@@ -70,13 +70,15 @@ jobs:
           TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
-          cat > task-def-app.json <<-'JSON'
+          CPU=${APP_CPU:-256}
+          MEMORY=${APP_MEMORY:-512}
+          cat > task-def-app.json <<"JSON"
           {
             "family": "${{ env.APP_ECR_REPO }}",
             "networkMode": "awsvpc",
             "requiresCompatibilities": ["FARGATE"],
-            "cpu": "${{ env.APP_CPU-256 }}",
-            "memory": "${{ env.APP_MEMORY-512 }}",
+            "cpu": "$CPU",
+            "memory": "$MEMORY",
             "executionRoleArn": "${EXECUTION_ROLE_ARN}",
             "taskRoleArn": "${TASK_ROLE_ARN}",
             "containerDefinitions": [
