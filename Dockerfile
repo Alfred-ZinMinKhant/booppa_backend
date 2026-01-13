@@ -35,7 +35,7 @@ COPY ./entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Create non-root user and take ownership
-RUN useradd -m -u 1000 booppa || true
+RUN useradd -m -u 1001 booppa || true
 RUN chown -R booppa:booppa /app
 USER booppa
 
