@@ -1,0 +1,23 @@
+{
+  "Version":"2012-10-17",
+  "Statement":[
+    {
+      "Sid":"SecretsManagerRead",
+      "Effect":"Allow",
+      "Action":["secretsmanager:GetSecretValue","secretsmanager:DescribeSecret"],
+      "Resource":"*"
+    },
+    {
+      "Sid":"S3AccessForReports",
+      "Effect":"Allow",
+      "Action":["s3:PutObject","s3:GetObject","s3:ListBucket"],
+      "Resource":["arn:aws:s3:::booppa-reports-*","arn:aws:s3:::booppa-reports-*/*","arn:aws:s3:::booppa-website","arn:aws:s3:::booppa-website/*"]
+    },
+    {
+      "Sid":"SESSend",
+      "Effect":"Allow",
+      "Action":["ses:SendEmail","ses:SendRawEmail"],
+      "Resource":"*"
+    }
+  ]
+}

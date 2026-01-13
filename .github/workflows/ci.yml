@@ -45,8 +45,8 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-            $ECR_REGISTRY/${{ env.APP_ECR_REPO }}:latest
-            $ECR_REGISTRY/${{ env.APP_ECR_REPO }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:latest
+            ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}
 
       - name: Build & push worker image
         uses: docker/build-push-action@v4
@@ -55,13 +55,13 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-            $ECR_REGISTRY/${{ env.WORKER_ECR_REPO }}:latest
-            $ECR_REGISTRY/${{ env.WORKER_ECR_REPO }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/${{ env.WORKER_ECR_REPO }}:latest
+            ${{ env.ECR_REGISTRY }}/${{ env.WORKER_ECR_REPO }}:${{ github.sha }}
 
       - name: Set image variables
         run: |
-          echo "APP_IMAGE=$ECR_REGISTRY/${{ env.APP_ECR_REPO }}:${{ github.sha }}" >> $GITHUB_ENV
-          echo "WORKER_IMAGE=$ECR_REGISTRY/${{ env.WORKER_ECR_REPO }}:${{ github.sha }}" >> $GITHUB_ENV
+          echo "APP_IMAGE=${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}" >> $GITHUB_ENV
+          echo "WORKER_IMAGE=${{ env.ECR_REGISTRY }}/${{ env.WORKER_ECR_REPO }}:${{ github.sha }}" >> $GITHUB_ENV
 
       - name: Register ECS task definition - app
         env:
