@@ -17,7 +17,7 @@ env:
   APP_ECR_REPO: booppa-app
   WORKER_ECR_REPO: booppa-worker
   ECS_CLUSTER: booppa-cluster
-  ECS_SERVICE: booppa-service
+  ECS_SERVICE: booppa-app
 
 jobs:
   build-and-deploy:
@@ -140,7 +140,7 @@ jobs:
       - name: Update ECS worker service to use new task definition (worker)
         env:
           CLUSTER: ${{ env.ECS_CLUSTER }}
-          WORKER_SERVICE: ${{ secrets.AWS_ECS_WORKER_SERVICE_NAME }}
+          WORKER_SERVICE: booppa-worker
           WORKER_TASK_DEF_ARN: ${{ env.WORKER_TASK_DEF_ARN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
