@@ -72,7 +72,7 @@ jobs:
         run: |
           CPU=${APP_CPU:-256}
           MEMORY=${APP_MEMORY:-512}
-          cat > task-def-app.json <<"JSON"
+          cat > task-def-app.json <<JSON
           {
             "family": "${{ env.APP_ECR_REPO }}",
             "networkMode": "awsvpc",
@@ -104,7 +104,7 @@ jobs:
           TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
-          cat > task-def-worker.json <<-'JSON'
+          cat > task-def-worker.json <<-JSON
           {
             "family": "${{ env.WORKER_ECR_REPO }}",
             "networkMode": "awsvpc",
