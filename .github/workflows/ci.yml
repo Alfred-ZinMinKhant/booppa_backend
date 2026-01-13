@@ -58,6 +58,15 @@ jobs:
             ${{ env.ECR_REGISTRY }}/${{ env.WORKER_ECR_REPO }}:latest
             ${{ env.ECR_REGISTRY }}/${{ env.WORKER_ECR_REPO }}:${{ github.sha }}
 
+      - name: Verify pushed images in ECR
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          echo "== App repository images =="
+          aws ecr describe-images --repository-name ${{ env.APP_ECR_REPO }} --region $AWS_REGION --query 'imageDetails[].imageTags' --output json || true
+          echo "== Worker repository images =="
+          aws ecr describe-images --repository-name ${{ env.WORKER_ECR_REPO }} --region $AWS_REGION --query 'imageDetails[].imageTags' --output json || true
+
       - name: Set image variables
         run: |
           echo "APP_IMAGE=${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}" >> $GITHUB_ENV
@@ -132,24 +141,32 @@ jobs:
         env:
           CLUSTER: ${{ env.ECS_CLUSTER }}
           SERVICE: ${{ env.ECS_SERVICE }}
-          TASK_DEF_ARN: ${{ env.APP_TASK_DEF_ARN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
-          aws ecs update-service --cluster $CLUSTER --service $SERVICE --task-definition $TASK_DEF_ARN --force-new-deployment --region $AWS_REGION
+          # Use runtime variable exported to $GITHUB_ENV by the task registration step
+          echo "Updating app service to task definition ARN: $APP_TASK_DEF_ARN"
+          aws ecs update-service --cluster $CLUSTER --service $SERVICE --task-definition "$APP_TASK_DEF_ARN" --force-new-deployment --region $AWS_REGION
 
       - name: Update ECS worker service to use new task definition (worker)
         env:
           CLUSTER: ${{ env.ECS_CLUSTER }}
           WORKER_SERVICE: booppa-worker
-          WORKER_TASK_DEF_ARN: ${{ env.WORKER_TASK_DEF_ARN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
-          aws ecs update-service --cluster $CLUSTER --service $WORKER_SERVICE --task-definition $WORKER_TASK_DEF_ARN --force-new-deployment --region $AWS_REGION
+          # Use runtime variable exported to $GITHUB_ENV by the worker task registration step
+          echo "Updating worker service to task definition ARN: $WORKER_TASK_DEF_ARN"
+          aws ecs update-service --cluster $CLUSTER --service $WORKER_SERVICE --task-definition "$WORKER_TASK_DEF_ARN" --force-new-deployment --region $AWS_REGION
 
-      - name: Update ECS service (force new deployment)
+      - name: Ensure service uses registered task definition (fallback)
         run: |
-          # This will cause ECS to pull the new image if the task definition references :latest
-          aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --force-new-deployment --region $AWS_REGION
+          # If we have the new task definition ARN, update the service to use it (immutable deploy).
+          if [ -n "$APP_TASK_DEF_ARN" ]; then
+            echo "Updating service to task definition ARN: $APP_TASK_DEF_ARN"
+            aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --task-definition "$APP_TASK_DEF_ARN" --force-new-deployment --region $AWS_REGION
+          else
+            echo "No APP_TASK_DEF_ARN found; forcing a new deployment of the existing service (not recommended)."
+            aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --force-new-deployment --region $AWS_REGION
+          fi
 
       - name: Wait for deployment stability
         run: |
