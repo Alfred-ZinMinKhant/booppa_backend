@@ -1,0 +1,20 @@
+from fastapi import APIRouter
+from .reports import router as reports_router
+from .auth import router as auth_router
+from .health import router as health_router
+from .consent import router as consent_router
+from .stripe_webhook import router as stripe_router
+from .stripe_checkout import router as stripe_checkout_router
+from .admin import router as admin_router
+
+router = APIRouter()
+
+router.include_router(health_router, prefix="/health", tags=["health"])
+router.include_router(auth_router, prefix="/auth", tags=["authentication"])
+router.include_router(reports_router, prefix="/reports", tags=["reports"])
+router.include_router(consent_router, prefix="", tags=["consent"])
+router.include_router(stripe_router, prefix="/stripe", tags=["stripe"])
+router.include_router(
+    stripe_checkout_router, prefix="/stripe", tags=["stripe-checkout"]
+)
+router.include_router(admin_router, prefix="/admin", tags=["admin"])

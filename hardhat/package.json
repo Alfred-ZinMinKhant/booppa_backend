@@ -1,0 +1,17 @@
+{
+  "name": "booppa-hardhat",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "compile": "hardhat compile",
+    "deploy:amoy": "hardhat run --network amoy scripts/deploy.js",
+    "check:deployer": "hardhat run --network amoy scripts/check_deployer.js",
+    "deploy:mainnet": "hardhat run --network mainnet scripts/deploy.js"
+  },
+  "devDependencies": {
+    "@nomiclabs/hardhat-ethers": "^2.0.6",
+    "dotenv": "^16.0.0",
+    "ethers": "^5.7.2",
+    "hardhat": "^2.17.0"
+  }
+}

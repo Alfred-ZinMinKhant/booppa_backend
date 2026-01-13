@@ -1,0 +1,40 @@
+{
+  "_format": "hh-sol-cache-2",
+  "files": {
+    "/Users/zinminkhant/Downloads/Booppa/booppa_v10_enterprise/contracts/EvidenceAnchorV3.sol": {
+      "lastModificationDate": 1768040140441,
+      "contentHash": "ea36d7334be033fb744c1cef975c0980",
+      "sourceName": "contracts/EvidenceAnchorV3.sol",
+      "solcConfig": {
+        "version": "0.8.19",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.19"
+      ],
+      "artifacts": [
+        "EvidenceAnchorV3"
+      ]
+    }
+  }
+}

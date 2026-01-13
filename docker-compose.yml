@@ -1,0 +1,78 @@
+version: "3.8"
+
+services:
+  app:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --log-level info
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./:/app:delegated
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  worker:
+    build: .
+    command: python -m celery -A app.workers.celery_app worker --loglevel=info
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - ./:/app:delegated
+
+  postgres:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: booppa
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: booppa
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+
+  django_admin:
+    build: ./cms_admin
+    image: booppa-django-admin:local
+    env_file: .env
+    ports:
+      - "8001:8001"
+    depends_on:
+      - postgres
+    volumes:
+      - ./cms_admin/:/app:delegated
+    restart: unless-stopped
+
+  # Headless browser service for reliable screenshots (fallback for Playwright)
+  browserless:
+    image: browserless/chrome:latest
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - CONNECTION_TIMEOUT=600000
+      - MAX_CONCURRENT_SESSIONS=5
+    # Do not depend on browserless from app by default; app will use it only as fallback
+
+volumes:
+  postgres_data:
+  redis_data:

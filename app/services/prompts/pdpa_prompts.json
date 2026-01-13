@@ -1,0 +1,63 @@
+{
+  "nric_violation": {
+    "template": "CRITICAL VIOLATION: Unauthorized NRIC Collection\n\nLEGISLATION VIOLATED:\n• PDPA Section 18 - Purpose Limitation\n• PDPC Advisory Guidelines on NRIC Numbers (2018)\n\nPENALTY: {penalty_amount}\n\nVIOLATION DETAILS:\n{details}\n\nIMMEDIATE ACTIONS REQUIRED (within 24 hours):\n1. Remove NRIC collection field from {location}\n2. Review all data collection forms for unnecessary NRIC fields\n3. Document the removal with timestamp\n\nALTERNATIVES TO NRIC COLLECTION:\n• Last 4 digits of NRIC + Full name\n• Company-issued identification number\n• Membership or loyalty card number\n• Email + Phone verification\n\nCOMPLIANCE DEADLINE: {deadline}\n\nREFERENCE DOCUMENTS:\n• PDPC Advisory Guidelines: {nric_guidelines_url}\n• MAS Notice 626 for financial institutions\n• Healthcare Services Act for medical providers\n\nBLOCKCHAIN EVIDENCE REQUIREMENTS:\n1. Generate SHA-256 hash of NRIC removal confirmation\n2. Anchor hash on Polygon Mainnet for timestamp proof\n3. Store transaction hash: {tx_hash_placeholder}\n4. Include Polygonscan QR code in compliance report\n\nVERIFICATION:\n• Transaction: https://polygonscan.com/tx/{tx_hash_placeholder}\n• Court-admissible as per Singapore Evidence Act",
+    "severity": "CRITICAL",
+    "triggers": ["nric", "national registration identity card", "fin number", "identity card"],
+    "examples": [
+      "NRIC collected for mall promotions without legal basis",
+      "NRIC stored in unencrypted customer database",
+      "NRIC used for simple age verification (use DOB instead)",
+      "FIN numbers collected for employment verification without justification"
+    ]
+  },
+  
+  "cookie_violation": {
+    "template": "HIGH VIOLATION: Non-Compliant Cookie Consent Mechanism\n\nLEGISLATION VIOLATED:\n• PDPA Section 13 - Consent Obligation\n• PDPC Guide to Enhanced Notice and Choice (2021)\n\nPENALTY: {penalty_amount}\n\nVIOLATION DETAILS:\n{details}\n\nREQUIRED FIXES (within 48 hours):\n1. Implement affirmative opt-in mechanism (no pre-ticked boxes)\n2. Provide granular consent options:\n   • Essential cookies (required for functionality)\n   • Analytics cookies (performance tracking)\n   • Marketing cookies (advertising preferences)\n3. Ensure banner is prominent and persistent until choice made\n4. Include options in 4 official languages:\n   • English • Chinese (中文) • Malay (Bahasa Melayu) • Tamil (தமிழ்)\n5. Implement easy withdrawal mechanism\n\nCOMPLIANCE DEADLINE: {deadline}\n\nREFERENCE DOCUMENTS:\n• PDPC Guide to Enhanced Notice: {cookies_guidelines_url}\n• Guide to Active Consent for Online Activities\n\nBLOCKCHAIN EVIDENCE:\n1. Document consent flow implementation\n2. Anchor consent mechanism screenshots on Polygon\n3. Timestamp deployment of compliant solution\n\nNOTE: Implied consent (continued browsing) is NOT sufficient under PDPA",
+    "severity": "HIGH",
+    "triggers": ["cookie banner", "consent", "gdpr popup", "tracking consent", "privacy settings"],
+    "examples": [
+      "Cookie banner missing or not prominent",
+      "Pre-ticked consent boxes (violates active consent requirement)",
+      "No granular consent options (all-or-nothing approach)",
+      "No option to withdraw consent easily",
+      "Missing multi-language support for Singapore market"
+    ]
+  },
+  
+  "security_violation": {
+    "template": "CRITICAL VIOLATION: Inadequate Data Protection Measures\n\nLEGISLATION VIOLATED:\n• PDPA Section 24 - Protection Obligation\n• MAS Notice 644 - Cyber Hygiene\n• MTCS Level 3 Requirements (if applicable)\n\nPENALTY: {penalty_amount}\n\nVIOLATION DETAILS:\n{details}\n\nMANDATORY SECURITY IMPLEMENTATION (within 72 hours):\n1. DEPLOY HTTPS IMMEDIATELY (Critical for data in transit)\n2. Implement security headers:\n   • Strict-Transport-Security (HSTS)\n   • Content-Security-Policy (CSP)\n   • X-XSS-Protection\n   • X-Content-Type-Options\n3. Conduct vulnerability assessment\n4. Document security measures in privacy policy\n\nADDITIONAL RECOMMENDATIONS:\n• Implement Web Application Firewall (WAF)\n• Regular security patching schedule\n• Employee security awareness training\n• Incident response plan\n\nCOMPLIANCE DEADLINE: {deadline}\n\nREFERENCE DOCUMENTS:\n• PDPC Guide to Data Protection by Design\n• MAS Technology Risk Management Guidelines\n• Singapore Cybersecurity Act 2018\n\nBLOCKCHAIN EVIDENCE:\n1. Anchor security implementation certificates\n2. Document compliance timeline\n3. Store security assessment reports with timestamp",
+    "severity": "CRITICAL",
+    "triggers": ["http://", "no ssl", "missing security headers", "insecure connection", "mixed content"],
+    "examples": [
+      "Website accessible via HTTP (no HTTPS encryption)",
+      "Missing HSTS header for SSL enforcement",
+      "No Content Security Policy implemented",
+      "Sensitive data transmitted without encryption",
+      "Outdated TLS protocols in use"
+    ]
+  },
+  
+  "dnc_violation": {
+    "template": "MEDIUM VIOLATION: Do Not Call (DNC) Registry Compliance Issue\n\nLEGISLATION VIOLATED:\n• Do Not Call (DNC) Registry Provisions\n• PDPA Section 13 (for marketing communications)\n\nPENALTY: {penalty_amount} per message\n\nVIOLATION DETAILS:\n{details}\n\nREQUIRED ACTIONS (within 7 days):\n1. Register with DNC Registry if sending marketing messages\n2. Check DNC Registry before each marketing campaign\n3. Include clear opt-out mechanism in all communications\n4. Maintain internal Do Not Call list\n5. Document DNC compliance procedures\n\nCOMPLIANCE DEADLINE: {deadline}\n\nREFERENCE DOCUMENTS:\n• DNC Registry Guidelines: https://www.dnc.gov.sg\n• PDPC Guide on Marketing Practices\n\nLANGUAGES FOR MARKETING:\nEnsure marketing materials are available in appropriate languages for Singapore audience.",
+    "severity": "MEDIUM",
+    "triggers": ["marketing", "sms", "telemarketing", "promotional", "newsletter"],
+    "examples": [
+      "No mention of DNC Registry compliance in marketing terms",
+      "Missing opt-out mechanism in marketing communications",
+      "No procedures for checking DNC Registry",
+      "Marketing without proper consent mechanisms"
+    ]
+  },
+  
+  "transfer_violation": {
+    "template": "HIGH VIOLATION: Cross-Border Data Transfer Compliance Issue\n\nLEGISLATION VIOLATED:\n• PDPA Section 26 - Transfer Limitation Obligation\n\nPENALTY: {penalty_amount}\n\nVIOLATION DETAILS:\n{details}\n\nREQUIRED ACTIONS (within 14 days):\n1. Conduct data transfer mapping exercise\n2. Ensure overseas recipients provide comparable protection\n3. Implement transfer agreements or binding corporate rules\n4. Document all cross-border data transfers\n5. Obtain explicit consent for transfers if required\n\nCOMPLIANCE DEADLINE: {deadline}\n\nREFERENCE DOCUMENTS:\n• PDPC Guide on Transfer Limitation Obligation\n• Model Clauses for Data Transfers\n\nCOUNTRIES WITH ADEQUATE PROTECTION:\n• European Union countries\n• United Kingdom\n• Switzerland\n• Japan\n• South Korea\n\nNOTE: Transfers to countries without adequate protection require additional safeguards.",
+    "severity": "HIGH",
+    "triggers": ["overseas", "cross-border", "international", "cloud storage", "third country"],
+    "examples": [
+      "Data stored in cloud servers located in non-adequate countries",
+      "No transfer agreements with overseas service providers",
+      "No mention of data transfer practices in privacy policy",
+      "International data flows without proper safeguards"
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+Django>=4.2
+dj-database-url>=1.0
+gunicorn
+psycopg2-binary
+whitenoise
+Pillow
+django-cors-headers

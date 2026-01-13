@@ -1,0 +1,253 @@
+from .celery_app import celery_app
+from app.core.db import SessionLocal
+from app.core.models import Report
+from app.services.ai_service import AIService
+from app.services.booppa_ai_service import BooppaAIService
+from app.services.blockchain import BlockchainService
+from app.services.pdf_service import PDFService
+from app.services.storage import S3Service
+from app.services.email_service import EmailService
+from app.services.screenshot_service import capture_screenshot_base64
+import asyncio
+import hashlib
+import json
+import logging
+from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
+
+
+@celery_app.task(bind=True, max_retries=3, name="process_report_task")
+def process_report_task(self, report_id: str):
+    """Main report processing task - orchestrates the entire workflow"""
+    try:
+        # Run async workflow in sync context
+        loop = asyncio.get_event_loop()
+        result = loop.run_until_complete(process_report_workflow(report_id))
+
+        logger.info(f"Report {report_id} processed successfully")
+        return result
+
+    except Exception as exc:
+        logger.error(f"Report processing failed for {report_id}: {exc}")
+
+        # Update report status to failed
+        db = SessionLocal()
+        try:
+            report = db.query(Report).filter(Report.id == report_id).first()
+            if report:
+                report.status = "failed"
+                db.commit()
+        finally:
+            db.close()
+
+        # Retry with exponential backoff
+        countdown = 60 * (2**self.request.retries)  # 1min, 2min, 4min
+        raise self.retry(exc=exc, countdown=countdown)
+
+
+async def process_report_workflow(report_id: str) -> dict:
+    """Async workflow for report processing"""
+    db = SessionLocal()
+    try:
+        # Get report from database
+        report = db.query(Report).filter(Report.id == report_id).first()
+        if not report:
+            raise ValueError(f"Report {report_id} not found")
+
+        # Step 1: Generate structured AI report (Booppa) and narrative
+        logger.info(f"Step 1: Generating structured AI report for {report_id}")
+        booppa_ai = BooppaAIService()
+        structured_report = await booppa_ai.generate_compliance_report(
+            report.assessment_data
+        )
+
+        # Keep a human-readable narrative for legacy fields
+        try:
+            ai_service = AIService()
+            narrative = ai_service._format_report_as_narrative(structured_report)
+        except Exception:
+            narrative = structured_report.get("executive_summary") or ""
+
+        report.ai_narrative = narrative
+        report.ai_model_used = structured_report.get("report_metadata", {}).get(
+            "ai_model", "Booppa"
+        )
+        # persist structured report into assessment_data for traceability
+        try:
+            if isinstance(report.assessment_data, dict):
+                report.assessment_data["booppa_report"] = structured_report
+        except Exception:
+            logger.warning("Could not attach structured report into assessment_data")
+
+        db.commit()
+
+        # Step 2: Compute evidence hash
+        logger.info(f"Step 2: Computing evidence hash for {report_id}")
+        evidence_data = {
+            "report_id": str(report.id),
+            "framework": report.framework,
+            "company": report.company_name,
+            "assessment_data": report.assessment_data,
+            "ai_narrative": narrative,
+            "timestamp": report.created_at.isoformat(),
+        }
+
+        evidence_json = json.dumps(evidence_data, sort_keys=True)
+        evidence_hash = hashlib.sha256(evidence_json.encode()).hexdigest()
+        report.audit_hash = evidence_hash
+        db.commit()
+
+        # Step 3: Anchor on blockchain (only if payment confirmed)
+        logger.info(f"Step 3: Anchoring evidence on blockchain for {report_id}")
+        payment_confirmed = False
+        try:
+            payment_confirmed = bool(report.assessment_data.get("payment_confirmed"))
+        except Exception:
+            payment_confirmed = False
+
+        tx_hash = None
+        if payment_confirmed:
+            blockchain = BlockchainService()
+            tx_hash = await blockchain.anchor_evidence(evidence_hash)
+            report.tx_hash = tx_hash
+            db.commit()
+        else:
+            # leave tx_hash None; PDF will point to pending verification
+            report.tx_hash = None
+            db.commit()
+
+        # Step 4: Generate PDF with QR code
+        logger.info(f"Step 4: Generating PDF for {report_id}")
+        pdf_service = PDFService()
+
+        pdf_data = {
+            "report_id": str(report.id),
+            "framework": report.framework,
+            "company_name": report.company_name,
+            "created_at": report.created_at.isoformat(),
+            "status": "completed",
+            "tx_hash": tx_hash,
+            "audit_hash": evidence_hash,
+            "ai_narrative": narrative,
+            "structured_report": structured_report,
+            "payment_confirmed": payment_confirmed,
+            "contact_email": (
+                report.assessment_data.get("contact_email")
+                if isinstance(report.assessment_data, dict)
+                else None
+            ),
+            "base_url": (
+                report.assessment_data.get("base_url")
+                if isinstance(report.assessment_data, dict)
+                and report.assessment_data.get("base_url")
+                else "https://www.booppa.io"
+            ),
+        }
+
+        # Ensure a site screenshot is present for every PDF. Prefer existing data, otherwise capture.
+        if not pdf_data.get("site_screenshot"):
+            try:
+                url = None
+                if isinstance(report.assessment_data, dict):
+                    url = report.assessment_data.get("url") or report.company_website
+                if url:
+                    ss_b64 = await asyncio.to_thread(capture_screenshot_base64, url)
+                    if ss_b64:
+                        pdf_data["site_screenshot"] = ss_b64
+            except Exception as e:
+                logger.warning(
+                    f"Could not capture site screenshot for {report_id}: {e}"
+                )
+
+        pdf_bytes = pdf_service.generate_pdf(pdf_data)
+
+        # Step 5: Upload to S3 with retry/backoff
+        logger.info(f"Step 5: Uploading PDF to S3 for {report_id}")
+        storage = S3Service()
+        max_attempts = 3
+        pdf_url = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                pdf_url = await storage.upload_pdf(pdf_bytes, str(report.id))
+                report.s3_url = pdf_url
+                report.file_key = f"reports/{report.id}.pdf"
+                # Mark as completed once upload succeeds so frontend can access URL
+                report.status = "completed"
+                report.completed_at = datetime.utcnow()
+                db.commit()
+                break
+            except Exception as e:
+                logger.error(f"S3 upload attempt {attempt} failed for {report_id}: {e}")
+                if attempt == max_attempts:
+                    # propagate so workflow marks failed and triggers retry
+                    raise
+                await asyncio.sleep(min(10, 2**attempt))
+
+        # Step 6: Send notification email (non-fatal)
+        logger.info(f"Step 6: Sending notification for {report_id}")
+        email_service = EmailService()
+        try:
+            await email_service.send_report_ready_email(
+                to_email=(
+                    report.assessment_data.get("contact_email")
+                    if isinstance(report.assessment_data, dict)
+                    else "user@example.com"
+                ),
+                report_url=pdf_url,
+                user_name=(report.company_name or "User"),
+                report_id=str(report.id),
+            )
+        except Exception as e:
+            logger.error(f"Failed to send notification email for {report_id}: {e}")
+
+        # If not already marked completed (defensive), set completion timestamp
+        try:
+            if report.status != "completed":
+                report.status = "completed"
+                report.completed_at = datetime.utcnow()
+                db.commit()
+        except Exception:
+            db.rollback()
+
+        return {
+            "status": "completed",
+            "report_id": report_id,
+            "pdf_url": pdf_url,
+            "tx_hash": tx_hash,
+        }
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Report workflow failed: {e}")
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(name="cleanup_old_tasks")
+def cleanup_old_tasks():
+    """Clean up old completed reports and temporary data"""
+    db = SessionLocal()
+    try:
+        # Delete reports older than 30 days
+        cutoff_date = datetime.utcnow() - timedelta(days=30)
+
+        old_reports = (
+            db.query(Report)
+            .filter(Report.status == "completed", Report.created_at < cutoff_date)
+            .all()
+        )
+
+        for report in old_reports:
+            # In production, you might archive instead of delete
+            db.delete(report)
+
+        db.commit()
+        logger.info(f"Cleaned up {len(old_reports)} old reports")
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Cleanup failed: {e}")
+    finally:
+        db.close()
