@@ -60,7 +60,7 @@ resource "aws_db_instance" "postgres" {
   engine                  = "postgres"
   instance_class          = "db.t4g.micro"
   allocated_storage       = var.db_allocated_storage
-  name                    = "${local.project}db"
+  db_name                 = "${local.project}db"
   username                = var.db_username
   password                = var.db_password
   skip_final_snapshot     = true
@@ -76,8 +76,12 @@ resource "aws_elasticache_subnet_group" "redis" {
   subnet_ids = var.create_vpc ? [for s in aws_subnet.private : s.id] : var.private_subnet_ids
 }
 
+resource "random_id" "elasticache_suffix" {
+  byte_length = 3
+}
+
 resource "aws_elasticache_cluster" "redis" {
-  cluster_id           = "${local.project}-redis"
+  cluster_id           = "${local.project}-redis-${random_id.elasticache_suffix.hex}"
   engine               = "redis"
   node_type            = "cache.t4g.micro"
   num_cache_nodes      = 1

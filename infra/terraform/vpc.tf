@@ -53,7 +53,6 @@ data "aws_availability_zones" "available" {}
 // NAT gateway for private subnets (single NAT)
 resource "aws_eip" "nat" {
   count = var.create_vpc ? 1 : 0
-  vpc = true
 }
 
 resource "aws_nat_gateway" "nat" {

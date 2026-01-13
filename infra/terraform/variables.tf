@@ -54,6 +54,12 @@ variable "public_subnet_cidrs" {
   default     = ["10.0.1.0/24", "10.0.2.0/24"]
 }
 
+variable "public_subnet_ids" {
+  description = "If using an existing VPC, provide the public subnet ids for ALB placement"
+  type        = list(string)
+  default     = []
+}
+
 variable "private_subnet_cidrs" {
   description = "CIDR blocks for private subnets (one per AZ)"
   type        = list(string)
@@ -92,4 +98,10 @@ variable "rds_multi_az" {
   description = "Whether to enable multi-AZ for RDS"
   type        = bool
   default     = false
+}
+
+variable "create_alb" {
+  description = "Whether to create an ALB (set false if account/region blocks ALB creation)"
+  type        = bool
+  default     = true
 }

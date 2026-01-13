@@ -6,7 +6,7 @@ domain_name = "booppa.io"
 
 # Database (DO NOT COMMIT; set a strong password locally)
 db_username = "booppa_user"
-db_password = "REPLACE_WITH_STRONG_PASSWORD"
+db_password = "4lfr3d2MK28##$"
 
 # Optional: provide a specific S3 bucket name or leave blank to let Terraform create one
 s3_bucket_name = ""

@@ -23,7 +23,7 @@ output "redis_endpoint" {
 }
 
 output "alb_dns" {
-  value = aws_lb.alb.dns_name
+  value = var.create_alb ? aws_lb.alb[0].dns_name : ""
 }
 
 output "app_service_name" {

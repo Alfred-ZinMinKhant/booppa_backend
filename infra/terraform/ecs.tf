@@ -44,12 +44,16 @@ resource "aws_ecs_service" "app" {
     assign_public_ip = false
     security_groups = [aws_security_group.ecs.id]
   }
-  load_balancer {
-    target_group_arn = aws_lb_target_group.app_tg.arn
-    container_name   = "app"
-    container_port   = 8000
+  dynamic "load_balancer" {
+    for_each = var.create_alb ? [1] : []
+    content {
+      target_group_arn = aws_lb_target_group.app_tg[0].arn
+      container_name   = "app"
+      container_port   = 8000
+    }
   }
-  depends_on = [aws_lb_listener.http]
+  # depends_on removed because Terraform requires a static list; the load_balancer
+  # dynamic block already creates the dependency through resource references when used.
 }
 
 // Basic worker service (runs same image but command overridden by entrypoint/command)
