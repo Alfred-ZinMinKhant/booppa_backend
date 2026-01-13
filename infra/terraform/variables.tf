@@ -103,5 +103,5 @@ variable "rds_multi_az" {
 variable "create_alb" {
   description = "Whether to create an ALB (set false if account/region blocks ALB creation)"
   type        = bool
-  default     = true
+  default     = false
 }
