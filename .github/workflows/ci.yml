@@ -1,0 +1,157 @@
+name: CI — Build, push to ECR, update ECS
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+  APP_ECR_REPO: booppa-app
+  WORKER_ECR_REPO: booppa-worker
+  ECS_CLUSTER: booppa-cluster
+  ECS_SERVICE: booppa-service
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions: write-all
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+
+      - name: Build & push app image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            $ECR_REGISTRY/${{ env.APP_ECR_REPO }}:latest
+            $ECR_REGISTRY/${{ env.APP_ECR_REPO }}:${{ github.sha }}
+
+      - name: Build & push worker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            $ECR_REGISTRY/${{ env.WORKER_ECR_REPO }}:latest
+            $ECR_REGISTRY/${{ env.WORKER_ECR_REPO }}:${{ github.sha }}
+
+      - name: Set image variables
+        run: |
+          echo "APP_IMAGE=$ECR_REGISTRY/${{ env.APP_ECR_REPO }}:${{ github.sha }}" >> $GITHUB_ENV
+          echo "WORKER_IMAGE=$ECR_REGISTRY/${{ env.WORKER_ECR_REPO }}:${{ github.sha }}" >> $GITHUB_ENV
+
+      - name: Register ECS task definition - app
+        env:
+          APP_IMAGE: ${{ env.APP_IMAGE }}
+          EXECUTION_ROLE_ARN: ${{ secrets.AWS_ECS_EXECUTION_ROLE_ARN }}
+          TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          cat > task-def-app.json <<-'JSON'
+          {
+            "family": "${{ env.APP_ECR_REPO }}",
+            "networkMode": "awsvpc",
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "${{ env.APP_CPU-256 }}",
+            "memory": "${{ env.APP_MEMORY-512 }}",
+            "executionRoleArn": "${EXECUTION_ROLE_ARN}",
+            "taskRoleArn": "${TASK_ROLE_ARN}",
+            "containerDefinitions": [
+              {
+                "name": "app",
+                "image": "${APP_IMAGE}",
+                "essential": true,
+                "portMappings": [{ "containerPort": 8000, "protocol": "tcp" }],
+                "logConfiguration": { "logDriver": "awslogs", "options": { "awslogs-group": "/ecs/${{ env.APP_ECR_REPO }}", "awslogs-region": "${AWS_REGION}", "awslogs-stream-prefix": "ecs" } }
+              }
+            ]
+          }
+          JSON
+
+          aws ecs register-task-definition --cli-input-json file://task-def-app.json --region $AWS_REGION > task-def-app-out.json
+          jq -r '.taskDefinition.taskDefinitionArn' task-def-app-out.json > task-def-app-arn.txt
+          echo "APP_TASK_DEF_ARN=$(cat task-def-app-arn.txt)" >> $GITHUB_ENV
+
+      - name: Register ECS task definition - worker
+        env:
+          WORKER_IMAGE: ${{ env.WORKER_IMAGE }}
+          EXECUTION_ROLE_ARN: ${{ secrets.AWS_ECS_EXECUTION_ROLE_ARN }}
+          TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          cat > task-def-worker.json <<-'JSON'
+          {
+            "family": "${{ env.WORKER_ECR_REPO }}",
+            "networkMode": "awsvpc",
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "256",
+            "memory": "512",
+            "executionRoleArn": "${EXECUTION_ROLE_ARN}",
+            "taskRoleArn": "${TASK_ROLE_ARN}",
+            "containerDefinitions": [
+              {
+                "name": "worker",
+                "image": "${WORKER_IMAGE}",
+                "essential": true,
+                "logConfiguration": { "logDriver": "awslogs", "options": { "awslogs-group": "/ecs/${{ env.WORKER_ECR_REPO }}", "awslogs-region": "${AWS_REGION}", "awslogs-stream-prefix": "ecs" } }
+              }
+            ]
+          }
+          JSON
+
+          aws ecs register-task-definition --cli-input-json file://task-def-worker.json --region $AWS_REGION > task-def-worker-out.json
+          jq -r '.taskDefinition.taskDefinitionArn' task-def-worker-out.json > task-def-worker-arn.txt
+          echo "WORKER_TASK_DEF_ARN=$(cat task-def-worker-arn.txt)" >> $GITHUB_ENV
+
+      - name: Update ECS service to use new task definition (app)
+        env:
+          CLUSTER: ${{ env.ECS_CLUSTER }}
+          SERVICE: ${{ env.ECS_SERVICE }}
+          TASK_DEF_ARN: ${{ env.APP_TASK_DEF_ARN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          aws ecs update-service --cluster $CLUSTER --service $SERVICE --task-definition $TASK_DEF_ARN --force-new-deployment --region $AWS_REGION
+
+      - name: Update ECS worker service to use new task definition (worker)
+        env:
+          CLUSTER: ${{ env.ECS_CLUSTER }}
+          WORKER_SERVICE: ${{ secrets.AWS_ECS_WORKER_SERVICE_NAME }}
+          WORKER_TASK_DEF_ARN: ${{ env.WORKER_TASK_DEF_ARN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          aws ecs update-service --cluster $CLUSTER --service $WORKER_SERVICE --task-definition $WORKER_TASK_DEF_ARN --force-new-deployment --region $AWS_REGION
+
+      - name: Update ECS service (force new deployment)
+        run: |
+          # This will cause ECS to pull the new image if the task definition references :latest
+          aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --force-new-deployment --region $AWS_REGION
+
+      - name: Wait for deployment stability
+        run: |
+          aws ecs wait services-stable --cluster $ECS_CLUSTER --services $ECS_SERVICE --region $AWS_REGION
+
+      - name: Show service
+        run: aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE --region $AWS_REGION
+
+      - name: Optional — run DB migrations (one-off)
+        if: github.event.inputs.run_migrations == 'true'
+        run: |
+          # Example: run migrations as an ECS task or use your CI runner to run alembic
+          echo "Run migrations manually or enable this step with proper task definition"
