@@ -304,3 +304,40 @@ jobs:
         run: |
           # Example: run migrations as an ECS task or use your CI runner to run alembic
           echo "Run migrations manually or enable this step with proper task definition"
+      - name: Create Django superuser if not exists (ECS one-off)
+        if: github.event.inputs.run_migrations == 'true'
+        env:
+          CMS_TASK_DEF_ARN: ${{ env.CMS_TASK_DEF_ARN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          ECS_CLUSTER: ${{ env.ECS_CLUSTER }}
+          AWS_SUBNETS: ${{ secrets.AWS_SUBNETS }}
+          AWS_SECURITY_GROUPS: ${{ secrets.AWS_SECURITY_GROUPS }}
+        run: |
+          echo "Creating Django superuser if not exists as an ECS one-off task..."
+          IFS=',' read -ra SUBS <<< "$AWS_SUBNETS"
+          IFS=',' read -ra SGS <<< "$AWS_SECURITY_GROUPS"
+          subs_json=$(printf '%s\n' "${SUBS[@]}" | jq -R . | jq -s .)
+          sgs_json=$(printf '%s\n' "${SGS[@]}" | jq -R . | jq -s .)
+          network_config=$(jq -n --argjson subs "$subs_json" --argjson sgs "$sgs_json" '{awsvpcConfiguration: {subnets: $subs, securityGroups: $sgs, assignPublicIp: "DISABLED"}}')
+
+          # Set your desired superuser credentials here
+          DJANGO_SUPERUSER_USERNAME=alfred
+          DJANGO_SUPERUSER_EMAIL=zinminkhant.alfred@gmail.com
+          DJANGO_SUPERUSER_PASSWORD=4lfr3d2MK28##$
+
+          # Run the ECS task to create the superuser if it doesn't exist
+          run_output=$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --launch-type FARGATE \
+            --task-definition "$CMS_TASK_DEF_ARN" \
+            --network-configuration "$network_config" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"cms\",\"command\":[\"sh\",\"-c\",\"python manage.py shell -c \"from django.contrib.auth import get_user_model; User=get_user_model(); u='$DJANGO_SUPERUSER_USERNAME'; e='$DJANGO_SUPERUSER_EMAIL'; p='$DJANGO_SUPERUSER_PASSWORD'; print('exists' if User.objects.filter(username=u).exists() else (User.objects.create_superuser(u,e,p) and 'created'))\"\"]}]}" \
+            --region "$AWS_REGION")
+
+          echo "$run_output"
+          exit_code=$(echo "$run_output" | jq -r '.failures | length')
+          if [ "$exit_code" -gt 0 ]; then
+            echo "Superuser creation task failed to start:" >&2
+            echo "$run_output" | jq -r '.failures[] | @json' >&2
+            exit 1
+          fi
