@@ -1,0 +1,14 @@
+{
+  "containerOverrides": [
+    {
+      "name": "cms",
+      "command": [
+        "python",
+        "manage.py",
+        "migrate",
+        "cms",
+        "--noinput"
+      ]
+    }
+  ]
+}
