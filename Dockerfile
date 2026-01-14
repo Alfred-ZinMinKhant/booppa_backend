@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright/python:latest
+FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -24,8 +24,6 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip setuptools wheel \
     && pip install --no-cache-dir -r /app/requirements.txt
 
-# Install Playwright browsers (ensure `playwright` is in requirements.txt)
-RUN python -m playwright install --with-deps || true
 
 # Copy application source
 COPY . /app
