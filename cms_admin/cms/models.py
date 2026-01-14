@@ -16,7 +16,6 @@ class BlogPost(models.Model):
 
     class Meta:
         db_table = "blog_posts"
-        managed = False
 
     def __str__(self):
         return self.title
