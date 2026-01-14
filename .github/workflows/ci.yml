@@ -331,7 +331,7 @@ jobs:
             --launch-type FARGATE \
             --task-definition "$CMS_TASK_DEF_ARN" \
             --network-configuration "$network_config" \
-            --overrides "{\"containerOverrides\":[{\"name\":\"cms\",\"command\":[\"sh\",\"-c\",\"python manage.py shell -c \"from django.contrib.auth import get_user_model; User=get_user_model(); u='$DJANGO_SUPERUSER_USERNAME'; e='$DJANGO_SUPERUSER_EMAIL'; p='$DJANGO_SUPERUSER_PASSWORD'; print('exists' if User.objects.filter(username=u).exists() else (User.objects.create_superuser(u,e,p) and 'created'))\"\"]}]}" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"cms\",\"command\":[\"sh\",\"-c\",\"python manage.py shell -c \\\"from django.contrib.auth import get_user_model; User=get_user_model(); u='alfred'; e='zinminkhant.alfred@gmail.com'; p='4lfr3d2MK28##$!'; print('exists' if User.objects.filter(username=u).exists() else (User.objects.create_superuser(u,e,p) and 'created'))\\\"\"]}]}"
             --region "$AWS_REGION")
 
           echo "$run_output"
