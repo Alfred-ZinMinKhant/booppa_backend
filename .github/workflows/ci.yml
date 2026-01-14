@@ -16,8 +16,10 @@ env:
   ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
   APP_ECR_REPO: booppa-app
   WORKER_ECR_REPO: booppa-worker
+  CMS_ECR_REPO: booppa-cms
   ECS_CLUSTER: booppa-cluster
   ECS_SERVICE: booppa-app
+  CMS_ECS_SERVICE: booppa-cms
 
 jobs:
   build-and-deploy:
@@ -64,6 +66,16 @@ jobs:
           tags: |
             ${{ env.ECR_REGISTRY }}/${{ env.WORKER_ECR_REPO }}:${{ github.sha }}
 
+      - name: Build & push cms image (SHA-only)
+        uses: docker/build-push-action@v4
+        with:
+          context: ./cms_admin
+          file: ./cms_admin/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.CMS_ECR_REPO }}:${{ github.sha }}
+
       - name: Verify pushed images in ECR
         env:
           AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -77,6 +89,7 @@ jobs:
         run: |
           echo "APP_IMAGE=${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}" >> $GITHUB_ENV
           echo "WORKER_IMAGE=${{ env.ECR_REGISTRY }}/${{ env.WORKER_ECR_REPO }}:${{ github.sha }}" >> $GITHUB_ENV
+          echo "CMS_IMAGE=${{ env.ECR_REGISTRY }}/${{ env.CMS_ECR_REPO }}:${{ github.sha }}" >> $GITHUB_ENV
 
       - name: Register ECS task definition - app
         env:
@@ -157,6 +170,44 @@ jobs:
           jq -r '.taskDefinition.taskDefinitionArn' task-def-worker-out.json > task-def-worker-arn.txt
           echo "WORKER_TASK_DEF_ARN=$(cat task-def-worker-arn.txt)" >> $GITHUB_ENV
 
+      - name: Register ECS task definition - cms
+        env:
+          CMS_IMAGE: ${{ env.CMS_IMAGE }}
+          EXECUTION_ROLE_ARN: ${{ secrets.AWS_ECS_EXECUTION_ROLE_ARN }}
+          TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          DB_SECRET_ARN: ${{ secrets.AWS_SECRETSMANAGER_DATABASE_URL_ARN }}
+        run: |
+          CPU=256
+          MEMORY=512
+          cat > task-def-cms.json <<JSON
+          {
+            "family": "${{ env.CMS_ECR_REPO }}",
+            "networkMode": "awsvpc",
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "${CPU}",
+            "memory": "${MEMORY}",
+            "executionRoleArn": "${EXECUTION_ROLE_ARN}",
+            "taskRoleArn": "${TASK_ROLE_ARN}",
+            "containerDefinitions": [
+              {
+                "name": "cms",
+                "image": "${CMS_IMAGE}",
+                "essential": true,
+                "secrets": [
+                  { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" }
+                ],
+                "portMappings": [{ "containerPort": 8001, "protocol": "tcp" }],
+                "logConfiguration": { "logDriver": "awslogs", "options": { "awslogs-group": "/ecs/${{ env.CMS_ECR_REPO }}", "awslogs-region": "${AWS_REGION}", "awslogs-stream-prefix": "ecs" } }
+              }
+            ]
+          }
+          JSON
+
+          aws ecs register-task-definition --cli-input-json file://task-def-cms.json --region $AWS_REGION > task-def-cms-out.json
+          jq -r '.taskDefinition.taskDefinitionArn' task-def-cms-out.json > task-def-cms-arn.txt
+          echo "CMS_TASK_DEF_ARN=$(cat task-def-cms-arn.txt)" >> $GITHUB_ENV
+
       - name: Run DB migrations (ECS one-off)
         if: github.event.inputs.run_migrations == 'true'
         env:
@@ -216,6 +267,19 @@ jobs:
           # Use runtime variable exported to $GITHUB_ENV by the worker task registration step
           echo "Updating worker service to task definition ARN: $WORKER_TASK_DEF_ARN"
           aws ecs update-service --cluster $CLUSTER --service $WORKER_SERVICE --task-definition "$WORKER_TASK_DEF_ARN" --force-new-deployment --region $AWS_REGION
+
+      - name: Update ECS cms service to use new task definition (cms)
+        env:
+          CLUSTER: ${{ env.ECS_CLUSTER }}
+          CMS_SERVICE: ${{ env.CMS_ECS_SERVICE }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          if [ -n "$CMS_TASK_DEF_ARN" ]; then
+            echo "Updating cms service to task definition ARN: $CMS_TASK_DEF_ARN"
+            aws ecs update-service --cluster $CLUSTER --service $CMS_SERVICE --task-definition "$CMS_TASK_DEF_ARN" --force-new-deployment --region $AWS_REGION || true
+          else
+            echo "No CMS_TASK_DEF_ARN found; skipping cms service update."
+          fi
 
       - name: Ensure service uses registered task definition (fallback)
         run: |
