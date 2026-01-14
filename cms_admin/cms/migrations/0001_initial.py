@@ -8,39 +8,44 @@ class Migration(migrations.Migration):
 
     initial = True
 
-    dependencies = [
-    ]
+    dependencies = []
 
     operations = [
         migrations.CreateModel(
-            name='BlogPost',
+            name="BlogPost",
             fields=[
-                ('id', models.UUIDField(primary_key=True, serialize=False)),
-                ('title', models.CharField(max_length=255)),
-                ('slug', models.CharField(max_length=255, unique=True)),
-                ('content', models.TextField()),
-                ('author', models.CharField(blank=True, max_length=255, null=True)),
-                ('published', models.BooleanField(default=False)),
-                ('published_at', models.DateTimeField(blank=True, null=True)),
-                ('created_at', models.DateTimeField(blank=True, null=True)),
-                ('updated_at', models.DateTimeField(blank=True, null=True)),
+                ("id", models.UUIDField(primary_key=True, serialize=False)),
+                ("title", models.CharField(max_length=255)),
+                ("slug", models.CharField(max_length=255, unique=True)),
+                ("content", models.TextField()),
+                ("author", models.CharField(blank=True, max_length=255, null=True)),
+                ("published", models.BooleanField(default=False)),
+                ("published_at", models.DateTimeField(blank=True, null=True)),
+                ("created_at", models.DateTimeField(blank=True, null=True)),
+                ("updated_at", models.DateTimeField(blank=True, null=True)),
             ],
             options={
-                'db_table': 'blog_posts',
-                'managed': False,
+                "db_table": "blog_posts",
             },
         ),
         migrations.CreateModel(
-            name='BlogImage',
+            name="BlogImage",
             fields=[
-                ('id', models.AutoField(primary_key=True, serialize=False)),
-                ('image', models.ImageField(upload_to='blog_images/')),
-                ('caption', models.CharField(blank=True, max_length=255, null=True)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('blog_post', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='images', to='cms.blogpost')),
+                ("id", models.AutoField(primary_key=True, serialize=False)),
+                ("image", models.ImageField(upload_to="blog_images/")),
+                ("caption", models.CharField(blank=True, max_length=255, null=True)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                (
+                    "blog_post",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="images",
+                        to="cms.blogpost",
+                    ),
+                ),
             ],
             options={
-                'db_table': 'blog_post_images',
+                "db_table": "blog_post_images",
             },
         ),
     ]
