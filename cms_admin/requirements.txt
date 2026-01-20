@@ -5,3 +5,4 @@ psycopg2-binary
 whitenoise
 Pillow
 django-cors-headers
+django-ckeditor

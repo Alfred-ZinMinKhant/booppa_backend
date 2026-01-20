@@ -1,4 +1,5 @@
 from django.db import models
+from ckeditor.fields import RichTextField
 import uuid
 from django.utils import timezone
 
@@ -7,8 +8,13 @@ class BlogPost(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=255)
     slug = models.SlugField(max_length=255, unique=True)
-    content = models.TextField()
+    content = RichTextField()
     author = models.CharField(max_length=255, null=True, blank=True)
+    # CTA buttons editable in admin for non-technical users
+    cta1_text = models.CharField(max_length=255, null=True, blank=True)
+    cta1_url = models.CharField(max_length=1024, null=True, blank=True)
+    cta2_text = models.CharField(max_length=255, null=True, blank=True)
+    cta2_url = models.CharField(max_length=1024, null=True, blank=True)
     published = models.BooleanField(default=False)
     published_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

@@ -13,6 +13,10 @@ class BlogPostAdmin(admin.ModelAdmin):
     fieldsets = (
         ("Identifiers", {"fields": ("id", "slug")}),
         (None, {"fields": ("title", "author", "content")}),
+        (
+            "Call To Action (Buttons)",
+            {"fields": ("cta1_text", "cta1_url", "cta2_text", "cta2_url")},
+        ),
         ("Publication", {"fields": ("published", "published_at")}),
         ("Timestamps", {"fields": ("created_at", "updated_at")}),
     )
