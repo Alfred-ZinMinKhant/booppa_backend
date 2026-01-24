@@ -1,10 +1,10 @@
 {
     "taskDefinition": {
-        "taskDefinitionArn": "arn:aws:ecs:ap-southeast-1:997493291407:task-definition/cloudflared-tunnel:32",
+        "taskDefinitionArn": "arn:aws:ecs:ap-southeast-1:997493291407:task-definition/cloudflared-tunnel:34",
         "containerDefinitions": [
             {
                 "name": "cloudflared",
-                "image": "997493291407.dkr.ecr.ap-southeast-1.amazonaws.com/cloudflared:latest",
+                "image": "997493291407.dkr.ecr.ap-southeast-1.amazonaws.com/cloudflared-wrapper:latest",
                 "cpu": 0,
                 "portMappings": [],
                 "essential": true,
@@ -52,7 +52,7 @@
         "taskRoleArn": "arn:aws:iam::997493291407:role/booppa-ecs-task-role",
         "executionRoleArn": "arn:aws:iam::997493291407:role/booppa-ecs-execution-role",
         "networkMode": "awsvpc",
-        "revision": 32,
+        "revision": 34,
         "volumes": [],
         "status": "ACTIVE",
         "requiresAttributes": [
@@ -99,7 +99,7 @@
         ],
         "cpu": "256",
         "memory": "512",
-        "registeredAt": "2026-01-24T13:22:07.853000+07:00",
+        "registeredAt": "2026-01-24T14:31:16.073000+07:00",
         "registeredBy": "arn:aws:iam::997493291407:user/Alfred"
     }
 }

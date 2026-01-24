@@ -12,7 +12,7 @@ AWS_REGION=${AWS_REGION:-ap-southeast-1}
 # Determine ECR image to use (default to account ECR mirror if possible)
 AWS_ACCOUNT_ID=${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)}
 if [ -n "$AWS_ACCOUNT_ID" ]; then
-  ECR_CLOUDFLARED_IMAGE=${ECR_CLOUDFLARED_IMAGE:-$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/cloudflared:latest}
+  ECR_CLOUDFLARED_IMAGE=${ECR_CLOUDFLARED_IMAGE:-$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/cloudflared-wrapper:latest}
 fi
 
 # Input methods for tunnel credentials (choose one):
