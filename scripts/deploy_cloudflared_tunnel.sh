@@ -32,7 +32,8 @@ if [ -z "$EXECUTION_ROLE_ARN" ] || [ -z "$TASK_ROLE_ARN" ]; then
 fi
 
 TMP_JSON=$(mktemp)
-cp /Users/zinminkhant/Downloads/Booppa/booppa_v10_enterprise/scripts/cloudflared_task_def.json.template "$TMP_JSON"
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+cp "$SCRIPT_DIR/cloudflared_task_def.json.template" "$TMP_JSON"
 
 # Inject execution and task role ARNs and AWS region into the JSON using jq to avoid shell substitution issues
 jq --arg exec "$EXECUTION_ROLE_ARN" --arg task "$TASK_ROLE_ARN" --arg region "$AWS_REGION" '.executionRoleArn=$exec | .taskRoleArn=$task | (.containerDefinitions[].logConfiguration.options["awslogs-region"] = $region)' "$TMP_JSON" > ${TMP_JSON}.patched
