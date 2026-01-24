@@ -197,6 +197,15 @@ jobs:
             "memory": "${MEMORY}",
             "executionRoleArn": "${EXECUTION_ROLE_ARN}",
             "taskRoleArn": "${TASK_ROLE_ARN}",
+            "volumes": [
+              {
+                "name": "media-volume",
+                "efsVolumeConfiguration": {
+                  "fileSystemId": "fs-0634ca84d161452f4",
+                  "rootDirectory": "/"
+                }
+              }
+            ],
             "containerDefinitions": [
               {
                 "name": "cms",
@@ -211,6 +220,13 @@ jobs:
                 ],
                 "secrets": [
                   { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" }
+                ],
+                "mountPoints": [
+                  {
+                    "sourceVolume": "media-volume",
+                    "containerPath": "/app/media",
+                    "readOnly": false
+                  }
                 ],
                 "portMappings": [{ "containerPort": 8001, "protocol": "tcp" }],
                 "logConfiguration": { "logDriver": "awslogs", "options": { "awslogs-group": "/ecs/${{ env.CMS_ECR_REPO }}", "awslogs-region": "${AWS_REGION}", "awslogs-stream-prefix": "ecs" } }
