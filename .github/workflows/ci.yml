@@ -200,8 +200,8 @@ jobs:
                 "environment": [
                   { "name": "ENVIRONMENT", "value": "production" },
                   { "name": "ALLOWED_HOSTS", "value": "cms.booppa.io" },
-                  { "name": "CSRF_TRUSTED_ORIGINS", "value": "https://cms.booppa.io" },
-                  { "name": "CORS_ALLOWED_ORIGINS", "value": "https://cms.booppa.io" }
+                  { "name": "CSRF_TRUSTED_ORIGINS", "value": "https://cms.booppa.io,https://booppa.io,https://api.booppa.io" },
+                  { "name": "CORS_ALLOWED_ORIGINS", "value": "https://cms.booppa.io,https://booppa.io,https://api.booppa.io" }
                 ],
                 "secrets": [
                   { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" }
