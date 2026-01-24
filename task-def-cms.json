@@ -9,10 +9,11 @@
   "containerDefinitions": [
     {
       "name": "cms",
-      "image": "997493291407.dkr.ecr.ap-southeast-1.amazonaws.com/booppa-cms:d33423148bbd174a8ef4319207f05a7115888903",
+      "image": "997493291407.dkr.ecr.ap-southeast-1.amazonaws.com/booppa-cms:debug",
       "essential": true,
       "environment": [
         { "name": "ENVIRONMENT", "value": "production" },
+        { "name": "DEBUG", "value": "1" },
         { "name": "ALLOWED_HOSTS", "value": "cms.booppa.io" },
         { "name": "CSRF_TRUSTED_ORIGINS", "value": "https://cms.booppa.io" },
         { "name": "CORS_ALLOWED_ORIGINS", "value": "https://cms.booppa.io" }
