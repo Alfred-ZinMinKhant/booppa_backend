@@ -9,6 +9,8 @@ DEBUG = os.environ.get("ENVIRONMENT", "development") == "development"
 
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
 
+CSRF_TRUSTED_ORIGINS = os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",") if os.environ.get("CSRF_TRUSTED_ORIGINS") else []
+
 # CORS settings (allow all origins in DEBUG for local Next.js dev)
 DEBUG = os.environ.get("ENVIRONMENT", "development") == "development"
 if DEBUG:

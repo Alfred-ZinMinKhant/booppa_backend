@@ -11,8 +11,11 @@
       "name": "cms",
       "image": "997493291407.dkr.ecr.ap-southeast-1.amazonaws.com/booppa-cms:d33423148bbd174a8ef4319207f05a7115888903",
       "essential": true,
-      "secrets": [
-        { "name": "DATABASE_URL", "valueFrom": "arn:aws:secretsmanager:ap-southeast-1:997493291407:secret:booppa/DatabaseUrl-ZjhS09" }
+      "environment": [
+        { "name": "ENVIRONMENT", "value": "production" },
+        { "name": "ALLOWED_HOSTS", "value": "cms.booppa.io" },
+        { "name": "CSRF_TRUSTED_ORIGINS", "value": "https://cms.booppa.io" },
+        { "name": "CORS_ALLOWED_ORIGINS", "value": "https://cms.booppa.io" }
       ],
       "portMappings": [{ "containerPort": 8001, "protocol": "tcp" }],
       "logConfiguration": { "logDriver": "awslogs", "options": { "awslogs-group": "/ecs/booppa-cms", "awslogs-region": "ap-southeast-1", "awslogs-stream-prefix": "ecs" } }

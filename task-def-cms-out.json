@@ -1,6 +1,6 @@
 {
     "taskDefinition": {
-        "taskDefinitionArn": "arn:aws:ecs:ap-southeast-1:997493291407:task-definition/booppa-cms:17",
+        "taskDefinitionArn": "arn:aws:ecs:ap-southeast-1:997493291407:task-definition/booppa-cms:19",
         "containerDefinitions": [
             {
                 "name": "cms",
@@ -14,15 +14,26 @@
                     }
                 ],
                 "essential": true,
-                "environment": [],
-                "mountPoints": [],
-                "volumesFrom": [],
-                "secrets": [
+                "environment": [
                     {
-                        "name": "DATABASE_URL",
-                        "valueFrom": "arn:aws:secretsmanager:ap-southeast-1:997493291407:secret:booppa/DatabaseUrl-ZjhS09"
+                        "name": "CORS_ALLOWED_ORIGINS",
+                        "value": "https://cms.booppa.io"
+                    },
+                    {
+                        "name": "ENVIRONMENT",
+                        "value": "production"
+                    },
+                    {
+                        "name": "ALLOWED_HOSTS",
+                        "value": "cms.booppa.io"
+                    },
+                    {
+                        "name": "CSRF_TRUSTED_ORIGINS",
+                        "value": "https://cms.booppa.io"
                     }
                 ],
+                "mountPoints": [],
+                "volumesFrom": [],
                 "logConfiguration": {
                     "logDriver": "awslogs",
                     "options": {
@@ -38,7 +49,7 @@
         "taskRoleArn": "arn:aws:iam::997493291407:role/booppa-ecs-task-role",
         "executionRoleArn": "arn:aws:iam::997493291407:role/booppa-ecs-execution-role",
         "networkMode": "awsvpc",
-        "revision": 17,
+        "revision": 19,
         "volumes": [],
         "status": "ACTIVE",
         "requiresAttributes": [
@@ -53,9 +64,6 @@
             },
             {
                 "name": "com.amazonaws.ecs.capability.docker-remote-api.1.19"
-            },
-            {
-                "name": "ecs.capability.secrets.asm.environment-variables"
             },
             {
                 "name": "com.amazonaws.ecs.capability.task-iam-role"
@@ -81,7 +89,7 @@
         ],
         "cpu": "256",
         "memory": "512",
-        "registeredAt": "2026-01-24T13:55:12.112000+07:00",
+        "registeredAt": "2026-01-24T14:28:31.829000+07:00",
         "registeredBy": "arn:aws:iam::997493291407:user/Alfred"
     }
 }
