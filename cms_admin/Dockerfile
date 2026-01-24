@@ -12,6 +12,9 @@ RUN apt-get update && apt-get install -y build-essential libpq-dev && \
 
 COPY . /app
 
+# Create media directory for EFS mount
+RUN mkdir -p /app/media
+
 # Collect static files so Django admin assets are available at runtime
 RUN python manage.py collectstatic --noinput || true
 
