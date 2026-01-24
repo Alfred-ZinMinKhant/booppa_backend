@@ -20,6 +20,9 @@ env:
   ECS_CLUSTER: booppa-cluster
   ECS_SERVICE: booppa-app
   CMS_ECS_SERVICE: booppa-cms
+  CLOUDFLARE_TUNNEL_SECRET_ARN: ${{ secrets.CLOUDFLARE_TUNNEL_SECRET_ARN }}
+  CLOUDFLARE_TUNNEL_CONFIG_SECRET_ARN: ${{ secrets.CLOUDFLARE_TUNNEL_CONFIG_SECRET_ARN }}
+  CLOUDFLARE_TUNNEL_ORIGINCERT_SECRET_ARN: ${{ secrets.CLOUDFLARE_TUNNEL_ORIGINCERT_SECRET_ARN }}
 
 jobs:
   build-and-deploy:
@@ -300,9 +303,11 @@ jobs:
         run: aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE --region $AWS_REGION
 
       - name: Deploy Cloudflare Tunnel (optional)
-        if: ${{ secrets.CLOUDFLARE_TUNNEL_SECRET_ARN != '' }}
+        if: ${{ env.CLOUDFLARE_TUNNEL_SECRET_ARN != '' }}
         env:
-          CLOUDFLARE_TUNNEL_SECRET_ARN: ${{ secrets.CLOUDFLARE_TUNNEL_SECRET_ARN }}
+          CLOUDFLARE_TUNNEL_SECRET_ARN: ${{ env.CLOUDFLARE_TUNNEL_SECRET_ARN }}
+          CLOUDFLARE_TUNNEL_CONFIG_SECRET_ARN: ${{ env.CLOUDFLARE_TUNNEL_CONFIG_SECRET_ARN }}
+          CLOUDFLARE_TUNNEL_ORIGINCERT_SECRET_ARN: ${{ env.CLOUDFLARE_TUNNEL_ORIGINCERT_SECRET_ARN }}
           EXECUTION_ROLE_ARN: ${{ secrets.AWS_ECS_EXECUTION_ROLE_ARN }}
           TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
           TUNNEL_SUBNETS: ${{ secrets.TUNNEL_SUBNETS }}
@@ -326,6 +331,9 @@ jobs:
           ECS_CLUSTER: ${{ env.ECS_CLUSTER }}
           AWS_SUBNETS: ${{ secrets.AWS_SUBNETS }}
           AWS_SECURITY_GROUPS: ${{ secrets.AWS_SECURITY_GROUPS }}
+          DJANGO_SUPERUSER_USERNAME: ${{ secrets.DJANGO_SUPERUSER_USERNAME }}
+          DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
+          DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
         run: |
           echo "Creating Django superuser if not exists as an ECS one-off task..."
           IFS=',' read -ra SUBS <<< "$AWS_SUBNETS"
@@ -334,18 +342,13 @@ jobs:
           sgs_json=$(printf '%s\n' "${SGS[@]}" | jq -R . | jq -s .)
           network_config=$(jq -n --argjson subs "$subs_json" --argjson sgs "$sgs_json" '{awsvpcConfiguration: {subnets: $subs, securityGroups: $sgs, assignPublicIp: "DISABLED"}}')
 
-          # Set your desired superuser credentials here
-          DJANGO_SUPERUSER_USERNAME=alfred
-          DJANGO_SUPERUSER_EMAIL=zinminkhant.alfred@gmail.com
-          DJANGO_SUPERUSER_PASSWORD=4lfr3d2MK28##$
-
           # Run the ECS task to create the superuser if it doesn't exist
           run_output=$(aws ecs run-task \
             --cluster "$ECS_CLUSTER" \
             --launch-type FARGATE \
             --task-definition "$CMS_TASK_DEF_ARN" \
             --network-configuration "$network_config" \
-            --overrides "{\"containerOverrides\":[{\"name\":\"cms\",\"command\":[\"sh\",\"-c\",\"python manage.py shell -c \\\"from django.contrib.auth import get_user_model; User=get_user_model(); u='alfred'; e='zinminkhant.alfred@gmail.com'; p='4lfr3d2MK28##$!'; print('exists' if User.objects.filter(username=u).exists() else (User.objects.create_superuser(u,e,p) and 'created'))\\\"\"]}]}" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"cms\",\"command\":[\"sh\",\"-c\",\"python manage.py shell -c \\\"from django.contrib.auth import get_user_model; User=get_user_model(); u='$DJANGO_SUPERUSER_USERNAME'; e='$DJANGO_SUPERUSER_EMAIL'; p='$DJANGO_SUPERUSER_PASSWORD'; print('exists' if User.objects.filter(username=u).exists() else (User.objects.create_superuser(u,e,p) and 'created'))\\\"\"]}]}" \
             --region "$AWS_REGION")
 
           echo "$run_output"
