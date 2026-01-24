@@ -1,0 +1,87 @@
+{
+    "taskDefinition": {
+        "taskDefinitionArn": "arn:aws:ecs:ap-southeast-1:997493291407:task-definition/booppa-cms:17",
+        "containerDefinitions": [
+            {
+                "name": "cms",
+                "image": "997493291407.dkr.ecr.ap-southeast-1.amazonaws.com/booppa-cms:d33423148bbd174a8ef4319207f05a7115888903",
+                "cpu": 0,
+                "portMappings": [
+                    {
+                        "containerPort": 8001,
+                        "hostPort": 8001,
+                        "protocol": "tcp"
+                    }
+                ],
+                "essential": true,
+                "environment": [],
+                "mountPoints": [],
+                "volumesFrom": [],
+                "secrets": [
+                    {
+                        "name": "DATABASE_URL",
+                        "valueFrom": "arn:aws:secretsmanager:ap-southeast-1:997493291407:secret:booppa/DatabaseUrl-ZjhS09"
+                    }
+                ],
+                "logConfiguration": {
+                    "logDriver": "awslogs",
+                    "options": {
+                        "awslogs-group": "/ecs/booppa-cms",
+                        "awslogs-region": "ap-southeast-1",
+                        "awslogs-stream-prefix": "ecs"
+                    }
+                },
+                "systemControls": []
+            }
+        ],
+        "family": "booppa-cms",
+        "taskRoleArn": "arn:aws:iam::997493291407:role/booppa-ecs-task-role",
+        "executionRoleArn": "arn:aws:iam::997493291407:role/booppa-ecs-execution-role",
+        "networkMode": "awsvpc",
+        "revision": 17,
+        "volumes": [],
+        "status": "ACTIVE",
+        "requiresAttributes": [
+            {
+                "name": "com.amazonaws.ecs.capability.logging-driver.awslogs"
+            },
+            {
+                "name": "ecs.capability.execution-role-awslogs"
+            },
+            {
+                "name": "com.amazonaws.ecs.capability.ecr-auth"
+            },
+            {
+                "name": "com.amazonaws.ecs.capability.docker-remote-api.1.19"
+            },
+            {
+                "name": "ecs.capability.secrets.asm.environment-variables"
+            },
+            {
+                "name": "com.amazonaws.ecs.capability.task-iam-role"
+            },
+            {
+                "name": "ecs.capability.execution-role-ecr-pull"
+            },
+            {
+                "name": "com.amazonaws.ecs.capability.docker-remote-api.1.18"
+            },
+            {
+                "name": "ecs.capability.task-eni"
+            }
+        ],
+        "placementConstraints": [],
+        "compatibilities": [
+            "EC2",
+            "FARGATE",
+            "MANAGED_INSTANCES"
+        ],
+        "requiresCompatibilities": [
+            "FARGATE"
+        ],
+        "cpu": "256",
+        "memory": "512",
+        "registeredAt": "2026-01-24T13:55:12.112000+07:00",
+        "registeredBy": "arn:aws:iam::997493291407:user/Alfred"
+    }
+}

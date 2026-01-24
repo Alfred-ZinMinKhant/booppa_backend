@@ -1,0 +1,21 @@
+{
+  "family": "booppa-cms",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::997493291407:role/booppa-ecs-execution-role",
+  "taskRoleArn": "arn:aws:iam::997493291407:role/booppa-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "cms",
+      "image": "997493291407.dkr.ecr.ap-southeast-1.amazonaws.com/booppa-cms:d33423148bbd174a8ef4319207f05a7115888903",
+      "essential": true,
+      "secrets": [
+        { "name": "DATABASE_URL", "valueFrom": "arn:aws:secretsmanager:ap-southeast-1:997493291407:secret:booppa/DatabaseUrl-ZjhS09" }
+      ],
+      "portMappings": [{ "containerPort": 8001, "protocol": "tcp" }],
+      "logConfiguration": { "logDriver": "awslogs", "options": { "awslogs-group": "/ecs/booppa-cms", "awslogs-region": "ap-southeast-1", "awslogs-stream-prefix": "ecs" } }
+    }
+  ]
+}
