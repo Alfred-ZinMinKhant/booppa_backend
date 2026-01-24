@@ -1,8 +1,0 @@
-{
-  "containerOverrides": [
-    {
-      "name": "app",
-      "command": ["/bin/sh", "-c", "alembic upgrade head"]
-    }
-  ]
-}

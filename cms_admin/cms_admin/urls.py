@@ -8,6 +8,7 @@ from cms import views as cms_views
 
 urlpatterns = [
     path("django-admin/", admin.site.urls),
+    path("health/", cms_views.health),
     path("api/public/blogs/", cms_views.public_blogs),
     path("api/public/blogs/<slug:slug>/", cms_views.public_blog_detail),
 ]

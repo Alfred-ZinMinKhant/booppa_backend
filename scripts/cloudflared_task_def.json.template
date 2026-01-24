@@ -1,0 +1,50 @@
+{
+  "family": "cloudflared-tunnel",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "runtimePlatform": {
+      "operatingSystemFamily": "LINUX",
+      "cpuArchitecture": "X86_64"
+    },
+    "executionRoleArn": "${EXECUTION_ROLE_ARN}",
+    "taskRoleArn": "${TASK_ROLE_ARN}",
+    "containerDefinitions": [
+      {
+        "name": "cloudflared",
+        "image": "${ECR_CLOUDFLARED_IMAGE:-997493291407.dkr.ecr.ap-southeast-1.amazonaws.com/cloudflared-wrapper:latest}",
+        "essential": true,
+        "environment": [
+          {
+            "name": "TUNNEL_NAME",
+            "value": "${TUNNEL_NAME:-booppa-tunnel}"
+          }
+        ],
+        "secrets": [
+          {
+            "name": "CLOUDFLARE_TUNNEL_CREDENTIALS",
+            "valueFrom": "${CLOUDFLARE_TUNNEL_SECRET_ARN:-}"
+          },
+          {
+            "name": "CLOUDFLARE_TUNNEL_CONFIG",
+            "valueFrom": "${CLOUDFLARE_TUNNEL_CONFIG_SECRET_ARN:-}"
+          },
+          {
+            "name": "CLOUDFLARE_TUNNEL_ORIGINCERT",
+            "valueFrom": "${CLOUDFLARE_TUNNEL_ORIGINCERT_SECRET_ARN:-}"
+          }
+        ],
+        "entryPoint": ["sh","-c"],
+        "command": ["mkdir -p /home/cloudflared && printf '%s' \"$CLOUDFLARE_TUNNEL_CREDENTIALS\" > /home/cloudflared/credentials.json && chown 1000:1000 /home/cloudflared/credentials.json && printf '%s' \"$CLOUDFLARE_TUNNEL_CONFIG\" > /home/cloudflared/config.yml && chown 1000:1000 /home/cloudflared/config.yml && printf '%s' \"$CLOUDFLARE_TUNNEL_ORIGINCERT\" > /home/cloudflared/cert.pem && export TUNNEL_ORIGIN_CERT=/home/cloudflared/cert.pem && chown 1000:1000 /home/cloudflared/cert.pem && /usr/local/bin/cloudflared --no-autoupdate --loglevel info --config /home/cloudflared/config.yml tunnel --credentials-file /home/cloudflared/credentials.json run ${TUNNEL_NAME:-booppa-tunnel}"],
+        "logConfiguration": {
+          "logDriver": "awslogs",
+          "options": {
+            "awslogs-group": "/ecs/cloudflared-tunnel",
+            "awslogs-region": "${AWS_REGION}",
+            "awslogs-stream-prefix": "cloudflared"
+          }
+        }
+      }
+    ]
+  }

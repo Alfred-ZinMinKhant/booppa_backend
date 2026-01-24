@@ -1,0 +1,17 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:ap-southeast-1:997493291407:secret:booppa/cloudflared/credentials-DOiYmX",
+        "arn:aws:secretsmanager:ap-southeast-1:997493291407:secret:booppa/cloudflared/config-OfEuVr",
+        "arn:aws:secretsmanager:ap-southeast-1:997493291407:secret:booppa/cloudflared/origincert-AtmFuj"
+      ]
+    }
+  ]
+}

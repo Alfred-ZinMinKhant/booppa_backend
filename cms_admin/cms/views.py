@@ -2,6 +2,10 @@ from django.http import JsonResponse
 from .models import BlogPost
 
 
+def health(request):
+    return JsonResponse({"status": "healthy", "service": "booppa-cms"})
+
+
 def public_blogs(request):
     posts = (
         BlogPost.objects.filter(published=True)

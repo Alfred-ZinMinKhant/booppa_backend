@@ -299,6 +299,20 @@ jobs:
       - name: Show service
         run: aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE --region $AWS_REGION
 
+      - name: Deploy Cloudflare Tunnel (optional)
+        if: ${{ secrets.CLOUDFLARE_TUNNEL_SECRET_ARN != '' }}
+        env:
+          CLOUDFLARE_TUNNEL_SECRET_ARN: ${{ secrets.CLOUDFLARE_TUNNEL_SECRET_ARN }}
+          EXECUTION_ROLE_ARN: ${{ secrets.AWS_ECS_EXECUTION_ROLE_ARN }}
+          TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
+          TUNNEL_SUBNETS: ${{ secrets.TUNNEL_SUBNETS }}
+          TUNNEL_SECURITY_GROUPS: ${{ secrets.TUNNEL_SECURITY_GROUPS }}
+          CLUSTER_NAME: ${{ env.ECS_CLUSTER }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          chmod +x scripts/deploy_cloudflared_tunnel.sh
+          ./scripts/deploy_cloudflared_tunnel.sh
+
       - name: Optional — run DB migrations (one-off)
         if: github.event.inputs.run_migrations == 'true'
         run: |

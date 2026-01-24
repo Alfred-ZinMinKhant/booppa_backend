@@ -1,0 +1,32 @@
+{
+  "family": "cloudflared-debug",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "${EXECUTION_ROLE_ARN}",
+  "taskRoleArn": "${TASK_ROLE_ARN}",
+  "containerDefinitions": [
+    {
+      "name": "cloudflared-debug",
+      "image": "alpine:3.18",
+      "essential": true,
+      "entryPoint": ["sh","-c"],
+      "command": ["sh","-c","echo '---SECRET START---'; printf '%s' \"$CLOUDFLARE_TUNNEL_ORIGINCERT\" | wc -c; echo; printf '%s' \"$CLOUDFLARE_TUNNEL_ORIGINCERT\" | sed -n '1,40p'; echo '---SECRET END---'; sleep 30"],
+      "secrets": [
+        {
+          "name": "CLOUDFLARE_TUNNEL_ORIGINCERT",
+          "valueFrom": "${CLOUDFLARE_TUNNEL_ORIGINCERT_SECRET_ARN}"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/cloudflared-debug",
+          "awslogs-region": "${AWS_REGION}",
+          "awslogs-stream-prefix": "debug"
+        }
+      }
+    }
+  ]
+}

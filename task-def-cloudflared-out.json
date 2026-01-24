@@ -1,0 +1,105 @@
+{
+    "taskDefinition": {
+        "taskDefinitionArn": "arn:aws:ecs:ap-southeast-1:997493291407:task-definition/cloudflared-tunnel:30",
+        "containerDefinitions": [
+            {
+                "name": "cloudflared",
+                "image": "997493291407.dkr.ecr.ap-southeast-1.amazonaws.com/cloudflared-wrapper:latest",
+                "cpu": 0,
+                "portMappings": [],
+                "essential": true,
+                "entryPoint": [
+                    "sh",
+                    "-c"
+                ],
+                "command": [
+                    "mkdir -p /home/cloudflared && printf '%s' \"$CLOUDFLARE_TUNNEL_CREDENTIALS\" > /home/cloudflared/credentials.json && chown 1000:1000 /home/cloudflared/credentials.json && printf '%s' \"$CLOUDFLARE_TUNNEL_CONFIG\" > /home/cloudflared/config.yml && chown 1000:1000 /home/cloudflared/config.yml && printf '%s' \"$CLOUDFLARE_TUNNEL_ORIGINCERT\" > /home/cloudflared/cert.pem && export TUNNEL_ORIGIN_CERT=/home/cloudflared/cert.pem && chown 1000:1000 /home/cloudflared/cert.pem && /usr/local/bin/cloudflared --no-autoupdate --loglevel info --config /home/cloudflared/config.yml tunnel --credentials-file /home/cloudflared/credentials.json run booppa-tunnel"
+                ],
+                "environment": [
+                    {
+                        "name": "TUNNEL_NAME",
+                        "value": "${TUNNEL_NAME:-booppa-tunnel}"
+                    }
+                ],
+                "mountPoints": [],
+                "volumesFrom": [],
+                "secrets": [
+                    {
+                        "name": "CLOUDFLARE_TUNNEL_CREDENTIALS",
+                        "valueFrom": "arn:aws:secretsmanager:ap-southeast-1:997493291407:secret:booppa/cloudflared/credentials-DOiYmX"
+                    },
+                    {
+                        "name": "CLOUDFLARE_TUNNEL_CONFIG",
+                        "valueFrom": "arn:aws:secretsmanager:ap-southeast-1:997493291407:secret:booppa/cloudflared/config-OfEuVr"
+                    },
+                    {
+                        "name": "CLOUDFLARE_TUNNEL_ORIGINCERT",
+                        "valueFrom": "arn:aws:secretsmanager:ap-southeast-1:997493291407:secret:booppa/cloudflared/origincert-AtmFuj"
+                    }
+                ],
+                "logConfiguration": {
+                    "logDriver": "awslogs",
+                    "options": {
+                        "awslogs-group": "/ecs/cloudflared-tunnel",
+                        "awslogs-region": "ap-southeast-1",
+                        "awslogs-stream-prefix": "cloudflared"
+                    }
+                },
+                "systemControls": []
+            }
+        ],
+        "family": "cloudflared-tunnel",
+        "taskRoleArn": "arn:aws:iam::997493291407:role/booppa-ecs-task-role",
+        "executionRoleArn": "arn:aws:iam::997493291407:role/ecsTaskExecutionRole",
+        "networkMode": "awsvpc",
+        "revision": 30,
+        "volumes": [],
+        "status": "ACTIVE",
+        "requiresAttributes": [
+            {
+                "name": "com.amazonaws.ecs.capability.logging-driver.awslogs"
+            },
+            {
+                "name": "ecs.capability.execution-role-awslogs"
+            },
+            {
+                "name": "com.amazonaws.ecs.capability.ecr-auth"
+            },
+            {
+                "name": "com.amazonaws.ecs.capability.docker-remote-api.1.19"
+            },
+            {
+                "name": "ecs.capability.secrets.asm.environment-variables"
+            },
+            {
+                "name": "com.amazonaws.ecs.capability.task-iam-role"
+            },
+            {
+                "name": "ecs.capability.execution-role-ecr-pull"
+            },
+            {
+                "name": "com.amazonaws.ecs.capability.docker-remote-api.1.18"
+            },
+            {
+                "name": "ecs.capability.task-eni"
+            }
+        ],
+        "placementConstraints": [],
+        "compatibilities": [
+            "EC2",
+            "MANAGED_INSTANCES",
+            "FARGATE"
+        ],
+        "runtimePlatform": {
+            "cpuArchitecture": "X86_64",
+            "operatingSystemFamily": "LINUX"
+        },
+        "requiresCompatibilities": [
+            "FARGATE"
+        ],
+        "cpu": "256",
+        "memory": "512",
+        "registeredAt": "2026-01-24T10:40:30.939000+07:00",
+        "registeredBy": "arn:aws:iam::997493291407:user/Alfred"
+    }
+}
