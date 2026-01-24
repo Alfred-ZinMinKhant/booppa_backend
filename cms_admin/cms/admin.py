@@ -35,4 +35,4 @@ class BlogImageInline(admin.TabularInline):
         return ""
 
 
-BlogPostAdmin.inlines = [BlogImageInline]
+BlogPostAdmin.inlines = []  # [BlogImageInline]

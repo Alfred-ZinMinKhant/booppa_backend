@@ -5,14 +5,13 @@ import dj_database_url
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.environ.get("SECRET_KEY", "change-me-in-production")
-DEBUG = os.environ.get("ENVIRONMENT", "development") == "development"
+DEBUG = os.environ.get("DEBUG", "0") == "1"
 
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
 
 CSRF_TRUSTED_ORIGINS = os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",") if os.environ.get("CSRF_TRUSTED_ORIGINS") else []
 
 # CORS settings (allow all origins in DEBUG for local Next.js dev)
-DEBUG = os.environ.get("ENVIRONMENT", "development") == "development"
 if DEBUG:
     CORS_ALLOW_ALL_ORIGINS = True
 else:
