@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     BOOKING_WORKING_DAYS: str = "0,1,2,3,4"  # Monday-Friday
     BOOKING_MORNING_SLOTS: str = "9,10,11"
     BOOKING_AFTERNOON_SLOTS: str = "14,15,16"
-    BOOKING_MAX_PER_SLOT: int = 3
+    BOOKING_MAX_PER_SLOT: int = 1
     BOOKING_DAYS_AHEAD: int = 60
 
     class Config:
