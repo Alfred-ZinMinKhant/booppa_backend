@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zlib1g-dev \
     libjpeg-dev \
     libfreetype6-dev \
+    tzdata \
     curl \
     git \
     fonts-liberation \
