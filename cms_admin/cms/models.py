@@ -60,3 +60,27 @@ class BlogImage(models.Model):
 
     def __str__(self):
         return f"Image for {self.blog_post_id}"
+
+
+class DemoBooking(models.Model):
+    id = models.UUIDField(primary_key=True)
+    slot_id = models.CharField(max_length=32)
+    slot_date = models.DateField()
+    start_time = models.CharField(max_length=5)
+    end_time = models.CharField(max_length=5)
+    customer_name = models.CharField(max_length=255)
+    customer_email = models.CharField(max_length=255)
+    customer_phone = models.CharField(max_length=50, null=True, blank=True)
+    notes = models.TextField(null=True, blank=True)
+    status = models.CharField(max_length=32)
+    booking_token = models.CharField(max_length=32, unique=True)
+    source = models.CharField(max_length=50, null=True, blank=True)
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "demo_bookings"
+        managed = False
+
+    def __str__(self):
+        return f"Booking {self.id}"

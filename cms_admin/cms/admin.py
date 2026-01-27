@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import BlogPost, BlogImage
+from .models import BlogPost, BlogImage, DemoBooking
 from django.utils.html import format_html
 
 
@@ -36,3 +36,24 @@ class BlogImageInline(admin.TabularInline):
 
 
 BlogPostAdmin.inlines = [BlogImageInline]
+
+
+@admin.register(DemoBooking)
+class DemoBookingAdmin(admin.ModelAdmin):
+    list_display = (
+        "customer_name",
+        "customer_email",
+        "slot_date",
+        "start_time",
+        "status",
+        "created_at",
+    )
+    search_fields = ("customer_name", "customer_email", "booking_token")
+    list_filter = ("status", "slot_date")
+    readonly_fields = (
+        "id",
+        "slot_id",
+        "booking_token",
+        "created_at",
+        "updated_at",
+    )
