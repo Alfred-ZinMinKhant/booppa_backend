@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import List, Optional
 import uuid
 
@@ -30,7 +30,10 @@ def _get_slot_config():
 
 
 def _generate_slots(days_ahead: int):
-    tz = ZoneInfo(settings.BOOKING_TIMEZONE)
+    try:
+        tz = ZoneInfo(settings.BOOKING_TIMEZONE)
+    except ZoneInfoNotFoundError:
+        tz = ZoneInfo("UTC")
     today = datetime.now(tz).date()
     working_days, hours = _get_slot_config()
 
@@ -63,7 +66,10 @@ def _validate_slot_id(slot_id: str, days_ahead: int):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid slot_id")
 
-    tz = ZoneInfo(settings.BOOKING_TIMEZONE)
+    try:
+        tz = ZoneInfo(settings.BOOKING_TIMEZONE)
+    except ZoneInfoNotFoundError:
+        tz = ZoneInfo("UTC")
     now_local = datetime.now(tz)
     today = now_local.date()
     if slot_date < today or slot_date > today + timedelta(days=days_ahead - 1):
