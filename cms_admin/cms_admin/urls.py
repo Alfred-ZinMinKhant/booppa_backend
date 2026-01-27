@@ -18,7 +18,7 @@ urlpatterns = [
 # Serve media in DEBUG, or when explicitly enabled (e.g. behind a reverse proxy)
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-elif os.environ.get("SERVE_MEDIA", "0") == "1":
+else:
     urlpatterns += [
         re_path(
             r"^media/(?P<path>.*)$",

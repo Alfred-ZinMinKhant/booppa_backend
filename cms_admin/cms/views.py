@@ -1,9 +1,24 @@
+import os
+
+from django.conf import settings
 from django.http import JsonResponse
+
 from .models import BlogPost
 
 
 def health(request):
-    return JsonResponse({"status": "healthy", "service": "booppa-cms"})
+    media_root = str(settings.MEDIA_ROOT)
+    media_exists = os.path.isdir(media_root)
+    media_writable = os.access(media_root, os.W_OK)
+    return JsonResponse(
+        {
+            "status": "healthy",
+            "service": "booppa-cms",
+            "media_root": media_root,
+            "media_exists": media_exists,
+            "media_writable": media_writable,
+        }
+    )
 
 
 def public_blogs(request):
