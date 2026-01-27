@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     ADMIN_USER: str | None = None
     ADMIN_PASSWORD: str | None = None
 
+    # Demo booking configuration
+    BOOKING_TIMEZONE: str = "Asia/Singapore"
+    BOOKING_WORKING_DAYS: str = "0,1,2,3,4"  # Monday-Friday
+    BOOKING_MORNING_SLOTS: str = "9,10,11"
+    BOOKING_AFTERNOON_SLOTS: str = "14,15,16"
+    BOOKING_MAX_PER_SLOT: int = 3
+    BOOKING_DAYS_AHEAD: int = 60
+
     class Config:
         env_file = ".env"
         case_sensitive = True

@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, DateTime, Text, JSON, Boolean
+from sqlalchemy import Column, String, DateTime, Text, JSON, Boolean, Date
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 from app.core.db import Base
@@ -70,3 +70,25 @@ class ConsentLog(Base):
     # store JSON metadata in the database column named "metadata" but expose
     # it on the model as `metadata_json` to avoid conflicts.
     metadata_json = Column("metadata", JSON, nullable=True)
+
+
+class DemoBooking(Base):
+    __tablename__ = "demo_bookings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    slot_id = Column(String(32), nullable=False, index=True)
+    slot_date = Column(Date, nullable=False, index=True)
+    start_time = Column(String(5), nullable=False)
+    end_time = Column(String(5), nullable=False)
+
+    customer_name = Column(String(255), nullable=False)
+    customer_email = Column(String(255), nullable=False, index=True)
+    customer_phone = Column(String(50), nullable=True)
+    notes = Column(Text, nullable=True)
+
+    status = Column(String(32), default="confirmed", index=True)
+    booking_token = Column(String(32), unique=True, index=True, nullable=False)
+    source = Column(String(50), nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

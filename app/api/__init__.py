@@ -6,6 +6,7 @@ from .consent import router as consent_router
 from .stripe_webhook import router as stripe_router
 from .stripe_checkout import router as stripe_checkout_router
 from .admin import router as admin_router
+from .booking import router as booking_router
 
 router = APIRouter()
 
@@ -18,3 +19,4 @@ router.include_router(
     stripe_checkout_router, prefix="/stripe", tags=["stripe-checkout"]
 )
 router.include_router(admin_router, prefix="/admin", tags=["admin"])
+router.include_router(booking_router, prefix="/booking", tags=["booking"])
