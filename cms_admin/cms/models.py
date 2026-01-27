@@ -87,7 +87,7 @@ class DemoBooking(models.Model):
 
 
 class SupportTicket(models.Model):
-    id = models.UUIDField(primary_key=True)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     ticket_id = models.CharField(max_length=50, unique=True)
     tracking_token = models.CharField(max_length=64, unique=True)
     name = models.CharField(max_length=255)
@@ -100,7 +100,7 @@ class SupportTicket(models.Model):
     assigned_to = models.CharField(max_length=255, null=True, blank=True)
     ip_address = models.CharField(max_length=45, null=True, blank=True)
     user_agent = models.CharField(max_length=500, null=True, blank=True)
-    created_at = models.DateTimeField()
+    created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
@@ -112,13 +112,13 @@ class SupportTicket(models.Model):
 
 
 class SupportTicketReply(models.Model):
-    id = models.UUIDField(primary_key=True)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     ticket_id = models.CharField(max_length=50)
     author = models.CharField(max_length=255)
     author_type = models.CharField(max_length=20)
     message = models.TextField()
     is_internal = models.BooleanField(default=False)
-    created_at = models.DateTimeField()
+    created_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
         db_table = "support_ticket_replies"
