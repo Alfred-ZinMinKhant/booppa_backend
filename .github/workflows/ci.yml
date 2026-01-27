@@ -384,12 +384,6 @@ jobs:
         run: |
           chmod +x scripts/deploy_cloudflared_tunnel.sh
           ./scripts/deploy_cloudflared_tunnel.sh
-
-      - name: Optional — run DB migrations (one-off)
-        if: github.event.inputs.run_migrations == 'true'
-        run: |
-          # Example: run migrations as an ECS task or use your CI runner to run alembic
-          echo "Run migrations manually or enable this step with proper task definition"
       - name: Create Django superuser if not exists (ECS one-off)
         if: github.event.inputs.run_migrations == 'true'
         env:
