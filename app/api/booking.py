@@ -35,11 +35,12 @@ def _generate_slots(days_ahead: int):
     except ZoneInfoNotFoundError:
         tz = ZoneInfo("UTC")
     today = datetime.now(tz).date()
+    start_date = today + timedelta(days=3)
     working_days, hours = _get_slot_config()
 
     slots = []
     for day in range(days_ahead):
-        slot_date = today + timedelta(days=day)
+        slot_date = start_date + timedelta(days=day)
         if slot_date.weekday() not in working_days:
             continue
 
@@ -72,7 +73,9 @@ def _validate_slot_id(slot_id: str, days_ahead: int):
         tz = ZoneInfo("UTC")
     now_local = datetime.now(tz)
     today = now_local.date()
-    if slot_date < today or slot_date > today + timedelta(days=days_ahead - 1):
+    earliest = today + timedelta(days=3)
+    latest = earliest + timedelta(days=days_ahead - 1)
+    if slot_date < earliest or slot_date > latest:
         raise HTTPException(status_code=400, detail="Slot date out of range")
 
     working_days, hours = _get_slot_config()
