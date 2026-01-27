@@ -15,4 +15,8 @@ if [ -f /app/alembic.ini ]; then
 fi
 
 echo "Starting Uvicorn"
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+if [ "${ENVIRONMENT:-production}" = "development" ] || [ "${UVICORN_RELOAD:-0}" = "1" ]; then
+  exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+else
+  exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+fi
