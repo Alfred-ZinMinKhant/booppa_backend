@@ -4,6 +4,7 @@ uvicorn[standard]==0.24.0
 pydantic==2.5.0
 pydantic-settings==2.1.0
 
+email-validator
 # Database
 sqlalchemy==2.0.45
 alembic==1.12.1
