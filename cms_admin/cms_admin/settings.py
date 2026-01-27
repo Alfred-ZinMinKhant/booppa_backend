@@ -92,7 +92,15 @@ STATICFILES_STORAGE = "whitenoise.storage.CompressedStaticFilesStorage"
 
 # Media (user uploaded files)
 MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "media"
+# Default to /app/media (EFS mount in container) but allow override via env
+MEDIA_ROOT = Path(os.environ.get("MEDIA_ROOT", "/app/media"))
+
+# Ensure media directory exists at startup (useful for fresh containers/local dev)
+try:
+    os.makedirs(MEDIA_ROOT, exist_ok=True)
+except OSError:
+    # If the filesystem is read-only, fail gracefully and let the storage backend handle it
+    pass
 
 # Handle proxy headers for HTTPS
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
