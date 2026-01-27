@@ -21,7 +21,7 @@ class TicketCreate(BaseModel):
     email: EmailStr
     category: str = Field(..., min_length=2, max_length=50)
     subject: str = Field(..., min_length=3, max_length=500)
-    message: str = Field(..., min_length=10, max_length=5000)
+    message: str = Field(..., min_length=3, max_length=5000)
     honeypot: Optional[str] = ""
 
 
