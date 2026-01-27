@@ -92,3 +92,39 @@ class DemoBooking(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SupportTicket(Base):
+    __tablename__ = "support_tickets"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ticket_id = Column(String(50), unique=True, nullable=False, index=True)
+    tracking_token = Column(String(64), unique=True, nullable=False, index=True)
+
+    name = Column(String(255), nullable=False)
+    email = Column(String(255), nullable=False, index=True)
+    category = Column(String(50), nullable=False)
+    subject = Column(String(500), nullable=False)
+    message = Column(Text, nullable=False)
+
+    status = Column(String(32), default="open", index=True)
+    priority = Column(String(32), default="medium", index=True)
+    assigned_to = Column(String(255), nullable=True)
+
+    ip_address = Column(String(45), nullable=True)
+    user_agent = Column(String(500), nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SupportTicketReply(Base):
+    __tablename__ = "support_ticket_replies"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ticket_id = Column(String(50), nullable=False, index=True)
+    author = Column(String(255), nullable=False)
+    author_type = Column(String(20), nullable=False, default="staff")
+    message = Column(Text, nullable=False)
+    is_internal = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)

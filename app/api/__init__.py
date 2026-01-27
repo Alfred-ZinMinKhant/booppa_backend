@@ -7,6 +7,7 @@ from .stripe_webhook import router as stripe_router
 from .stripe_checkout import router as stripe_checkout_router
 from .admin import router as admin_router
 from .booking import router as booking_router
+from .tickets import router as tickets_router
 
 router = APIRouter()
 
@@ -20,3 +21,4 @@ router.include_router(
 )
 router.include_router(admin_router, prefix="/admin", tags=["admin"])
 router.include_router(booking_router, prefix="/booking", tags=["booking"])
+router.include_router(tickets_router, prefix="/tickets", tags=["tickets"])

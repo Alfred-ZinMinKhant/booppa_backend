@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import BlogPost, BlogImage, DemoBooking
+from .models import BlogPost, BlogImage, DemoBooking, SupportTicket, SupportTicketReply
 from django.utils.html import format_html
 
 
@@ -57,3 +57,18 @@ class DemoBookingAdmin(admin.ModelAdmin):
         "created_at",
         "updated_at",
     )
+
+
+@admin.register(SupportTicket)
+class SupportTicketAdmin(admin.ModelAdmin):
+    list_display = ("ticket_id", "email", "subject", "status", "priority", "created_at")
+    search_fields = ("ticket_id", "email", "subject")
+    list_filter = ("status", "priority", "category")
+    readonly_fields = ("ticket_id", "tracking_token", "created_at", "updated_at")
+
+
+@admin.register(SupportTicketReply)
+class SupportTicketReplyAdmin(admin.ModelAdmin):
+    list_display = ("ticket_id", "author", "author_type", "is_internal", "created_at")
+    search_fields = ("ticket_id", "author")
+    list_filter = ("author_type", "is_internal")

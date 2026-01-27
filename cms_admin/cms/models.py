@@ -84,3 +84,45 @@ class DemoBooking(models.Model):
 
     def __str__(self):
         return f"Booking {self.id}"
+
+
+class SupportTicket(models.Model):
+    id = models.UUIDField(primary_key=True)
+    ticket_id = models.CharField(max_length=50, unique=True)
+    tracking_token = models.CharField(max_length=64, unique=True)
+    name = models.CharField(max_length=255)
+    email = models.CharField(max_length=255)
+    category = models.CharField(max_length=50)
+    subject = models.CharField(max_length=500)
+    message = models.TextField()
+    status = models.CharField(max_length=32)
+    priority = models.CharField(max_length=32)
+    assigned_to = models.CharField(max_length=255, null=True, blank=True)
+    ip_address = models.CharField(max_length=45, null=True, blank=True)
+    user_agent = models.CharField(max_length=500, null=True, blank=True)
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "support_tickets"
+        managed = False
+
+    def __str__(self):
+        return self.ticket_id
+
+
+class SupportTicketReply(models.Model):
+    id = models.UUIDField(primary_key=True)
+    ticket_id = models.CharField(max_length=50)
+    author = models.CharField(max_length=255)
+    author_type = models.CharField(max_length=20)
+    message = models.TextField()
+    is_internal = models.BooleanField(default=False)
+    created_at = models.DateTimeField()
+
+    class Meta:
+        db_table = "support_ticket_replies"
+        managed = False
+
+    def __str__(self):
+        return f"Reply {self.id}"
