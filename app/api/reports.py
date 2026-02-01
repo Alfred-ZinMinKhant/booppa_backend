@@ -125,6 +125,19 @@ def _run_report_workflow_sync(report_id: str) -> None:
         asyncio.run(process_report_workflow(report_id))
     except Exception as exc:
         logger.error(f"On-demand report processing failed for {report_id}: {exc}")
+        db = SessionLocal()
+        try:
+            report = db.query(Report).filter(Report.id == report_id).first()
+            if report:
+                assessment = report.assessment_data or {}
+                if not isinstance(assessment, dict):
+                    assessment = {}
+                assessment["last_processing_error"] = str(exc)[:500]
+                report.assessment_data = assessment
+                report.status = "failed"
+                db.commit()
+        finally:
+            db.close()
 
 
 @router.get("/by-session")
@@ -192,10 +205,14 @@ async def get_report_by_session(
 
         structured_report = None
         site_screenshot = None
+        last_processing_error = None
         try:
             if isinstance(report.assessment_data, dict):
                 structured_report = report.assessment_data.get("booppa_report")
-            site_screenshot = report.assessment_data.get("site_screenshot")
+                site_screenshot = report.assessment_data.get("site_screenshot")
+                last_processing_error = report.assessment_data.get(
+                    "last_processing_error"
+                )
         except Exception:
             structured_report = None
 
@@ -240,6 +257,7 @@ async def get_report_by_session(
                         "has_pdf": bool(report.s3_url),
                         "has_report": bool(structured_report),
                         "payment_status": session.get("payment_status"),
+                        "last_processing_error": last_processing_error,
                     },
                 )
             raise HTTPException(status_code=404, detail="Report not ready")
