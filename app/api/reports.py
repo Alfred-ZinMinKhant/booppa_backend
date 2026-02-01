@@ -189,8 +189,23 @@ async def get_report_by_session(
         except Exception as e:
             logger.warning(f"Failed to update payment status for {report_id}: {e}")
 
-        if report.s3_url:
-            return {"url": report.s3_url}
+        structured_report = None
+        site_screenshot = None
+        try:
+            if isinstance(report.assessment_data, dict):
+                structured_report = report.assessment_data.get("booppa_report")
+            site_screenshot = report.assessment_data.get("site_screenshot")
+        except Exception:
+            structured_report = None
+
+        if report.s3_url or structured_report:
+            return {
+                "status": report.status,
+                "url": report.s3_url,
+                "report": structured_report,
+                "report_id": str(report.id),
+                "site_screenshot": site_screenshot,
+            }
         else:
             # If report isn't ready, try to kick off processing on demand.
             try:
