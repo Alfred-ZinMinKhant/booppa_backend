@@ -15,7 +15,6 @@ env:
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
   APP_ECR_REPO: booppa-app
-  WORKER_ECR_REPO: booppa-worker
   CMS_ECR_REPO: booppa-cms
   ECS_CLUSTER: booppa-cluster
   ECS_SERVICE: booppa-app
@@ -59,16 +58,6 @@ jobs:
           tags: |
             ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}
 
-      - name: Build & push worker image (SHA-only)
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          platforms: linux/amd64
-          tags: |
-            ${{ env.ECR_REGISTRY }}/${{ env.WORKER_ECR_REPO }}:${{ github.sha }}
-
       - name: Build & push cms image (SHA-only)
         uses: docker/build-push-action@v4
         with:
@@ -85,13 +74,10 @@ jobs:
         run: |
           echo "== App repository images =="
           aws ecr describe-images --repository-name ${{ env.APP_ECR_REPO }} --region $AWS_REGION --query 'imageDetails[].imageTags' --output json || true
-          echo "== Worker repository images =="
-          aws ecr describe-images --repository-name ${{ env.WORKER_ECR_REPO }} --region $AWS_REGION --query 'imageDetails[].imageTags' --output json || true
 
       - name: Set image variables
         run: |
           echo "APP_IMAGE=${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}" >> $GITHUB_ENV
-          echo "WORKER_IMAGE=${{ env.ECR_REGISTRY }}/${{ env.WORKER_ECR_REPO }}:${{ github.sha }}" >> $GITHUB_ENV
           echo "CMS_IMAGE=${{ env.ECR_REGISTRY }}/${{ env.CMS_ECR_REPO }}:${{ github.sha }}" >> $GITHUB_ENV
 
       - name: Register ECS task definition - app
@@ -108,6 +94,7 @@ jobs:
           NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN: ${{ secrets.NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN }}
           NEXT_PUBLIC_BASE_URL: ${{ secrets.NEXT_PUBLIC_BASE_URL }}
           BACKEND_BASE_URL: ${{ secrets.BACKEND_BASE_URL }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
           # ARN of a Secrets Manager secret that contains DATABASE_URL (set this as a GitHub secret)
           DB_SECRET_ARN: ${{ secrets.AWS_SECRETSMANAGER_DATABASE_URL_ARN }}
         run: |
@@ -135,6 +122,7 @@ jobs:
                   { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" },
                   { "name": "NEXT_PUBLIC_BASE_URL", "value": "${NEXT_PUBLIC_BASE_URL}" },
                   { "name": "BACKEND_BASE_URL", "value": "${BACKEND_BASE_URL}" },
+                  { "name": "REDIS_URL", "value": "${REDIS_URL}" },
                   { "name": "ENVIRONMENT", "value": "production" },
                   { "name": "ALLOWED_HOSTS", "value": "api.booppa.io" },
                   { "name": "ALLOWED_ORIGINS", "value": "https://booppa.io,https://www.booppa.io,https://api.booppa.io,https://cms.booppa.io" },
@@ -155,54 +143,6 @@ jobs:
           jq -r '.taskDefinition.taskDefinitionArn' task-def-app-out.json > task-def-app-arn.txt
           echo "APP_TASK_DEF_ARN=$(cat task-def-app-arn.txt)" >> $GITHUB_ENV
 
-      - name: Register ECS task definition - worker
-        env:
-          WORKER_IMAGE: ${{ env.WORKER_IMAGE }}
-          EXECUTION_ROLE_ARN: ${{ secrets.AWS_ECS_EXECUTION_ROLE_ARN }}
-          TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
-          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
-          STRIPE_PDPA_QUICK_SCAN: ${{ secrets.STRIPE_PDPA_QUICK_SCAN }}
-          NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN: ${{ secrets.NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN }}
-          NEXT_PUBLIC_BASE_URL: ${{ secrets.NEXT_PUBLIC_BASE_URL }}
-          BACKEND_BASE_URL: ${{ secrets.BACKEND_BASE_URL }}
-          DB_SECRET_ARN: ${{ secrets.AWS_SECRETSMANAGER_DATABASE_URL_ARN }}
-        run: |
-          cat > task-def-worker.json <<-JSON
-          {
-            "family": "${{ env.WORKER_ECR_REPO }}",
-            "networkMode": "awsvpc",
-            "requiresCompatibilities": ["FARGATE"],
-            "cpu": "256",
-            "memory": "512",
-            "executionRoleArn": "${EXECUTION_ROLE_ARN}",
-            "taskRoleArn": "${TASK_ROLE_ARN}",
-            "containerDefinitions": [
-              {
-                "name": "worker",
-                "image": "${WORKER_IMAGE}",
-                "essential": true,
-                "environment": [
-                  { "name": "STRIPE_SECRET_KEY", "value": "${STRIPE_SECRET_KEY}" },
-                  { "name": "STRIPE_WEBHOOK_SECRET", "value": "${STRIPE_WEBHOOK_SECRET}" },
-                  { "name": "STRIPE_PDPA_QUICK_SCAN", "value": "${STRIPE_PDPA_QUICK_SCAN}" },
-                  { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" },
-                  { "name": "NEXT_PUBLIC_BASE_URL", "value": "${NEXT_PUBLIC_BASE_URL}" },
-                  { "name": "BACKEND_BASE_URL", "value": "${BACKEND_BASE_URL}" }
-                ],
-                "secrets": [
-                  { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" }
-                ],
-                "logConfiguration": { "logDriver": "awslogs", "options": { "awslogs-group": "/ecs/${{ env.WORKER_ECR_REPO }}", "awslogs-region": "${AWS_REGION}", "awslogs-stream-prefix": "ecs" } }
-              }
-            ]
-          }
-          JSON
-
-          aws ecs register-task-definition --cli-input-json file://task-def-worker.json --region $AWS_REGION > task-def-worker-out.json
-          jq -r '.taskDefinition.taskDefinitionArn' task-def-worker-out.json > task-def-worker-arn.txt
-          echo "WORKER_TASK_DEF_ARN=$(cat task-def-worker-arn.txt)" >> $GITHUB_ENV
 
       - name: Register ECS task definition - cms
         env:
@@ -353,15 +293,6 @@ jobs:
           echo "Updating app service to task definition ARN: $APP_TASK_DEF_ARN"
           aws ecs update-service --cluster $CLUSTER --service $SERVICE --task-definition "$APP_TASK_DEF_ARN" --force-new-deployment --region $AWS_REGION
 
-      - name: Update ECS worker service to use new task definition (worker)
-        env:
-          CLUSTER: ${{ env.ECS_CLUSTER }}
-          WORKER_SERVICE: booppa-worker
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-        run: |
-          # Use runtime variable exported to $GITHUB_ENV by the worker task registration step
-          echo "Updating worker service to task definition ARN: $WORKER_TASK_DEF_ARN"
-          aws ecs update-service --cluster $CLUSTER --service $WORKER_SERVICE --task-definition "$WORKER_TASK_DEF_ARN" --force-new-deployment --region $AWS_REGION
 
       - name: Update ECS cms service to use new task definition (cms)
         env:

@@ -7,13 +7,12 @@ from app.core.config import settings
 import stripe
 import logging
 from app.core.models import Report, User
-from app.workers.tasks import process_report_task
+from app.workers.tasks import process_report_workflow
 from sqlalchemy.orm import Session
 import uuid
 import asyncio
 from datetime import datetime
 
-from app.workers.tasks import process_report_workflow
 
 router = APIRouter()
 
@@ -67,8 +66,8 @@ async def create_report(
         db.commit()
         db.refresh(report)
 
-        # Start background processing
-        background_tasks.add_task(process_report_task, str(report.id))
+        # Start background processing (synchronous workflow, no Celery/Redis)
+        background_tasks.add_task(_run_report_workflow_sync, str(report.id))
 
         return ReportResponse(
             id=report.id,
@@ -240,14 +239,6 @@ async def get_report_by_session(
                 if report.status != "processing":
                     report.status = "processing"
                     db.commit()
-
-                # Prefer celery, but also schedule a background fallback to avoid stuck jobs.
-                try:
-                    process_report_task.delay(str(report.id))
-                except Exception as e:
-                    logger.warning(
-                        f"Celery enqueue failed for {report_id}: {e}"
-                    )
 
                 if background_tasks is not None:
                     background_tasks.add_task(
