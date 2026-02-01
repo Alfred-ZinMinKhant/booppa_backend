@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: Optional[str] = None
     ANTHROPIC_MODEL: str = "claude-haiku-4.5"
 
+    # Stripe
+    STRIPE_SECRET_KEY: Optional[str] = None
+    STRIPE_WEBHOOK_SECRET: Optional[str] = None
+
     # Monitoring
     GRAFANA_OTEL_ENDPOINT: Optional[str] = None
     PROMETHEUS_PORT: int = 9090

@@ -126,7 +126,11 @@ async def get_report_by_session(session_id: str | None = None):
     if not session_id:
         raise HTTPException(status_code=400, detail="Missing session_id")
 
-    stripe.api_key = settings.STRIPE_SECRET_KEY
+    stripe_key = settings.STRIPE_SECRET_KEY
+    if not stripe_key:
+        raise HTTPException(status_code=500, detail="Stripe is not configured")
+
+    stripe.api_key = stripe_key
     try:
         session = stripe.checkout.Session.retrieve(session_id)
     except Exception as e:
