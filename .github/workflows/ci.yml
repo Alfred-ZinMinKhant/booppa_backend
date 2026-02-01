@@ -167,6 +167,7 @@ jobs:
           NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN: ${{ secrets.NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN }}
           NEXT_PUBLIC_BASE_URL: ${{ secrets.NEXT_PUBLIC_BASE_URL }}
           BACKEND_BASE_URL: ${{ secrets.BACKEND_BASE_URL }}
+          DB_SECRET_ARN: ${{ secrets.AWS_SECRETSMANAGER_DATABASE_URL_ARN }}
         run: |
           cat > task-def-worker.json <<-JSON
           {
@@ -189,6 +190,9 @@ jobs:
                   { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" },
                   { "name": "NEXT_PUBLIC_BASE_URL", "value": "${NEXT_PUBLIC_BASE_URL}" },
                   { "name": "BACKEND_BASE_URL", "value": "${BACKEND_BASE_URL}" }
+                ],
+                "secrets": [
+                  { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" }
                 ],
                 "logConfiguration": { "logDriver": "awslogs", "options": { "awslogs-group": "/ecs/${{ env.WORKER_ECR_REPO }}", "awslogs-region": "${AWS_REGION}", "awslogs-stream-prefix": "ecs" } }
               }

@@ -10,6 +10,9 @@ from app.core.models import Report, User
 from app.workers.tasks import process_report_task
 from sqlalchemy.orm import Session
 import uuid
+import asyncio
+
+from app.workers.tasks import process_report_workflow
 
 router = APIRouter()
 
@@ -117,8 +120,18 @@ async def create_report_public(request: ReportRequest):
         db.close()
 
 
+def _run_report_workflow_sync(report_id: str) -> None:
+    try:
+        asyncio.run(process_report_workflow(report_id))
+    except Exception as exc:
+        logger.error(f"On-demand report processing failed for {report_id}: {exc}")
+
+
 @router.get("/by-session")
-async def get_report_by_session(session_id: str | None = None):
+async def get_report_by_session(
+    session_id: str | None = None,
+    background_tasks: BackgroundTasks = None,
+):
     """Public endpoint: lookup a report by a Stripe Checkout `session_id`.
     The Stripe session should contain `metadata.report_id` or `client_reference_id`.
     Returns JSON `{ url: <presigned_s3_url> }` when the report PDF is available.
@@ -158,9 +171,45 @@ async def get_report_by_session(session_id: str | None = None):
         if not report:
             raise HTTPException(status_code=404, detail="Report not found")
 
+        # If payment succeeded, mark it on the report so downstream processing can anchor evidence.
+        try:
+            payment_status = session.get("payment_status")
+            if payment_status == "paid":
+                assessment = report.assessment_data or {}
+                if not isinstance(assessment, dict):
+                    assessment = {}
+                assessment["payment_confirmed"] = True
+                customer_email = metadata.get("customer_email") or session.get(
+                    "customer_details", {}
+                ).get("email")
+                if customer_email:
+                    assessment["contact_email"] = customer_email
+                report.assessment_data = assessment
+                db.commit()
+        except Exception as e:
+            logger.warning(f"Failed to update payment status for {report_id}: {e}")
+
         if report.s3_url:
             return {"url": report.s3_url}
         else:
+            # If report isn't ready, try to kick off processing on demand.
+            try:
+                if report.status != "processing":
+                    report.status = "processing"
+                    db.commit()
+
+                # Prefer celery if available, otherwise run workflow in background.
+                try:
+                    process_report_task.delay(str(report.id))
+                except Exception:
+                    if background_tasks is not None:
+                        background_tasks.add_task(
+                            _run_report_workflow_sync, str(report.id)
+                        )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to trigger on-demand processing for {report_id}: {e}"
+                )
             raise HTTPException(status_code=404, detail="Report not ready")
     finally:
         db.close()
