@@ -8,6 +8,9 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional
 import logging
+import httpx
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -275,7 +278,7 @@ class BooppaAIService:
         self.system_prompt = BOOPPA_SYSTEM_PROMPT
         self.legislation = SINGAPORE_LEGISLATION
         self.prompts = self._load_prompts()
-        self.deepseek_api_key = deepseek_api_key
+        self.deepseek_api_key = deepseek_api_key or settings.DEEPSEEK_API_KEY
 
     def _load_prompts(self) -> Dict:
         """Load Booppa-specific prompt templates"""
@@ -455,11 +458,26 @@ BLOCKCHAIN EVIDENCE:
         risk_level = get_risk_level(risk_score)
 
         # Generate report sections
-        executive_summary = self._generate_executive_summary(violations, risk_level)
+        deepseek_payload = await self._generate_deepseek_report_payload(
+            scan_data, violations, risk_level
+        )
+        executive_summary = deepseek_payload.get("executive_summary") or self._generate_executive_summary(
+            violations, risk_level
+        )
         detailed_findings = []
 
+        deepseek_descriptions = {
+            item.get("type"): item.get("description")
+            for item in deepseek_payload.get("violation_details", [])
+            if isinstance(item, dict) and item.get("type")
+        }
+
         for violation in violations:
-            finding = await self._generate_violation_detail(violation, scan_data)
+            finding = await self._generate_violation_detail(
+                violation,
+                scan_data,
+                description_override=deepseek_descriptions.get(violation.get("type")),
+            )
             detailed_findings.append(finding)
 
         # Generate recommendations
@@ -477,7 +495,11 @@ BLOCKCHAIN EVIDENCE:
                 "generated_date": datetime.now().strftime("%d %B %Y"),
                 "generated_time": datetime.now().strftime("%H:%M:%S"),
                 "version": "2.0",
-                "ai_model": "DeepSeek-Chat with Booppa Specialization",
+                "ai_model": (
+                    "DeepSeek-Chat with Booppa Specialization"
+                    if deepseek_payload.get("used_deepseek")
+                    else "Booppa Template Engine"
+                ),
             },
             "company_info": {
                 "name": scan_data.get("company_name", "Not specified"),
@@ -587,7 +609,10 @@ BLOCKCHAIN EVIDENCE:
         return violations
 
     async def _generate_violation_detail(
-        self, violation: Dict, scan_data: Dict
+        self,
+        violation: Dict,
+        scan_data: Dict,
+        description_override: Optional[str] = None,
     ) -> Dict:
         """Generate detailed violation report using templates"""
         violation_type = violation.get("type")
@@ -599,7 +624,9 @@ BLOCKCHAIN EVIDENCE:
         deadline = get_compliance_deadline(violation.get("severity", "MEDIUM"))
 
         # Check if we have a template for this violation
-        if violation_type in self.prompts:
+        if description_override:
+            description = description_override
+        elif violation_type in self.prompts:
             template = self.prompts[violation_type]["template"]
 
             # Fill template with data
@@ -659,6 +686,120 @@ Recommended Actions:
 Compliance Deadline: {get_compliance_deadline(violation.get('severity', 'MEDIUM'))}
 
 Note: Consult legal counsel for specific compliance requirements."""
+
+    async def _generate_deepseek_report_payload(
+        self, scan_data: Dict, violations: List[Dict], risk_level: Dict
+    ) -> Dict:
+        """Generate executive summary and violation descriptions using DeepSeek."""
+        if not self.deepseek_api_key:
+            return {"used_deepseek": False}
+
+        violations_for_prompt = []
+        for v in violations:
+            penalty_info = get_penalty_for_violation(v.get("type", ""))
+            deadline = get_compliance_deadline(v.get("severity", "MEDIUM"))
+            violations_for_prompt.append(
+                {
+                    "type": v.get("type"),
+                    "severity": v.get("severity"),
+                    "details": v.get("details"),
+                    "location": v.get("location"),
+                    "evidence": v.get("evidence"),
+                    "penalty": penalty_info,
+                    "deadline": deadline,
+                    "legislation": self._get_violation_legislation(v.get("type", "")),
+                }
+            )
+
+        prompt = (
+            "You are generating a Singapore PDPA compliance audit report. "
+            "Return ONLY valid JSON with the following schema: "
+            "{\"executive_summary\": string, \"violation_details\": ["
+            "{\"type\": string, \"description\": string}]}" 
+            "The description MUST follow the format: "
+            "[SEVERITY]\n[VIOLATION]\n[LEGISLATION]\n[PENALTY]\n"
+            "[IMMEDIATE ACTION]\n[COMPLIANCE DEADLINE]\n[REFERENCE]\n"
+            "[BLOCKCHAIN EVIDENCE]\n[VERIFICATION]."
+        )
+
+        user_payload = {
+            "scan_data": scan_data,
+            "risk_level": risk_level,
+            "violations": violations_for_prompt,
+        }
+
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {
+                "role": "user",
+                "content": f"{prompt}\n\nINPUT:\n{json.dumps(user_payload, ensure_ascii=False)}",
+            },
+        ]
+
+        content = await self._call_deepseek(messages)
+        if not content:
+            return {"used_deepseek": False}
+
+        parsed = self._extract_json(content)
+        if not parsed or not isinstance(parsed, dict):
+            return {"used_deepseek": False}
+
+        parsed["used_deepseek"] = True
+        return parsed
+
+    async def _call_deepseek(self, messages: List[Dict]) -> Optional[str]:
+        """Call DeepSeek Chat Completions API."""
+        if not self.deepseek_api_key:
+            return None
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    "https://api.deepseek.com/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.deepseek_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "deepseek-chat",
+                        "messages": messages,
+                        "temperature": 0.2,
+                        "max_tokens": 1400,
+                    },
+                )
+            if response.status_code >= 400:
+                logger.error(
+                    f"DeepSeek API error {response.status_code}: {response.text}"
+                )
+                return None
+            data = response.json()
+            return (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content")
+            )
+        except Exception as e:
+            logger.error(f"DeepSeek API call failed: {e}")
+            return None
+
+    def _extract_json(self, content: str) -> Optional[Dict]:
+        """Extract JSON object from model output."""
+        if not content:
+            return None
+        try:
+            return json.loads(content)
+        except Exception:
+            pass
+
+        start = content.find("{")
+        end = content.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+
+        try:
+            return json.loads(content[start : end + 1])
+        except Exception:
+            return None
 
     def _generate_executive_summary(
         self, violations: List[Dict], risk_level: Dict
