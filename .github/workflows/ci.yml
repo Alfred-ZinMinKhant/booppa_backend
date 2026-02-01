@@ -106,6 +106,8 @@ jobs:
           NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY }}
           STRIPE_PDPA_QUICK_SCAN: ${{ secrets.STRIPE_PDPA_QUICK_SCAN }}
           NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN: ${{ secrets.NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN }}
+          NEXT_PUBLIC_BASE_URL: ${{ secrets.NEXT_PUBLIC_BASE_URL }}
+          BACKEND_BASE_URL: ${{ secrets.BACKEND_BASE_URL }}
           # ARN of a Secrets Manager secret that contains DATABASE_URL (set this as a GitHub secret)
           DB_SECRET_ARN: ${{ secrets.AWS_SECRETSMANAGER_DATABASE_URL_ARN }}
         run: |
@@ -131,6 +133,8 @@ jobs:
                   { "name": "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY", "value": "${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}" },
                   { "name": "STRIPE_PDPA_QUICK_SCAN", "value": "${STRIPE_PDPA_QUICK_SCAN}" },
                   { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" },
+                  { "name": "NEXT_PUBLIC_BASE_URL", "value": "${NEXT_PUBLIC_BASE_URL}" },
+                  { "name": "BACKEND_BASE_URL", "value": "${BACKEND_BASE_URL}" },
                   { "name": "ENVIRONMENT", "value": "production" },
                   { "name": "ALLOWED_HOSTS", "value": "api.booppa.io" },
                   { "name": "ALLOWED_ORIGINS", "value": "https://booppa.io,https://www.booppa.io,https://api.booppa.io,https://cms.booppa.io" },
@@ -161,6 +165,8 @@ jobs:
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
           STRIPE_PDPA_QUICK_SCAN: ${{ secrets.STRIPE_PDPA_QUICK_SCAN }}
           NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN: ${{ secrets.NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN }}
+          NEXT_PUBLIC_BASE_URL: ${{ secrets.NEXT_PUBLIC_BASE_URL }}
+          BACKEND_BASE_URL: ${{ secrets.BACKEND_BASE_URL }}
         run: |
           cat > task-def-worker.json <<-JSON
           {
@@ -180,7 +186,9 @@ jobs:
                   { "name": "STRIPE_SECRET_KEY", "value": "${STRIPE_SECRET_KEY}" },
                   { "name": "STRIPE_WEBHOOK_SECRET", "value": "${STRIPE_WEBHOOK_SECRET}" },
                   { "name": "STRIPE_PDPA_QUICK_SCAN", "value": "${STRIPE_PDPA_QUICK_SCAN}" },
-                  { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" }
+                  { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" },
+                  { "name": "NEXT_PUBLIC_BASE_URL", "value": "${NEXT_PUBLIC_BASE_URL}" },
+                  { "name": "BACKEND_BASE_URL", "value": "${BACKEND_BASE_URL}" }
                 ],
                 "logConfiguration": { "logDriver": "awslogs", "options": { "awslogs-group": "/ecs/${{ env.WORKER_ECR_REPO }}", "awslogs-region": "${AWS_REGION}", "awslogs-stream-prefix": "ecs" } }
               }
