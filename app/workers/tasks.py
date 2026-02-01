@@ -232,6 +232,21 @@ async def process_report_workflow(report_id: str) -> dict:
     except Exception as e:
         db.rollback()
         logger.error(f"Report workflow failed: {e}")
+        try:
+            report = db.query(Report).filter(Report.id == report_id).first()
+            if report:
+                assessment = report.assessment_data or {}
+                if not isinstance(assessment, dict):
+                    assessment = {}
+                assessment["last_processing_error"] = str(e)[:500]
+                assessment["last_processing_error_at"] = datetime.utcnow().isoformat()
+                report.assessment_data = assessment
+                report.status = "failed"
+                db.commit()
+        except Exception as inner_exc:
+            logger.error(
+                f"Failed to persist processing error for {report_id}: {inner_exc}"
+            )
         raise
     finally:
         db.close()
