@@ -130,6 +130,7 @@ def _run_report_workflow_sync(report_id: str) -> None:
 @router.get("/by-session")
 async def get_report_by_session(
     session_id: str | None = None,
+    debug: bool = False,
     background_tasks: BackgroundTasks = None,
 ):
     """Public endpoint: lookup a report by a Stripe Checkout `session_id`.
@@ -224,6 +225,18 @@ async def get_report_by_session(
             except Exception as e:
                 logger.warning(
                     f"Failed to trigger on-demand processing for {report_id}: {e}"
+                )
+            if debug:
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "message": "Report not ready",
+                        "report_id": str(report.id),
+                        "status": report.status,
+                        "has_pdf": bool(report.s3_url),
+                        "has_report": bool(structured_report),
+                        "payment_status": session.get("payment_status"),
+                    },
                 )
             raise HTTPException(status_code=404, detail="Report not ready")
     finally:
