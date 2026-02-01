@@ -9,12 +9,18 @@ class EmailService:
     """AWS SES email service for notifications"""
 
     def __init__(self):
-        self.ses_client = boto3.client(
-            'ses',
-            region_name=settings.AWS_SES_REGION,
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
-        )
+        client_kwargs = {
+            "region_name": settings.AWS_SES_REGION,
+        }
+        if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
+            client_kwargs.update(
+                {
+                    "aws_access_key_id": settings.AWS_ACCESS_KEY_ID,
+                    "aws_secret_access_key": settings.AWS_SECRET_ACCESS_KEY,
+                }
+            )
+
+        self.ses_client = boto3.client("ses", **client_kwargs)
 
     async def send_report_ready_email(self, to_email: str, report_url: str, user_name: str, report_id: str):
         """Send email notification when report is ready"""

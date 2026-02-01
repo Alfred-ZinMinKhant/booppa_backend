@@ -155,6 +155,14 @@ async def process_report_workflow(report_id: str) -> dict:
                     ss_b64 = await asyncio.to_thread(capture_screenshot_base64, url)
                     if ss_b64:
                         pdf_data["site_screenshot"] = ss_b64
+                        try:
+                            if isinstance(report.assessment_data, dict):
+                                report.assessment_data["site_screenshot"] = ss_b64
+                                db.commit()
+                        except Exception as e:
+                            logger.warning(
+                                f"Could not store site screenshot for {report_id}: {e}"
+                            )
             except Exception as e:
                 logger.warning(
                     f"Could not capture site screenshot for {report_id}: {e}"
@@ -188,12 +196,16 @@ async def process_report_workflow(report_id: str) -> dict:
         logger.info(f"Step 6: Sending notification for {report_id}")
         email_service = EmailService()
         try:
+            to_email = None
+            if isinstance(report.assessment_data, dict):
+                to_email = report.assessment_data.get("contact_email") or report.assessment_data.get(
+                    "customer_email"
+                )
+            if not to_email:
+                raise ValueError("Missing contact email for report notification")
+
             await email_service.send_report_ready_email(
-                to_email=(
-                    report.assessment_data.get("contact_email")
-                    if isinstance(report.assessment_data, dict)
-                    else "user@example.com"
-                ),
+                to_email=to_email,
                 report_url=pdf_url,
                 user_name=(report.company_name or "User"),
                 report_id=str(report.id),
