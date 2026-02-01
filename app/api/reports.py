@@ -214,14 +214,18 @@ async def get_report_by_session(
                     report.status = "processing"
                     db.commit()
 
-                # Prefer celery if available, otherwise run workflow in background.
+                # Prefer celery, but also schedule a background fallback to avoid stuck jobs.
                 try:
                     process_report_task.delay(str(report.id))
-                except Exception:
-                    if background_tasks is not None:
-                        background_tasks.add_task(
-                            _run_report_workflow_sync, str(report.id)
-                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Celery enqueue failed for {report_id}: {e}"
+                    )
+
+                if background_tasks is not None:
+                    background_tasks.add_task(
+                        _run_report_workflow_sync, str(report.id)
+                    )
             except Exception as e:
                 logger.warning(
                     f"Failed to trigger on-demand processing for {report_id}: {e}"
