@@ -11,6 +11,7 @@ from app.workers.tasks import process_report_task
 from sqlalchemy.orm import Session
 import uuid
 import asyncio
+from datetime import datetime
 
 from app.workers.tasks import process_report_workflow
 
@@ -144,6 +145,7 @@ def _run_report_workflow_sync(report_id: str) -> None:
 async def get_report_by_session(
     session_id: str | None = None,
     debug: bool = False,
+    force: bool = False,
     background_tasks: BackgroundTasks = None,
 ):
     """Public endpoint: lookup a report by a Stripe Checkout `session_id`.
@@ -206,12 +208,20 @@ async def get_report_by_session(
         structured_report = None
         site_screenshot = None
         last_processing_error = None
+        last_processing_attempt_at = None
+        processing_attempts = None
         try:
             if isinstance(report.assessment_data, dict):
                 structured_report = report.assessment_data.get("booppa_report")
                 site_screenshot = report.assessment_data.get("site_screenshot")
                 last_processing_error = report.assessment_data.get(
                     "last_processing_error"
+                )
+                last_processing_attempt_at = report.assessment_data.get(
+                    "last_processing_attempt_at"
+                )
+                processing_attempts = report.assessment_data.get(
+                    "processing_attempts"
                 )
         except Exception:
             structured_report = None
@@ -243,10 +253,54 @@ async def get_report_by_session(
                     background_tasks.add_task(
                         _run_report_workflow_sync, str(report.id)
                     )
+
+                # Track processing attempts for debugging.
+                try:
+                    if isinstance(report.assessment_data, dict):
+                        attempts = report.assessment_data.get("processing_attempts")
+                        try:
+                            attempts = int(attempts) if attempts is not None else 0
+                        except Exception:
+                            attempts = 0
+                        report.assessment_data["processing_attempts"] = attempts + 1
+                        report.assessment_data[
+                            "last_processing_attempt_at"
+                        ] = datetime.utcnow().isoformat()
+                        db.commit()
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to update processing attempt metadata for {report_id}: {e}"
+                    )
             except Exception as e:
                 logger.warning(
                     f"Failed to trigger on-demand processing for {report_id}: {e}"
                 )
+
+            if force:
+                try:
+                    await process_report_workflow(str(report.id))
+                    db.refresh(report)
+                    structured_report = None
+                    try:
+                        if isinstance(report.assessment_data, dict):
+                            structured_report = report.assessment_data.get(
+                                "booppa_report"
+                            )
+                    except Exception:
+                        structured_report = None
+
+                    if report.s3_url or structured_report:
+                        return {
+                            "status": report.status,
+                            "url": report.s3_url,
+                            "report": structured_report,
+                            "report_id": str(report.id),
+                            "site_screenshot": site_screenshot,
+                        }
+                except Exception as e:
+                    logger.error(
+                        f"Force processing failed for {report_id}: {e}"
+                    )
             if debug:
                 raise HTTPException(
                     status_code=404,
@@ -258,6 +312,8 @@ async def get_report_by_session(
                         "has_report": bool(structured_report),
                         "payment_status": session.get("payment_status"),
                         "last_processing_error": last_processing_error,
+                        "processing_attempts": processing_attempts,
+                        "last_processing_attempt_at": last_processing_attempt_at,
                     },
                 )
             raise HTTPException(status_code=404, detail="Report not ready")
