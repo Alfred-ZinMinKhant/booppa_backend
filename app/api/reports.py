@@ -140,6 +140,26 @@ def _run_report_workflow_sync(report_id: str) -> None:
             db.close()
 
 
+async def _run_report_workflow_async(report_id: str) -> None:
+    try:
+        await process_report_workflow(report_id)
+    except Exception as exc:
+        logger.error(f"On-demand async processing failed for {report_id}: {exc}")
+        db = SessionLocal()
+        try:
+            report = db.query(Report).filter(Report.id == report_id).first()
+            if report:
+                assessment = report.assessment_data or {}
+                if not isinstance(assessment, dict):
+                    assessment = {}
+                assessment["last_processing_error"] = str(exc)[:500]
+                report.assessment_data = assessment
+                report.status = "failed"
+                db.commit()
+        finally:
+            db.close()
+
+
 @router.get("/by-session")
 async def get_report_by_session(
     session_id: str | None = None,
@@ -236,15 +256,6 @@ async def get_report_by_session(
         else:
             # If report isn't ready, try to kick off processing on demand.
             try:
-                if report.status != "processing":
-                    report.status = "processing"
-                    db.commit()
-
-                if background_tasks is not None:
-                    background_tasks.add_task(
-                        _run_report_workflow_sync, str(report.id)
-                    )
-
                 # Track processing attempts for debugging.
                 try:
                     if isinstance(report.assessment_data, dict):
@@ -261,6 +272,23 @@ async def get_report_by_session(
                 except Exception as e:
                     logger.warning(
                         f"Failed to update processing attempt metadata for {report_id}: {e}"
+                    )
+
+                if report.status != "processing":
+                    report.status = "processing"
+                    db.commit()
+
+                if background_tasks is not None:
+                    background_tasks.add_task(
+                        _run_report_workflow_sync, str(report.id)
+                    )
+
+                # Also schedule async processing to avoid background task delays.
+                try:
+                    asyncio.create_task(_run_report_workflow_async(str(report.id)))
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to schedule async processing for {report_id}: {e}"
                     )
             except Exception as e:
                 logger.warning(
