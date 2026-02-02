@@ -168,7 +168,14 @@ async def process_report_workflow(report_id: str) -> dict:
                     f"Could not capture site screenshot for {report_id}: {e}"
                 )
 
-        pdf_bytes = pdf_service.generate_pdf(pdf_data)
+        try:
+            pdf_bytes = pdf_service.generate_pdf(pdf_data)
+            logger.info(
+                f"PDF generated for {report_id} ({len(pdf_bytes)} bytes)"
+            )
+        except Exception as e:
+            logger.error(f"PDF generation failed for {report_id}: {e}")
+            raise
 
         # Step 5: Upload to S3 with retry/backoff
         logger.info(f"Step 5: Uploading PDF to S3 for {report_id}")

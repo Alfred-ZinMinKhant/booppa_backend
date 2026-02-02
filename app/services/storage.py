@@ -1,5 +1,6 @@
 import boto3
 from botocore.exceptions import ClientError
+from botocore.config import Config
 from app.core.config import settings
 import logging
 
@@ -10,12 +11,19 @@ class S3Service:
     """AWS S3 service for file storage"""
 
     def __init__(self):
-        self.s3_client = boto3.client(
-            "s3",
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-            region_name=settings.AWS_REGION,
-        )
+        client_kwargs = {
+            "region_name": settings.AWS_REGION,
+            "config": Config(connect_timeout=10, read_timeout=20, retries={"max_attempts": 3}),
+        }
+        if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
+            client_kwargs.update(
+                {
+                    "aws_access_key_id": settings.AWS_ACCESS_KEY_ID,
+                    "aws_secret_access_key": settings.AWS_SECRET_ACCESS_KEY,
+                }
+            )
+
+        self.s3_client = boto3.client("s3", **client_kwargs)
         self.bucket = settings.S3_BUCKET
 
     async def upload_pdf(self, pdf_bytes: bytes, report_id: str) -> str:
