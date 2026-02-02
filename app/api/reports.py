@@ -229,6 +229,7 @@ async def get_report_by_session(
         last_processing_error = None
         last_processing_attempt_at = None
         processing_attempts = None
+        workflow_flags = {}
         try:
             if isinstance(report.assessment_data, dict):
                 structured_report = report.assessment_data.get("booppa_report")
@@ -242,8 +243,23 @@ async def get_report_by_session(
                 processing_attempts = report.assessment_data.get(
                     "processing_attempts"
                 )
+                workflow_flags = {
+                    "booppa_report_saved_at": report.assessment_data.get(
+                        "booppa_report_saved_at"
+                    ),
+                    "pdf_generated": report.assessment_data.get("pdf_generated"),
+                    "pdf_generated_at": report.assessment_data.get("pdf_generated_at"),
+                    "s3_uploaded": report.assessment_data.get("s3_uploaded"),
+                    "s3_uploaded_at": report.assessment_data.get("s3_uploaded_at"),
+                }
         except Exception:
             structured_report = None
+
+        if not structured_report and report.ai_narrative:
+            structured_report = {
+                "executive_summary": report.ai_narrative,
+                "report_metadata": {"report_id": str(report.id)},
+            }
 
         if report.s3_url or structured_report:
             return {
@@ -252,6 +268,7 @@ async def get_report_by_session(
                 "report": structured_report,
                 "report_id": str(report.id),
                 "site_screenshot": site_screenshot,
+                "workflow": workflow_flags,
             }
         else:
             # If report isn't ready, try to kick off processing on demand.
@@ -333,6 +350,7 @@ async def get_report_by_session(
                         "last_processing_error": last_processing_error,
                         "processing_attempts": processing_attempts,
                         "last_processing_attempt_at": last_processing_attempt_at,
+                        "workflow": workflow_flags,
                     },
                 )
             raise HTTPException(status_code=404, detail="Report not ready")
