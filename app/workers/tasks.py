@@ -77,6 +77,7 @@ async def process_report_workflow(report_id: str) -> dict:
         try:
             if isinstance(report.assessment_data, dict):
                 report.assessment_data["booppa_report"] = structured_report
+                report.assessment_data["booppa_report_saved_at"] = datetime.utcnow().isoformat()
         except Exception:
             logger.warning("Could not attach structured report into assessment_data")
 
@@ -173,6 +174,13 @@ async def process_report_workflow(report_id: str) -> dict:
             logger.info(
                 f"PDF generated for {report_id} ({len(pdf_bytes)} bytes)"
             )
+            try:
+                if isinstance(report.assessment_data, dict):
+                    report.assessment_data["pdf_generated"] = True
+                    report.assessment_data["pdf_generated_at"] = datetime.utcnow().isoformat()
+                    db.commit()
+            except Exception:
+                db.rollback()
         except Exception as e:
             logger.error(f"PDF generation failed for {report_id}: {e}")
             raise
@@ -187,6 +195,12 @@ async def process_report_workflow(report_id: str) -> dict:
                 pdf_url = await storage.upload_pdf(pdf_bytes, str(report.id))
                 report.s3_url = pdf_url
                 report.file_key = f"reports/{report.id}.pdf"
+                try:
+                    if isinstance(report.assessment_data, dict):
+                        report.assessment_data["s3_uploaded"] = True
+                        report.assessment_data["s3_uploaded_at"] = datetime.utcnow().isoformat()
+                except Exception:
+                    logger.warning(f"Failed to mark S3 upload status for {report_id}")
                 # Mark as completed once upload succeeds so frontend can access URL
                 report.status = "completed"
                 report.completed_at = datetime.utcnow()
