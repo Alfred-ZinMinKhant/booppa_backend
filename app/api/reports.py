@@ -50,6 +50,8 @@ async def create_report(
         assessment = request.assessment_data or {}
         if request.website:
             assessment["url"] = request.website
+            if "uses_https" not in assessment and isinstance(request.website, str):
+                assessment["uses_https"] = request.website.lower().startswith("https://")
         if getattr(request, "contact_email", None):
             assessment["contact_email"] = request.contact_email
 
@@ -95,6 +97,8 @@ async def create_report_public(request: ReportRequest):
         assessment = request.assessment_data or {}
         if request.website:
             assessment["url"] = request.website
+            if "uses_https" not in assessment and isinstance(request.website, str):
+                assessment["uses_https"] = request.website.lower().startswith("https://")
         if getattr(request, "contact_email", None):
             assessment["contact_email"] = request.contact_email
 
