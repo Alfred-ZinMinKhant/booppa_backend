@@ -130,6 +130,9 @@ async def process_report_workflow(report_id: str) -> dict:
                 if isinstance(report.assessment_data, dict):
                     report.assessment_data["pdf_generated"] = False
                     report.assessment_data["s3_uploaded"] = False
+                    report.assessment_data["site_screenshot"] = report.assessment_data.get(
+                        "site_screenshot"
+                    )
                     db.commit()
             except Exception:
                 db.rollback()
