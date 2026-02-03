@@ -33,6 +33,19 @@ def _set_assessment_values(report: Report, updates: dict) -> None:
         logger.warning(f"Failed to update assessment_data for {report.id}: {e}")
 
 
+async def _capture_screenshot_with_timeout(url: str, timeout: int = 25) -> str | None:
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(capture_screenshot_base64, url), timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"Screenshot capture timed out for {url}")
+        return None
+    except Exception as e:
+        logger.warning(f"Screenshot capture failed for {url}: {e}")
+        return None
+
+
 async def _resolve_website_url(raw_url: str | None) -> dict:
     if not raw_url or not isinstance(raw_url, str):
         return {}
@@ -211,7 +224,7 @@ async def process_report_workflow(report_id: str) -> dict:
                 if isinstance(url, str) and url and not url.lower().startswith(("http://", "https://")):
                     url = f"https://{url}"
                 if url:
-                    ss_b64 = await asyncio.to_thread(capture_screenshot_base64, url)
+                    ss_b64 = await _capture_screenshot_with_timeout(url, timeout=25)
                     if ss_b64:
                         try:
                             _set_assessment_values(report, {"site_screenshot": ss_b64})
@@ -225,7 +238,7 @@ async def process_report_workflow(report_id: str) -> dict:
                             _set_assessment_values(
                                 report,
                                 {
-                                    "screenshot_error": "capture_failed",
+                                    "screenshot_error": "capture_failed_or_timeout",
                                     "screenshot_url": url,
                                 },
                             )
@@ -333,7 +346,7 @@ async def process_report_workflow(report_id: str) -> dict:
                 if isinstance(report.assessment_data, dict):
                     url = report.assessment_data.get("url") or report.company_website
                 if url:
-                    ss_b64 = await asyncio.to_thread(capture_screenshot_base64, url)
+                    ss_b64 = await _capture_screenshot_with_timeout(url, timeout=25)
                     if ss_b64:
                         pdf_data["site_screenshot"] = ss_b64
                         try:
@@ -348,7 +361,7 @@ async def process_report_workflow(report_id: str) -> dict:
                             _set_assessment_values(
                                 report,
                                 {
-                                    "screenshot_error": "capture_failed",
+                                    "screenshot_error": "capture_failed_or_timeout",
                                     "screenshot_url": url,
                                 },
                             )
