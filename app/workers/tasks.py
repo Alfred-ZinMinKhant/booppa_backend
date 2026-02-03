@@ -19,6 +19,20 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 
+def _set_assessment_values(report: Report, updates: dict) -> None:
+    if not isinstance(updates, dict):
+        return
+    try:
+        if isinstance(report.assessment_data, dict):
+            assessment = dict(report.assessment_data)
+        else:
+            assessment = {}
+        assessment.update(updates)
+        report.assessment_data = assessment
+    except Exception as e:
+        logger.warning(f"Failed to update assessment_data for {report.id}: {e}")
+
+
 async def _resolve_website_url(raw_url: str | None) -> dict:
     if not raw_url or not isinstance(raw_url, str):
         return {}
@@ -98,20 +112,21 @@ async def process_report_workflow(report_id: str) -> dict:
             if isinstance(report.assessment_data, dict):
                 url = report.assessment_data.get("url") or report.company_website
             result = await _resolve_website_url(url)
-            if result and isinstance(report.assessment_data, dict):
+            if result:
                 resolved_url = result.get("resolved_url")
+                updates = {}
                 if resolved_url:
-                    report.assessment_data["url"] = resolved_url
-                    report.assessment_data["resolved_url"] = resolved_url
+                    updates["url"] = resolved_url
+                    updates["resolved_url"] = resolved_url
                 if "uses_https" in result:
-                    report.assessment_data["uses_https"] = bool(result.get("uses_https"))
+                    updates["uses_https"] = bool(result.get("uses_https"))
                 if "http_status" in result:
-                    report.assessment_data["http_status"] = result.get("http_status")
+                    updates["http_status"] = result.get("http_status")
                 if result.get("resolution_error"):
-                    report.assessment_data["url_resolution_error"] = result.get(
-                        "resolution_error"
-                    )
-                db.commit()
+                    updates["url_resolution_error"] = result.get("resolution_error")
+                if updates:
+                    _set_assessment_values(report, updates)
+                    db.commit()
         except Exception as e:
             logger.warning(
                 f"Could not resolve website URL for {report_id}: {e}"
@@ -137,9 +152,13 @@ async def process_report_workflow(report_id: str) -> dict:
         )
         # persist structured report into assessment_data for traceability
         try:
-            if isinstance(report.assessment_data, dict):
-                report.assessment_data["booppa_report"] = structured_report
-                report.assessment_data["booppa_report_saved_at"] = datetime.utcnow().isoformat()
+            _set_assessment_values(
+                report,
+                {
+                    "booppa_report": structured_report,
+                    "booppa_report_saved_at": datetime.utcnow().isoformat(),
+                },
+            )
         except Exception:
             logger.warning("Could not attach structured report into assessment_data")
 
@@ -195,9 +214,8 @@ async def process_report_workflow(report_id: str) -> dict:
                     ss_b64 = await asyncio.to_thread(capture_screenshot_base64, url)
                     if ss_b64:
                         try:
-                            if isinstance(report.assessment_data, dict):
-                                report.assessment_data["site_screenshot"] = ss_b64
-                                db.commit()
+                            _set_assessment_values(report, {"site_screenshot": ss_b64})
+                            db.commit()
                         except Exception as e:
                             logger.warning(
                                 f"Could not store site screenshot for {report_id}: {e}"
@@ -215,13 +233,14 @@ async def process_report_workflow(report_id: str) -> dict:
             report.status = "completed"
             report.completed_at = datetime.utcnow()
             try:
-                if isinstance(report.assessment_data, dict):
-                    report.assessment_data["pdf_generated"] = False
-                    report.assessment_data["s3_uploaded"] = False
-                    report.assessment_data["site_screenshot"] = report.assessment_data.get(
-                        "site_screenshot"
-                    )
-                    db.commit()
+                _set_assessment_values(
+                    report,
+                    {
+                        "pdf_generated": False,
+                        "s3_uploaded": False,
+                    },
+                )
+                db.commit()
             except Exception:
                 db.rollback()
 
@@ -291,9 +310,8 @@ async def process_report_workflow(report_id: str) -> dict:
                     if ss_b64:
                         pdf_data["site_screenshot"] = ss_b64
                         try:
-                            if isinstance(report.assessment_data, dict):
-                                report.assessment_data["site_screenshot"] = ss_b64
-                                db.commit()
+                            _set_assessment_values(report, {"site_screenshot": ss_b64})
+                            db.commit()
                         except Exception as e:
                             logger.warning(
                                 f"Could not store site screenshot for {report_id}: {e}"
@@ -309,10 +327,14 @@ async def process_report_workflow(report_id: str) -> dict:
                 f"PDF generated for {report_id} ({len(pdf_bytes)} bytes)"
             )
             try:
-                if isinstance(report.assessment_data, dict):
-                    report.assessment_data["pdf_generated"] = True
-                    report.assessment_data["pdf_generated_at"] = datetime.utcnow().isoformat()
-                    db.commit()
+                _set_assessment_values(
+                    report,
+                    {
+                        "pdf_generated": True,
+                        "pdf_generated_at": datetime.utcnow().isoformat(),
+                    },
+                )
+                db.commit()
             except Exception:
                 db.rollback()
         except Exception as e:
@@ -330,9 +352,13 @@ async def process_report_workflow(report_id: str) -> dict:
                 report.s3_url = pdf_url
                 report.file_key = f"reports/{report.id}.pdf"
                 try:
-                    if isinstance(report.assessment_data, dict):
-                        report.assessment_data["s3_uploaded"] = True
-                        report.assessment_data["s3_uploaded_at"] = datetime.utcnow().isoformat()
+                    _set_assessment_values(
+                        report,
+                        {
+                            "s3_uploaded": True,
+                            "s3_uploaded_at": datetime.utcnow().isoformat(),
+                        },
+                    )
                 except Exception:
                     logger.warning(f"Failed to mark S3 upload status for {report_id}")
                 # Mark as completed once upload succeeds so frontend can access URL
