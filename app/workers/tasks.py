@@ -13,9 +13,43 @@ import asyncio
 import hashlib
 import json
 import logging
+import httpx
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
+
+
+async def _resolve_website_url(raw_url: str | None) -> dict:
+    if not raw_url or not isinstance(raw_url, str):
+        return {}
+
+    url = raw_url.strip()
+    if not url:
+        return {}
+
+    candidates = []
+    if url.lower().startswith("http://") or url.lower().startswith("https://"):
+        candidates.append(url)
+    else:
+        candidates.append(f"https://{url}")
+        candidates.append(f"http://{url}")
+
+    headers = {"User-Agent": "BooppaComplianceBot/1.0"}
+
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        for candidate in candidates:
+            try:
+                resp = await client.get(candidate, headers=headers)
+                final_url = str(resp.url)
+                return {
+                    "resolved_url": final_url,
+                    "uses_https": final_url.lower().startswith("https://"),
+                    "http_status": resp.status_code,
+                }
+            except Exception as e:
+                logger.warning(f"URL check failed for {candidate}: {e}")
+
+    return {}
 
 
 @celery_app.task(bind=True, max_retries=3, name="process_report_task")
@@ -55,6 +89,27 @@ async def process_report_workflow(report_id: str) -> dict:
         report = db.query(Report).filter(Report.id == report_id).first()
         if not report:
             raise ValueError(f"Report {report_id} not found")
+
+        # Resolve website URL over the network and store HTTPS status
+        try:
+            url = None
+            if isinstance(report.assessment_data, dict):
+                url = report.assessment_data.get("url") or report.company_website
+            result = await _resolve_website_url(url)
+            if result and isinstance(report.assessment_data, dict):
+                resolved_url = result.get("resolved_url")
+                if resolved_url:
+                    report.assessment_data["url"] = resolved_url
+                    report.assessment_data["resolved_url"] = resolved_url
+                if "uses_https" in result:
+                    report.assessment_data["uses_https"] = bool(result.get("uses_https"))
+                if "http_status" in result:
+                    report.assessment_data["http_status"] = result.get("http_status")
+                db.commit()
+        except Exception as e:
+            logger.warning(
+                f"Could not resolve website URL for {report_id}: {e}"
+            )
 
         # Step 1: Generate structured AI report (Booppa) and narrative
         logger.info(f"Step 1: Generating structured AI report for {report_id}")
@@ -118,6 +173,31 @@ async def process_report_workflow(report_id: str) -> dict:
             # leave tx_hash None; PDF will point to pending verification
             report.tx_hash = None
             db.commit()
+
+        # Ensure a site screenshot is present for on-page report (even if PDF is skipped).
+        try:
+            existing_screenshot = None
+            if isinstance(report.assessment_data, dict):
+                existing_screenshot = report.assessment_data.get("site_screenshot")
+            if not existing_screenshot:
+                url = None
+                if isinstance(report.assessment_data, dict):
+                    url = report.assessment_data.get("url") or report.company_website
+                if url:
+                    ss_b64 = await asyncio.to_thread(capture_screenshot_base64, url)
+                    if ss_b64:
+                        try:
+                            if isinstance(report.assessment_data, dict):
+                                report.assessment_data["site_screenshot"] = ss_b64
+                                db.commit()
+                        except Exception as e:
+                            logger.warning(
+                                f"Could not store site screenshot for {report_id}: {e}"
+                            )
+        except Exception as e:
+            logger.warning(
+                f"Could not capture site screenshot for {report_id}: {e}"
+            )
 
         # Optional: skip PDF generation and S3 upload
         if settings.SKIP_PDF_GENERATION:
