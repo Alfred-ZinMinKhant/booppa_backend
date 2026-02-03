@@ -27,12 +27,14 @@ async def _resolve_website_url(raw_url: str | None) -> dict:
     if not url:
         return {}
 
-    candidates = []
-    if url.lower().startswith("http://") or url.lower().startswith("https://"):
-        candidates.append(url)
-    else:
-        candidates.append(f"https://{url}")
-        candidates.append(f"http://{url}")
+    # Normalize input and try HTTPS first, then HTTP.
+    normalized = url
+    if normalized.lower().startswith("http://"):
+        normalized = normalized[7:]
+    elif normalized.lower().startswith("https://"):
+        normalized = normalized[8:]
+
+    candidates = [f"https://{normalized}", f"http://{normalized}"]
 
     headers = {"User-Agent": "BooppaComplianceBot/1.0"}
 
@@ -49,7 +51,7 @@ async def _resolve_website_url(raw_url: str | None) -> dict:
             except Exception as e:
                 logger.warning(f"URL check failed for {candidate}: {e}")
 
-    return {}
+    return {"resolution_error": "all_attempts_failed"}
 
 
 @celery_app.task(bind=True, max_retries=3, name="process_report_task")
@@ -105,6 +107,10 @@ async def process_report_workflow(report_id: str) -> dict:
                     report.assessment_data["uses_https"] = bool(result.get("uses_https"))
                 if "http_status" in result:
                     report.assessment_data["http_status"] = result.get("http_status")
+                if result.get("resolution_error"):
+                    report.assessment_data["url_resolution_error"] = result.get(
+                        "resolution_error"
+                    )
                 db.commit()
         except Exception as e:
             logger.warning(
@@ -183,6 +189,8 @@ async def process_report_workflow(report_id: str) -> dict:
                 url = None
                 if isinstance(report.assessment_data, dict):
                     url = report.assessment_data.get("url") or report.company_website
+                if isinstance(url, str) and url and not url.lower().startswith(("http://", "https://")):
+                    url = f"https://{url}"
                 if url:
                     ss_b64 = await asyncio.to_thread(capture_screenshot_base64, url)
                     if ss_b64:
