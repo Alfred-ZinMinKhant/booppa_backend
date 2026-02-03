@@ -77,6 +77,23 @@ def capture_screenshot_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
         logger.warning(f"Browserless screenshot attempt failed for {url}: {e}")
         return None
 
+    # Final fallback: public screenshot service (no API key required).
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.get(
+                f"https://image.thum.io/get/width/1400/{url}",
+                follow_redirects=True,
+            )
+            if resp.status_code == 200:
+                return resp.content
+            logger.warning(
+                f"Thum.io screenshot failed for {url}: {resp.status_code} {resp.text}"
+            )
+    except Exception as e:
+        logger.warning(f"Thum.io screenshot attempt failed for {url}: {e}")
+
+    return None
+
 
 def capture_screenshot_base64(url: str) -> Optional[str]:
     b = capture_screenshot_bytes(url)

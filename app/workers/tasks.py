@@ -235,6 +235,19 @@ async def process_report_workflow(report_id: str) -> dict:
                                 f"Could not store screenshot error for {report_id}: {e}"
                             )
         except Exception as e:
+            try:
+                _set_assessment_values(
+                    report,
+                    {
+                        "screenshot_error": f"exception:{str(e)[:200]}",
+                        "screenshot_url": report.assessment_data.get("url")
+                        if isinstance(report.assessment_data, dict)
+                        else report.company_website,
+                    },
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
             logger.warning(
                 f"Could not capture site screenshot for {report_id}: {e}"
             )
@@ -345,6 +358,19 @@ async def process_report_workflow(report_id: str) -> dict:
                                 f"Could not store screenshot error for {report_id}: {e}"
                             )
             except Exception as e:
+                try:
+                    _set_assessment_values(
+                        report,
+                        {
+                            "screenshot_error": f"exception:{str(e)[:200]}",
+                            "screenshot_url": report.assessment_data.get("url")
+                            if isinstance(report.assessment_data, dict)
+                            else report.company_website,
+                        },
+                    )
+                    db.commit()
+                except Exception:
+                    db.rollback()
                 logger.warning(
                     f"Could not capture site screenshot for {report_id}: {e}"
                 )
