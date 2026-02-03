@@ -265,6 +265,25 @@ async def process_report_workflow(report_id: str) -> dict:
                 f"Could not capture site screenshot for {report_id}: {e}"
             )
 
+        # If this report is meant for on-page only, mark as completed and skip PDF generation.
+        try:
+            on_page_only = False
+            if isinstance(report.assessment_data, dict):
+                on_page_only = bool(report.assessment_data.get("on_page_only"))
+            if on_page_only:
+                _set_assessment_values(report, {"on_page_ready": True})
+                report.status = "completed"
+                report.completed_at = datetime.utcnow()
+                db.commit()
+                return {
+                    "status": "completed",
+                    "report_id": report_id,
+                    "pdf_url": None,
+                    "tx_hash": tx_hash,
+                }
+        except Exception as e:
+            logger.warning(f"Failed to finalize on-page report {report_id}: {e}")
+
         # Optional: skip PDF generation and S3 upload
         if settings.SKIP_PDF_GENERATION:
             logger.info(f"Skipping PDF generation for {report_id}")

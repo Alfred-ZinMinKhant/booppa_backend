@@ -55,6 +55,9 @@ async def create_report(
         if getattr(request, "contact_email", None):
             assessment["contact_email"] = request.contact_email
 
+        if request.framework in {"pdpa_quick_scan", "pdpa_free_scan"}:
+            assessment["on_page_only"] = True
+
         report = Report(
             owner_id=current_user.id,
             framework=request.framework,
@@ -101,6 +104,9 @@ async def create_report_public(request: ReportRequest):
                 assessment["uses_https"] = request.website.lower().startswith("https://")
         if getattr(request, "contact_email", None):
             assessment["contact_email"] = request.contact_email
+
+        if request.framework in {"pdpa_quick_scan", "pdpa_free_scan"}:
+            assessment["on_page_only"] = True
 
         report = Report(
             owner_id=str(uuid.uuid4()),
