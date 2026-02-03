@@ -233,11 +233,23 @@ async def get_report_by_session(
         last_processing_error = None
         last_processing_attempt_at = None
         processing_attempts = None
+        url_resolution_error = None
+        resolved_url = None
+        uses_https = None
+        http_status = None
+        screenshot_error = None
+        screenshot_url = None
         workflow_flags = {}
         try:
             if isinstance(report.assessment_data, dict):
                 structured_report = report.assessment_data.get("booppa_report")
                 site_screenshot = report.assessment_data.get("site_screenshot")
+                url_resolution_error = report.assessment_data.get("url_resolution_error")
+                resolved_url = report.assessment_data.get("resolved_url")
+                uses_https = report.assessment_data.get("uses_https")
+                http_status = report.assessment_data.get("http_status")
+                screenshot_error = report.assessment_data.get("screenshot_error")
+                screenshot_url = report.assessment_data.get("screenshot_url")
                 last_processing_error = report.assessment_data.get(
                     "last_processing_error"
                 )
@@ -272,6 +284,12 @@ async def get_report_by_session(
                 "report": structured_report,
                 "report_id": str(report.id),
                 "site_screenshot": site_screenshot,
+                "resolved_url": resolved_url,
+                "uses_https": uses_https,
+                "http_status": http_status,
+                "url_resolution_error": url_resolution_error,
+                "screenshot_error": screenshot_error,
+                "screenshot_url": screenshot_url,
                 "workflow": workflow_flags,
             }
         else:
