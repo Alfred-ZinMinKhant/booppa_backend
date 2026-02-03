@@ -71,11 +71,8 @@ def capture_screenshot_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
                     )
             except Exception as e:
                 logger.warning(f"Browserless screenshot attempt failed for {url}: {e}")
-
-            return None
     except Exception as e:
         logger.warning(f"Browserless screenshot attempt failed for {url}: {e}")
-        return None
 
     # Final fallback: public screenshot service (no API key required).
     try:
