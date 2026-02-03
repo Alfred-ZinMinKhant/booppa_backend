@@ -8,6 +8,7 @@ from app.services.pdf_service import PDFService
 from app.services.storage import S3Service
 from app.services.email_service import EmailService
 from app.services.screenshot_service import capture_screenshot_base64
+from app.core.config import settings
 import asyncio
 import hashlib
 import json
@@ -117,6 +118,48 @@ async def process_report_workflow(report_id: str) -> dict:
             # leave tx_hash None; PDF will point to pending verification
             report.tx_hash = None
             db.commit()
+
+        # Optional: skip PDF generation and S3 upload
+        if settings.SKIP_PDF_GENERATION:
+            logger.info(f"Skipping PDF generation for {report_id}")
+            report.s3_url = None
+            report.file_key = None
+            report.status = "completed"
+            report.completed_at = datetime.utcnow()
+            try:
+                if isinstance(report.assessment_data, dict):
+                    report.assessment_data["pdf_generated"] = False
+                    report.assessment_data["s3_uploaded"] = False
+                    db.commit()
+            except Exception:
+                db.rollback()
+
+            # Send notification email without PDF link
+            email_service = EmailService()
+            try:
+                to_email = None
+                if isinstance(report.assessment_data, dict):
+                    to_email = report.assessment_data.get("contact_email") or report.assessment_data.get(
+                        "customer_email"
+                    )
+                if to_email:
+                    await email_service.send_report_ready_email(
+                        to_email=to_email,
+                        report_url=None,
+                        user_name=(report.company_name or "User"),
+                        report_id=str(report.id),
+                    )
+            except Exception as e:
+                logger.error(
+                    f"Failed to send notification email for {report_id}: {e}"
+                )
+
+            return {
+                "status": "completed",
+                "report_id": report_id,
+                "pdf_url": None,
+                "tx_hash": tx_hash,
+            }
 
         # Step 4: Generate PDF with QR code
         logger.info(f"Step 4: Generating PDF for {report_id}")

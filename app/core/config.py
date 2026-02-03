@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     GRAFANA_OTEL_ENDPOINT: Optional[str] = None
     PROMETHEUS_PORT: int = 9090
 
+    # Report generation
+    SKIP_PDF_GENERATION: bool = True
+
     # Rate Limiting
     RATE_LIMIT_REQUESTS: int = 100
     RATE_LIMIT_WINDOW: int = 60

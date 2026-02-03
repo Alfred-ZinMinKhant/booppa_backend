@@ -22,10 +22,16 @@ class EmailService:
 
         self.ses_client = boto3.client("ses", **client_kwargs)
 
-    async def send_report_ready_email(self, to_email: str, report_url: str, user_name: str, report_id: str):
+    async def send_report_ready_email(self, to_email: str, report_url: str | None, user_name: str, report_id: str):
         """Send email notification when report is ready"""
         try:
             subject = f"BOOPPA Audit Report Ready - {report_id}"
+
+            download_section = (
+                f"<p><a href=\"{report_url}\" style=\"background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;\">Download Report</a></p>"
+                if report_url
+                else "<p>Your report is ready on the BOOPPA website. Please return to your report page to view it.</p>"
+            )
 
             body_html = f"""
             <html>
@@ -35,7 +41,7 @@ class EmailService:
                 <p>Hello {user_name},</p>
                 <p>Your compliance audit report has been generated and is ready for download.</p>
                 <p><strong>Report ID:</strong> {report_id}</p>
-                <p><a href="{report_url}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Download Report</a></p>
+                {download_section}
                 <p>The report includes blockchain-verified evidence for auditor review.</p>
                 <p>Thank you for using BOOPPA.</p>
             </body>
