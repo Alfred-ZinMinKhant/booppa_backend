@@ -15,6 +15,7 @@ import json
 import logging
 import httpx
 import base64
+import re
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,99 @@ async def _fetch_thum_io_base64(url: str, timeout: int = 20) -> tuple[str | None
             return None, f"thum_io_status:{resp.status_code}"
     except Exception as e:
         return None, f"thum_io_error:{str(e)[:200]}"
+
+
+async def _detect_cookie_banner(url: str | None) -> dict:
+    if not url:
+        return {}
+
+    indicators = [
+        "cookiebot",
+        "usercentrics",
+        "cookieyes",
+        "onetrust",
+        "osano",
+        "iubenda",
+        "cookie-consent",
+        "cookie consent",
+        "consentmanager",
+        "data-cookieconsent",
+    ]
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": "BooppaComplianceBot/1.0"})
+            if resp.status_code >= 400:
+                return {"cookie_scan_error": f"status:{resp.status_code}"}
+            html = resp.text.lower()
+            found = [k for k in indicators if k in html]
+            if found:
+                return {
+                    "consent_mechanism": {
+                        "has_cookie_banner": True,
+                        "has_active_consent": True,
+                        "detected_providers": found,
+                    }
+                }
+            return {"consent_mechanism": {"has_cookie_banner": False}}
+    except Exception as e:
+        return {"cookie_scan_error": f"error:{str(e)[:200]}"}
+
+
+async def _scan_site_metadata(url: str | None) -> dict:
+    if not url:
+        return {}
+
+    headers_result = {}
+    page_result = {}
+    html = ""
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": "BooppaComplianceBot/1.0"})
+            headers_result = {
+                "hsts": bool(resp.headers.get("strict-transport-security")),
+                "csp": bool(resp.headers.get("content-security-policy")),
+                "x_content_type_options": bool(resp.headers.get("x-content-type-options")),
+                "x_frame_options": bool(resp.headers.get("x-frame-options")),
+                "referrer_policy": bool(resp.headers.get("referrer-policy")),
+                "permissions_policy": bool(resp.headers.get("permissions-policy")),
+            }
+            html = resp.text or ""
+    except Exception as e:
+        page_result["scan_error"] = f"metadata_error:{str(e)[:200]}"
+
+    html_lower = html.lower()
+
+    # Privacy policy detection
+    privacy_link = None
+    match = re.search(r'href=["\"]([^"\"]*privacy[^"\"]*)', html_lower)
+    if match:
+        privacy_link = match.group(1)
+    page_result["privacy_policy"] = {
+        "found": bool(privacy_link),
+        "link": privacy_link,
+    }
+
+    # DPO detection
+    has_dpo = "data protection officer" in html_lower or re.search(r"\bdpo\b", html_lower)
+    dpo_email_match = re.search(r"[\w.+-]+@[^\s\"'>]+", html_lower)
+    page_result["dpo_compliance"] = {
+        "has_dpo": bool(has_dpo),
+        "dpo_email": dpo_email_match.group(0) if dpo_email_match and has_dpo else None,
+    }
+
+    # DNC mention detection
+    mentions_dnc = "dnc" in html_lower or "do not call" in html_lower or "do-not-call" in html_lower
+    page_result["dnc_mention"] = {"mentions_dnc": bool(mentions_dnc)}
+
+    # NRIC hints detection
+    collects_nric = "nric" in html_lower or "fin" in html_lower
+    page_result["collects_nric"] = bool(collects_nric)
+    if collects_nric:
+        page_result["nric_evidence"] = "NRIC/FIN keyword detected in page content"
+
+    return {"security_headers": headers_result, **page_result}
     except Exception as e:
         logger.warning(f"Screenshot capture failed for {url}: {e}")
         return None
@@ -156,6 +250,30 @@ async def process_report_workflow(report_id: str) -> dict:
             logger.warning(
                 f"Could not resolve website URL for {report_id}: {e}"
             )
+
+        # Detect cookie banner/consent mechanism from HTML
+        try:
+            resolved_url = None
+            if isinstance(report.assessment_data, dict):
+                resolved_url = report.assessment_data.get("resolved_url") or report.assessment_data.get("url")
+            cookie_result = await _detect_cookie_banner(resolved_url)
+            if cookie_result:
+                _set_assessment_values(report, cookie_result)
+                db.commit()
+        except Exception as e:
+            logger.warning(f"Cookie detection failed for {report_id}: {e}")
+
+        # Run broad website metadata scan (privacy policy, DPO, DNC, security headers, NRIC hints)
+        try:
+            resolved_url = None
+            if isinstance(report.assessment_data, dict):
+                resolved_url = report.assessment_data.get("resolved_url") or report.assessment_data.get("url")
+            metadata_result = await _scan_site_metadata(resolved_url)
+            if metadata_result:
+                _set_assessment_values(report, metadata_result)
+                db.commit()
+        except Exception as e:
+            logger.warning(f"Metadata scan failed for {report_id}: {e}")
 
         # Step 1: Generate structured AI report (Booppa) and narrative
         logger.info(f"Step 1: Generating structured AI report for {report_id}")
