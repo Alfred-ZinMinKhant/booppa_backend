@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import asyncio
 import logging
 import uuid
 
@@ -7,8 +8,9 @@ from pydantic import BaseModel, EmailStr
 
 from app.core.db import SessionLocal
 from app.core.models import Report
-from app.services.booppa_ai_service import BooppaAIService
 from app.services.pdf_service import PDFService
+from app.services.screenshot_service import capture_screenshot_base64
+from app.orchestrator.engine import run
 from sqlalchemy import and_
 
 logger = logging.getLogger(__name__)
@@ -70,8 +72,38 @@ async def qr_scan(payload: QRScanRequest):
         db.commit()
         db.refresh(report_row)
 
-        booppa = BooppaAIService()
-        report = await booppa.generate_compliance_report(scan_data)
+        orchestrated = await run(website_url)
+        ai_report = orchestrated.get("ai") if isinstance(orchestrated, dict) else None
+        if not isinstance(ai_report, dict):
+            ai_report = {}
+
+        if isinstance(orchestrated, dict):
+            scan_data["orchestrator_scan"] = orchestrated.get("scan")
+            scan_data["orchestrator_notary_hash"] = orchestrated.get("notary_hash")
+            scan_data["orchestrator_blockchain_tx_hash"] = orchestrated.get(
+                "blockchain_tx_hash"
+            )
+            try:
+                screenshot_url = scan_data.get("url") or website_url
+                if isinstance(screenshot_url, str) and screenshot_url:
+                    screenshot_b64 = await asyncio.wait_for(
+                        asyncio.to_thread(capture_screenshot_base64, screenshot_url),
+                        timeout=25,
+                    )
+                    if screenshot_b64:
+                        scan_data["site_screenshot"] = screenshot_b64
+                    else:
+                        scan_data["screenshot_error"] = "capture_failed_or_timeout"
+                        scan_data["screenshot_url"] = screenshot_url
+            except Exception:
+                scan_data["screenshot_error"] = "capture_failed_or_timeout"
+                scan_data["screenshot_url"] = scan_data.get("url") or website_url
+
+            try:
+                report_row.assessment_data = scan_data
+                db.commit()
+            except Exception:
+                db.rollback()
 
         report_id = f"FREE-{datetime.utcnow().strftime('%Y%m%d')}-{uuid.uuid4().hex[:8]}"
 
@@ -83,13 +115,14 @@ async def qr_scan(payload: QRScanRequest):
             "status": "completed",
             "tx_hash": None,
             "audit_hash": None,
-            "ai_narrative": report.get("executive_summary", ""),
-            "structured_report": report,
+            "ai_narrative": ai_report.get("executive_summary")
+            or ai_report.get("summary", ""),
+            "structured_report": ai_report,
             "payment_confirmed": False,
             "contact_email": payload.email,
             "key_issues": [
                 f"{f.get('severity', 'MEDIUM')}: {f.get('type', '').replace('_', ' ').title()}"
-                for f in report.get("detailed_findings", [])[:5]
+                for f in ai_report.get("detailed_findings", [])[:5]
             ],
         }
 

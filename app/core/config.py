@@ -49,8 +49,28 @@ class Settings(BaseSettings):
     GRAFANA_OTEL_ENDPOINT: Optional[str] = None
     PROMETHEUS_PORT: int = 9090
 
+    # Booppa Monitor v5.5++
+    MONITOR_CACHE_DIR: str = ".cache/booppa_monitor"
+    MONITOR_CONCURRENCY_LIMIT: int = 100
+    MONITOR_RISK_THRESHOLDS: dict[str, int] = {
+        "LOW": 30,
+        "MEDIUM": 60,
+        "HIGH": 100,
+    }
+
     # Report generation
     SKIP_PDF_GENERATION: bool = True
+
+    # Monitor v5.5++
+    MONITOR_CACHE_DIR: str = ".cache/monitor"
+    MONITOR_CONCURRENCY_LIMIT: int = 100
+    MONITOR_RISK_THRESHOLDS: dict = {
+        "LOW": 30,
+        "MEDIUM": 60,
+        "HIGH": 100,
+    }
+    MONITOR_SCAN1_COMMAND: Optional[str] = "python Scan1.py {url}"
+    MONITOR_ANCHOR_ENABLED: bool = True
 
     # Rate Limiting
     RATE_LIMIT_REQUESTS: int = 100
