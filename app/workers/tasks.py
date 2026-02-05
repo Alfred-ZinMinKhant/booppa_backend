@@ -16,6 +16,7 @@ import logging
 import httpx
 import base64
 import re
+from urllib.parse import urljoin
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,7 @@ async def _scan_site_metadata(url: str | None) -> dict:
         page_result["scan_error"] = f"metadata_error:{str(e)[:200]}"
 
     html_lower = html.lower()
+    combined_html = html_lower
 
     # Privacy policy detection
     privacy_link = None
@@ -128,23 +130,67 @@ async def _scan_site_metadata(url: str | None) -> dict:
         "link": privacy_link,
     }
 
+    # If privacy policy link is found, fetch it for deeper checks
+    if privacy_link:
+        try:
+            privacy_url = (
+                privacy_link
+                if privacy_link.startswith("http")
+                else urljoin(url, privacy_link)
+            )
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                resp = await client.get(
+                    privacy_url, headers={"User-Agent": "BooppaComplianceBot/1.0"}
+                )
+                if resp.status_code < 400:
+                    combined_html += "\n" + (resp.text or "").lower()
+        except Exception as e:
+            page_result["privacy_policy_fetch_error"] = f"privacy_fetch:{str(e)[:200]}"
+
     # DPO detection
-    has_dpo = "data protection officer" in html_lower or re.search(r"\bdpo\b", html_lower)
-    dpo_email_match = re.search(r"[\w.+-]+@[^\s\"'>]+", html_lower)
+    has_dpo = "data protection officer" in combined_html or re.search(r"\bdpo\b", combined_html)
+    dpo_email_match = re.search(r"[\w.+-]+@[^\s\"'>]+", combined_html)
     page_result["dpo_compliance"] = {
         "has_dpo": bool(has_dpo),
         "dpo_email": dpo_email_match.group(0) if dpo_email_match and has_dpo else None,
     }
 
     # DNC mention detection
-    mentions_dnc = "dnc" in html_lower or "do not call" in html_lower or "do-not-call" in html_lower
+    mentions_dnc = "dnc" in combined_html or "do not call" in combined_html or "do-not-call" in combined_html
     page_result["dnc_mention"] = {"mentions_dnc": bool(mentions_dnc)}
 
     # NRIC hints detection
-    collects_nric = "nric" in html_lower or "fin" in html_lower
+    nric_word = re.search(r"\bnric\b", combined_html)
+    fin_word = re.search(r"\bfin\b", combined_html)
+    fin_context = "fin number" in combined_html or "fin no" in combined_html
+    input_nric = re.search(r"name=\"[^\"]*(nric|fin)[^\"]*\"", combined_html)
+    collects_nric = bool(nric_word or (fin_word and fin_context) or input_nric)
     page_result["collects_nric"] = bool(collects_nric)
     if collects_nric:
         page_result["nric_evidence"] = "NRIC/FIN keyword detected in page content"
+
+    # Cookie banner detection from combined HTML
+    cookie_indicators = [
+        "cookiebot",
+        "usercentrics",
+        "cookieyes",
+        "onetrust",
+        "osano",
+        "iubenda",
+        "cookie-consent",
+        "cookie consent",
+        "consentmanager",
+        "data-cookieconsent",
+    ]
+    detected_cookies = [k for k in cookie_indicators if k in combined_html]
+    if detected_cookies:
+        page_result["consent_mechanism"] = {
+            "has_cookie_banner": True,
+            "has_active_consent": True,
+            "detected_providers": detected_cookies,
+        }
+    elif "consent_mechanism" not in page_result:
+        page_result["consent_mechanism"] = {"has_cookie_banner": False}
 
     return {"security_headers": headers_result, **page_result}
 
