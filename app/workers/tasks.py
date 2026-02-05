@@ -147,9 +147,6 @@ async def _scan_site_metadata(url: str | None) -> dict:
         page_result["nric_evidence"] = "NRIC/FIN keyword detected in page content"
 
     return {"security_headers": headers_result, **page_result}
-    except Exception as e:
-        logger.warning(f"Screenshot capture failed for {url}: {e}")
-        return None
 
 
 async def _resolve_website_url(raw_url: str | None) -> dict:
