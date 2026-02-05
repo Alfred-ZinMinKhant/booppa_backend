@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import httpx
+import base64
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,17 @@ async def _capture_screenshot_with_timeout(url: str, timeout: int = 25) -> str |
     except asyncio.TimeoutError:
         logger.warning(f"Screenshot capture timed out for {url}")
         return None
+
+
+async def _fetch_thum_io_base64(url: str, timeout: int = 20) -> tuple[str | None, str | None]:
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.get(f"https://image.thum.io/get/width/1400/{url}")
+            if resp.status_code == 200 and resp.content:
+                return base64.b64encode(resp.content).decode(), None
+            return None, f"thum_io_status:{resp.status_code}"
+    except Exception as e:
+        return None, f"thum_io_error:{str(e)[:200]}"
     except Exception as e:
         logger.warning(f"Screenshot capture failed for {url}: {e}")
         return None
@@ -234,19 +246,30 @@ async def process_report_workflow(report_id: str) -> dict:
                                 f"Could not store site screenshot for {report_id}: {e}"
                             )
                     else:
-                        try:
-                            _set_assessment_values(
-                                report,
-                                {
-                                    "screenshot_error": "capture_failed_or_timeout",
-                                    "screenshot_url": url,
-                                },
-                            )
-                            db.commit()
-                        except Exception as e:
-                            logger.warning(
-                                f"Could not store screenshot error for {report_id}: {e}"
-                            )
+                        thum_b64, thum_err = await _fetch_thum_io_base64(url)
+                        if thum_b64:
+                            try:
+                                _set_assessment_values(report, {"site_screenshot": thum_b64})
+                                db.commit()
+                            except Exception as e:
+                                logger.warning(
+                                    f"Could not store thum.io screenshot for {report_id}: {e}"
+                                )
+                        else:
+                            try:
+                                _set_assessment_values(
+                                    report,
+                                    {
+                                        "screenshot_error": thum_err
+                                        or "capture_failed_or_timeout",
+                                        "screenshot_url": url,
+                                    },
+                                )
+                                db.commit()
+                            except Exception as e:
+                                logger.warning(
+                                    f"Could not store screenshot error for {report_id}: {e}"
+                                )
         except Exception as e:
             try:
                 _set_assessment_values(
@@ -376,19 +399,31 @@ async def process_report_workflow(report_id: str) -> dict:
                                 f"Could not store site screenshot for {report_id}: {e}"
                             )
                     else:
-                        try:
-                            _set_assessment_values(
-                                report,
-                                {
-                                    "screenshot_error": "capture_failed_or_timeout",
-                                    "screenshot_url": url,
-                                },
-                            )
-                            db.commit()
-                        except Exception as e:
-                            logger.warning(
-                                f"Could not store screenshot error for {report_id}: {e}"
-                            )
+                        thum_b64, thum_err = await _fetch_thum_io_base64(url)
+                        if thum_b64:
+                            pdf_data["site_screenshot"] = thum_b64
+                            try:
+                                _set_assessment_values(report, {"site_screenshot": thum_b64})
+                                db.commit()
+                            except Exception as e:
+                                logger.warning(
+                                    f"Could not store thum.io screenshot for {report_id}: {e}"
+                                )
+                        else:
+                            try:
+                                _set_assessment_values(
+                                    report,
+                                    {
+                                        "screenshot_error": thum_err
+                                        or "capture_failed_or_timeout",
+                                        "screenshot_url": url,
+                                    },
+                                )
+                                db.commit()
+                            except Exception as e:
+                                logger.warning(
+                                    f"Could not store screenshot error for {report_id}: {e}"
+                                )
             except Exception as e:
                 try:
                     _set_assessment_values(
