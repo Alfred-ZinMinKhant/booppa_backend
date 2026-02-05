@@ -183,11 +183,13 @@ async def _scan_site_metadata(url: str | None) -> dict:
         "data-cookieconsent",
     ]
     detected_cookies = [k for k in cookie_indicators if k in combined_html]
-    if detected_cookies:
+    policy_mentions_banner = "cookie banner" in combined_html or "accept all" in combined_html or "reject" in combined_html
+    if detected_cookies or policy_mentions_banner:
         page_result["consent_mechanism"] = {
             "has_cookie_banner": True,
             "has_active_consent": True,
             "detected_providers": detected_cookies,
+            "policy_mentions_banner": policy_mentions_banner,
         }
     elif "consent_mechanism" not in page_result:
         page_result["consent_mechanism"] = {"has_cookie_banner": False}
