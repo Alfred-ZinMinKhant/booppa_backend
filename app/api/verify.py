@@ -11,7 +11,7 @@ def _verify_url(audit_hash: str) -> str:
     return f"{settings.VERIFY_BASE_URL.rstrip('/')}/verify/{audit_hash}"
 
 
-@router.get("/verify/{audit_hash}")
+@router.get("/{audit_hash}")
 def verify_report(audit_hash: str):
     """Read-only verification endpoint for proof hashes."""
     db = SessionLocal()
