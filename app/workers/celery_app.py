@@ -23,7 +23,7 @@ celery_app.conf.update(
     worker_max_tasks_per_child=100,
     # Queue routing
     task_routes={
-        "app.workers.tasks.process_report_task": {"queue": "reports"},
+        "process_report_task": {"queue": "reports"},
         "app.workers.tasks.*": {"queue": "default"},
     },
     # Beat schedule
