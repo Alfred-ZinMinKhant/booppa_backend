@@ -92,6 +92,10 @@ async def stripe_webhook(request: Request):
             ad["tier"] = policy.get("tier")
             ad["tier_features"] = policy.get("features")
 
+            # Ensure PDF generation is attempted for paid tiers
+            if policy.get("features", {}).get("pdf"):
+                ad["on_page_only"] = False
+
             report.assessment_data = ad
             db.commit()
 
