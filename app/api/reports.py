@@ -297,8 +297,10 @@ async def get_report_by_session(
             assessment = report.assessment_data or {}
             if not isinstance(assessment, dict):
                 assessment = {}
-            if session_paid:
+            if session_paid and not assessment.get("payment_confirmed"):
                 assessment["payment_confirmed"] = True
+                assessment["payment_confirmed_at"] = datetime.utcnow().isoformat()
+                assessment["payment_source"] = "stripe_session"
             product_type = metadata.get("product_type")
             if product_type:
                 assessment["product_type"] = product_type
@@ -363,6 +365,24 @@ async def get_report_by_session(
 
         policy = enforce_tier(report.assessment_data, report.framework)
         features = policy.get("features", {}) if isinstance(policy, dict) else {}
+        if session_paid and policy.get("tier") in {"PRO", "ENTERPRISE"}:
+            features = {
+                **features,
+                "ai_mode": "full",
+                "ai_full": True,
+                "pdf": True,
+                "blockchain": True,
+            }
+            try:
+                assessment = report.assessment_data or {}
+                if not isinstance(assessment, dict):
+                    assessment = {}
+                assessment["tier"] = policy.get("tier")
+                assessment["tier_features"] = features
+                report.assessment_data = assessment
+                db.commit()
+            except Exception:
+                db.rollback()
         needs_paid_output = (
             (policy.get("paid") or session_paid)
             and (features.get("ai_full") or features.get("pdf"))
