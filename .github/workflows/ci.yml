@@ -249,7 +249,7 @@ jobs:
                 "name": "worker",
                 "image": "${APP_IMAGE}",
                 "essential": true,
-                "command": ["python", "-m", "celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info"],
+                "command": ["python", "-m", "celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info", "-Q", "reports,default"],
                 "environment": [
                   { "name": "STRIPE_SECRET_KEY", "value": "${STRIPE_SECRET_KEY}" },
                   { "name": "STRIPE_WEBHOOK_SECRET", "value": "${STRIPE_WEBHOOK_SECRET}" },

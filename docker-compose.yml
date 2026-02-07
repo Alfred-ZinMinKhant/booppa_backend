@@ -20,7 +20,7 @@ services:
 
   worker:
     build: .
-    command: python -m celery -A app.workers.celery_app worker --loglevel=info
+    command: python -m celery -A app.workers.celery_app worker --loglevel=info -Q reports,default
     restart: unless-stopped
     env_file: .env
     depends_on:
