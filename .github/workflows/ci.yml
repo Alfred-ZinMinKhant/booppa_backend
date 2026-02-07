@@ -48,7 +48,11 @@ jobs:
           DEPLOY_PRIVATE_KEY: ${{ secrets.DEPLOY_PRIVATE_KEY }}
         run: |
           cd hardhat
-          npm ci
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
           output=$(npm run deploy:amoy)
           echo "$output"
           contract=$(echo "$output" | grep -E "EvidenceAnchorV3 deployed to:" | tail -n 1 | awk '{print $NF}')
