@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status, Response
 from pydantic import BaseModel
 from typing import Optional
 from uuid import UUID
@@ -7,7 +7,12 @@ from app.core.config import settings
 import stripe
 import logging
 from app.core.models import Report, User
+from app.services.blockchain import BlockchainService
+import base64
+from io import BytesIO
+import qrcode
 from app.workers.tasks import process_report_workflow
+from app.billing.enforcement import enforce_tier
 from sqlalchemy.orm import Session
 import uuid
 import asyncio
@@ -34,6 +39,72 @@ class ReportResponse(BaseModel):
     company_name: str
     company_website: Optional[str] = None
     created_at: str
+
+
+def _build_verify_payload(report: Report) -> dict:
+    audit_hash = report.audit_hash
+    if not audit_hash:
+        return {}
+
+    verify_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/{audit_hash}"
+    tx_hash = report.tx_hash
+    anchored = False
+    anchored_at = None
+    tx_confirmed = None
+
+    if tx_hash:
+        blockchain = BlockchainService()
+        status = blockchain.get_anchor_status(audit_hash, tx_hash=tx_hash)
+        anchored = status.get("anchored", False)
+        anchored_at = status.get("anchored_at")
+        tx_confirmed = status.get("tx_confirmed")
+
+    qr_image = _build_qr_image(verify_url) if verify_url else None
+
+    return {
+        "qr_target": verify_url,
+        "qr_image": qr_image,
+        "proof_header": "BOOPPA-PROOF-SG",
+        "schema_version": "1.0",
+        "verify_url": verify_url,
+        "tx_hash": tx_hash,
+        "anchored": anchored,
+        "anchored_at": anchored_at,
+        "tx_confirmed": tx_confirmed,
+    }
+
+
+def _build_qr_image(target: str) -> str | None:
+    if not target:
+        return None
+
+
+def _build_qr_png(target: str) -> bytes | None:
+    if not target:
+        return None
+    try:
+        qr = qrcode.QRCode(version=1, box_size=4, border=2)
+        qr.add_data(target)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+        return buffer.getvalue()
+    except Exception as exc:
+        logger.warning("QR PNG generation failed: %s", exc)
+        return None
+    try:
+        qr = qrcode.QRCode(version=1, box_size=4, border=2)
+        qr.add_data(target)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+    except Exception as exc:
+        logger.warning("QR generation failed: %s", exc)
+        return None
 
 
 @router.post("", response_model=ReportResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -226,6 +297,9 @@ async def get_report_by_session(
                 if not isinstance(assessment, dict):
                     assessment = {}
                 assessment["payment_confirmed"] = True
+                product_type = metadata.get("product_type")
+                if product_type:
+                    assessment["product_type"] = product_type
                 customer_email = metadata.get("customer_email") or session.get(
                     "customer_details", {}
                 ).get("email")
@@ -285,12 +359,27 @@ async def get_report_by_session(
                 "report_metadata": {"report_id": str(report.id)},
             }
 
-        if report.s3_url or structured_report:
+        policy = enforce_tier(report.assessment_data, report.framework)
+        features = policy.get("features", {}) if isinstance(policy, dict) else {}
+        needs_paid_output = (
+            policy.get("paid")
+            and (features.get("ai_full") or features.get("pdf"))
+            and (
+                not report.assessment_data
+                or not isinstance(report.assessment_data, dict)
+                or not report.assessment_data.get("booppa_report_saved_at")
+                or report.assessment_data.get("pdf_generated") is False
+            )
+        )
+
+        if not needs_paid_output and (report.s3_url or structured_report):
+            verify_payload = _build_verify_payload(report)
             return {
                 "status": report.status,
                 "url": report.s3_url,
                 "report": structured_report,
                 "report_id": str(report.id),
+                "verification": verify_payload,
                 "site_screenshot": site_screenshot,
                 "resolved_url": resolved_url,
                 "uses_https": uses_https,
@@ -406,4 +495,52 @@ async def get_report(
             status_code=status.HTTP_404_NOT_FOUND, detail="Report not found"
         )
 
-    return report
+    structured_report = None
+    if isinstance(report.assessment_data, dict):
+        structured_report = report.assessment_data.get("booppa_report")
+
+    if not structured_report and report.ai_narrative:
+        structured_report = {
+            "executive_summary": report.ai_narrative,
+            "report_metadata": {"report_id": str(report.id)},
+        }
+
+    return {
+        "status": report.status,
+        "url": report.s3_url,
+        "report": structured_report,
+        "report_id": str(report.id),
+        "verification": _build_verify_payload(report),
+    }
+
+
+@router.get("/{report_id}/qr")
+async def get_report_qr(
+    report_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return a QR code PNG for the report verification URL (read-only)."""
+    report = (
+        db.query(Report)
+        .filter(Report.id == report_id, Report.owner_id == current_user.id)
+        .first()
+    )
+
+    if not report:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Report not found"
+        )
+
+    if not report.audit_hash:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Verification hash not available",
+        )
+
+    verify_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/{report.audit_hash}"
+    png_bytes = _build_qr_png(verify_url)
+    if not png_bytes:
+        raise HTTPException(status_code=500, detail="QR generation failed")
+
+    return Response(content=png_bytes, media_type="image/png")
