@@ -63,6 +63,7 @@ node_modules/
 pnpm-lock.yaml
 package-lock.json
 dist/
+!hardhat/package-lock.json
 
 # Next.js build
 .next/
