@@ -8,7 +8,7 @@ router = APIRouter()
 
 
 def _verify_url(audit_hash: str) -> str:
-    return f"{settings.VERIFY_BASE_URL.rstrip('/')}/{audit_hash}"
+    return f"{settings.VERIFY_BASE_URL.rstrip('/')}/verify/{audit_hash}"
 
 
 @router.get("/verify/{audit_hash}")
@@ -43,7 +43,7 @@ def verify_report(audit_hash: str):
             "tx_confirmed": tx_confirmed,
             "format": "BOOPPA-PROOF-SG",
             "schema_version": "1.0",
-            "verify_url": _verify_url(audit_hash),
+            "verify_url": f"{settings.VERIFY_BASE_URL.rstrip('/')}/verify/{audit_hash}",
             "disclaimer": (
                 "Verification is read-only and does not certify compliance or "
                 "imply regulatory approval."

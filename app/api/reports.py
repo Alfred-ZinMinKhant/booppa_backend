@@ -50,7 +50,7 @@ def _build_verify_payload(report: Report) -> dict:
     if not audit_hash:
         return {}
 
-    verify_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/{audit_hash}"
+    verify_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/verify/{audit_hash}"
     tx_hash = report.tx_hash
     anchored = False
     anchored_at = None
@@ -559,7 +559,7 @@ async def get_report_qr(
             detail="Verification hash not available",
         )
 
-    verify_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/{report.audit_hash}"
+    verify_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/verify/{report.audit_hash}"
     png_bytes = _build_qr_png(verify_url)
     if not png_bytes:
         raise HTTPException(status_code=500, detail="QR generation failed")

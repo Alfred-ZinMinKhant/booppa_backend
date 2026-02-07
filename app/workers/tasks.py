@@ -514,7 +514,7 @@ async def process_report_workflow(report_id: str) -> dict:
             db.commit()
 
         verify_base = settings.VERIFY_BASE_URL.rstrip("/")
-        verify_url = f"{verify_base}/{evidence_hash}"
+        verify_url = f"{verify_base}/verify/{evidence_hash}"
 
         if features.get("pdf") and payment_confirmed:
             try:
