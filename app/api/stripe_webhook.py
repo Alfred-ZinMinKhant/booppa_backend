@@ -100,7 +100,10 @@ async def stripe_webhook(request: Request):
             evidence_hash = report.audit_hash
             if policy.get("features", {}).get("blockchain") and policy.get("paid"):
                 try:
-                    tx_hash = await blockchain.anchor_evidence(evidence_hash)
+                    metadata_label = f"report:{report.id}"
+                    tx_hash = await blockchain.anchor_evidence(
+                        evidence_hash, metadata=metadata_label
+                    )
                     report.tx_hash = tx_hash
                     db.commit()
                 except Exception as e:

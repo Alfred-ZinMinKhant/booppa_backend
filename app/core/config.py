@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     POLYGON_RPC_URL: str = "https://polygon-rpc.com"
     ANCHOR_CONTRACT_ADDRESS: str = "0x0000000000000000000000000000000000000000"
     PRIVATE_KEY_ENCRYPTED: Optional[str] = None
+    BLOCKCHAIN_PRIVATE_KEY: Optional[str] = None
 
     # AI Services
     DEEPSEEK_API_KEY: Optional[str] = None

@@ -490,7 +490,8 @@ async def process_report_workflow(report_id: str) -> dict:
         tx_hash = None
         if features.get("blockchain") and payment_confirmed:
             blockchain = BlockchainService()
-            tx_hash = await blockchain.anchor_evidence(evidence_hash)
+            metadata = f"report:{report.id}"
+            tx_hash = await blockchain.anchor_evidence(evidence_hash, metadata=metadata)
             report.tx_hash = tx_hash
             db.commit()
         else:

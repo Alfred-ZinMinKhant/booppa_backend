@@ -22,9 +22,14 @@ def verify_report(audit_hash: str):
 
         tx_hash = report.tx_hash
         anchored = False
+        anchored_at = None
+        tx_confirmed = None
         if tx_hash:
             blockchain = BlockchainService()
-            anchored = blockchain.verify_anchored(audit_hash)
+            status = blockchain.get_anchor_status(audit_hash, tx_hash=tx_hash)
+            anchored = status.get("anchored", False)
+            anchored_at = status.get("anchored_at")
+            tx_confirmed = status.get("tx_confirmed")
 
         return {
             "verify_id": audit_hash,
@@ -34,6 +39,8 @@ def verify_report(audit_hash: str):
             "status": report.status,
             "tx_hash": tx_hash,
             "anchored": anchored,
+            "anchored_at": anchored_at,
+            "tx_confirmed": tx_confirmed,
             "format": "BOOPPA-PROOF-SG",
             "schema_version": "1.0",
             "verify_url": _verify_url(audit_hash),
