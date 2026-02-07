@@ -148,6 +148,7 @@ jobs:
           POLYGON_RPC_URL: ${{ secrets.POLYGON_RPC_URL }}
           BLOCKCHAIN_PRIVATE_KEY: ${{ secrets.BLOCKCHAIN_PRIVATE_KEY }}
           ANCHOR_CONTRACT_ADDRESS: ${{ secrets.ANCHOR_CONTRACT_ADDRESS }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
           # ARN of a Secrets Manager secret that contains DATABASE_URL (set this as a GitHub secret)
           DB_SECRET_ARN: ${{ secrets.AWS_SECRETSMANAGER_DATABASE_URL_ARN }}
         run: |
@@ -184,6 +185,7 @@ jobs:
                   { "name": "POLYGON_RPC_URL", "value": "${POLYGON_RPC_URL}" },
                   { "name": "BLOCKCHAIN_PRIVATE_KEY", "value": "${BLOCKCHAIN_PRIVATE_KEY}" },
                   { "name": "ANCHOR_CONTRACT_ADDRESS", "value": "${ANCHOR_CONTRACT_ADDRESS}" },
+                  { "name": "S3_BUCKET", "value": "${S3_BUCKET}" },
                   { "name": "DB_POOL_SIZE", "value": "${DB_POOL_SIZE}" },
                   { "name": "DB_MAX_OVERFLOW", "value": "${DB_MAX_OVERFLOW}" },
                   { "name": "DB_POOL_TIMEOUT", "value": "${DB_POOL_TIMEOUT}" },
@@ -226,6 +228,7 @@ jobs:
           POLYGON_RPC_URL: ${{ secrets.POLYGON_RPC_URL }}
           BLOCKCHAIN_PRIVATE_KEY: ${{ secrets.BLOCKCHAIN_PRIVATE_KEY }}
           ANCHOR_CONTRACT_ADDRESS: ${{ secrets.ANCHOR_CONTRACT_ADDRESS }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
           DB_SECRET_ARN: ${{ secrets.AWS_SECRETSMANAGER_DATABASE_URL_ARN }}
         run: |
           CPU=${APP_CPU:-256}
@@ -263,6 +266,7 @@ jobs:
                   { "name": "POLYGON_RPC_URL", "value": "${POLYGON_RPC_URL}" },
                   { "name": "BLOCKCHAIN_PRIVATE_KEY", "value": "${BLOCKCHAIN_PRIVATE_KEY}" },
                   { "name": "ANCHOR_CONTRACT_ADDRESS", "value": "${ANCHOR_CONTRACT_ADDRESS}" },
+                  { "name": "S3_BUCKET", "value": "${S3_BUCKET}" },
                   { "name": "DB_POOL_SIZE", "value": "${DB_POOL_SIZE}" },
                   { "name": "DB_MAX_OVERFLOW", "value": "${DB_MAX_OVERFLOW}" },
                   { "name": "DB_POOL_TIMEOUT", "value": "${DB_POOL_TIMEOUT}" },
