@@ -9,6 +9,10 @@ on:
         description: 'Set to "true" to run DB migrations as part of this workflow'
         required: false
         default: 'false'
+      deploy_contract:
+        description: 'Set to "true" to deploy EvidenceAnchorV3 (manual only)'
+        required: false
+        default: 'false'
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -30,6 +34,103 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        if: github.event.inputs.deploy_contract == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Deploy EvidenceAnchorV3 (Amoy)
+        if: github.event.inputs.deploy_contract == 'true'
+        env:
+          POLYGON_RPC_URL: ${{ secrets.POLYGON_RPC_URL }}
+          DEPLOY_PRIVATE_KEY: ${{ secrets.DEPLOY_PRIVATE_KEY }}
+        run: |
+          cd hardhat
+          npm ci
+          output=$(npm run deploy:amoy)
+          echo "$output"
+          contract=$(echo "$output" | grep -E "EvidenceAnchorV3 deployed to:" | tail -n 1 | awk '{print $NF}')
+          if [ -z "$contract" ]; then
+            echo "Failed to parse contract address" >&2
+            exit 1
+          fi
+          echo "ANCHOR_CONTRACT_ADDRESS=$contract" >> $GITHUB_ENV
+
+      - name: Persist ANCHOR_CONTRACT_ADDRESS secret
+        if: github.event.inputs.deploy_contract == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANCHOR_CONTRACT_ADDRESS: ${{ env.ANCHOR_CONTRACT_ADDRESS }}
+        run: |
+          if [ -z "$ANCHOR_CONTRACT_ADDRESS" ]; then
+            echo "ANCHOR_CONTRACT_ADDRESS is empty; skipping secret update" >&2
+            exit 1
+          fi
+          npm install tweetnacl tweetnacl-util
+          node <<'NODE'
+          const https = require('https');
+          const nacl = require('tweetnacl');
+          const util = require('tweetnacl-util');
+
+          const repo = process.env.GITHUB_REPOSITORY;
+          const token = process.env.GITHUB_TOKEN;
+          const secretName = 'ANCHOR_CONTRACT_ADDRESS';
+          const value = process.env.ANCHOR_CONTRACT_ADDRESS;
+
+          function apiRequest(path, method, body) {
+            return new Promise((resolve, reject) => {
+              const req = https.request(
+                {
+                  hostname: 'api.github.com',
+                  path,
+                  method,
+                  headers: {
+                    'User-Agent': 'booppa-ci',
+                    'Authorization': `Bearer ${token}`,
+                    'Accept': 'application/vnd.github+json'
+                  }
+                },
+                (res) => {
+                  let data = '';
+                  res.on('data', (chunk) => (data += chunk));
+                  res.on('end', () => {
+                    if (res.statusCode >= 200 && res.statusCode < 300) {
+                      resolve(data ? JSON.parse(data) : {});
+                    } else {
+                      reject(new Error(`GitHub API ${res.statusCode}: ${data}`));
+                    }
+                  });
+                }
+              );
+              req.on('error', reject);
+              if (body) {
+                req.write(JSON.stringify(body));
+              }
+              req.end();
+            });
+          }
+
+          async function main() {
+            const keyData = await apiRequest(`/repos/${repo}/actions/secrets/public-key`, 'GET');
+            const publicKey = util.decodeBase64(keyData.key);
+            const messageBytes = util.decodeUTF8(value);
+            const encryptedBytes = nacl.box.seal(messageBytes, publicKey);
+            const encryptedValue = util.encodeBase64(encryptedBytes);
+
+            await apiRequest(`/repos/${repo}/actions/secrets/${secretName}`, 'PUT', {
+              encrypted_value: encryptedValue,
+              key_id: keyData.key_id,
+            });
+            console.log('Updated ANCHOR_CONTRACT_ADDRESS secret');
+          }
+
+          main().catch((err) => {
+            console.error(err);
+            process.exit(1);
+          });
+          NODE
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
@@ -96,6 +197,9 @@ jobs:
           BACKEND_BASE_URL: ${{ secrets.BACKEND_BASE_URL }}
           VERIFY_BASE_URL: ${{ secrets.VERIFY_BASE_URL }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
+          POLYGON_RPC_URL: ${{ secrets.POLYGON_RPC_URL }}
+          BLOCKCHAIN_PRIVATE_KEY: ${{ secrets.BLOCKCHAIN_PRIVATE_KEY }}
+          ANCHOR_CONTRACT_ADDRESS: ${{ secrets.ANCHOR_CONTRACT_ADDRESS }}
           # ARN of a Secrets Manager secret that contains DATABASE_URL (set this as a GitHub secret)
           DB_SECRET_ARN: ${{ secrets.AWS_SECRETSMANAGER_DATABASE_URL_ARN }}
         run: |
@@ -125,6 +229,9 @@ jobs:
                   { "name": "BACKEND_BASE_URL", "value": "${BACKEND_BASE_URL}" },
                   { "name": "VERIFY_BASE_URL", "value": "${VERIFY_BASE_URL}" },
                   { "name": "REDIS_URL", "value": "${REDIS_URL}" },
+                  { "name": "POLYGON_RPC_URL", "value": "${POLYGON_RPC_URL}" },
+                  { "name": "BLOCKCHAIN_PRIVATE_KEY", "value": "${BLOCKCHAIN_PRIVATE_KEY}" },
+                  { "name": "ANCHOR_CONTRACT_ADDRESS", "value": "${ANCHOR_CONTRACT_ADDRESS}" },
                   { "name": "ENVIRONMENT", "value": "production" },
                   { "name": "ALLOWED_HOSTS", "value": "api.booppa.io" },
                   { "name": "ALLOWED_ORIGINS", "value": "https://booppa.io,https://www.booppa.io,https://api.booppa.io,https://cms.booppa.io" },
