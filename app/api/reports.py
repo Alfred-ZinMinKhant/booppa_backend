@@ -23,6 +23,9 @@ router = APIRouter()
 
 logger = logging.getLogger(__name__)
 
+MAX_PROCESSING_ATTEMPTS = 3
+PROCESSING_RETRY_WINDOW_SECONDS = 600
+
 
 class ReportRequest(BaseModel):
     framework: str
@@ -426,17 +429,39 @@ async def get_report_by_session(
             try:
                 # Track processing attempts for debugging.
                 try:
-                    if isinstance(report.assessment_data, dict):
-                        attempts = report.assessment_data.get("processing_attempts")
+                    now = datetime.utcnow()
+                    assessment = report.assessment_data if isinstance(report.assessment_data, dict) else {}
+                    attempts = assessment.get("processing_attempts")
+                    try:
+                        attempts = int(attempts) if attempts is not None else 0
+                    except Exception:
+                        attempts = 0
+                    last_attempt = assessment.get("last_processing_attempt_at")
+                    last_attempt_dt = None
+                    if isinstance(last_attempt, str):
                         try:
-                            attempts = int(attempts) if attempts is not None else 0
+                            last_attempt_dt = datetime.fromisoformat(last_attempt)
                         except Exception:
-                            attempts = 0
-                        report.assessment_data["processing_attempts"] = attempts + 1
-                        report.assessment_data[
-                            "last_processing_attempt_at"
-                        ] = datetime.utcnow().isoformat()
-                        db.commit()
+                            last_attempt_dt = None
+
+                    if attempts >= MAX_PROCESSING_ATTEMPTS:
+                        raise HTTPException(
+                            status_code=429,
+                            detail="Processing retry limit reached. Please try again later.",
+                        )
+
+                    if last_attempt_dt and (now - last_attempt_dt).total_seconds() < PROCESSING_RETRY_WINDOW_SECONDS:
+                        raise HTTPException(
+                            status_code=429,
+                            detail="Processing retry already triggered. Please wait before retrying.",
+                        )
+
+                    assessment["processing_attempts"] = attempts + 1
+                    assessment["last_processing_attempt_at"] = now.isoformat()
+                    report.assessment_data = assessment
+                    db.commit()
+                except HTTPException:
+                    raise
                 except Exception as e:
                     logger.warning(
                         f"Failed to update processing attempt metadata for {report_id}: {e}"
@@ -450,14 +475,14 @@ async def get_report_by_session(
                     background_tasks.add_task(
                         _run_report_workflow_sync, str(report.id)
                     )
-
-                # Also schedule async processing to avoid background task delays.
-                try:
-                    asyncio.create_task(_run_report_workflow_async(str(report.id)))
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to schedule async processing for {report_id}: {e}"
-                    )
+                else:
+                    # If background tasks are unavailable, schedule a single async run.
+                    try:
+                        asyncio.create_task(_run_report_workflow_async(str(report.id)))
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to schedule async processing for {report_id}: {e}"
+                        )
             except Exception as e:
                 logger.warning(
                     f"Failed to trigger on-demand processing for {report_id}: {e}"

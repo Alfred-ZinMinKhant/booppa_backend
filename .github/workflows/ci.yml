@@ -152,6 +152,10 @@ jobs:
         run: |
           CPU=${APP_CPU:-256}
           MEMORY=${APP_MEMORY:-512}
+          DB_POOL_SIZE=${DB_POOL_SIZE:-5}
+          DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW:-5}
+          DB_POOL_TIMEOUT=${DB_POOL_TIMEOUT:-30}
+          DB_POOL_RECYCLE=${DB_POOL_RECYCLE:-300}
           cat > task-def-app.json <<JSON
           {
             "family": "${{ env.APP_ECR_REPO }}",
@@ -179,6 +183,10 @@ jobs:
                   { "name": "POLYGON_RPC_URL", "value": "${POLYGON_RPC_URL}" },
                   { "name": "BLOCKCHAIN_PRIVATE_KEY", "value": "${BLOCKCHAIN_PRIVATE_KEY}" },
                   { "name": "ANCHOR_CONTRACT_ADDRESS", "value": "${ANCHOR_CONTRACT_ADDRESS}" },
+                  { "name": "DB_POOL_SIZE", "value": "${DB_POOL_SIZE}" },
+                  { "name": "DB_MAX_OVERFLOW", "value": "${DB_MAX_OVERFLOW}" },
+                  { "name": "DB_POOL_TIMEOUT", "value": "${DB_POOL_TIMEOUT}" },
+                  { "name": "DB_POOL_RECYCLE", "value": "${DB_POOL_RECYCLE}" },
                   { "name": "ENVIRONMENT", "value": "production" },
                   { "name": "ALLOWED_HOSTS", "value": "api.booppa.io" },
                   { "name": "ALLOWED_ORIGINS", "value": "https://booppa.io,https://www.booppa.io,https://api.booppa.io,https://cms.booppa.io" },
@@ -301,6 +309,36 @@ jobs:
             exit 1
           fi
 
+          task_arn=$(echo "$run_output" | jq -r '.tasks[0].taskArn')
+          if [ -z "$task_arn" ] || [ "$task_arn" = "null" ]; then
+            echo "Failed to capture migration task ARN" >&2
+            exit 1
+          fi
+
+          echo "Waiting for migration task to stop: $task_arn"
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$task_arn" --region "$AWS_REGION"
+
+          describe=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$task_arn" --region "$AWS_REGION")
+          container_exit=$(echo "$describe" | jq -r '.tasks[0].containers[0].exitCode')
+          container_reason=$(echo "$describe" | jq -r '.tasks[0].containers[0].reason')
+          stop_reason=$(echo "$describe" | jq -r '.tasks[0].stoppedReason')
+          task_id=$(echo "$task_arn" | awk -F'/' '{print $NF}')
+
+          echo "Migration task exit code: $container_exit"
+          if [ "$container_exit" != "0" ]; then
+            echo "Migration task failed: $container_reason" >&2
+            echo "Task stopped reason: $stop_reason" >&2
+            echo "Last 200 log lines for migration task:" >&2
+            aws logs get-log-events \
+              --log-group-name "/ecs/${APP_ECR_REPO}" \
+              --log-stream-name "ecs/app/${task_id}" \
+              --limit 200 \
+              --region "$AWS_REGION" \
+              --query 'events[].message' \
+              --output text || echo "Log fetch failed" >&2
+            exit 1
+          fi
+
       - name: Run CMS DB migrations (ECS one-off)
         if: github.event.inputs.run_migrations == 'true'
         env:
@@ -336,6 +374,36 @@ jobs:
           if [ "$exit_code" -gt 0 ]; then
             echo "CMS Migration task failed to start:" >&2
             echo "$run_output" | jq -r '.failures[] | @json' >&2
+            exit 1
+          fi
+
+          task_arn=$(echo "$run_output" | jq -r '.tasks[0].taskArn')
+          if [ -z "$task_arn" ] || [ "$task_arn" = "null" ]; then
+            echo "Failed to capture CMS migration task ARN" >&2
+            exit 1
+          fi
+
+          echo "Waiting for CMS migration task to stop: $task_arn"
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$task_arn" --region "$AWS_REGION"
+
+          describe=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$task_arn" --region "$AWS_REGION")
+          container_exit=$(echo "$describe" | jq -r '.tasks[0].containers[0].exitCode')
+          container_reason=$(echo "$describe" | jq -r '.tasks[0].containers[0].reason')
+          stop_reason=$(echo "$describe" | jq -r '.tasks[0].stoppedReason')
+          task_id=$(echo "$task_arn" | awk -F'/' '{print $NF}')
+
+          echo "CMS migration task exit code: $container_exit"
+          if [ "$container_exit" != "0" ]; then
+            echo "CMS migration task failed: $container_reason" >&2
+            echo "Task stopped reason: $stop_reason" >&2
+            echo "Last 200 log lines for CMS migration task:" >&2
+            aws logs get-log-events \
+              --log-group-name "/ecs/${CMS_ECR_REPO}" \
+              --log-stream-name "ecs/cms/${task_id}" \
+              --limit 200 \
+              --region "$AWS_REGION" \
+              --query 'events[].message' \
+              --output text || echo "Log fetch failed" >&2
             exit 1
           fi
 
