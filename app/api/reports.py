@@ -290,23 +290,25 @@ async def get_report_by_session(
             raise HTTPException(status_code=404, detail="Report not found")
 
         # If payment succeeded, mark it on the report so downstream processing can anchor evidence.
+        payment_status = session.get("payment_status")
+        session_status = session.get("status")
+        session_paid = payment_status == "paid" or session_status == "complete"
         try:
-            payment_status = session.get("payment_status")
-            if payment_status == "paid":
-                assessment = report.assessment_data or {}
-                if not isinstance(assessment, dict):
-                    assessment = {}
+            assessment = report.assessment_data or {}
+            if not isinstance(assessment, dict):
+                assessment = {}
+            if session_paid:
                 assessment["payment_confirmed"] = True
-                product_type = metadata.get("product_type")
-                if product_type:
-                    assessment["product_type"] = product_type
-                customer_email = metadata.get("customer_email") or session.get(
-                    "customer_details", {}
-                ).get("email")
-                if customer_email:
-                    assessment["contact_email"] = customer_email
-                report.assessment_data = assessment
-                db.commit()
+            product_type = metadata.get("product_type")
+            if product_type:
+                assessment["product_type"] = product_type
+            customer_email = metadata.get("customer_email") or session.get(
+                "customer_details", {}
+            ).get("email")
+            if customer_email:
+                assessment["contact_email"] = customer_email
+            report.assessment_data = assessment
+            db.commit()
         except Exception as e:
             logger.warning(f"Failed to update payment status for {report_id}: {e}")
 
@@ -362,7 +364,7 @@ async def get_report_by_session(
         policy = enforce_tier(report.assessment_data, report.framework)
         features = policy.get("features", {}) if isinstance(policy, dict) else {}
         needs_paid_output = (
-            policy.get("paid")
+            (policy.get("paid") or session_paid)
             and (features.get("ai_full") or features.get("pdf"))
             and (
                 not report.assessment_data
@@ -385,6 +387,8 @@ async def get_report_by_session(
                     if isinstance(report.assessment_data, dict)
                     else False
                 ),
+                "stripe_payment_status": payment_status,
+                "stripe_session_status": session_status,
                 "tier": policy.get("tier"),
                 "tier_features": features,
                 "verification": verify_payload,
