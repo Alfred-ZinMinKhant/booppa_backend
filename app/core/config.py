@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     }
 
     # Report generation
-    SKIP_PDF_GENERATION: bool = True
+    SKIP_PDF_GENERATION: bool = False
     VERIFY_BASE_URL: str = "https://verify.booppa.io"
 
     # Monitor v5.5++
