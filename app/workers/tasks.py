@@ -275,7 +275,15 @@ async def process_report_workflow(report_id: str) -> dict:
         if not report:
             raise ValueError(f"Report {report_id} not found")
 
-        policy = enforce_tier(report.assessment_data, report.framework)
+        # Ensure assessment_data is a dict (it might come as a string)
+        ad = report.assessment_data or {}
+        if not isinstance(ad, dict):
+            try:
+                ad = json.loads(ad)
+            except Exception:
+                ad = {}
+        
+        policy = enforce_tier(ad, report.framework)
         features = policy.get("features", {}) if isinstance(policy, dict) else {}
         try:
             _set_assessment_values(
