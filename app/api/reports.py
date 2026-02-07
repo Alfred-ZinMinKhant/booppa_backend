@@ -425,94 +425,26 @@ async def get_report_by_session(
                 "workflow": workflow_flags,
             }
         else:
-            # If report isn't ready, try to kick off processing on demand.
-            try:
-                # Track processing attempts for debugging.
-                try:
-                    now = datetime.utcnow()
-                    assessment = report.assessment_data if isinstance(report.assessment_data, dict) else {}
-                    attempts = assessment.get("processing_attempts")
-                    try:
-                        attempts = int(attempts) if attempts is not None else 0
-                    except Exception:
-                        attempts = 0
-                    last_attempt = assessment.get("last_processing_attempt_at")
-                    last_attempt_dt = None
-                    if isinstance(last_attempt, str):
-                        try:
-                            last_attempt_dt = datetime.fromisoformat(last_attempt)
-                        except Exception:
-                            last_attempt_dt = None
+            # Polling endpoint should NOT trigger workflow.
+            # Fulfillment is handled by the webhook.
+            # We just return "Not Ready" (202) here.
 
-                    if attempts >= MAX_PROCESSING_ATTEMPTS:
-                        raise HTTPException(
-                            status_code=429,
-                            detail="Processing retry limit reached. Please try again later.",
-                        )
-
-                    if last_attempt_dt and (now - last_attempt_dt).total_seconds() < PROCESSING_RETRY_WINDOW_SECONDS:
-                        raise HTTPException(
-                            status_code=429,
-                            detail="Processing retry already triggered. Please wait before retrying.",
-                        )
-
-                    assessment["processing_attempts"] = attempts + 1
-                    assessment["last_processing_attempt_at"] = now.isoformat()
-                    report.assessment_data = assessment
-                    db.commit()
-                except HTTPException:
-                    raise
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to update processing attempt metadata for {report_id}: {e}"
-                    )
-
-                if report.status != "processing":
-                    report.status = "processing"
-                    db.commit()
-
-                if background_tasks is not None:
-                    background_tasks.add_task(
-                        _run_report_workflow_sync, str(report.id)
-                    )
-                else:
-                    # If background tasks are unavailable, schedule a single async run.
-                    try:
-                        asyncio.create_task(_run_report_workflow_async(str(report.id)))
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to schedule async processing for {report_id}: {e}"
-                        )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to trigger on-demand processing for {report_id}: {e}"
+            if debug:
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "message": "Report not ready",
+                        "report_id": str(report.id),
+                        "status": report.status,
+                        "has_pdf": bool(report.s3_url),
+                        "has_report": bool(structured_report),
+                        "payment_status": session.get("payment_status"),
+                        "last_processing_error": last_processing_error,
+                        "processing_attempts": processing_attempts,
+                        "last_processing_attempt_at": last_processing_attempt_at,
+                        "workflow": workflow_flags,
+                    },
                 )
-
-            if force:
-                try:
-                    await process_report_workflow(str(report.id))
-                    db.refresh(report)
-                    structured_report = None
-                    try:
-                        if isinstance(report.assessment_data, dict):
-                            structured_report = report.assessment_data.get(
-                                "booppa_report"
-                            )
-                    except Exception:
-                        structured_report = None
-
-                    if report.s3_url or structured_report:
-                        return {
-                            "status": report.status,
-                            "url": report.s3_url,
-                            "report": structured_report,
-                            "report_id": str(report.id),
-                            "site_screenshot": site_screenshot,
-                        }
-                except Exception as e:
-                    logger.error(
-                        f"Force processing failed for {report_id}: {e}"
-                    )
             if debug:
                 raise HTTPException(
                     status_code=404,
