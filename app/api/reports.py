@@ -379,6 +379,14 @@ async def get_report_by_session(
                 "url": report.s3_url,
                 "report": structured_report,
                 "report_id": str(report.id),
+                "framework": report.framework,
+                "payment_confirmed": bool(
+                    report.assessment_data.get("payment_confirmed")
+                    if isinstance(report.assessment_data, dict)
+                    else False
+                ),
+                "tier": policy.get("tier"),
+                "tier_features": features,
                 "verification": verify_payload,
                 "site_screenshot": site_screenshot,
                 "resolved_url": resolved_url,
@@ -510,6 +518,18 @@ async def get_report(
         "url": report.s3_url,
         "report": structured_report,
         "report_id": str(report.id),
+        "framework": report.framework,
+        "payment_confirmed": bool(
+            report.assessment_data.get("payment_confirmed")
+            if isinstance(report.assessment_data, dict)
+            else False
+        ),
+        "tier": report.assessment_data.get("tier")
+        if isinstance(report.assessment_data, dict)
+        else None,
+        "tier_features": report.assessment_data.get("tier_features")
+        if isinstance(report.assessment_data, dict)
+        else None,
         "verification": _build_verify_payload(report),
     }
 
