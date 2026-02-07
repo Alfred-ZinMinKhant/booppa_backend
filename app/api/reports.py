@@ -14,6 +14,7 @@ import qrcode
 from app.workers.tasks import process_report_workflow
 from app.billing.enforcement import enforce_tier
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 import uuid
 import asyncio
 from datetime import datetime
@@ -383,6 +384,7 @@ async def get_report_by_session(
                 assessment["tier"] = policy.get("tier")
                 assessment["tier_features"] = features
                 report.assessment_data = assessment
+                flag_modified(report, "assessment_data")
                 db.commit()
             except Exception:
                 db.rollback()
