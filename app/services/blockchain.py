@@ -67,6 +67,12 @@ class BlockchainService:
     async def anchor_evidence(self, evidence_hash: str, metadata: str = "") -> str:
         """Anchor evidence hash on Polygon blockchain"""
         try:
+            # Idempotency check: Don't spend gas if already anchored
+            status = self.get_anchor_status(evidence_hash)
+            if status.get("anchored"):
+                logger.info(f"Evidence {evidence_hash} already anchored. Skipping transaction.")
+                return status.get("tx_hash") or "already_anchored"
+
             file_hash = self._hash_to_bytes32(evidence_hash)
             private_key = self._get_private_key()
             account = self.w3.eth.account.from_key(private_key)

@@ -95,140 +95,15 @@ async def stripe_webhook(request: Request):
             report.assessment_data = ad
             db.commit()
 
-            # Anchor evidence on blockchain
-            blockchain = BlockchainService()
-            evidence_hash = report.audit_hash
-            if policy.get("features", {}).get("blockchain") and policy.get("paid"):
-                try:
-                    metadata_label = f"report:{report.id}"
-                    tx_hash = await blockchain.anchor_evidence(
-                        evidence_hash, metadata=metadata_label
-                    )
-                    report.tx_hash = tx_hash
-                    db.commit()
-                except Exception as e:
-                    logger.error(f"Anchoring failed for report {report_id}: {e}")
-                    # proceed but leave tx_hash empty
-
-            # Regenerate PDF with updated tx_hash/payment flag and structured report
-            pdf_service = PDFService()
-            verify_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/{evidence_hash}"
-
-            if policy.get("features", {}).get("pdf") and policy.get("paid"):
-                ad["verify_url"] = verify_url
-                ad["proof_header"] = "BOOPPA-PROOF-SG"
-                ad["schema_version"] = "1.0"
-                report.assessment_data = ad
-                db.commit()
-
-            # Try to reuse existing structured Booppa report saved in assessment_data,
-            # otherwise generate one now so the PDF includes full sections.
-            structured_report = None
+            # Trigger async processing for fulfillment (AI generation, PDF, Email)
             try:
-                if isinstance(
-                    report.assessment_data, dict
-                ) and report.assessment_data.get("booppa_report"):
-                    structured_report = report.assessment_data.get("booppa_report")
-                else:
-                    booppa = BooppaAIService()
-                    structured_report = await booppa.generate_compliance_report(
-                        report.assessment_data or {}
-                    )
+                from app.workers.tasks import process_report_task
+                process_report_task.delay(str(report.id))
+                logger.info(f"Queued background processing for paid report {report_id}")
             except Exception as e:
-                logger.error(f"Failed to obtain structured report for {report_id}: {e}")
-
-            pdf_data = {
-                "report_id": str(report.id),
-                "framework": report.framework,
-                "company_name": report.company_name,
-                "created_at": report.created_at.isoformat(),
-                # Ensure regenerated PDF reflects completed status
-                "status": "completed",
-                "tx_hash": report.tx_hash,
-                "audit_hash": report.audit_hash,
-                "ai_narrative": report.ai_narrative or None,
-                "structured_report": structured_report,
-                "payment_confirmed": True,
-                "tier": policy.get("tier"),
-                "proof_header": ad.get("proof_header"),
-                "schema_version": ad.get("schema_version"),
-                "verify_url": ad.get("verify_url") or verify_url,
-                "contact_email": (
-                    ad.get("contact_email") if isinstance(ad, dict) else None
-                ),
-                "base_url": (
-                    ad.get("base_url")
-                    if isinstance(ad, dict) and ad.get("base_url")
-                    else "https://www.booppa.io"
-                ),
-            }
-
-            # Ensure screenshot is present for regenerated PDF (prefer stored value)
-            try:
-                if isinstance(
-                    report.assessment_data, dict
-                ) and report.assessment_data.get("site_screenshot"):
-                    pdf_data["site_screenshot"] = report.assessment_data.get(
-                        "site_screenshot"
-                    )
-                else:
-                    url = None
-                    if isinstance(report.assessment_data, dict):
-                        url = (
-                            report.assessment_data.get("url") or report.company_website
-                        )
-                    if url:
-                        from app.services.screenshot_service import (
-                            capture_screenshot_base64,
-                        )
-
-                        ss_b64 = await asyncio.to_thread(capture_screenshot_base64, url)
-                        if ss_b64:
-                            pdf_data["site_screenshot"] = ss_b64
-            except Exception as e:
-                logger.warning(
-                    f"Failed to attach screenshot for regenerated PDF {report_id}: {e}"
-                )
-
-            pdf_bytes = None
-            if policy.get("features", {}).get("pdf") and policy.get("paid"):
-                try:
-                    pdf_bytes = pdf_service.generate_pdf(pdf_data)
-                except Exception as e:
-                    logger.error(
-                        f"PDF regeneration failed for report {report_id}: {e}"
-                    )
-
-            # Upload PDF to S3
-            if pdf_bytes:
-                storage = S3Service()
-                try:
-                    pdf_url = await storage.upload_pdf(pdf_bytes, str(report.id))
-                    report.s3_url = pdf_url
-                    report.file_key = f"reports/{report.id}.pdf"
-                    # Mark report completed when PDF is uploaded
-                    report.status = "completed"
-                    report.completed_at = datetime.utcnow()
-                    db.commit()
-                except Exception as e:
-                    logger.error(
-                        f"Failed to upload regenerated PDF for report {report_id}: {e}"
-                    )
-
-            # Send notification email
-            email_to = ad.get("contact_email") or customer_email or "user@example.com"
-            email_service = EmailService()
-            try:
-                await email_service.send_report_ready_email(
-                    to_email=email_to,
-                    report_url=report.s3_url or "",
-                    user_name=email_to.split("@")[0],
-                    report_id=str(report.id),
-                )
-            except Exception as e:
-                logger.error(
-                    f"Failed to send report ready email for report {report_id}: {e}"
-                )
+                logger.error(f"Failed to queue background task for {report_id}: {e}")
+                # Fallback: try to run it via background tasks if celery fails? 
+                # For now just log, as celery is the main worker.
 
         finally:
             db.close()
