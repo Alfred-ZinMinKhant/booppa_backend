@@ -3,14 +3,14 @@ import asyncio
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr
 
 from app.core.db import SessionLocal
 from app.core.models import Report
-from app.services.pdf_service import PDFService
 from app.services.screenshot_service import capture_screenshot_base64
-from app.orchestrator.engine import run
+from app.integrations.scan1.adapter import run_scan_async
+from app.integrations.ai.adapter import ai_light
 from sqlalchemy import and_
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ class QRScanRequest(BaseModel):
 
 @router.post("/qr-scan")
 async def qr_scan(payload: QRScanRequest):
-    """Run the free PDPA scan and return a PDF report."""
+    """Run the free PDPA scan and return a light AI summary (no PDF)."""
     db = SessionLocal()
     report_row = None
     try:
@@ -58,6 +58,7 @@ async def qr_scan(payload: QRScanRequest):
             "uses_https": uses_https,
             "assessment_source": "free_scan",
             "contact_email": payload.email,
+            "tier": "free",
         }
 
         report_row = Report(
@@ -72,62 +73,33 @@ async def qr_scan(payload: QRScanRequest):
         db.commit()
         db.refresh(report_row)
 
-        orchestrated = await run(website_url)
-        ai_report = orchestrated.get("ai") if isinstance(orchestrated, dict) else None
-        if not isinstance(ai_report, dict):
-            ai_report = {}
+        scan_result = await run_scan_async(website_url)
+        scan_payload = scan_result.model_dump() if scan_result else {}
+        ai_report = await ai_light(scan_payload)
 
-        if isinstance(orchestrated, dict):
-            scan_data["orchestrator_scan"] = orchestrated.get("scan")
-            scan_data["orchestrator_notary_hash"] = orchestrated.get("notary_hash")
-            scan_data["orchestrator_blockchain_tx_hash"] = orchestrated.get(
-                "blockchain_tx_hash"
-            )
-            try:
-                screenshot_url = scan_data.get("url") or website_url
-                if isinstance(screenshot_url, str) and screenshot_url:
-                    screenshot_b64 = await asyncio.wait_for(
-                        asyncio.to_thread(capture_screenshot_base64, screenshot_url),
-                        timeout=25,
-                    )
-                    if screenshot_b64:
-                        scan_data["site_screenshot"] = screenshot_b64
-                    else:
-                        scan_data["screenshot_error"] = "capture_failed_or_timeout"
-                        scan_data["screenshot_url"] = screenshot_url
-            except Exception:
-                scan_data["screenshot_error"] = "capture_failed_or_timeout"
-                scan_data["screenshot_url"] = scan_data.get("url") or website_url
+        scan_data["scan_result"] = scan_payload
+        scan_data["light_ai_report"] = ai_report
+        try:
+            screenshot_url = scan_data.get("url") or website_url
+            if isinstance(screenshot_url, str) and screenshot_url:
+                screenshot_b64 = await asyncio.wait_for(
+                    asyncio.to_thread(capture_screenshot_base64, screenshot_url),
+                    timeout=25,
+                )
+                if screenshot_b64:
+                    scan_data["site_screenshot"] = screenshot_b64
+                else:
+                    scan_data["screenshot_error"] = "capture_failed_or_timeout"
+                    scan_data["screenshot_url"] = screenshot_url
+        except Exception:
+            scan_data["screenshot_error"] = "capture_failed_or_timeout"
+            scan_data["screenshot_url"] = scan_data.get("url") or website_url
 
-            try:
-                report_row.assessment_data = scan_data
-                db.commit()
-            except Exception:
-                db.rollback()
-
-        report_id = f"FREE-{datetime.utcnow().strftime('%Y%m%d')}-{uuid.uuid4().hex[:8]}"
-
-        pdf_payload = {
-            "report_id": report_id,
-            "framework": "PDPA Quick Scan (Free)",
-            "company_name": scan_data.get("company_name"),
-            "created_at": datetime.utcnow().isoformat(),
-            "status": "completed",
-            "tx_hash": None,
-            "audit_hash": None,
-            "ai_narrative": ai_report.get("executive_summary")
-            or ai_report.get("summary", ""),
-            "structured_report": ai_report,
-            "payment_confirmed": False,
-            "contact_email": payload.email,
-            "key_issues": [
-                f"{f.get('severity', 'MEDIUM')}: {f.get('type', '').replace('_', ' ').title()}"
-                for f in ai_report.get("detailed_findings", [])[:5]
-            ],
-        }
-
-        pdf_service = PDFService()
-        pdf_bytes = pdf_service.generate_pdf(pdf_payload)
+        try:
+            report_row.assessment_data = scan_data
+            db.commit()
+        except Exception:
+            db.rollback()
 
         try:
             report_row.status = "completed"
@@ -135,13 +107,12 @@ async def qr_scan(payload: QRScanRequest):
         except Exception:
             db.rollback()
 
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": 'attachment; filename="Booppa-PDPA-Scan.pdf"'
-            },
-        )
+        return {
+            "status": "completed",
+            "report_id": str(report_row.id),
+            "summary": ai_report,
+            "message": "Free tier includes light AI summary only. PDF is not available.",
+        }
     except HTTPException:
         raise
     except Exception as e:

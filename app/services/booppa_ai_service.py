@@ -8,9 +8,8 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional
 import logging
-import httpx
-
 from app.core.config import settings
+from app.services.ai_provider import DeepSeekProvider
 
 logger = logging.getLogger(__name__)
 
@@ -279,6 +278,7 @@ class BooppaAIService:
         self.legislation = SINGAPORE_LEGISLATION
         self.prompts = self._load_prompts()
         self.deepseek_api_key = deepseek_api_key or settings.DEEPSEEK_API_KEY
+        self._deepseek_provider = DeepSeekProvider(self.deepseek_api_key)
 
     def _load_prompts(self) -> Dict:
         """Load Booppa-specific prompt templates"""
@@ -749,38 +749,7 @@ Note: Consult legal counsel for specific compliance requirements."""
 
     async def _call_deepseek(self, messages: List[Dict]) -> Optional[str]:
         """Call DeepSeek Chat Completions API."""
-        if not self.deepseek_api_key:
-            return None
-
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    "https://api.deepseek.com/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.deepseek_api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": "deepseek-chat",
-                        "messages": messages,
-                        "temperature": 0.2,
-                        "max_tokens": 1400,
-                    },
-                )
-            if response.status_code >= 400:
-                logger.error(
-                    f"DeepSeek API error {response.status_code}: {response.text}"
-                )
-                return None
-            data = response.json()
-            return (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content")
-            )
-        except Exception as e:
-            logger.error(f"DeepSeek API call failed: {e}")
-            return None
+        return await self._deepseek_provider.call_chat(messages)
 
     def _extract_json(self, content: str) -> Optional[Dict]:
         """Extract JSON object from model output."""

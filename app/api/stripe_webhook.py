@@ -7,6 +7,7 @@ from app.services.pdf_service import PDFService
 from app.services.booppa_ai_service import BooppaAIService
 from app.services.storage import S3Service
 from app.services.email_service import EmailService
+from app.billing.enforcement import enforce_tier
 from datetime import datetime
 import stripe
 import logging
@@ -81,8 +82,15 @@ async def stripe_webhook(request: Request):
                 ad = {}
 
             ad["payment_confirmed"] = True
+            product_type = metadata.get("product_type")
+            if product_type:
+                ad["product_type"] = product_type
             if customer_email:
                 ad["contact_email"] = customer_email
+
+            policy = enforce_tier(ad, report.framework)
+            ad["tier"] = policy.get("tier")
+            ad["tier_features"] = policy.get("features")
 
             report.assessment_data = ad
             db.commit()
@@ -90,16 +98,25 @@ async def stripe_webhook(request: Request):
             # Anchor evidence on blockchain
             blockchain = BlockchainService()
             evidence_hash = report.audit_hash
-            try:
-                tx_hash = await blockchain.anchor_evidence(evidence_hash)
-                report.tx_hash = tx_hash
-                db.commit()
-            except Exception as e:
-                logger.error(f"Anchoring failed for report {report_id}: {e}")
-                # proceed but leave tx_hash empty
+            if policy.get("features", {}).get("blockchain") and policy.get("paid"):
+                try:
+                    tx_hash = await blockchain.anchor_evidence(evidence_hash)
+                    report.tx_hash = tx_hash
+                    db.commit()
+                except Exception as e:
+                    logger.error(f"Anchoring failed for report {report_id}: {e}")
+                    # proceed but leave tx_hash empty
 
             # Regenerate PDF with updated tx_hash/payment flag and structured report
             pdf_service = PDFService()
+            verify_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/{evidence_hash}"
+
+            if policy.get("features", {}).get("pdf") and policy.get("paid"):
+                ad["verify_url"] = verify_url
+                ad["proof_header"] = "BOOPPA-PROOF-SG"
+                ad["schema_version"] = "1.0"
+                report.assessment_data = ad
+                db.commit()
 
             # Try to reuse existing structured Booppa report saved in assessment_data,
             # otherwise generate one now so the PDF includes full sections.
@@ -129,6 +146,10 @@ async def stripe_webhook(request: Request):
                 "ai_narrative": report.ai_narrative or None,
                 "structured_report": structured_report,
                 "payment_confirmed": True,
+                "tier": policy.get("tier"),
+                "proof_header": ad.get("proof_header"),
+                "schema_version": ad.get("schema_version"),
+                "verify_url": ad.get("verify_url") or verify_url,
                 "contact_email": (
                     ad.get("contact_email") if isinstance(ad, dict) else None
                 ),
@@ -166,11 +187,14 @@ async def stripe_webhook(request: Request):
                     f"Failed to attach screenshot for regenerated PDF {report_id}: {e}"
                 )
 
-            try:
-                pdf_bytes = pdf_service.generate_pdf(pdf_data)
-            except Exception as e:
-                logger.error(f"PDF regeneration failed for report {report_id}: {e}")
-                pdf_bytes = None
+            pdf_bytes = None
+            if policy.get("features", {}).get("pdf") and policy.get("paid"):
+                try:
+                    pdf_bytes = pdf_service.generate_pdf(pdf_data)
+                except Exception as e:
+                    logger.error(
+                        f"PDF regeneration failed for report {report_id}: {e}"
+                    )
 
             # Upload PDF to S3
             if pdf_bytes:

@@ -9,6 +9,11 @@ from app.services.storage import S3Service
 from app.services.email_service import EmailService
 from app.services.screenshot_service import capture_screenshot_base64
 from app.core.config import settings
+from app.billing.enforcement import enforce_tier
+from app.services.audit_chain import append_audit_event
+from app.services.dependency_logger import log_dependency_event
+from app.services.verify_registry import register_verification
+from app.integrations.ai.adapter import ai_light
 import asyncio
 import hashlib
 import json
@@ -270,6 +275,58 @@ async def process_report_workflow(report_id: str) -> dict:
         if not report:
             raise ValueError(f"Report {report_id} not found")
 
+        policy = enforce_tier(report.assessment_data, report.framework)
+        features = policy.get("features", {}) if isinstance(policy, dict) else {}
+        try:
+            _set_assessment_values(
+                report,
+                {
+                    "access_checked_at": datetime.utcnow().isoformat(),
+                    "access_allowed": policy.get("allowed"),
+                    "access_paid": policy.get("paid"),
+                    "access_reason": policy.get("reason"),
+                    "tier": policy.get("tier"),
+                    "tier_features": features,
+                },
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+
+        if not policy.get("allowed"):
+            report.status = "blocked"
+            report.completed_at = datetime.utcnow()
+            try:
+                _set_assessment_values(
+                    report,
+                    {
+                        "access_blocked": True,
+                        "access_blocked_at": datetime.utcnow().isoformat(),
+                    },
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+
+            try:
+                dep_updates = log_dependency_event(
+                    report.assessment_data,
+                    owner_id=str(report.owner_id),
+                    report_id=str(report.id),
+                    company_name=report.company_name,
+                    event_type="access_blocked",
+                )
+                _set_assessment_values(report, dep_updates)
+                db.commit()
+            except Exception:
+                db.rollback()
+
+            return {
+                "status": "blocked",
+                "report_id": report_id,
+                "reason": policy.get("reason"),
+            }
+
         # Resolve website URL over the network and store HTTPS status
         try:
             url = None
@@ -320,36 +377,80 @@ async def process_report_workflow(report_id: str) -> dict:
         except Exception as e:
             logger.warning(f"Metadata scan failed for {report_id}: {e}")
 
-        # Step 1: Generate structured AI report (Booppa) and narrative
-        logger.info(f"Step 1: Generating structured AI report for {report_id}")
-        booppa_ai = BooppaAIService()
-        structured_report = await booppa_ai.generate_compliance_report(
-            report.assessment_data
-        )
+        # Step 1: Generate structured AI report (full for paid tiers, light for free)
+        logger.info(f"Step 1: Generating AI report for {report_id}")
+        structured_report = None
+        narrative = ""
 
-        # Keep a human-readable narrative for legacy fields
-        try:
-            ai_service = AIService()
-            narrative = ai_service._format_report_as_narrative(structured_report)
-        except Exception:
-            narrative = structured_report.get("executive_summary") or ""
+        if features.get("ai_full"):
+            booppa_ai = BooppaAIService()
+            structured_report = await booppa_ai.generate_compliance_report(
+                report.assessment_data
+            )
+            # Keep a human-readable narrative for legacy fields
+            try:
+                ai_service = AIService()
+                narrative = ai_service._format_report_as_narrative(structured_report)
+            except Exception:
+                narrative = structured_report.get("executive_summary") or ""
+
+            report.ai_model_used = structured_report.get("report_metadata", {}).get(
+                "ai_model", "Booppa"
+            )
+            # persist structured report into assessment_data for traceability
+            try:
+                _set_assessment_values(
+                    report,
+                    {
+                        "booppa_report": structured_report,
+                        "booppa_report_saved_at": datetime.utcnow().isoformat(),
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "Could not attach structured report into assessment_data"
+                )
+        else:
+            url_value = None
+            if isinstance(report.assessment_data, dict):
+                url_value = report.assessment_data.get("url")
+            light_payload = {
+                "company_name": report.company_name,
+                "url": url_value or report.company_website,
+                "scan_date": datetime.utcnow().strftime("%Y-%m-%d"),
+                "detected_laws": (
+                    report.assessment_data.get("detected_laws", [])
+                    if isinstance(report.assessment_data, dict)
+                    else []
+                ),
+                "overall_risk_score": (
+                    report.assessment_data.get("overall_risk_score")
+                    if isinstance(report.assessment_data, dict)
+                    else 0
+                ),
+                "uses_https": (
+                    report.assessment_data.get("uses_https", True)
+                    if isinstance(report.assessment_data, dict)
+                    else True
+                ),
+            }
+            light_report = await ai_light(light_payload)
+            narrative = light_report.get("summary") or light_report.get(
+                "recommendation", ""
+            )
+            report.ai_model_used = "Booppa Light"
+            try:
+                _set_assessment_values(
+                    report,
+                    {
+                        "light_ai_report": light_report,
+                        "light_ai_saved_at": datetime.utcnow().isoformat(),
+                    },
+                )
+            except Exception:
+                logger.warning("Could not attach light AI output into assessment_data")
 
         report.ai_narrative = narrative
-        report.ai_model_used = structured_report.get("report_metadata", {}).get(
-            "ai_model", "Booppa"
-        )
-        # persist structured report into assessment_data for traceability
-        try:
-            _set_assessment_values(
-                report,
-                {
-                    "booppa_report": structured_report,
-                    "booppa_report_saved_at": datetime.utcnow().isoformat(),
-                },
-            )
-        except Exception:
-            logger.warning("Could not attach structured report into assessment_data")
-
         db.commit()
 
         # Step 2: Compute evidence hash
@@ -368,16 +469,26 @@ async def process_report_workflow(report_id: str) -> dict:
         report.audit_hash = evidence_hash
         db.commit()
 
+        try:
+            append_audit_event(
+                db,
+                report_id=str(report.id),
+                action="report_hash_created",
+                actor=str(report.owner_id),
+                hash_value=evidence_hash,
+                metadata={"framework": report.framework},
+            )
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.warning(f"Failed to append audit chain for {report_id}: {e}")
+
         # Step 3: Anchor on blockchain (only if payment confirmed)
         logger.info(f"Step 3: Anchoring evidence on blockchain for {report_id}")
-        payment_confirmed = False
-        try:
-            payment_confirmed = bool(report.assessment_data.get("payment_confirmed"))
-        except Exception:
-            payment_confirmed = False
+        payment_confirmed = bool(policy.get("paid"))
 
         tx_hash = None
-        if payment_confirmed:
+        if features.get("blockchain") and payment_confirmed:
             blockchain = BlockchainService()
             tx_hash = await blockchain.anchor_evidence(evidence_hash)
             report.tx_hash = tx_hash
@@ -386,6 +497,35 @@ async def process_report_workflow(report_id: str) -> dict:
             # leave tx_hash None; PDF will point to pending verification
             report.tx_hash = None
             db.commit()
+
+        verify_base = settings.VERIFY_BASE_URL.rstrip("/")
+        verify_url = f"{verify_base}/{evidence_hash}"
+
+        if features.get("pdf") and payment_confirmed:
+            try:
+                _set_assessment_values(
+                    report,
+                    {
+                        "verify_url": verify_url,
+                        "proof_header": "BOOPPA-PROOF-SG",
+                        "schema_version": "1.0",
+                    },
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+
+        try:
+            if features.get("pdf") and payment_confirmed:
+                verify_updates = register_verification(
+                    report.assessment_data,
+                    evidence_hash=evidence_hash,
+                    tx_hash=tx_hash,
+                )
+                _set_assessment_values(report, verify_updates)
+                db.commit()
+        except Exception as e:
+            logger.warning(f"Failed to register verification for {report_id}: {e}")
 
         # Ensure a site screenshot is present for on-page report (even if PDF is skipped).
         try:
@@ -456,11 +596,78 @@ async def process_report_workflow(report_id: str) -> dict:
             on_page_only = False
             if isinstance(report.assessment_data, dict):
                 on_page_only = bool(report.assessment_data.get("on_page_only"))
+            if not features.get("pdf"):
+                _set_assessment_values(
+                    report,
+                    {
+                        "pdf_generated": False,
+                        "pdf_reason": "tier_restriction",
+                    },
+                )
+                report.status = "completed"
+                report.completed_at = datetime.utcnow()
+                db.commit()
+
+                # Send notification email without PDF link
+                email_service = EmailService()
+                try:
+                    to_email = None
+                    if isinstance(report.assessment_data, dict):
+                        to_email = report.assessment_data.get(
+                            "contact_email"
+                        ) or report.assessment_data.get("customer_email")
+                    if to_email:
+                        await email_service.send_report_ready_email(
+                            to_email=to_email,
+                            report_url=None,
+                            user_name=(report.company_name or "User"),
+                            report_id=str(report.id),
+                        )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to send notification email for {report_id}: {e}"
+                    )
+
+                try:
+                    dep_updates = log_dependency_event(
+                        report.assessment_data,
+                        owner_id=str(report.owner_id),
+                        report_id=str(report.id),
+                        company_name=report.company_name,
+                        event_type="report_completed",
+                        extra={"delivery": "no_pdf"},
+                    )
+                    _set_assessment_values(report, dep_updates)
+                    db.commit()
+                except Exception:
+                    db.rollback()
+
+                return {
+                    "status": "completed",
+                    "report_id": report_id,
+                    "pdf_url": None,
+                    "tx_hash": tx_hash,
+                }
             if on_page_only:
                 _set_assessment_values(report, {"on_page_ready": True})
                 report.status = "completed"
                 report.completed_at = datetime.utcnow()
                 db.commit()
+
+                try:
+                    dep_updates = log_dependency_event(
+                        report.assessment_data,
+                        owner_id=str(report.owner_id),
+                        report_id=str(report.id),
+                        company_name=report.company_name,
+                        event_type="report_completed",
+                        extra={"delivery": "on_page"},
+                    )
+                    _set_assessment_values(report, dep_updates)
+                    db.commit()
+                except Exception:
+                    db.rollback()
+
                 return {
                     "status": "completed",
                     "report_id": report_id,
@@ -509,6 +716,20 @@ async def process_report_workflow(report_id: str) -> dict:
                     f"Failed to send notification email for {report_id}: {e}"
                 )
 
+            try:
+                dep_updates = log_dependency_event(
+                    report.assessment_data,
+                    owner_id=str(report.owner_id),
+                    report_id=str(report.id),
+                    company_name=report.company_name,
+                    event_type="report_completed",
+                    extra={"delivery": "no_pdf"},
+                )
+                _set_assessment_values(report, dep_updates)
+                db.commit()
+            except Exception:
+                db.rollback()
+
             return {
                 "status": "completed",
                 "report_id": report_id,
@@ -531,6 +752,25 @@ async def process_report_workflow(report_id: str) -> dict:
             "ai_narrative": narrative,
             "structured_report": structured_report,
             "payment_confirmed": payment_confirmed,
+            "tier": policy.get("tier"),
+            "proof_header": (
+                report.assessment_data.get("proof_header")
+                if isinstance(report.assessment_data, dict)
+                else None
+            )
+            or ("BOOPPA-PROOF-SG" if payment_confirmed else None),
+            "schema_version": (
+                report.assessment_data.get("schema_version")
+                if isinstance(report.assessment_data, dict)
+                else None
+            )
+            or ("1.0" if payment_confirmed else None),
+            "verify_url": (
+                report.assessment_data.get("verify_url")
+                if isinstance(report.assessment_data, dict)
+                else None
+            )
+            or (verify_url if payment_confirmed else None),
             "contact_email": (
                 report.assessment_data.get("contact_email")
                 if isinstance(report.assessment_data, dict)
@@ -684,6 +924,20 @@ async def process_report_workflow(report_id: str) -> dict:
                 report.status = "completed"
                 report.completed_at = datetime.utcnow()
                 db.commit()
+        except Exception:
+            db.rollback()
+
+        try:
+            dep_updates = log_dependency_event(
+                report.assessment_data,
+                owner_id=str(report.owner_id),
+                report_id=str(report.id),
+                company_name=report.company_name,
+                event_type="report_completed",
+                extra={"delivery": "pdf" if pdf_url else "no_pdf"},
+            )
+            _set_assessment_values(report, dep_updates)
+            db.commit()
         except Exception:
             db.rollback()
 

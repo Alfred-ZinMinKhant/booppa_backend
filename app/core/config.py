@@ -60,6 +60,7 @@ class Settings(BaseSettings):
 
     # Report generation
     SKIP_PDF_GENERATION: bool = True
+    VERIFY_BASE_URL: str = "https://verify.booppa.io"
 
     # Monitor v5.5++
     MONITOR_CACHE_DIR: str = ".cache/monitor"
