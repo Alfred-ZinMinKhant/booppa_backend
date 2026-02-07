@@ -285,6 +285,13 @@ async def process_report_workflow(report_id: str) -> dict:
         
         policy = enforce_tier(ad, report.framework)
         features = policy.get("features", {}) if isinstance(policy, dict) else {}
+        
+        logger.info(f"DEBUG WORKER TIER: Report {report_id} - AD Type: {type(ad)}")
+        logger.info(f"DEBUG WORKER TIER: AD Keys: {list(ad.keys()) if isinstance(ad, dict) else 'Not Dict'}")
+        logger.info(f"DEBUG WORKER TIER: Framework: {report.framework}")
+        logger.info(f"DEBUG WORKER TIER: Policy: {policy}")
+        logger.info(f"DEBUG WORKER TIER: Features: {features}")
+
         try:
             _set_assessment_values(
                 report,
