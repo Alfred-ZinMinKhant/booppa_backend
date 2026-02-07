@@ -12,6 +12,7 @@ from datetime import datetime
 import stripe
 import logging
 import json
+from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,7 @@ async def stripe_webhook(request: Request):
                 ad["on_page_only"] = False
 
             report.assessment_data = ad
+            flag_modified(report, "assessment_data")
             db.commit()
 
             # Trigger async processing for fulfillment (AI generation, PDF, Email)
