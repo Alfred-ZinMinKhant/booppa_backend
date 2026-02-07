@@ -529,7 +529,13 @@ async def get_report_by_session(
                         "workflow": workflow_flags,
                     },
                 )
-            raise HTTPException(status_code=404, detail="Report not ready")
+            # Return 202 Accepted instead of 404 Not Found to avoid console errors
+            # when polling for report completion.
+            return Response(
+                status_code=status.HTTP_202_ACCEPTED,
+                content='{"detail": "Report not ready"}',
+                media_type="application/json",
+            )
     finally:
         db.close()
 
