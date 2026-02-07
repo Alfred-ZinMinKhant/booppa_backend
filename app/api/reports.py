@@ -81,6 +81,18 @@ def _build_verify_payload(report: Report) -> dict:
 def _build_qr_image(target: str) -> str | None:
     if not target:
         return None
+    try:
+        qr = qrcode.QRCode(version=1, box_size=4, border=2)
+        qr.add_data(target)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        return encoded
+    except Exception as exc:
+        logger.warning("QR generation failed: %s", exc)
+        return None
 
 
 def _build_qr_png(target: str) -> bytes | None:
