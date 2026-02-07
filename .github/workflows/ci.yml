@@ -65,12 +65,16 @@ jobs:
       - name: Persist ANCHOR_CONTRACT_ADDRESS secret
         if: github.event.inputs.deploy_contract == 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_SECRETS_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}
           ANCHOR_CONTRACT_ADDRESS: ${{ env.ANCHOR_CONTRACT_ADDRESS }}
         run: |
           if [ -z "$ANCHOR_CONTRACT_ADDRESS" ]; then
             echo "ANCHOR_CONTRACT_ADDRESS is empty; skipping secret update" >&2
             exit 1
+          fi
+          if [ -z "$GH_SECRETS_TOKEN" ]; then
+            echo "GH_SECRETS_TOKEN not set; skipping secret update" >&2
+            exit 0
           fi
           npm install tweetnacl tweetnacl-util
           node <<'NODE'
@@ -79,7 +83,7 @@ jobs:
           const util = require('tweetnacl-util');
 
           const repo = process.env.GITHUB_REPOSITORY;
-          const token = process.env.GITHUB_TOKEN;
+          const token = process.env.GH_SECRETS_TOKEN;
           const secretName = 'ANCHOR_CONTRACT_ADDRESS';
           const value = process.env.ANCHOR_CONTRACT_ADDRESS;
 
