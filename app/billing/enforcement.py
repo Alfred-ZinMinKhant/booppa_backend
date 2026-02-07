@@ -30,23 +30,20 @@ def resolve_tier(assessment_data: Dict[str, Any] | None, framework: str | None) 
     data = assessment_data if isinstance(assessment_data, dict) else {}
     framework_value = _normalize(framework)
 
-    if framework_value in FREE_FRAMEWORKS:
-        return FREE
-
-    tier = _normalize(data.get("tier") or data.get("plan") or data.get("package"))
-    product_type = _normalize(data.get("product_type") or data.get("product"))
-
     if tier in {"enterprise", "ent", "enterprise_monthly"}:
         return ENTERPRISE
 
-    if tier in {"free", "starter", "trial"}:
-        return FREE
+    if product_type in PRO_PRODUCT_KEYS:
+        return PRO
 
     if tier in {"pro", "paid", "standard", "business"}:
         return PRO
 
-    if product_type in PRO_PRODUCT_KEYS:
-        return PRO
+    if framework_value in FREE_FRAMEWORKS:
+        return FREE
+    
+    if tier in {"free", "starter", "trial"}:
+        return FREE
 
     if framework_value in {"pdpa_quick_scan", "pdpa_basic", "pdpa_pro"}:
         return PRO
