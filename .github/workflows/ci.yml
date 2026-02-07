@@ -206,6 +206,8 @@ jobs:
 
           aws ecs register-task-definition --cli-input-json file://task-def-app.json --region $AWS_REGION > task-def-app-out.json
           jq -r '.taskDefinition.taskDefinitionArn' task-def-app-out.json > task-def-app-arn.txt
+          echo "APP_TASK_DEF_ARN=$(cat task-def-app-arn.txt)" >> $GITHUB_ENV
+
       - name: Register ECS task definition - worker
         env:
           APP_IMAGE: ${{ env.APP_IMAGE }}
