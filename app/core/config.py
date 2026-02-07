@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "postgresql+psycopg2://booppa:password@localhost:5432/booppa"
     REDIS_URL: str = "redis://localhost:6379/0"
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
+    DB_POOL_TIMEOUT: int = 30
+    DB_POOL_RECYCLE: int = 300
 
     # AWS
     AWS_ACCESS_KEY_ID: Optional[str] = None
