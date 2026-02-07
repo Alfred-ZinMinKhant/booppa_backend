@@ -78,6 +78,12 @@ class PDFService:
                 story.append(Paragraph(subtitle, self.styles["BodyText"]))
                 story.append(Spacer(1, 0.15 * inch))
 
+            # Proof metadata header (paid tiers)
+            proof_block = self._create_proof_metadata(report_data)
+            if proof_block:
+                story.extend(proof_block)
+                story.append(Spacer(1, 0.15 * inch))
+
             # Optional: include site screenshot if provided (bytes or base64 string)
             ss = report_data.get("site_screenshot")
             if ss:
@@ -265,6 +271,8 @@ class PDFService:
                         story.append(Spacer(1, 0.08 * inch))
 
             # Build PDF
+            # PDPA/legal disclaimer is always included
+            story.extend(self._create_pdpa_disclaimer())
             doc.build(story)
             buffer.seek(0)
 
@@ -366,6 +374,7 @@ class PDFService:
         tx_hash = report_data.get("tx_hash")
         audit_hash = report_data.get("audit_hash")
         payment_confirmed = report_data.get("payment_confirmed", False)
+        verify_url = report_data.get("verify_url")
 
         # Blockchain details
         sections.append(
@@ -381,8 +390,18 @@ class PDFService:
             )
             sections.append(Spacer(1, 0.1 * inch))
 
+        # Prefer verify URL for paid reports
+        if payment_confirmed and verify_url and audit_hash:
+            sections.append(
+                Paragraph(
+                    f'<b>Verification URL:</b> <a href="{verify_url}">{verify_url}</a>',
+                    self.styles["BodyText"],
+                )
+            )
+            sections.append(Spacer(1, 0.1 * inch))
+            qr_target = verify_url
         # If payment not confirmed or tx_hash absent, point to pending verification page
-        if not payment_confirmed or not tx_hash:
+        elif not payment_confirmed or not tx_hash:
             pending_url = (
                 report_data.get("pending_verification_url")
                 or f"https://www.booppa.io/verify/pending?report_id={report_data.get('report_id') }"
@@ -433,3 +452,50 @@ class PDFService:
             )
 
         return sections
+
+    def _create_proof_metadata(self, report_data: dict) -> list:
+        """Create proof metadata header for paid reports."""
+        proof_header = report_data.get("proof_header")
+        schema_version = report_data.get("schema_version")
+        verify_url = report_data.get("verify_url")
+
+        if not (proof_header or schema_version or verify_url):
+            return []
+
+        sections = [
+            Paragraph("Proof Metadata", self.styles["Heading2"]),
+        ]
+        if proof_header:
+            sections.append(
+                Paragraph(f"<b>Format:</b> {proof_header}", self.styles["BodyText"])
+            )
+        if schema_version:
+            sections.append(
+                Paragraph(
+                    f"<b>Schema Version:</b> {schema_version}",
+                    self.styles["BodyText"],
+                )
+            )
+        if verify_url:
+            sections.append(
+                Paragraph(
+                    f'<b>Verify URL:</b> <a href="{verify_url}">{verify_url}</a>',
+                    self.styles["BodyText"],
+                )
+            )
+        return sections
+
+    def _create_pdpa_disclaimer(self) -> list:
+        """Add PDPA/legal disclaimer and prohibit certification/regulatory claims."""
+        disclaimer = (
+            "This report is provided for informational purposes only and does not "
+            "constitute legal advice, certification, or regulatory approval. "
+            "Booppa does not certify vendors, issue regulatory determinations, or "
+            "publish public vendor scoring. Organizations should consult qualified "
+            "professionals for compliance decisions and regulatory engagement."
+        )
+        return [
+            Spacer(1, 0.2 * inch),
+            Paragraph("Disclaimer", self.styles["Heading2"]),
+            Paragraph(disclaimer, self.styles["BodyText"]),
+        ]

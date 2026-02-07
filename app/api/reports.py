@@ -55,8 +55,9 @@ async def create_report(
         if getattr(request, "contact_email", None):
             assessment["contact_email"] = request.contact_email
 
-        if request.framework in {"pdpa_quick_scan", "pdpa_free_scan"}:
+        if request.framework in {"pdpa_free_scan"}:
             assessment["on_page_only"] = True
+            assessment["tier"] = "free"
 
         report = Report(
             owner_id=current_user.id,
@@ -105,8 +106,9 @@ async def create_report_public(request: ReportRequest):
         if getattr(request, "contact_email", None):
             assessment["contact_email"] = request.contact_email
 
-        if request.framework in {"pdpa_quick_scan", "pdpa_free_scan"}:
+        if request.framework in {"pdpa_free_scan"}:
             assessment["on_page_only"] = True
+            assessment["tier"] = "free"
 
         report = Report(
             owner_id=str(uuid.uuid4()),

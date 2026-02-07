@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, DateTime, Text, JSON, Boolean, Date
+from sqlalchemy import Column, String, DateTime, Text, JSON, Boolean, Date, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 from app.core.db import Base
@@ -47,6 +47,19 @@ class Report(Base):
     # AI Narrative
     ai_narrative = Column(Text, nullable=True)
     ai_model_used = Column(String(100), nullable=True)
+
+
+class AuditChainEvent(Base):
+    __tablename__ = "audit_chain_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    report_id = Column(UUID(as_uuid=True), ForeignKey("reports.id"), nullable=False, index=True)
+    action = Column(String(100), nullable=False, index=True)
+    actor = Column(String(255), nullable=False)
+    hash_prev = Column(String(64), nullable=False)
+    hash = Column(String(64), nullable=False, index=True)
+    metadata_json = Column("metadata", JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
 class TaskLock(Base):
