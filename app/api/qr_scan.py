@@ -35,13 +35,14 @@ async def qr_scan(payload: QRScanRequest):
         uses_https = website_url.lower().startswith("https://")
         month_ago = datetime.utcnow() - timedelta(days=30)
 
+        from sqlalchemy import String, cast
         existing = (
             db.query(Report)
             .filter(
                 and_(
                     Report.framework == "pdpa_free_scan",
                     Report.created_at >= month_ago,
-                    Report.assessment_data["contact_email"].astext == payload.email,
+                    cast(Report.assessment_data["contact_email"], String) == payload.email,
                 )
             )
             .first()
