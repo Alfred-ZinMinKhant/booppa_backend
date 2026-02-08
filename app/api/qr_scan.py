@@ -12,6 +12,7 @@ from app.services.screenshot_service import capture_screenshot_base64
 from app.integrations.scan1.adapter import run_scan_async
 from app.integrations.ai.adapter import ai_light
 from sqlalchemy import and_
+from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,7 @@ async def qr_scan(payload: QRScanRequest):
 
         try:
             report_row.assessment_data = scan_data
+            flag_modified(report_row, "assessment_data")
             db.commit()
         except Exception:
             db.rollback()
