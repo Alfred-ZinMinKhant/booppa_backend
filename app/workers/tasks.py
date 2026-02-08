@@ -13,7 +13,7 @@ from app.billing.enforcement import enforce_tier
 from app.services.audit_chain import append_audit_event
 from app.services.dependency_logger import log_dependency_event
 from app.services.verify_registry import register_verification
-from app.integrations.ai.adapter import ai_light
+from app.integrations.ai.adapter import ai_preview
 import asyncio
 import hashlib
 import json
@@ -448,7 +448,7 @@ async def process_report_workflow(report_id: str) -> dict:
                     else True
                 ),
             }
-            light_report = await ai_light(light_payload)
+            light_report = await ai_preview(light_payload)
             narrative = light_report.get("summary") or light_report.get(
                 "recommendation", ""
             )

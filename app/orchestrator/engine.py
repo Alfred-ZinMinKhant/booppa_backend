@@ -5,7 +5,7 @@ from typing import Any
 from app.core.cache.cache import get, set, cache_key
 from app.core.blockchain.notary import notarize
 from app.integrations.scan1.adapter import run_scan_async
-from app.integrations.ai.adapter import ai_light, ai_full
+from app.integrations.ai.adapter import ai_preview, ai_full
 from app.core.config import settings
 from app.services.blockchain import BlockchainService
 
@@ -38,7 +38,7 @@ async def run(url: str) -> dict[str, Any]:
     if risk < thresholds["LOW"]:
         ai_result = None
     elif risk < thresholds["MEDIUM"]:
-        ai_result = await ai_light(scan_payload)
+        ai_result = await ai_preview(scan_payload)
     else:
         ai_result = await ai_full(scan_payload)
 
