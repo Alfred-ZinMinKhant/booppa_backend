@@ -116,6 +116,8 @@ async def qr_scan(payload: QRScanRequest):
             "ai_summary": ai_report,
             "company_name": scan_data.get("company_name"),
             "website_url": website_url,
+            "screenshot": scan_data.get("site_screenshot"),
+            "screenshot_error": scan_data.get("screenshot_error"),
             "message": "Free tier includes light AI summary only. PDF is not available.",
         }
     except HTTPException:
