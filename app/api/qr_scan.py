@@ -10,7 +10,7 @@ from app.core.db import SessionLocal
 from app.core.models import Report
 from app.services.screenshot_service import capture_screenshot_base64
 from app.integrations.scan1.adapter import run_scan_async
-from app.integrations.ai.adapter import ai_light
+from app.integrations.ai.adapter import ai_preview
 from sqlalchemy import and_
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -77,7 +77,7 @@ async def qr_scan(payload: QRScanRequest):
 
         scan_result = await run_scan_async(website_url)
         scan_payload = scan_result.model_dump() if scan_result else {}
-        ai_report = await ai_light(scan_payload)
+        ai_report = await ai_preview(scan_payload)
 
         scan_data["scan_result"] = scan_payload
         scan_data["light_ai_report"] = ai_report

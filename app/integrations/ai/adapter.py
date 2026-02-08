@@ -3,13 +3,32 @@ from typing import Any
 from app.services.booppa_ai_service import BooppaAIService
 
 
-async def ai_light(scan: dict[str, Any]) -> dict[str, Any]:
+async def ai_preview(scan: dict[str, Any]) -> dict[str, Any]:
+    """
+    Cost-effective preview AI for free tier.
+    Uses real scan data for accurate risk score but templated text instead of LLM.
+    """
+    risk_score = scan.get("overall_risk_score", 50)
+    detected_laws = scan.get("detected_laws", [])
+    
+    # Generate templated summary based on risk score
+    if risk_score >= 70:
+        summary = "High compliance risk detected"
+        recommendation = "Immediate action recommended. Multiple compliance gaps identified."
+    elif risk_score >= 40:
+        summary = "Medium compliance risk detected"
+        recommendation = "Review and address compliance gaps within 30 days."
+    else:
+        summary = "Low compliance risk"
+        recommendation = "Continue monitoring. Minor improvements suggested."
+    
     return {
-        "summary": "Medium compliance risk detected.",
-        "recommendation": "Review data transfer mechanisms.",
-        "detected_laws": scan.get("detected_laws", []),
-        "risk_score": scan.get("overall_risk_score"),
+        "summary": summary,
+        "recommendation": recommendation,
+        "detected_laws": detected_laws,
+        "risk_score": risk_score,
     }
+
 
 
 def _build_ai_scan_payload(scan: dict[str, Any]) -> dict[str, Any]:
