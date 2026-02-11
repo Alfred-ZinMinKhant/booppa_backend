@@ -1,4 +1,5 @@
-# Web Framework
+# Core Dependencies
+setuptools==65.5.1
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
@@ -50,12 +51,11 @@ pytest-asyncio==0.21.1
 pytest-cov==4.1.0
 
 # Utilities
-setuptools
 python-dotenv==1.0.0
 python-multipart==0.0.6
 python-dateutil==2.8.2
 greenlet==3.0.1
 
- # Browser automation for screenshots
- playwright
- django-ckeditor
+# Browser automation for screenshots
+playwright
+django-ckeditor

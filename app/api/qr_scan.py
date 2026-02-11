@@ -19,9 +19,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+from typing import Optional, Union
+
 class QRScanRequest(BaseModel):
     website_url: str
-    company_name: str | None = None
+    company_name: Optional[str] = None
     email: EmailStr
 
 

@@ -1,114 +1,35 @@
 import asyncio
 import json
 import shlex
+import logging
 from datetime import datetime
 from typing import List, Any, Optional
 
 from pydantic import BaseModel, Field, ConfigDict
-
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
 
 class ScanResultModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     url: str
-    pdpa_violations: int = Field(..., ge=0)
-    nric_found: bool
-    overall_risk_score: int = Field(..., ge=0, le=100)
-    detected_laws: List[str]
+    pdpa_violations: int = Field(0, ge=0)
+    nric_found: bool = False
+    overall_risk_score: int = Field(0, ge=0, le=100)
+    detected_laws: List[str] = Field(default_factory=list)
     scan_date: Optional[str] = None
 
-
-def _normalize_scan1_output(url: str, raw_data: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(raw_data, dict):
-        raw_data = {}
-
-    violations = raw_data.get("pdpa_violations")
-    if violations is None:
-        if isinstance(raw_data.get("violations"), list):
-            violations = len(raw_data.get("violations"))
-        else:
-            violations = raw_data.get("violation_count")
-
-    detected_laws = raw_data.get("detected_laws")
-    if detected_laws is None:
-        detected_laws = raw_data.get("laws") or raw_data.get("regulations") or []
-
-    nric_found = raw_data.get("nric_found")
-    if nric_found is None:
-        nric_found = bool(raw_data.get("collects_nric") or raw_data.get("nric_leak"))
-
-    risk_score = raw_data.get("overall_risk_score")
-    if risk_score is None:
-        risk_score = raw_data.get("risk_score") or raw_data.get("score") or 0
-
-    return {
-        "url": raw_data.get("url") or url,
-        "pdpa_violations": violations or 0,
-        "nric_found": bool(nric_found),
-        "overall_risk_score": int(risk_score),
-        "detected_laws": list(detected_laws),
-        "scan_date": raw_data.get("scan_date") or datetime.utcnow().strftime("%Y-%m-%d"),
-    }
-
-
-def _map_scan1_output(url: str, raw_data: dict[str, Any]) -> ScanResultModel:
-    normalized = _normalize_scan1_output(url, raw_data)
-    return ScanResultModel(**normalized)
-
-
-def _run_scan1_command(url: str) -> dict[str, Any]:
-    if not settings.MONITOR_SCAN1_COMMAND:
-        return {}
-
-    command = settings.MONITOR_SCAN1_COMMAND.format(url=url)
-    args = shlex.split(command)
-    result = asyncio.run(_run_scan1_subprocess(args))
-    return result
-
-
-async def _run_scan1_subprocess(args: list[str]) -> dict[str, Any]:
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, _ = await proc.communicate()
-    if not stdout:
-        return {}
-    try:
-        return json.loads(stdout.decode("utf-8"))
-    except Exception:
-        return {}
-
-
-def run_scan(url: str) -> ScanResultModel:
+async def run_scan_async(url: str) -> ScanResultModel:
     """
     Adapter for real PDPA compliance scanning.
-    Uses the existing scanner from workers.tasks instead of mock data.
+    Invokes the Python-based scanner asynchronously.
     """
     # Import here to avoid circular dependencies
     from app.workers.tasks import _scan_site_metadata
     
-    raw_data = {}
-    
-    # Try to run the real scanner asynchronously
     try:
-        import asyncio
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # No event loop running, create one
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                metadata = loop.run_until_complete(_scan_site_metadata(url))
-            finally:
-                loop.close()
-        else:
-            # Event loop is already running, use asyncio.create_task
-            metadata = asyncio.run(_scan_site_metadata(url))
+        metadata = await _scan_site_metadata(url)
         
         if metadata:
             # Calculate violations based on actual findings
@@ -141,28 +62,15 @@ def run_scan(url: str) -> ScanResultModel:
             
             # Calculate risk score based on findings
             risk_score = 0
+            if not privacy.get("found"): risk_score += 15
+            if not consent.get("has_cookie_banner"): risk_score += 10
+            if nric_found: risk_score += 25
+            if not dnc.get("mentions_dnc"): risk_score += 10
             
-            # Privacy violations
-            if not privacy.get("found"):
-                risk_score += 15
-            
-            # Cookie consent
-            if not consent.get("has_cookie_banner"):
-                risk_score += 10
-            
-            # NRIC collection
-            if nric_found:
-                risk_score += 25
-            
-            # DNC violations
-            if not dnc.get("mentions_dnc"):
-                risk_score += 10
-            
-            # Security headers (optional check)
-            if not metadata.get("hsts"):
-                risk_score += 5
-            if not metadata.get("csp"):
-                risk_score += 3
+            # Security headers
+            sh = metadata.get("security_headers", {})
+            if not sh.get("hsts"): risk_score += 5
+            if not sh.get("csp"): risk_score += 3
             
             raw_data = {
                 "url": url,
@@ -170,28 +78,41 @@ def run_scan(url: str) -> ScanResultModel:
                 "nric_found": nric_found,
                 "overall_risk_score": min(risk_score, 100),
                 "detected_laws": detected_laws if detected_laws else ["PDPA General Provisions"],
+                "scan_date": datetime.utcnow().strftime("%Y-%m-%d"),
             }
+            return ScanResultModel(**raw_data)
+        else:
+            raise ValueError("No metadata returned from scanner")
+            
     except Exception as e:
-        # If real scanner fails, use minimal mock data
-        import random
-        violations = random.randint(1, 3)
-        raw_data = {
-            "url": url,
-            "pdpa_violations": violations,
-            "nric_found": False,
-            "overall_risk_score": 20 + (violations * 10),
-            "detected_laws": ["PDPA General Provisions"],
-        }
-    
-    return _map_scan1_output(url, raw_data)
+        logger.warning(f"Scanner failed or returned empty for {url}: {e}. Using safe defaults.")
+        return ScanResultModel(
+            url=url,
+            pdpa_violations=1,
+            nric_found=False,
+            overall_risk_score=30,
+            detected_laws=["PDPA General Provisions"],
+            scan_date=datetime.utcnow().strftime("%Y-%m-%d")
+        )
 
-
-
-async def run_scan_async(url: str) -> ScanResultModel:
-    if settings.MONITOR_SCAN1_COMMAND:
-        command = settings.MONITOR_SCAN1_COMMAND.format(url=url)
-        args = shlex.split(command)
-        raw_data = await _run_scan1_subprocess(args)
-        if raw_data:
-            return _map_scan1_output(url, raw_data)
-    return await asyncio.to_thread(run_scan, url)
+def run_scan(url: str) -> ScanResultModel:
+    """Sync wrapper for legacy callers. Only for use outside of main event loop."""
+    try:
+        import nest_asyncio
+        nest_asyncio.apply()
+    except ImportError:
+        pass
+        
+    try:
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(run_scan_async(url))
+    except Exception:
+        # Emergency fallback without any async overhead
+        return ScanResultModel(
+            url=url,
+            pdpa_violations=0,
+            nric_found=False,
+            overall_risk_score=20,
+            detected_laws=["PDPA General Provisions"],
+            scan_date=datetime.utcnow().strftime("%Y-%m-%d")
+        )

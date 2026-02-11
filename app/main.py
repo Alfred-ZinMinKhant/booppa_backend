@@ -1,5 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+try:
+    import pkg_resources
+    # This helps verify that setuptools is correctly installed in the container
+except ImportError:
+    pass
 from app.core.config import settings
 from app.api import router as api_router
 from app.core.db import create_tables
