@@ -84,10 +84,41 @@ async def qr_scan(payload: QRScanRequest):
         try:
             screenshot_url = scan_data.get("url") or website_url
             if isinstance(screenshot_url, str) and screenshot_url:
-                screenshot_b64 = await asyncio.wait_for(
-                    asyncio.to_thread(capture_screenshot_base64, screenshot_url),
-                    timeout=25,
-                )
+                # Try the standard screenshot service with reduced timeout for free tier
+                try:
+                    screenshot_b64 = await asyncio.wait_for(
+                        asyncio.to_thread(capture_screenshot_base64, screenshot_url),
+                        timeout=10,  # Reduced from 25s for faster free tier
+                    )
+                except asyncio.TimeoutError:
+                    screenshot_b64 = None
+                
+                # If standard service fails/times out, use fast HTTP API fallback
+                if not screenshot_b64:
+                    try:
+                        import httpx
+                        async with httpx.AsyncClient(timeout=8.0) as client:
+                            # Use screenshotone.com free tier
+                            resp = await client.get(
+                                "https://api.screenshotone.com/take",
+                                params={
+                                    "url": screenshot_url,
+                                    "viewport_width": 1400,
+                                    "viewport_height": 900,
+                                    "device_scale_factor": 1,
+                                    "format": "png",
+                                    "block_ads": "true",
+                                    "block_cookie_banners": "true",
+                                },
+                                follow_redirects=True,
+                            )
+                            if resp.status_code == 200:
+                                import base64
+                                screenshot_b64 = base64.b64encode(resp.content).decode()
+                    except Exception as e:
+                        logger.warning(f"Fast screenshot API failed for {screenshot_url}: {e}")
+                        screenshot_b64 = None
+                
                 if screenshot_b64:
                     scan_data["site_screenshot"] = screenshot_b64
                 else:
