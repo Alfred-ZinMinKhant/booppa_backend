@@ -26,6 +26,16 @@ class BlockchainService:
                 "type": "function",
             },
             {
+                "inputs": [
+                    {"internalType": "bytes32[]", "name": "fileHashes", "type": "bytes32[]"},
+                    {"internalType": "string", "name": "batchMetadata", "type": "string"},
+                ],
+                "name": "batchAnchor",
+                "outputs": [],
+                "stateMutability": "nonpayable",
+                "type": "function",
+            },
+            {
                 "inputs": [{"internalType": "bytes32", "name": "fileHash", "type": "bytes32"}],
                 "name": "isAnchored",
                 "outputs": [
@@ -95,6 +105,43 @@ class BlockchainService:
 
         except Exception as e:
             logger.error("Blockchain anchoring failed: %s", e)
+            raise
+
+    async def batch_anchor_hashes(self, evidence_hashes: list[str], batch_metadata: str = "") -> str:
+        """Batch anchor multiple evidence hashes on Polygon blockchain for efficiency"""
+        try:
+            hashes_to_anchor = []
+            for h in evidence_hashes:
+                # Idempotency check: Skip if already anchored
+                status = self.get_anchor_status(h)
+                if not status.get("anchored"):
+                    hashes_to_anchor.append(self._hash_to_bytes32(h))
+            
+            if not hashes_to_anchor:
+                logger.info("All hashes in batch already anchored. Skipping transaction.")
+                return "already_anchored"
+
+            private_key = self._get_private_key()
+            account = self.w3.eth.account.from_key(private_key)
+
+            nonce = self.w3.eth.get_transaction_count(account.address)
+            txn = self.contract.functions.batchAnchor(hashes_to_anchor, batch_metadata).build_transaction(
+                {
+                    "from": account.address,
+                    "nonce": nonce,
+                    "gas": 100000 + (len(hashes_to_anchor) * 50000), # Linear gas estimation
+                    "gasPrice": self.w3.eth.gas_price,
+                }
+            )
+            signed = self.w3.eth.account.sign_transaction(txn, private_key)
+            tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
+            tx_hex = tx_hash.hex()
+
+            logger.info("Batch of %s hashes anchored: %s", len(hashes_to_anchor), tx_hex)
+            return tx_hex
+
+        except Exception as e:
+            logger.error("Blockchain batch anchoring failed: %s", e)
             raise
 
     def get_anchor_status(self, evidence_hash: str, tx_hash: Optional[str] = None) -> Dict[str, Any]:

@@ -10,6 +10,9 @@ from app.api import router as api_router
 from app.core.db import create_tables
 from app.core import models as _models
 import logging
+from mangum import Mangum
+from app.api.websocket import socket_app, start_event_relay
+import asyncio
 
 logging.basicConfig(level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
@@ -46,6 +49,9 @@ async def startup_event():
         except Exception:
             pass
         create_tables()
+        
+    # Start WebSocket event relay task
+    asyncio.create_task(start_event_relay())
 
 
 @app.get("/health")
@@ -59,3 +65,9 @@ app.include_router(api_router, prefix="/api/v1")
 # Also expose the same API surface at /api for compatibility with frontend
 # callers that expect unversioned endpoints (e.g. /api/stripe/checkout).
 app.include_router(api_router, prefix="/api")
+
+# Mount WebSocket Server
+app.mount("/socket.io", socket_app)
+
+# AWS Lambda handler
+handler = Mangum(app, lifespan="off")
