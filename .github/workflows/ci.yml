@@ -117,6 +117,8 @@ jobs:
             --function-name $LAMBDA_FUNCTION_NAME \
             --image-uri $IMAGE_URI \
             --region $AWS_REGION
+
+      - name: Register ECS task definition - app
         env:
           APP_IMAGE: ${{ env.APP_IMAGE }}
           EXECUTION_ROLE_ARN: ${{ secrets.AWS_ECS_EXECUTION_ROLE_ARN }}
