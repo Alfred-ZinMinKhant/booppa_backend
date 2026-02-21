@@ -43,6 +43,10 @@ PRICE_MAP = {
         or os.environ.get("STRIPE_SUPPLY_CHAIN_50")
         or os.environ.get("NEXT_PUBLIC_STRIPE_SUPPLY_CHAIN_50")
     ),
+    "rfp_kit_express": os.environ.get("STRIPE_RFP_EXPRESS")
+    or os.environ.get("NEXT_PUBLIC_STRIPE_RFP_EXPRESS"),
+    "rfp_kit_complete": os.environ.get("STRIPE_RFP_COMPLETE")
+    or os.environ.get("NEXT_PUBLIC_STRIPE_RFP_COMPLETE"),
 }
 
 MODE_MAP = {
@@ -57,6 +61,8 @@ MODE_MAP = {
     "compliance_notarization_1": "payment",
     "compliance_notarization_10": "payment",
     "compliance_notarization_50": "payment",
+    "rfp_kit_express": "payment",
+    "rfp_kit_complete": "payment",
 }
 
 
@@ -177,7 +183,7 @@ async def checkout_get(
 ):
     """Support GET requests like /checkout?product=... to create a session and redirect the user to Stripe."""
     product_type = product
-    price_id = PRICE_MAP.get(product_type)
+    price_id = PRICE_MAP.get(product_type) if product_type else None
 
     if not price_id:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -203,7 +209,7 @@ async def checkout_get(
         cancel_url = f"{base_url}/{cancel_path}"
 
         session = stripe_client.checkout.Session.create(
-            mode=MODE_MAP.get(product_type, "payment"),
+            mode=MODE_MAP.get(product_type, "payment") if product_type else "payment",
             line_items=[{"price": price_id, "quantity": 1}],
             success_url=success_url,
             cancel_url=cancel_url,
