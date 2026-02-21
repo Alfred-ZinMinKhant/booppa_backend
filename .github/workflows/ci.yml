@@ -108,6 +108,17 @@ jobs:
             ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}
             ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:latest
 
+      - name: Build & push cms image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./cms_admin
+          file: ./cms_admin/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.CMS_ECR_REPO }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/${{ env.CMS_ECR_REPO }}:latest
+
 
 
       - name: Register ECS task definition - app
