@@ -112,7 +112,7 @@ jobs:
 
       - name: Register ECS task definition - app
         env:
-          APP_IMAGE: ${{ env.APP_IMAGE }}
+          APP_IMAGE: ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}
           EXECUTION_ROLE_ARN: ${{ secrets.AWS_ECS_EXECUTION_ROLE_ARN }}
           TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -193,7 +193,7 @@ jobs:
 
       - name: Register ECS task definition - worker
         env:
-          APP_IMAGE: ${{ env.APP_IMAGE }}
+          APP_IMAGE: ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}
           EXECUTION_ROLE_ARN: ${{ secrets.AWS_ECS_EXECUTION_ROLE_ARN }}
           TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -270,7 +270,7 @@ jobs:
 
       - name: Register ECS task definition - cms
         env:
-          CMS_IMAGE: ${{ env.CMS_IMAGE }}
+          CMS_IMAGE: ${{ env.ECR_REGISTRY }}/${{ env.CMS_ECR_REPO }}:latest
           EXECUTION_ROLE_ARN: ${{ secrets.AWS_ECS_EXECUTION_ROLE_ARN }}
           TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
