@@ -10,6 +10,7 @@ from .admin import router as admin_router
 from .booking import router as booking_router
 from .tickets import router as tickets_router
 from .verify import router as verify_router
+from .bridge import router as bridge_router
 
 router = APIRouter()
 
@@ -26,3 +27,4 @@ router.include_router(booking_router, prefix="/booking", tags=["booking"])
 router.include_router(tickets_router, prefix="/tickets", tags=["tickets"])
 router.include_router(qr_scan_router, prefix="", tags=["qr-scan"])
 router.include_router(verify_router, prefix="/verify", tags=["verify"])
+router.include_router(bridge_router, prefix="")

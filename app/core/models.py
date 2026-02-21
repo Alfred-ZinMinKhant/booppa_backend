@@ -17,6 +17,13 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # V6 Additions for Vendor features
+    role = Column(String(50), default="VENDOR")
+    company = Column(String(255), nullable=True)
+    uen = Column(String(50), unique=True, nullable=True)
+    temp_password = Column(Boolean, default=False)
+    verified_at = Column(DateTime, nullable=True)
+
 
 class Report(Base):
     __tablename__ = "reports"
@@ -141,3 +148,6 @@ class SupportTicketReply(Base):
     message = Column(Text, nullable=False)
     is_internal = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+# Import V6 extensions so Alembic picks them up correctly
+from .models_v6 import *

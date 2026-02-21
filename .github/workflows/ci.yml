@@ -106,30 +106,17 @@ jobs:
           platforms: linux/amd64
           tags: |
             ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:latest
 
-      - name: Build & push cms image (SHA-only)
-        uses: docker/build-push-action@v4
-        with:
-          context: ./cms_admin
-          file: ./cms_admin/Dockerfile
-          push: true
-          platforms: linux/amd64
-          tags: |
-            ${{ env.ECR_REGISTRY }}/${{ env.CMS_ECR_REPO }}:${{ github.sha }}
-
-      - name: Verify pushed images in ECR
+      - name: Deploy to AWS Lambda
         env:
-          AWS_REGION: ${{ secrets.AWS_REGION }}
+          LAMBDA_FUNCTION_NAME: booppa-api-lambda
+          IMAGE_URI: ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}
         run: |
-          echo "== App repository images =="
-          aws ecr describe-images --repository-name ${{ env.APP_ECR_REPO }} --region $AWS_REGION --query 'imageDetails[].imageTags' --output json || true
-
-      - name: Set image variables
-        run: |
-          echo "APP_IMAGE=${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}" >> $GITHUB_ENV
-          echo "CMS_IMAGE=${{ env.ECR_REGISTRY }}/${{ env.CMS_ECR_REPO }}:${{ github.sha }}" >> $GITHUB_ENV
-
-      - name: Register ECS task definition - app
+          aws lambda update-function-code \
+            --function-name $LAMBDA_FUNCTION_NAME \
+            --image-uri $IMAGE_URI \
+            --region $AWS_REGION
         env:
           APP_IMAGE: ${{ env.APP_IMAGE }}
           EXECUTION_ROLE_ARN: ${{ secrets.AWS_ECS_EXECUTION_ROLE_ARN }}

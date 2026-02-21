@@ -1,5 +1,9 @@
 import logging
+import hashlib
+import json
 from typing import Dict
+import redis
+from app.core.config import settings
 
 from .booppa_ai_service import BooppaAIService
 
@@ -7,24 +11,40 @@ logger = logging.getLogger(__name__)
 
 
 class AIService:
-    """AI service for generating audit narratives - Now with Booppa specialization"""
+    """AI service for generating audit narratives - Now with Booppa specialization and caching"""
 
     def __init__(self):
         self.deepseek_key = None  # Will be set from settings
         self.openai_key = None
         self.ollama_url = None
         self.booppa_ai = BooppaAIService()
+        self.cache = redis.from_url(settings.REDIS_URL, decode_responses=True)
+
+    def _get_cache_key(self, assessment_data: Dict) -> str:
+        """Generate a stable cache key based on assessment data"""
+        data_str = json.dumps(assessment_data, sort_keys=True)
+        return f"narrative_cache:{hashlib.sha256(data_str.encode()).hexdigest()}"
 
     async def generate_audit_narrative(
         self, assessment_data: Dict, use_fallback: bool = False
     ) -> str:
-        """Generate audit narrative using Booppa-specialized AI"""
+        """Generate audit narrative using Booppa-specialized AI with Redis caching"""
+        cache_key = self._get_cache_key(assessment_data)
         try:
+            # Check cache first
+            cached_narrative = self.cache.get(cache_key)
+            if cached_narrative:
+                logger.info("Serving audit narrative from cache")
+                return cached_narrative
+
             # Use Booppa AI service for specialized compliance reporting
             report = await self.booppa_ai.generate_compliance_report(assessment_data)
 
             # Format the report as narrative
             narrative = self._format_report_as_narrative(report)
+
+            # Cache the result for 24 hours
+            self.cache.setex(cache_key, 86400, narrative)
 
             logger.info(
                 f"Generated Booppa-specialized audit narrative: {len(narrative)} chars"

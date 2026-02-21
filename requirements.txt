@@ -59,3 +59,4 @@ greenlet==3.0.1
 # Browser automation for screenshots
 playwright
 django-ckeditor
+mangum==0.17.0
