@@ -108,15 +108,7 @@ jobs:
             ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}
             ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:latest
 
-      - name: Deploy to AWS Lambda
-        env:
-          LAMBDA_FUNCTION_NAME: booppa-api-lambda
-          IMAGE_URI: ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}
-        run: |
-          aws lambda update-function-code \
-            --function-name $LAMBDA_FUNCTION_NAME \
-            --image-uri $IMAGE_URI \
-            --region $AWS_REGION
+
 
       - name: Register ECS task definition - app
         env:
