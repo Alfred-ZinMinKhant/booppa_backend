@@ -151,3 +151,7 @@ class SupportTicketReply(Base):
 
 # Import V6 extensions so Alembic picks them up correctly
 from .models_v6 import *
+
+# Import V8 extensions (VendorStatusSnapshot, ScoreSnapshot, NotarizationMetadata,
+# RfpRequirement, RfpRequirementFlag)
+from .models_v8 import *
