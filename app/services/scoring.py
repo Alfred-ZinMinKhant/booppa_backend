@@ -10,6 +10,27 @@ from app.core.models import (
 
 logger = logging.getLogger(__name__)
 
+# Lazy import to avoid circular dependency — called after score is committed
+def _record_score_snapshot_lazy(db: Session, vendor_id: str, score_record):
+    """Write a ScoreSnapshot and refresh VendorStatusSnapshot after every score update."""
+    try:
+        from app.services.vendor_status import record_score_snapshot, upsert_status_snapshot
+        record_score_snapshot(
+            db=db,
+            vendor_id=str(vendor_id),
+            final_score=score_record.total_score,
+            breakdown={
+                "compliance":          score_record.compliance_score,
+                "visibility":          score_record.visibility_score,
+                "engagement":          score_record.engagement_score,
+                "recency":             score_record.recency_score,
+                "procurement_interest": score_record.procurement_interest_score,
+            },
+        )
+        upsert_status_snapshot(db=db, vendor_id=str(vendor_id))
+    except Exception as e:
+        logger.warning(f"ScoreSnapshot hook failed for vendor={vendor_id}: {e}")
+
 class VendorScoreEngine:
     WEIGHTS = {
         "COMPLIANCE": 0.30,
@@ -171,6 +192,10 @@ class VendorScoreEngine:
         db.add(gov_record)
         db.commit()
         db.refresh(score_record)
+
+        # Seed ScoreSnapshot + refresh VendorStatusSnapshot (V8 trust layer)
+        _record_score_snapshot_lazy(db, vendor_id, score_record)
+
         return score_record
 
 class EnterpriseBehavioralEngine:

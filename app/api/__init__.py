@@ -11,6 +11,10 @@ from .booking import router as booking_router
 from .tickets import router as tickets_router
 from .verify import router as verify_router
 from .bridge import router as bridge_router
+# V8 new routes
+from .vendor_status import router as vendor_status_router
+from .procurement import router as procurement_router
+from .rfp_requirements import router as rfp_requirements_router
 
 router = APIRouter()
 
@@ -28,3 +32,9 @@ router.include_router(tickets_router, prefix="/tickets", tags=["tickets"])
 router.include_router(qr_scan_router, prefix="", tags=["qr-scan"])
 router.include_router(verify_router, prefix="/verify", tags=["verify"])
 router.include_router(bridge_router, prefix="")
+# V8 — Vendor Status, Sector Pressure, CAL Dashboard
+router.include_router(vendor_status_router, prefix="/vendor", tags=["vendor-status"])
+# V8 — Enterprise Procurement Dashboard
+router.include_router(procurement_router, prefix="/procurement", tags=["procurement"])
+# V8 — RFP Requirements
+router.include_router(rfp_requirements_router, prefix="/rfp-requirements", tags=["rfp-requirements"])
