@@ -24,8 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.core.db import get_db
-from app.core.auth import get_current_user
+from app.core.db import get_db, get_current_user
 from app.core.models import User, VendorScore, VerifyRecord
 from app.core.models_v8 import (
     RfpRequirement,

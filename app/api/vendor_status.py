@@ -9,8 +9,7 @@ GET /api/vendor/dashboard-cal    → CAL payload: ladder + suggestion + message 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.db import get_db
-from app.core.auth import get_current_user
+from app.core.db import get_db, get_current_user
 from app.services.vendor_status import get_vendor_status
 from app.services.sector_pressure import (
     get_sector_competitive_pressure,

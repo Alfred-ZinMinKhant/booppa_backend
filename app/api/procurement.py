@@ -25,8 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from app.core.db import get_db
-from app.core.auth import get_current_user
+from app.core.db import get_db, get_current_user
 from app.core.models import (
     User, VendorScore, VerifyRecord, VendorSector,
     EnterpriseProfile, GovernanceRecord, ActivityLog,
