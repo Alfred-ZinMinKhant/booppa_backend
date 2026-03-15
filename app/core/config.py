@@ -95,6 +95,18 @@ class Settings(BaseSettings):
     BOOKING_MAX_PER_SLOT: int = 1
     BOOKING_DAYS_AHEAD: int = 60
 
+    # Feature Flags
+    FEATURE_COMPARISON: bool = False
+    FEATURE_SEO: bool = False
+    FEATURE_RANKING: bool = False
+    FEATURE_GRAPH: bool = False
+    FEATURE_COMPETITION: bool = False
+    FEATURE_INSIGHT: bool = False
+    FEATURE_PROCUREMENT_AUTOMATION: bool = False
+
+    # Auto-activation check interval (seconds)
+    AUTO_ACTIVATION_INTERVAL: int = 3600  # 1 hour
+
     class Config:
         env_file = ".env"
         case_sensitive = True

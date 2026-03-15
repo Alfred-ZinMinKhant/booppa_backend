@@ -10,6 +10,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.db import Base
 from app.core.models import User, Report, TaskLock, DemoBooking, SupportTicket, SupportTicketReply
+from app.core.models_v6 import *   # noqa: F401,F403 — VendorScore, VerifyRecord, etc.
+from app.core.models_v8 import *   # noqa: F401,F403 — VendorStatusSnapshot, EvidencePackage, etc.
+from app.core.models_v10 import *  # noqa: F401,F403 — MarketplaceVendor, FeatureFlag, etc.
 from app.core.config import settings
 
 # this is the Alembic Config object

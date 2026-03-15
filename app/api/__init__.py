@@ -15,6 +15,18 @@ from .bridge import router as bridge_router
 from .vendor_status import router as vendor_status_router
 from .procurement import router as procurement_router
 from .rfp_requirements import router as rfp_requirements_router
+# V10 new routes
+from .marketplace import router as marketplace_router
+from .feature_flags import router as feature_flags_router
+from .comparison import router as comparison_router
+from .seo import router as seo_router
+from .rankings import router as rankings_router
+from .funnel import router as funnel_router
+from .discovery import router as discovery_router
+from .referrals import router as referrals_router
+from .widget import router as widget_router
+from .sse import router as sse_router
+from .notarize import router as notarize_router
 
 router = APIRouter()
 
@@ -38,3 +50,25 @@ router.include_router(vendor_status_router, prefix="/vendor", tags=["vendor-stat
 router.include_router(procurement_router, prefix="/procurement", tags=["procurement"])
 # V8 — RFP Requirements
 router.include_router(rfp_requirements_router, prefix="/rfp-requirements", tags=["rfp-requirements"])
+# V10 — Marketplace & Vendor Directory
+router.include_router(marketplace_router, prefix="/marketplace", tags=["marketplace"])
+# V10 — Feature Flags
+router.include_router(feature_flags_router, prefix="/features", tags=["feature-flags"])
+# V10 — Vendor Comparison (Phase 2)
+router.include_router(comparison_router, prefix="/compare", tags=["comparison"])
+# V10 — SEO Engine (Phase 2)
+router.include_router(seo_router, prefix="/seo", tags=["seo"])
+# V10 — Rankings & Leaderboard (Phase 3)
+router.include_router(rankings_router, prefix="/rankings", tags=["rankings"])
+# V10 — Funnel & Analytics
+router.include_router(funnel_router, prefix="/funnel", tags=["funnel"])
+# V10 — Vendor Discovery (GeBIZ, ACRA)
+router.include_router(discovery_router, prefix="/discovery", tags=["discovery"])
+# V10 — Referral Program
+router.include_router(referrals_router, prefix="/referrals", tags=["referrals"])
+# V10 — Embeddable Widget
+router.include_router(widget_router, prefix="/widget", tags=["widget"])
+# V10 — Server-Sent Events
+router.include_router(sse_router, prefix="/sse", tags=["sse"])
+# V10 — Notarization Upload
+router.include_router(notarize_router, prefix="/notarize", tags=["notarization"])

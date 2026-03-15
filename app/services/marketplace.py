@@ -1,0 +1,232 @@
+"""
+Marketplace Service
+===================
+CSV import, vendor directory search, slug generation, deduplication.
+"""
+
+import csv
+import io
+import re
+import logging
+from datetime import datetime
+from typing import Optional
+from uuid import uuid4
+
+from sqlalchemy.orm import Session
+from sqlalchemy import or_, func
+from app.core.models_v10 import MarketplaceVendor, ImportBatch
+
+logger = logging.getLogger(__name__)
+
+
+def generate_slug(name: str) -> str:
+    """Generate URL-safe slug from company name."""
+    slug = name.lower().strip()
+    slug = re.sub(r'[^a-z0-9\s-]', '', slug)
+    slug = re.sub(r'[\s-]+', '-', slug)
+    slug = slug.strip('-')
+    return slug[:200]
+
+
+def _find_duplicate(db: Session, domain: Optional[str], uen: Optional[str], slug: str) -> Optional[MarketplaceVendor]:
+    """Check for existing vendor by UEN (primary), domain, or slug."""
+    if uen:
+        existing = db.query(MarketplaceVendor).filter(MarketplaceVendor.uen == uen).first()
+        if existing:
+            return existing
+    if domain:
+        existing = db.query(MarketplaceVendor).filter(MarketplaceVendor.domain == domain).first()
+        if existing:
+            return existing
+    existing = db.query(MarketplaceVendor).filter(MarketplaceVendor.slug == slug).first()
+    return existing
+
+
+def import_csv_data(
+    db: Session,
+    csv_content: str,
+    filename: str = "upload.csv",
+    source: str = "csv",
+    created_by: Optional[str] = None,
+    dry_run: bool = False,
+) -> dict:
+    """Import vendors from CSV content string."""
+    batch = ImportBatch(
+        filename=filename,
+        source=source,
+        status="PROCESSING",
+        started_at=datetime.utcnow(),
+        created_by=created_by,
+    )
+    if not dry_run:
+        db.add(batch)
+        db.flush()
+
+    reader = csv.DictReader(io.StringIO(csv_content))
+    imported = 0
+    skipped = 0
+    errors = []
+    total = 0
+
+    for row in reader:
+        total += 1
+        try:
+            name = row.get("company_name", "").strip()
+            if not name:
+                errors.append({"row": total, "error": "Missing company_name"})
+                continue
+
+            domain = row.get("domain", "").strip() or row.get("website", "").strip()
+            if domain:
+                domain = re.sub(r'^https?://', '', domain).split('/')[0].lower()
+
+            uen = row.get("uen", "").strip() or None
+            slug = generate_slug(name)
+
+            existing = _find_duplicate(db, domain, uen, slug)
+            if existing:
+                skipped += 1
+                continue
+
+            # Make slug unique
+            base_slug = slug
+            counter = 1
+            while db.query(MarketplaceVendor).filter(MarketplaceVendor.slug == slug).first():
+                slug = f"{base_slug}-{counter}"
+                counter += 1
+
+            vendor = MarketplaceVendor(
+                company_name=name,
+                slug=slug,
+                domain=domain or None,
+                website=row.get("website", "").strip() or None,
+                uen=uen,
+                industry=row.get("industry", "").strip() or None,
+                country=row.get("country", "").strip() or "Singapore",
+                city=row.get("city", "").strip() or None,
+                short_description=row.get("short_description", "").strip() or None,
+                linkedin_url=row.get("linkedin_url", "").strip() or None,
+                crunchbase_url=row.get("crunchbase_url", "").strip() or None,
+                import_batch_id=batch.id if not dry_run else None,
+                source=source,
+            )
+
+            if not dry_run:
+                db.add(vendor)
+            imported += 1
+
+        except Exception as e:
+            errors.append({"row": total, "error": str(e)})
+
+    if not dry_run:
+        batch.total_rows = total
+        batch.imported_count = imported
+        batch.skipped_count = skipped
+        batch.error_count = len(errors)
+        batch.errors = errors[:100]  # Limit stored errors
+        batch.status = "COMPLETE"
+        batch.completed_at = datetime.utcnow()
+        db.commit()
+
+    return {
+        "batch_id": str(batch.id) if not dry_run else None,
+        "total_rows": total,
+        "imported": imported,
+        "skipped": skipped,
+        "errors": len(errors),
+        "error_details": errors[:20],
+        "dry_run": dry_run,
+    }
+
+
+def search_marketplace(
+    db: Session,
+    query: Optional[str] = None,
+    industry: Optional[str] = None,
+    country: Optional[str] = None,
+    page: int = 1,
+    per_page: int = 20,
+) -> dict:
+    """Search marketplace vendors with pagination."""
+    q = db.query(MarketplaceVendor)
+
+    if query:
+        search = f"%{query}%"
+        q = q.filter(
+            or_(
+                MarketplaceVendor.company_name.ilike(search),
+                MarketplaceVendor.short_description.ilike(search),
+                MarketplaceVendor.industry.ilike(search),
+            )
+        )
+
+    if industry:
+        q = q.filter(MarketplaceVendor.industry.ilike(f"%{industry}%"))
+
+    if country:
+        q = q.filter(MarketplaceVendor.country.ilike(f"%{country}%"))
+
+    total = q.count()
+    vendors = q.order_by(MarketplaceVendor.company_name).offset((page - 1) * per_page).limit(per_page).all()
+
+    return {
+        "vendors": [
+            {
+                "id": str(v.id),
+                "company_name": v.company_name,
+                "slug": v.slug,
+                "domain": v.domain,
+                "website": v.website,
+                "industry": v.industry,
+                "country": v.country,
+                "city": v.city,
+                "short_description": v.short_description,
+                "scan_status": v.scan_status,
+                "claimed": v.claimed_by_user_id is not None,
+            }
+            for v in vendors
+        ],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": (total + per_page - 1) // per_page,
+    }
+
+
+def get_vendor_by_slug(db: Session, slug: str) -> Optional[dict]:
+    """Get a single marketplace vendor by slug."""
+    v = db.query(MarketplaceVendor).filter(MarketplaceVendor.slug == slug).first()
+    if not v:
+        return None
+    return {
+        "id": str(v.id),
+        "company_name": v.company_name,
+        "slug": v.slug,
+        "domain": v.domain,
+        "website": v.website,
+        "uen": v.uen,
+        "industry": v.industry,
+        "country": v.country,
+        "city": v.city,
+        "short_description": v.short_description,
+        "linkedin_url": v.linkedin_url,
+        "crunchbase_url": v.crunchbase_url,
+        "scan_status": v.scan_status,
+        "claimed": v.claimed_by_user_id is not None,
+        "created_at": v.created_at.isoformat() if v.created_at else None,
+    }
+
+
+def get_industries(db: Session) -> list[dict]:
+    """Get all industries with vendor counts."""
+    results = (
+        db.query(
+            MarketplaceVendor.industry,
+            func.count(MarketplaceVendor.id).label("count"),
+        )
+        .filter(MarketplaceVendor.industry.isnot(None))
+        .group_by(MarketplaceVendor.industry)
+        .order_by(func.count(MarketplaceVendor.id).desc())
+        .all()
+    )
+    return [{"industry": r[0], "count": r[1], "slug": generate_slug(r[0])} for r in results]

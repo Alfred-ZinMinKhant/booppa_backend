@@ -1,0 +1,73 @@
+"""
+Marketplace API Routes
+======================
+Vendor directory, CSV import, search, and entity profiles.
+"""
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from typing import Optional
+from app.core.db import get_db
+from app.services.marketplace import (
+    import_csv_data, search_marketplace, get_vendor_by_slug, get_industries,
+)
+
+router = APIRouter()
+
+
+class ImportResponse(BaseModel):
+    batch_id: Optional[str] = None
+    total_rows: int
+    imported: int
+    skipped: int
+    errors: int
+    dry_run: bool
+
+
+@router.get("/search")
+async def search_vendors(
+    q: Optional[str] = Query(None, description="Search query"),
+    industry: Optional[str] = Query(None),
+    country: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Search marketplace vendors."""
+    return search_marketplace(db, query=q, industry=industry, country=country, page=page, per_page=per_page)
+
+
+@router.get("/industries")
+async def list_industries(db: Session = Depends(get_db)):
+    """List all industries with vendor counts."""
+    return get_industries(db)
+
+
+@router.get("/vendor/{slug}")
+async def get_vendor(slug: str, db: Session = Depends(get_db)):
+    """Get vendor by slug."""
+    vendor = get_vendor_by_slug(db, slug)
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    return vendor
+
+
+@router.post("/import/csv", response_model=ImportResponse)
+async def import_csv(
+    file: UploadFile = File(...),
+    dry_run: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """Import vendors from CSV file."""
+    if not file.filename or not file.filename.endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a CSV")
+
+    content = await file.read()
+    try:
+        csv_text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        csv_text = content.decode("latin-1")
+
+    result = import_csv_data(db, csv_text, filename=file.filename, dry_run=dry_run)
+    return result

@@ -307,6 +307,9 @@ class EvidencePackage(Base):
     # DRAFT | UNDER_REVIEW | READY | REJECTED
     status = Column(String(20), nullable=False, default="DRAFT", index=True)
 
+    # STANDARD | EXPRESS | COMPLETE (v12 bug fix — was missing)
+    tier = Column(String(20), nullable=True, index=True)
+
     # The sector this evidence bundle is curated for (matches VendorSector.sector)
     sector = Column(String(100), nullable=True, index=True)
 

@@ -25,24 +25,14 @@ PRICE_MAP = {
     or os.environ.get("NEXT_PUBLIC_STRIPE_SUPPLY_CHAIN_10"),
     "supply_chain_50": os.environ.get("STRIPE_SUPPLY_CHAIN_50")
     or os.environ.get("NEXT_PUBLIC_STRIPE_SUPPLY_CHAIN_50"),
-    "compliance_notarization_1": (
-        os.environ.get("STRIPE_COMPLIANCE_NOTARIZATION_1")
-        or os.environ.get("NEXT_PUBLIC_STRIPE_COMPLIANCE_NOTARIZATION_1")
-        or os.environ.get("STRIPE_SUPPLY_CHAIN_1")
-        or os.environ.get("NEXT_PUBLIC_STRIPE_SUPPLY_CHAIN_1")
-    ),
-    "compliance_notarization_10": (
-        os.environ.get("STRIPE_COMPLIANCE_NOTARIZATION_10")
-        or os.environ.get("NEXT_PUBLIC_STRIPE_COMPLIANCE_NOTARIZATION_10")
-        or os.environ.get("STRIPE_SUPPLY_CHAIN_10")
-        or os.environ.get("NEXT_PUBLIC_STRIPE_SUPPLY_CHAIN_10")
-    ),
-    "compliance_notarization_50": (
-        os.environ.get("STRIPE_COMPLIANCE_NOTARIZATION_50")
-        or os.environ.get("NEXT_PUBLIC_STRIPE_COMPLIANCE_NOTARIZATION_50")
-        or os.environ.get("STRIPE_SUPPLY_CHAIN_50")
-        or os.environ.get("NEXT_PUBLIC_STRIPE_SUPPLY_CHAIN_50")
-    ),
+    "compliance_notarization_1": os.environ.get("STRIPE_COMPLIANCE_NOTARIZATION_1")
+    or os.environ.get("NEXT_PUBLIC_STRIPE_COMPLIANCE_NOTARIZATION_1"),
+    "compliance_notarization_10": os.environ.get("STRIPE_COMPLIANCE_NOTARIZATION_10")
+    or os.environ.get("NEXT_PUBLIC_STRIPE_COMPLIANCE_NOTARIZATION_10"),
+    "compliance_notarization_50": os.environ.get("STRIPE_COMPLIANCE_NOTARIZATION_50")
+    or os.environ.get("NEXT_PUBLIC_STRIPE_COMPLIANCE_NOTARIZATION_50"),
+    "vendor_proof": os.environ.get("STRIPE_VENDOR_PROOF")
+    or os.environ.get("NEXT_PUBLIC_STRIPE_VENDOR_PROOF"),
     "rfp_kit_express": os.environ.get("STRIPE_RFP_EXPRESS")
     or os.environ.get("NEXT_PUBLIC_STRIPE_RFP_EXPRESS"),
     "rfp_kit_complete": os.environ.get("STRIPE_RFP_COMPLETE")
@@ -61,6 +51,7 @@ MODE_MAP = {
     "compliance_notarization_1": "payment",
     "compliance_notarization_10": "payment",
     "compliance_notarization_50": "payment",
+    "vendor_proof": "payment",
     "rfp_kit_express": "payment",
     "rfp_kit_complete": "payment",
 }
@@ -129,6 +120,9 @@ async def checkout_post(request: Request):
             f"Creating checkout session for product={product_type} price_id={price_id} report_id={report_id} prefill_email={prefill_email}"
         )
         success_url = f"{base_url}/thank-you?session_id={{CHECKOUT_SESSION_ID}}&product={product_type}"
+        # Notarization products redirect to the certificate result page
+        if product_type and "compliance_notarization" in product_type and report_id:
+            success_url = f"{base_url}/notarization/result?session_id={{CHECKOUT_SESSION_ID}}&report_id={report_id}"
         # simple cancel URL mapping
         cancel_path = (
             "pdpa"
@@ -290,6 +284,15 @@ async def checkout_verify(session_id: str | None = None):
                     (metadata or {}).get("product_type")
                     if isinstance(metadata, dict)
                     else None
+                ),
+                "report_id": (
+                    (metadata or {}).get("report_id")
+                    if isinstance(metadata, dict)
+                    else None
+                ) or (
+                    session.get("client_reference_id")
+                    if hasattr(session, "get")
+                    else getattr(session, "client_reference_id", None)
                 ),
                 "customer_email": customer_email,
             }
