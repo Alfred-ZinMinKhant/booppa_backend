@@ -29,8 +29,8 @@ MODE_MAP = {
     "compliance_notarization_10": "payment",
     "compliance_notarization_50": "payment",
     "vendor_proof": "payment",
-    "rfp_kit_express": "payment",
-    "rfp_kit_complete": "payment",
+    "rfp_express": "payment",
+    "rfp_complete": "payment",
 }
 
 
