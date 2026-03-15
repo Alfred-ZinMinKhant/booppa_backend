@@ -127,12 +127,27 @@ jobs:
           EXECUTION_ROLE_ARN: ${{ secrets.AWS_ECS_EXECUTION_ROLE_ARN }}
           TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
-          # Optional Stripe test secrets from GitHub Secrets (for CI/test deployments)
+          # Stripe keys
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
           NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY }}
+          # Stripe price IDs
           STRIPE_PDPA_QUICK_SCAN: ${{ secrets.STRIPE_PDPA_QUICK_SCAN }}
+          STRIPE_PDPA_BASIC: ${{ secrets.STRIPE_PDPA_BASIC }}
+          STRIPE_PDPA_PRO: ${{ secrets.STRIPE_PDPA_PRO }}
+          STRIPE_COMPLIANCE_STANDARD: ${{ secrets.STRIPE_COMPLIANCE_STANDARD }}
+          STRIPE_COMPLIANCE_PRO: ${{ secrets.STRIPE_COMPLIANCE_PRO }}
+          STRIPE_SUPPLY_CHAIN_1: ${{ secrets.STRIPE_SUPPLY_CHAIN_1 }}
+          STRIPE_SUPPLY_CHAIN_10: ${{ secrets.STRIPE_SUPPLY_CHAIN_10 }}
+          STRIPE_SUPPLY_CHAIN_50: ${{ secrets.STRIPE_SUPPLY_CHAIN_50 }}
+          STRIPE_COMPLIANCE_NOTARIZATION_1: ${{ secrets.STRIPE_COMPLIANCE_NOTARIZATION_1 }}
+          STRIPE_COMPLIANCE_NOTARIZATION_10: ${{ secrets.STRIPE_COMPLIANCE_NOTARIZATION_10 }}
+          STRIPE_COMPLIANCE_NOTARIZATION_50: ${{ secrets.STRIPE_COMPLIANCE_NOTARIZATION_50 }}
+          STRIPE_VENDOR_PROOF: ${{ secrets.STRIPE_VENDOR_PROOF }}
+          STRIPE_RFP_EXPRESS: ${{ secrets.STRIPE_RFP_EXPRESS }}
+          STRIPE_RFP_COMPLETE: ${{ secrets.STRIPE_RFP_COMPLETE }}
           NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN: ${{ secrets.NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN }}
+          # App config
           NEXT_PUBLIC_BASE_URL: ${{ secrets.NEXT_PUBLIC_BASE_URL }}
           BACKEND_BASE_URL: ${{ secrets.BACKEND_BASE_URL }}
           VERIFY_BASE_URL: ${{ secrets.VERIFY_BASE_URL }}
@@ -141,7 +156,6 @@ jobs:
           BLOCKCHAIN_PRIVATE_KEY: ${{ secrets.BLOCKCHAIN_PRIVATE_KEY }}
           ANCHOR_CONTRACT_ADDRESS: ${{ secrets.ANCHOR_CONTRACT_ADDRESS }}
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
-          # ARN of a Secrets Manager secret that contains DATABASE_URL (set this as a GitHub secret)
           DB_SECRET_ARN: ${{ secrets.AWS_SECRETSMANAGER_DATABASE_URL_ARN }}
         run: |
           CPU=${APP_CPU:-256}
@@ -169,6 +183,19 @@ jobs:
                   { "name": "STRIPE_WEBHOOK_SECRET", "value": "${STRIPE_WEBHOOK_SECRET}" },
                   { "name": "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY", "value": "${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}" },
                   { "name": "STRIPE_PDPA_QUICK_SCAN", "value": "${STRIPE_PDPA_QUICK_SCAN}" },
+                  { "name": "STRIPE_PDPA_BASIC", "value": "${STRIPE_PDPA_BASIC}" },
+                  { "name": "STRIPE_PDPA_PRO", "value": "${STRIPE_PDPA_PRO}" },
+                  { "name": "STRIPE_COMPLIANCE_STANDARD", "value": "${STRIPE_COMPLIANCE_STANDARD}" },
+                  { "name": "STRIPE_COMPLIANCE_PRO", "value": "${STRIPE_COMPLIANCE_PRO}" },
+                  { "name": "STRIPE_SUPPLY_CHAIN_1", "value": "${STRIPE_SUPPLY_CHAIN_1}" },
+                  { "name": "STRIPE_SUPPLY_CHAIN_10", "value": "${STRIPE_SUPPLY_CHAIN_10}" },
+                  { "name": "STRIPE_SUPPLY_CHAIN_50", "value": "${STRIPE_SUPPLY_CHAIN_50}" },
+                  { "name": "STRIPE_COMPLIANCE_NOTARIZATION_1", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_1}" },
+                  { "name": "STRIPE_COMPLIANCE_NOTARIZATION_10", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_10}" },
+                  { "name": "STRIPE_COMPLIANCE_NOTARIZATION_50", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_50}" },
+                  { "name": "STRIPE_VENDOR_PROOF", "value": "${STRIPE_VENDOR_PROOF}" },
+                  { "name": "STRIPE_RFP_EXPRESS", "value": "${STRIPE_RFP_EXPRESS}" },
+                  { "name": "STRIPE_RFP_COMPLETE", "value": "${STRIPE_RFP_COMPLETE}" },
                   { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" },
                   { "name": "NEXT_PUBLIC_BASE_URL", "value": "${NEXT_PUBLIC_BASE_URL}" },
                   { "name": "BACKEND_BASE_URL", "value": "${BACKEND_BASE_URL}" },
@@ -212,6 +239,19 @@ jobs:
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
           NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY }}
           STRIPE_PDPA_QUICK_SCAN: ${{ secrets.STRIPE_PDPA_QUICK_SCAN }}
+          STRIPE_PDPA_BASIC: ${{ secrets.STRIPE_PDPA_BASIC }}
+          STRIPE_PDPA_PRO: ${{ secrets.STRIPE_PDPA_PRO }}
+          STRIPE_COMPLIANCE_STANDARD: ${{ secrets.STRIPE_COMPLIANCE_STANDARD }}
+          STRIPE_COMPLIANCE_PRO: ${{ secrets.STRIPE_COMPLIANCE_PRO }}
+          STRIPE_SUPPLY_CHAIN_1: ${{ secrets.STRIPE_SUPPLY_CHAIN_1 }}
+          STRIPE_SUPPLY_CHAIN_10: ${{ secrets.STRIPE_SUPPLY_CHAIN_10 }}
+          STRIPE_SUPPLY_CHAIN_50: ${{ secrets.STRIPE_SUPPLY_CHAIN_50 }}
+          STRIPE_COMPLIANCE_NOTARIZATION_1: ${{ secrets.STRIPE_COMPLIANCE_NOTARIZATION_1 }}
+          STRIPE_COMPLIANCE_NOTARIZATION_10: ${{ secrets.STRIPE_COMPLIANCE_NOTARIZATION_10 }}
+          STRIPE_COMPLIANCE_NOTARIZATION_50: ${{ secrets.STRIPE_COMPLIANCE_NOTARIZATION_50 }}
+          STRIPE_VENDOR_PROOF: ${{ secrets.STRIPE_VENDOR_PROOF }}
+          STRIPE_RFP_EXPRESS: ${{ secrets.STRIPE_RFP_EXPRESS }}
+          STRIPE_RFP_COMPLETE: ${{ secrets.STRIPE_RFP_COMPLETE }}
           NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN: ${{ secrets.NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN }}
           NEXT_PUBLIC_BASE_URL: ${{ secrets.NEXT_PUBLIC_BASE_URL }}
           BACKEND_BASE_URL: ${{ secrets.BACKEND_BASE_URL }}
@@ -250,6 +290,19 @@ jobs:
                   { "name": "STRIPE_WEBHOOK_SECRET", "value": "${STRIPE_WEBHOOK_SECRET}" },
                   { "name": "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY", "value": "${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}" },
                   { "name": "STRIPE_PDPA_QUICK_SCAN", "value": "${STRIPE_PDPA_QUICK_SCAN}" },
+                  { "name": "STRIPE_PDPA_BASIC", "value": "${STRIPE_PDPA_BASIC}" },
+                  { "name": "STRIPE_PDPA_PRO", "value": "${STRIPE_PDPA_PRO}" },
+                  { "name": "STRIPE_COMPLIANCE_STANDARD", "value": "${STRIPE_COMPLIANCE_STANDARD}" },
+                  { "name": "STRIPE_COMPLIANCE_PRO", "value": "${STRIPE_COMPLIANCE_PRO}" },
+                  { "name": "STRIPE_SUPPLY_CHAIN_1", "value": "${STRIPE_SUPPLY_CHAIN_1}" },
+                  { "name": "STRIPE_SUPPLY_CHAIN_10", "value": "${STRIPE_SUPPLY_CHAIN_10}" },
+                  { "name": "STRIPE_SUPPLY_CHAIN_50", "value": "${STRIPE_SUPPLY_CHAIN_50}" },
+                  { "name": "STRIPE_COMPLIANCE_NOTARIZATION_1", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_1}" },
+                  { "name": "STRIPE_COMPLIANCE_NOTARIZATION_10", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_10}" },
+                  { "name": "STRIPE_COMPLIANCE_NOTARIZATION_50", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_50}" },
+                  { "name": "STRIPE_VENDOR_PROOF", "value": "${STRIPE_VENDOR_PROOF}" },
+                  { "name": "STRIPE_RFP_EXPRESS", "value": "${STRIPE_RFP_EXPRESS}" },
+                  { "name": "STRIPE_RFP_COMPLETE", "value": "${STRIPE_RFP_COMPLETE}" },
                   { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" },
                   { "name": "NEXT_PUBLIC_BASE_URL", "value": "${NEXT_PUBLIC_BASE_URL}" },
                   { "name": "BACKEND_BASE_URL", "value": "${BACKEND_BASE_URL}" },
