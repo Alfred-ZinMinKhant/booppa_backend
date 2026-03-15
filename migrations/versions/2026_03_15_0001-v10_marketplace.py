@@ -1,7 +1,7 @@
 """V10 marketplace, feature flags, funnel analytics, leaderboard
 
 Revision ID: v10_marketplace
-Revises: (latest)
+Revises: 2026_03_04_0002
 Create Date: 2026-03-15
 """
 from alembic import op
@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 # revision identifiers
 revision = "v10_marketplace"
-down_revision = None  # will be set by alembic autogenerate
+down_revision = "2026_03_04_0002"
 branch_labels = None
 depends_on = None
 
