@@ -416,7 +416,7 @@ class PDFService:
             qr_target = pending_url
         else:
             # CRITICAL FIX: Zero spaces in Polygonscan URL for valid QR codes
-            polygonscan_url = f"https://polygonscan.com/tx/{tx_hash}"
+            polygonscan_url = f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{tx_hash}"
             sections.append(
                 Paragraph(
                     f'<b>Verification URL:</b> <a href="{polygonscan_url}">{polygonscan_url}</a>',

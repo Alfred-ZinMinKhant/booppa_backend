@@ -34,6 +34,7 @@ class Settings(BaseSettings):
 
     # Blockchain
     POLYGON_RPC_URL: str = "https://polygon-rpc.com"
+    POLYGON_EXPLORER_URL: str = "https://amoy.polygonscan.com"
     ANCHOR_CONTRACT_ADDRESS: str = "0x0000000000000000000000000000000000000000"
     PRIVATE_KEY_ENCRYPTED: Optional[str] = None
     BLOCKCHAIN_PRIVATE_KEY: Optional[str] = None
@@ -65,7 +66,7 @@ class Settings(BaseSettings):
 
     # Report generation
     SKIP_PDF_GENERATION: bool = False
-    VERIFY_BASE_URL: str = "https://verify.booppa.io"
+    VERIFY_BASE_URL: str = "https://www.booppa.io"
 
     # Monitor v5.5++
     MONITOR_CACHE_DIR: str = ".cache/monitor"

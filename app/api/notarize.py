@@ -182,7 +182,7 @@ async def get_certificate(report_id: str):
         verification = None
         if report.audit_hash:
             verify_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/verify/{report.audit_hash}"
-            polygonscan_url = f"https://polygonscan.com/tx/{report.tx_hash}" if report.tx_hash else None
+            polygonscan_url = f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{report.tx_hash}" if report.tx_hash else None
 
             anchored = False
             anchored_at = None
