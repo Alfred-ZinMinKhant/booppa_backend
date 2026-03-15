@@ -7,37 +7,14 @@ import logging
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Price map: reads environment variables. Missing values will cause 400 errors later.
-PRICE_MAP = {
-    "pdpa_quick_scan": os.environ.get("STRIPE_PDPA_QUICK_SCAN")
-    or os.environ.get("NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN"),
-    "pdpa_basic": os.environ.get("STRIPE_PDPA_BASIC")
-    or os.environ.get("NEXT_PUBLIC_STRIPE_PDPA_BASIC"),
-    "pdpa_pro": os.environ.get("STRIPE_PDPA_PRO")
-    or os.environ.get("NEXT_PUBLIC_STRIPE_PDPA_PRO"),
-    "compliance_standard": os.environ.get("STRIPE_COMPLIANCE_STANDARD")
-    or os.environ.get("NEXT_PUBLIC_STRIPE_COMPLIANCE_STANDARD"),
-    "compliance_pro": os.environ.get("STRIPE_COMPLIANCE_PRO")
-    or os.environ.get("NEXT_PUBLIC_STRIPE_COMPLIANCE_PRO"),
-    "supply_chain_1": os.environ.get("STRIPE_SUPPLY_CHAIN_1")
-    or os.environ.get("NEXT_PUBLIC_STRIPE_SUPPLY_CHAIN_1"),
-    "supply_chain_10": os.environ.get("STRIPE_SUPPLY_CHAIN_10")
-    or os.environ.get("NEXT_PUBLIC_STRIPE_SUPPLY_CHAIN_10"),
-    "supply_chain_50": os.environ.get("STRIPE_SUPPLY_CHAIN_50")
-    or os.environ.get("NEXT_PUBLIC_STRIPE_SUPPLY_CHAIN_50"),
-    "compliance_notarization_1": os.environ.get("STRIPE_COMPLIANCE_NOTARIZATION_1")
-    or os.environ.get("NEXT_PUBLIC_STRIPE_COMPLIANCE_NOTARIZATION_1"),
-    "compliance_notarization_10": os.environ.get("STRIPE_COMPLIANCE_NOTARIZATION_10")
-    or os.environ.get("NEXT_PUBLIC_STRIPE_COMPLIANCE_NOTARIZATION_10"),
-    "compliance_notarization_50": os.environ.get("STRIPE_COMPLIANCE_NOTARIZATION_50")
-    or os.environ.get("NEXT_PUBLIC_STRIPE_COMPLIANCE_NOTARIZATION_50"),
-    "vendor_proof": os.environ.get("STRIPE_VENDOR_PROOF")
-    or os.environ.get("NEXT_PUBLIC_STRIPE_VENDOR_PROOF"),
-    "rfp_kit_express": os.environ.get("STRIPE_RFP_EXPRESS")
-    or os.environ.get("NEXT_PUBLIC_STRIPE_RFP_EXPRESS"),
-    "rfp_kit_complete": os.environ.get("STRIPE_RFP_COMPLETE")
-    or os.environ.get("NEXT_PUBLIC_STRIPE_RFP_COMPLETE"),
-}
+# Price map: resolved at request time so env vars set after import are picked up.
+def _get_price(product_type: str) -> str | None:
+    """Look up the Stripe Price ID for a product at call time (not import time)."""
+    env_key = product_type.upper()
+    return (
+        os.environ.get(f"STRIPE_{env_key}")
+        or os.environ.get(f"NEXT_PUBLIC_STRIPE_{env_key}")
+    )
 
 MODE_MAP = {
     "pdpa_quick_scan": "payment",
@@ -97,9 +74,15 @@ async def checkout_post(request: Request):
         raise HTTPException(status_code=400, detail="Missing productType or priceId")
 
     if not price_id:
-        price_id = PRICE_MAP.get(product_type)
+        price_id = _get_price(product_type)
 
     if not price_id:
+        env_key = (product_type or "").upper()
+        logger.error(
+            f"No Stripe price found for product_type={product_type!r}. "
+            f"Checked STRIPE_{env_key}={os.environ.get(f'STRIPE_{env_key}')!r} "
+            f"and NEXT_PUBLIC_STRIPE_{env_key}={os.environ.get(f'NEXT_PUBLIC_STRIPE_{env_key}')!r}"
+        )
         raise HTTPException(
             status_code=400, detail="Invalid product type or price not configured"
         )
@@ -177,7 +160,7 @@ async def checkout_get(
 ):
     """Support GET requests like /checkout?product=... to create a session and redirect the user to Stripe."""
     product_type = product
-    price_id = PRICE_MAP.get(product_type) if product_type else None
+    price_id = _get_price(product_type) if product_type else None
 
     if not price_id:
         raise HTTPException(status_code=404, detail="Product not found")
