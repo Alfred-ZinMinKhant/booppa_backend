@@ -151,7 +151,10 @@ class BlockchainService:
         tx_confirmed = None
         try:
             file_hash = self._hash_to_bytes32(evidence_hash)
-            anchored, anchored_at = self.contract.functions.isAnchored(file_hash).call()
+            anchored, raw_ts = self.contract.functions.isAnchored(file_hash).call()
+            if anchored and raw_ts:
+                from datetime import datetime, timezone
+                anchored_at = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc).isoformat()
         except Exception as e:
             logger.error("Blockchain anchor status failed: %s", e)
 
