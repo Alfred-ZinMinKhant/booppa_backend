@@ -121,12 +121,23 @@ async def checkout_post(request: Request):
         )
         cancel_url = f"{base_url}/{cancel_path}"
 
+        vendor_url = data.get("vendor_url", "")
+        company_name = data.get("company_name", "")
+        rfp_description = data.get("rfp_description", "")
+
         metadata = {"product_type": product_type or "", "client_ip": client_ip}
         if report_id:
             metadata["report_id"] = str(report_id)
         # include customer email in metadata when provided
         if prefill_email:
             metadata["customer_email"] = prefill_email
+        # RFP fulfillment fields — required by webhook to generate the package
+        if vendor_url:
+            metadata["vendor_url"] = vendor_url
+        if company_name:
+            metadata["company_name"] = company_name
+        if rfp_description:
+            metadata["rfp_description"] = rfp_description
 
         session = stripe_client.checkout.Session.create(
             mode=mode,
