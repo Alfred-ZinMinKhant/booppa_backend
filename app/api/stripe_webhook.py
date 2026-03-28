@@ -20,6 +20,153 @@ router = APIRouter()
 
 
 RFP_PRODUCT_TYPES = {"rfp_express", "rfp_complete"}
+NOTARIZATION_PRODUCT_TYPES = {
+    "compliance_notarization_1",
+    "compliance_notarization_10",
+    "compliance_notarization_50",
+}
+
+
+async def _fulfill_notarization(report_id: str, customer_email: str | None) -> None:
+    """
+    Lightweight notarization fulfillment:
+    1. Anchor the original file SHA-256 to the blockchain
+    2. Generate a proper notarization certificate PDF
+    3. Upload to S3, set pipeline flags, send email
+    """
+    db = SessionLocal()
+    try:
+        report = db.query(Report).filter(Report.id == report_id).first()
+        if not report:
+            logger.error(f"[Notarize] Report {report_id} not found")
+            return
+
+        assessment = report.assessment_data if isinstance(report.assessment_data, dict) else {}
+        file_hash = assessment.get("file_hash") or report.audit_hash
+        original_filename = assessment.get("original_filename", "document")
+        file_size = assessment.get("file_size_bytes")
+        contact_email = customer_email or assessment.get("contact_email") or assessment.get("customer_email")
+
+        # Step 1: Anchor file hash on blockchain
+        tx_hash = None
+        try:
+            blockchain = BlockchainService()
+            tx_hash = await blockchain.anchor_evidence(
+                file_hash, metadata=f"notarization:{report_id}"
+            )
+            report.tx_hash = tx_hash
+            report.audit_hash = file_hash  # keep as original file hash for verification
+            assessment["blockchain_anchored"] = True
+            assessment["blockchain_anchored_at"] = datetime.utcnow().isoformat()
+            report.assessment_data = assessment
+            flag_modified(report, "assessment_data")
+            db.commit()
+            logger.info(f"[Notarize] Anchored {file_hash[:16]}… tx={tx_hash}")
+        except Exception as e:
+            logger.error(f"[Notarize] Blockchain anchor failed for {report_id}: {e}")
+
+        # Step 2: Build verify URL
+        verify_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/verify/{file_hash}"
+        polygonscan_url = (
+            f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{tx_hash}" if tx_hash else None
+        )
+
+        # Step 3: Generate notarization certificate PDF
+        pdf_bytes = None
+        try:
+            pdf_service = PDFService()
+            pdf_data = {
+                "report_id": report_id,
+                "framework": "compliance_notarization",
+                "company_name": report.company_name,
+                "created_at": report.created_at.isoformat() if report.created_at else datetime.utcnow().isoformat(),
+                "status": "completed",
+                "tx_hash": tx_hash,
+                "audit_hash": file_hash,
+                "original_filename": original_filename,
+                "file_size": file_size,
+                "verify_url": verify_url,
+                "polygonscan_url": polygonscan_url,
+                "proof_header": "BOOPPA-PROOF-SG",
+                "schema_version": "1.0",
+                "network": "Polygon Amoy Testnet",
+                "testnet_notice": "Anchored on Polygon Amoy testnet. Not yet on mainnet.",
+                "payment_confirmed": True,
+                "tier": "pro",
+                "contact_email": contact_email,
+                "base_url": "https://www.booppa.io",
+            }
+            pdf_bytes = pdf_service.generate_pdf(pdf_data)
+            assessment["pdf_generated"] = True
+            assessment["pdf_generated_at"] = datetime.utcnow().isoformat()
+            report.assessment_data = assessment
+            flag_modified(report, "assessment_data")
+            db.commit()
+        except Exception as e:
+            logger.error(f"[Notarize] PDF generation failed for {report_id}: {e}")
+
+        # Step 4: Upload PDF to S3
+        pdf_url = None
+        if pdf_bytes:
+            try:
+                storage = S3Service()
+                pdf_url = await storage.upload_pdf(pdf_bytes, report_id)
+                report.s3_url = pdf_url
+                assessment["s3_uploaded"] = True
+                assessment["s3_uploaded_at"] = datetime.utcnow().isoformat()
+                assessment["verify_url"] = verify_url
+                assessment["polygonscan_url"] = polygonscan_url
+                report.assessment_data = assessment
+                flag_modified(report, "assessment_data")
+                db.commit()
+            except Exception as e:
+                logger.error(f"[Notarize] S3 upload failed for {report_id}: {e}")
+
+        # Step 5: Mark completed
+        report.status = "completed"
+        report.completed_at = datetime.utcnow()
+        db.commit()
+
+        # Step 6: Send email
+        if contact_email:
+            try:
+                email_svc = EmailService()
+                download_section = (
+                    f'<p><a href="{pdf_url}" style="background-color:#10b981;color:#fff;'
+                    f'padding:10px 24px;text-decoration:none;border-radius:6px;font-weight:bold;">'
+                    f'Download Notarization Certificate (PDF)</a></p>'
+                    if pdf_url
+                    else "<p>Your certificate will be available on the BOOPPA website once processing is complete.</p>"
+                )
+                body_html = f"""
+                <html><body style="font-family:Arial,sans-serif;color:#0f172a;">
+                  <h2 style="color:#10b981;">Your Notarization Certificate is Ready</h2>
+                  <p>Hello {report.company_name or "Customer"},</p>
+                  <p>Your blockchain notarization certificate for
+                     <strong>{original_filename}</strong> has been generated.</p>
+                  <p><strong>SHA-256 Hash:</strong> <code>{file_hash}</code></p>
+                  {'<p><strong>Blockchain TX:</strong> <a href="' + polygonscan_url + '">' + (tx_hash or '') + '</a></p>' if polygonscan_url else ''}
+                  {download_section}
+                  <p style="color:#64748b;font-size:12px;">
+                    Certificate ID: {report_id}<br>
+                    Network: Polygon Amoy Testnet
+                  </p>
+                  <p>Thank you for using BOOPPA.</p>
+                </body></html>
+                """
+                await email_svc.send_html_email(
+                    to_email=contact_email,
+                    subject=f"Your Notarization Certificate is Ready — {original_filename}",
+                    body_html=body_html,
+                )
+            except Exception as e:
+                logger.error(f"[Notarize] Email failed for {report_id}: {e}")
+
+        logger.info(f"[Notarize] Fulfilled {report_id}: tx={tx_hash} pdf={pdf_url}")
+    except Exception as e:
+        logger.error(f"[Notarize] Fulfillment error for {report_id}: {e}")
+    finally:
+        db.close()
 
 
 async def _fulfill_rfp_package(
@@ -41,6 +188,7 @@ async def _fulfill_rfp_package(
             company_name=company_name,
             rfp_details=rfp_details,
             db=db,
+            product_type=product_type,
         )
         logger.info(
             f"RFP package fulfilled: product={product_type} vendor={vendor_id} "
@@ -84,6 +232,7 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
             or metadata.get("reportId")
             or session.get("client_reference_id")
         )
+        product_type = metadata.get("product_type")
         customer_email = None
         try:
             customer_email = session.get("customer_details", {}).get(
@@ -93,6 +242,32 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
             customer_email = session.get("customer_email")
 
         if not report_id:
+            # RFP products are self-contained — no pre-existing Report record required
+            if product_type in RFP_PRODUCT_TYPES:
+                vendor_url   = metadata.get("vendor_url", "")
+                company_name = metadata.get("company_name", "")
+                if vendor_url and company_name:
+                    vendor_id = metadata.get("vendor_id") or customer_email or "anonymous"
+                    background_tasks.add_task(
+                        _fulfill_rfp_package,
+                        product_type=product_type,
+                        vendor_id=vendor_id,
+                        vendor_email=customer_email or "",
+                        vendor_url=vendor_url,
+                        company_name=company_name,
+                        rfp_description=metadata.get("rfp_description"),
+                    )
+                    logger.info(
+                        f"Queued RFP {product_type} fulfillment (no report_id) "
+                        f"vendor={vendor_id} url={vendor_url}"
+                    )
+                else:
+                    logger.error(
+                        f"RFP fulfillment skipped: missing vendor_url or company_name "
+                        f"in metadata={metadata}"
+                    )
+                return {"received": True}
+
             logger.warning(
                 "Checkout session completed but no report_id found in metadata"
             )
@@ -116,7 +291,6 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
                 ad = {}
 
             ad["payment_confirmed"] = True
-            product_type = metadata.get("product_type")
             if product_type:
                 ad["product_type"] = product_type
             if customer_email:
@@ -134,9 +308,18 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
             flag_modified(report, "assessment_data")
             db.commit()
 
+            # Notarization — lightweight anchor + certificate (no AI, no website scan)
+            if product_type in NOTARIZATION_PRODUCT_TYPES:
+                background_tasks.add_task(
+                    _fulfill_notarization,
+                    report_id=str(report.id),
+                    customer_email=customer_email,
+                )
+                logger.info(f"Queued notarization fulfillment for report {report_id}")
+
             # RFP Express / Complete — generate PDF + email immediately
-            if product_type in RFP_PRODUCT_TYPES:
-                vendor_id   = metadata.get("vendor_id") or str(report.user_id)
+            elif product_type in RFP_PRODUCT_TYPES:
+                vendor_id   = metadata.get("vendor_id") or str(report.owner_id)
                 vendor_url  = metadata.get("vendor_url") or metadata.get("website_url", "")
                 company_name = metadata.get("company_name") or metadata.get("company", "")
                 rfp_desc    = metadata.get("rfp_description")

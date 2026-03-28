@@ -111,12 +111,13 @@ async def checkout_post(request: Request):
             "pdpa"
             if "pdpa" in (product_type or "")
             else (
-                "compliance-notarization"
-                if (
-                    "supply_chain" in (product_type or "")
-                    or "compliance_notarization" in (product_type or "")
+                "notarization"
+                if "compliance_notarization" in (product_type or "")
+                else (
+                    "supply-chain"
+                    if "supply_chain" in (product_type or "")
+                    else "compliance"
                 )
-                else "compliance"
             )
         )
         cancel_url = f"{base_url}/{cancel_path}"
@@ -186,12 +187,13 @@ async def checkout_get(
             "pdpa"
             if "pdpa" in (product_type or "")
             else (
-                "compliance-notarization"
-                if (
-                    "supply_chain" in (product_type or "")
-                    or "compliance_notarization" in (product_type or "")
+                "notarization"
+                if "compliance_notarization" in (product_type or "")
+                else (
+                    "supply-chain"
+                    if "supply_chain" in (product_type or "")
+                    else "compliance"
                 )
-                else "compliance"
             )
         )
         cancel_url = f"{base_url}/{cancel_path}"

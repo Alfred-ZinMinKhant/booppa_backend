@@ -19,10 +19,13 @@ class RFPExpressEmailer:
         download_url: str,
         blockchain_proof: Optional[Dict] = None,
         scan_summary: Optional[Dict] = None,
+        product_type: str = "rfp_express",
     ) -> bool:
         try:
             from app.services.email_service import EmailService
             svc = EmailService()
+
+            product_label = "RFP Kit Complete" if product_type == "rfp_complete" else "RFP Kit Express"
 
             bc_section = ""
             if blockchain_proof and blockchain_proof.get("verify_url"):
@@ -36,7 +39,7 @@ class RFPExpressEmailer:
             <html><body style="font-family:Arial,sans-serif;color:#0f172a;">
               <h2 style="color:#10b981;">Your RFP Kit Evidence is Ready</h2>
               <p>Hello,</p>
-              <p>Your <strong>RFP Kit Express</strong> evidence certificate for
+              <p>Your <strong>{product_label}</strong> evidence certificate for
                  <strong>{vendor_name}</strong> has been generated and is ready for download.</p>
               <p>
                 <a href="{download_url}"
@@ -59,10 +62,10 @@ class RFPExpressEmailer:
 
             await svc.send_html_email(
                 to_email=customer_email,
-                subject=f"Your RFP Kit Evidence is Ready — {vendor_name}",
+                subject=f"Your {product_label} Evidence is Ready — {vendor_name}",
                 body_html=body_html,
             )
-            logger.info(f"RFP Kit Express delivery email sent to {customer_email}")
+            logger.info(f"{product_label} delivery email sent to {customer_email}")
             return True
         except Exception as e:
             logger.error(f"RFP Express email failed for {customer_email}: {e}")

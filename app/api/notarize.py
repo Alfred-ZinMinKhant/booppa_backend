@@ -11,7 +11,6 @@ from app.core.db import SessionLocal
 from app.core.models import Report
 from app.core.config import settings
 from app.services.storage import S3Service
-from app.services.blockchain import BlockchainService
 import hashlib
 import uuid
 import base64
@@ -184,16 +183,8 @@ async def get_certificate(report_id: str):
             verify_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/verify/{report.audit_hash}"
             polygonscan_url = f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{report.tx_hash}" if report.tx_hash else None
 
-            anchored = False
-            anchored_at = None
-            if report.tx_hash:
-                try:
-                    blockchain = BlockchainService()
-                    anchor_status = blockchain.get_anchor_status(report.audit_hash, tx_hash=report.tx_hash)
-                    anchored = anchor_status.get("anchored", False)
-                    anchored_at = anchor_status.get("anchored_at")
-                except Exception as exc:
-                    logger.warning("Blockchain status check failed: %s", exc)
+            anchored = bool(assessment.get("blockchain_anchored", False))
+            anchored_at = assessment.get("blockchain_anchored_at")
 
             verification = {
                 "verify_url": verify_url,
