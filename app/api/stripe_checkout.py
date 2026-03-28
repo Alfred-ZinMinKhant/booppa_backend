@@ -119,7 +119,11 @@ async def checkout_post(request: Request):
                     else (
                         "rfp-acceleration"
                         if "rfp_" in (product_type or "")
-                        else "compliance"
+                        else (
+                            "vendor-proof"
+                            if (product_type or "") == "vendor_proof"
+                            else "compliance"
+                        )
                     )
                 )
             )
@@ -199,7 +203,11 @@ async def checkout_get(
                     else (
                         "rfp-acceleration"
                         if "rfp_" in (product_type or "")
-                        else "compliance"
+                        else (
+                            "vendor-proof"
+                            if (product_type or "") == "vendor_proof"
+                            else "compliance"
+                        )
                     )
                 )
             )
