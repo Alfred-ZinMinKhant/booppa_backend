@@ -81,7 +81,7 @@ class BlockchainService:
             status = self.get_anchor_status(evidence_hash)
             if status.get("anchored"):
                 logger.info(f"Evidence {evidence_hash} already anchored. Skipping transaction.")
-                return status.get("tx_hash") or "already_anchored"
+                return None  # already on-chain; no new tx_hash available
 
             file_hash = self._hash_to_bytes32(evidence_hash)
             private_key = self._get_private_key()

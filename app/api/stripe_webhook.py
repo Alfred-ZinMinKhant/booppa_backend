@@ -54,7 +54,9 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
             tx_hash = await blockchain.anchor_evidence(
                 file_hash, metadata=f"notarization:{report_id}"
             )
-            report.tx_hash = tx_hash
+            # Only store a real hex tx_hash; None means already anchored (no new tx)
+            if tx_hash:
+                report.tx_hash = tx_hash
             report.audit_hash = file_hash  # keep as original file hash for verification
             assessment["blockchain_anchored"] = True
             assessment["blockchain_anchored_at"] = datetime.utcnow().isoformat()

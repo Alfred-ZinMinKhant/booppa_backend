@@ -156,7 +156,12 @@ class RFPExpressBuilder:
         try:
             from app.core.models import User, VendorScore
             from app.core.models_v6 import VendorSector
-            user = db.query(User).filter(User.id == self.vendor_id).first()
+            import re as _re
+            # vendor_id may be an email (for anonymous/no-account purchases) or a UUID
+            if _re.match(r'^[0-9a-f-]{36}$', self.vendor_id or '', _re.IGNORECASE):
+                user = db.query(User).filter(User.id == self.vendor_id).first()
+            else:
+                user = db.query(User).filter(User.email == self.vendor_id).first()
             if user:
                 ctx["uen"] = getattr(user, "uen", None)
             score = db.query(VendorScore).filter(VendorScore.vendor_id == self.vendor_id).first()
@@ -195,9 +200,10 @@ class RFPExpressBuilder:
 
             import json, re
             # Extract JSON block from AI response
-            match = re.search(r'\{.*\}', response, re.DOTALL)
-            if match:
-                return json.loads(match.group())
+            if response and isinstance(response, str):
+                match = re.search(r'\{.*\}', response, re.DOTALL)
+                if match:
+                    return json.loads(match.group())
         except Exception as e:
             logger.warning(f"AI Q&A generation failed, using template fallback: {e}")
             self.warnings.append("AI Q&A used template fallback")
@@ -276,6 +282,13 @@ class RFPExpressBuilder:
 
             is_complete = product_type == "rfp_complete"
             framework_label = "RFP Kit Complete Evidence Pack" if is_complete else "RFP Kit Express Evidence Certificate"
+            vendor_details = "\n".join([
+                f"Vendor URL: {vendor_url}",
+                f"Report ID: {self.report_id}",
+                f"Sector: {ctx.get('sector') or 'General'}",
+                f"UEN: {ctx.get('uen') or 'Not provided'}",
+                blockchain_info,
+            ])
             report_data = {
                 "company_name": company_name,
                 "created_at":   datetime.utcnow().strftime("%d %b %Y %H:%M UTC"),
@@ -284,17 +297,12 @@ class RFPExpressBuilder:
                 "summary":      (
                     f"This certificate confirms that {company_name} has completed the "
                     f"BOOPPA {'RFP Kit Complete' if is_complete else 'RFP Kit Express'} process, "
-                    f"generating blockchain-anchored evidence for procurement submission."
+                    f"generating blockchain-anchored evidence for procurement submission.\n\n"
+                    f"{vendor_details}"
                 ),
                 "key_issues":   [],
-                "recommendations": [
-                    f"Vendor URL: {vendor_url}",
-                    f"Report ID: {self.report_id}",
-                    f"Sector: {ctx.get('sector') or 'General'}",
-                    f"UEN: {ctx.get('uen') or 'Not provided'}",
-                    blockchain_info,
-                ],
-                "qa_section": qa_section,
+                # Use ai_narrative so PDFService renders as plain paragraphs (not structured mode)
+                "ai_narrative": qa_section,
                 "audit_hash": self.report_id,
                 "verify_url": f"{verify_base}/verify/{self.report_id}",
                 "tx_hash": tx_hash,
