@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException
 from app.core.config import settings
 from app.core.db import SessionLocal
 from app.core.models import Report
@@ -176,6 +176,7 @@ async def _fulfill_rfp_package(
     vendor_url: str,
     company_name: str,
     rfp_description: str | None = None,
+    session_id: str | None = None,
 ) -> None:
     """Background task: generate and deliver the RFP Kit package after payment."""
     db = SessionLocal()
@@ -190,10 +191,18 @@ async def _fulfill_rfp_package(
             db=db,
             product_type=product_type,
         )
+        download_url = result.get("download_url")
         logger.info(
             f"RFP package fulfilled: product={product_type} vendor={vendor_id} "
-            f"url={result.get('download_url')} errors={result.get('errors')}"
+            f"url={download_url} errors={result.get('errors')}"
         )
+        # Store the download URL keyed by session_id so the result page can retrieve it
+        if session_id and download_url:
+            from app.core.cache import cache as cache_mod
+            cache_mod.set(
+                cache_mod.cache_key(f"rfp_result:{session_id}"),
+                {"download_url": download_url, "product_type": product_type, "company_name": company_name},
+            )
     except Exception as e:
         logger.error(f"RFP fulfillment failed for vendor {vendor_id}: {e}")
     finally:
@@ -201,7 +210,7 @@ async def _fulfill_rfp_package(
 
 
 @router.post("/webhook")
-async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
+async def stripe_webhook(request: Request):
     """Handle Stripe webhooks. Verifies signature and processes checkout.session.completed events."""
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
@@ -248,14 +257,15 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
                 company_name = metadata.get("company_name", "")
                 if vendor_url and company_name:
                     vendor_id = metadata.get("vendor_id") or customer_email or "anonymous"
-                    background_tasks.add_task(
-                        _fulfill_rfp_package,
+                    from app.workers.tasks import fulfill_rfp_task
+                    fulfill_rfp_task.delay(
                         product_type=product_type,
                         vendor_id=vendor_id,
                         vendor_email=customer_email or "",
                         vendor_url=vendor_url,
                         company_name=company_name,
                         rfp_description=metadata.get("rfp_description"),
+                        session_id=session.get("id"),
                     )
                     logger.info(
                         f"Queued RFP {product_type} fulfillment (no report_id) "
@@ -310,11 +320,8 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
 
             # Notarization — lightweight anchor + certificate (no AI, no website scan)
             if product_type in NOTARIZATION_PRODUCT_TYPES:
-                background_tasks.add_task(
-                    _fulfill_notarization,
-                    report_id=str(report.id),
-                    customer_email=customer_email,
-                )
+                from app.workers.tasks import fulfill_notarization_task
+                fulfill_notarization_task.delay(str(report.id), customer_email)
                 logger.info(f"Queued notarization fulfillment for report {report_id}")
 
             # RFP Express / Complete — generate PDF + email immediately
@@ -329,14 +336,15 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
                         f"metadata={metadata}"
                     )
                 else:
-                    background_tasks.add_task(
-                        _fulfill_rfp_package,
+                    from app.workers.tasks import fulfill_rfp_task
+                    fulfill_rfp_task.delay(
                         product_type=product_type,
                         vendor_id=vendor_id,
                         vendor_email=customer_email or "",
                         vendor_url=vendor_url,
                         company_name=company_name,
                         rfp_description=rfp_desc,
+                        session_id=session.get("id"),
                     )
                     logger.info(
                         f"Queued RFP {product_type} fulfillment for vendor {vendor_id}"
