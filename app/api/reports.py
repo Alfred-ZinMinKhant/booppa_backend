@@ -7,7 +7,6 @@ from app.core.config import settings
 import stripe
 import logging
 from app.core.models import Report, User
-from app.services.blockchain import BlockchainService
 import base64
 from io import BytesIO
 import qrcode
@@ -52,16 +51,12 @@ def _build_verify_payload(report: Report) -> dict:
 
     verify_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/verify/{audit_hash}"
     tx_hash = report.tx_hash
-    anchored = False
-    anchored_at = None
-    tx_confirmed = None
 
-    if tx_hash:
-        blockchain = BlockchainService()
-        status = blockchain.get_anchor_status(audit_hash, tx_hash=tx_hash)
-        anchored = status.get("anchored", False)
-        anchored_at = status.get("anchored_at")
-        tx_confirmed = status.get("tx_confirmed")
+    # tx_hash is stored only after a successful blockchain anchor — if present it is anchored.
+    # Read cached anchored_at from assessment_data to avoid blocking synchronous RPC calls.
+    anchored = bool(tx_hash)
+    assessment = report.assessment_data if isinstance(report.assessment_data, dict) else {}
+    anchored_at = assessment.get("blockchain_anchored_at")
 
     qr_image = _build_qr_image(verify_url) if verify_url else None
     polygonscan_url = (
@@ -78,7 +73,6 @@ def _build_verify_payload(report: Report) -> dict:
         "polygonscan_url": polygonscan_url,
         "anchored": anchored,
         "anchored_at": anchored_at,
-        "tx_confirmed": tx_confirmed,
     }
 
 
