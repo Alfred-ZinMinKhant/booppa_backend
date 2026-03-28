@@ -6,7 +6,7 @@ and certificate status retrieval.
 No authentication required — payment is handled via Stripe afterwards.
 """
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks
 from app.core.db import SessionLocal
 from app.core.models import Report
 from app.core.config import settings
@@ -156,7 +156,7 @@ def _build_qr_base64(target: str) -> str | None:
 
 
 @router.get("/certificate/{report_id}")
-async def get_certificate(report_id: str):
+async def get_certificate(report_id: str, background_tasks: BackgroundTasks = None):
     """
     Public endpoint: return notarization certificate data for display on the frontend.
     Mirrors exactly what the PDF certificate contains.
@@ -170,6 +170,25 @@ async def get_certificate(report_id: str):
             raise HTTPException(status_code=404, detail="Not a notarization report")
 
         assessment = report.assessment_data if isinstance(report.assessment_data, dict) else {}
+
+        # Self-heal: if payment confirmed but fulfillment never ran, trigger it once
+        payment_confirmed_flag = bool(assessment.get("payment_confirmed"))
+        if (
+            payment_confirmed_flag
+            and report.status in {"pending", "processing"}
+            and not assessment.get("pdf_generated")
+            and not assessment.get("fulfillment_triggered")
+            and background_tasks is not None
+        ):
+            assessment["fulfillment_triggered"] = True
+            report.assessment_data = assessment
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(report, "assessment_data")
+            db.commit()
+            from app.workers.tasks import fulfill_notarization_task
+            contact_email = assessment.get("contact_email") or assessment.get("customer_email")
+            fulfill_notarization_task.delay(str(report.id), contact_email)
+            logger.info(f"[Notarize] Self-heal triggered for stuck report {report_id}")
 
         # Pipeline step flags
         payment_confirmed = bool(assessment.get("payment_confirmed"))

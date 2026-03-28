@@ -315,3 +315,19 @@ async def checkout_verify(session_id: str | None = None):
     except Exception as e:
         logger.exception("Failed to verify Stripe session")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/rfp/result")
+async def rfp_result(session_id: str | None = None):
+    """Public endpoint: poll for RFP Kit download URL after payment.
+    Returns 202 while generation is in progress, 200 with download_url when ready.
+    """
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Missing session_id")
+
+    from app.core.cache import cache as cache_mod
+    data = cache_mod.get(cache_mod.cache_key(f"rfp_result:{session_id}"))
+    if not data:
+        return JSONResponse(status_code=202, content={"detail": "Not ready"})
+
+    return JSONResponse(data)

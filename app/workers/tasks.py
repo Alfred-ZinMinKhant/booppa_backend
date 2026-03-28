@@ -986,6 +986,49 @@ async def process_report_workflow(report_id: str) -> dict:
         db.close()
 
 
+@celery_app.task(bind=True, max_retries=3, name="fulfill_notarization_task")
+def fulfill_notarization_task(self, report_id: str, customer_email: str | None = None):
+    """Celery task: anchor, generate PDF, and deliver notarization certificate."""
+    try:
+        from app.api.stripe_webhook import _fulfill_notarization
+        asyncio.run(_fulfill_notarization(report_id=report_id, customer_email=customer_email))
+        logger.info(f"Notarization fulfilled for report {report_id}")
+    except Exception as exc:
+        logger.error(f"Notarization fulfillment failed for {report_id}: {exc}")
+        countdown = 60 * (2 ** self.request.retries)
+        raise self.retry(exc=exc, countdown=countdown)
+
+
+@celery_app.task(bind=True, max_retries=3, name="fulfill_rfp_task")
+def fulfill_rfp_task(
+    self,
+    product_type: str,
+    vendor_id: str,
+    vendor_email: str,
+    vendor_url: str,
+    company_name: str,
+    rfp_description: str | None = None,
+    session_id: str | None = None,
+):
+    """Celery task: generate and deliver the RFP Kit evidence package."""
+    try:
+        from app.api.stripe_webhook import _fulfill_rfp_package
+        asyncio.run(_fulfill_rfp_package(
+            product_type=product_type,
+            vendor_id=vendor_id,
+            vendor_email=vendor_email,
+            vendor_url=vendor_url,
+            company_name=company_name,
+            rfp_description=rfp_description,
+            session_id=session_id,
+        ))
+        logger.info(f"RFP package fulfilled for vendor {vendor_id} session {session_id}")
+    except Exception as exc:
+        logger.error(f"RFP fulfillment failed for vendor {vendor_id}: {exc}")
+        countdown = 60 * (2 ** self.request.retries)
+        raise self.retry(exc=exc, countdown=countdown)
+
+
 @celery_app.task(name="cleanup_old_tasks")
 def cleanup_old_tasks():
     """Clean up old completed reports and temporary data"""

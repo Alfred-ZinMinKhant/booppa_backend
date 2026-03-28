@@ -24,6 +24,8 @@ celery_app.conf.update(
     # Queue routing
     task_routes={
         "process_report_task": {"queue": "reports"},
+        "fulfill_notarization_task": {"queue": "reports"},
+        "fulfill_rfp_task": {"queue": "reports"},
         "app.workers.tasks.*": {"queue": "default"},
     },
     # Beat schedule
