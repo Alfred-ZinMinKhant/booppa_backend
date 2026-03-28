@@ -66,3 +66,19 @@ async def get_current_user(
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     return user
+
+
+async def get_optional_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    """FastAPI dependency — returns authenticated User or None (no 401)."""
+    if not token:
+        return None
+    from app.core.auth import verify_access_token
+    payload = verify_access_token(token)
+    if not payload:
+        return None
+    email = payload.get("sub")
+    from app.core.models import User
+    return db.query(User).filter(User.email == email).first()
