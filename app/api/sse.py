@@ -26,8 +26,8 @@ def publish_event(event_type: str, data: dict):
     for queue in _event_subscribers:
         try:
             queue.put_nowait(message)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("[SSE] Failed to deliver event to subscriber queue: %s", exc)
 
 
 async def _event_generator(request: Request, queue: asyncio.Queue):

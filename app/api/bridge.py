@@ -1,15 +1,24 @@
-import hashlib
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.models import User, VendorScore, VerifyRecord, Proof, ProofView
-from app.core.auth import create_access_token, create_refresh_token, verify_access_token, verify_refresh_token, verify_password
+from app.core.models import (
+    User, VendorScore, VerifyRecord, Proof, ProofView, 
+    EnterpriseProfile, GovernanceRecord
+)
+from app.core.auth import (
+    create_access_token, create_refresh_token, 
+    verify_access_token, verify_refresh_token, verify_password
+)
 from app.services.scoring import VendorScoreEngine
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -100,64 +109,8 @@ def get_current_user_from_header(token: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="User not found")
     return user
 
-# Dashboard Endpoint
-@router.get("/dashboard", tags=["bridge-dashboard"])
-async def dashboard_overview(token: str, db: Session = Depends(get_db)):
-    user = get_current_user_from_header(token, db)
-    vendor_id = str(user.id)
-    
-    proof_count = db.query(Proof).join(VerifyRecord).filter(VerifyRecord.vendor_id == vendor_id).count()
-    
-    verify_ids = [v[0] for v in db.query(VerifyRecord.id).filter(VerifyRecord.vendor_id == vendor_id).all()]
-    if verify_ids:
-        recent_views = db.query(ProofView).filter(ProofView.verify_id.in_(verify_ids)).order_by(ProofView.created_at.desc()).limit(10).all()
-        active_users = len(set(v.domain for v in recent_views if v.domain))
-    else:
-        recent_views = []
-        active_users = 0
-        
-    recent_activity = []
-    for log in recent_views:
-        recent_activity.append({
-            "id": str(log.id),
-            "type": "Enterprise Verification",
-            "description": f"Domain {log.domain or 'unknown'} viewed your compliance proof",
-            "timestamp": log.created_at.isoformat()
-        })
-        
-    # Generate dynamic UI stats for Dashboard
-    # Try fetching a real vendor score, otherwise fallback
-    try:
-        score_record = VendorScoreEngine.update_vendor_score(db, vendor_id)
-        trust_score = score_record.total_score
-    except Exception:
-        trust_score = 78 # Default UI placeholder
-        
-    # Aggregate real procurement metrics
-    from app.core.models import EnterpriseProfile
-    active_proc = db.query(EnterpriseProfile).filter(EnterpriseProfile.active_procurement == True).count()
-    gov_agencies = db.query(EnterpriseProfile).filter(EnterpriseProfile.is_government == True).count()
-        
-    chart_data = [
-        {"name": "Mon", "views": 4, "triggers": 0},
-        {"name": "Tue", "views": 7, "triggers": 1},
-        {"name": "Wed", "views": 12, "triggers": 2},
-        {"name": "Thu", "views": 28, "triggers": 5},
-        {"name": "Fri", "views": 45, "triggers": 8},
-        {"name": "Sat", "views": int(active_users) + 42, "triggers": 4},
-        {"name": "Sun", "views": int(proof_count) + 56, "triggers": 12},
-    ]
 
-    return {
-        "stats": {
-            "trustScore": trust_score,
-            "enterpriseViews": active_users, # Real unique views rather than hardcoded 184
-            "activeProcurements": active_proc,
-            "govAgencies": gov_agencies
-        },
-        "chartData": chart_data,
-        "recentActivity": recent_activity
-    }
+# Auth and other bridge routes follow...
 
 # Scoring Endpoint
 @router.get("/enterprise/score", tags=["bridge-scoring"])

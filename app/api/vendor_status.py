@@ -156,3 +156,160 @@ async def dashboard_cal(
         "message":        message,
         "sectorPressure": sector_pressure,
     }
+
+
+# ── Evidence Management ───────────────────────────────────────────────────────
+
+from fastapi import UploadFile, File
+from app.core.models import Proof, VerifyRecord, LifecycleStatus, VerificationLevel
+import hashlib
+
+@router.get("/evidence")
+async def list_evidence(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """List all notarized evidence for the authenticated vendor."""
+    # Find active verify record
+    verify = db.query(VerifyRecord).filter(
+        VerifyRecord.vendor_id == current_user.id,
+        VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE
+    ).first()
+    
+    if not verify:
+        return []
+        
+    proofs = db.query(Proof).filter(Proof.verify_id == verify.id).order_by(Proof.created_at.desc()).all()
+    
+    return [
+        {
+            "id": str(p.id),
+            "filename": p.title or "Document",
+            "hash": p.hash_value,
+            "blockchain_tx": p.metadata_json.get("tx_hash") if p.metadata_json else None,
+            "verify_url": p.metadata_json.get("verify_url") if p.metadata_json else None,
+            "created_at": p.created_at.isoformat()
+        }
+        for p in proofs
+    ]
+
+
+@router.post("/evidence")
+async def upload_evidence(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Upload a document, notarize it, and anchor to blockchain."""
+    # 1. Get or create VerifyRecord
+    verify = db.query(VerifyRecord).filter(
+        VerifyRecord.vendor_id == current_user.id,
+        VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE
+    ).first()
+    
+    if not verify:
+        verify = VerifyRecord(
+            vendor_id=current_user.id,
+            verification_level=VerificationLevel.BASIC,
+            compliance_score=0
+        )
+        db.add(verify)
+        db.commit()
+        db.refresh(verify)
+        
+    # 2. Read file and hash it
+    content = await file.read()
+    file_hash = hashlib.sha256(content).hexdigest()
+    
+    # Check for duplicate hash
+    existing = db.query(Proof).filter(Proof.hash_value == file_hash).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="This document has already been notarized.")
+        
+    # 3. Anchor to blockchain (Polygon Amoy testnet)
+    tx_hash = None
+    anchor_status = "pending_anchor"
+    try:
+        from app.services.blockchain import BlockchainService
+        blockchain = BlockchainService()
+        tx_hash = await blockchain.anchor_evidence(
+            file_hash, metadata=f"vendor_evidence:vendor:{current_user.id}"
+        )
+        anchor_status = "anchored"
+    except Exception as exc:
+        logger.warning("Blockchain anchor failed for evidence upload (will retry later): %s", exc)
+
+    explorer_base = settings.POLYGON_EXPLORER_URL.rstrip("/")
+    verify_url = (
+        f"{explorer_base}/tx/{tx_hash}"
+        if tx_hash else None
+    )
+
+    # 4. Create Proof record
+    proof = Proof(
+        verify_id=verify.id,
+        hash_value=file_hash,
+        title=file.filename,
+        metadata_json={
+            "size": len(content),
+            "content_type": file.content_type,
+            "status": anchor_status,
+            "tx_hash": tx_hash,
+            "verify_url": verify_url,
+            "network": "Polygon Amoy Testnet",
+            "testnet_notice": "Anchored on Polygon Amoy testnet. Not yet on mainnet.",
+        }
+    )
+    db.add(proof)
+
+    # 5. Update vendor score visibility bonus
+    from app.services.scoring import VendorScoreEngine
+    db.commit()  # save proof first
+    VendorScoreEngine.update_vendor_score(db, str(current_user.id))
+
+    db.refresh(proof)
+    return {
+        "id": str(proof.id),
+        "filename": proof.title,
+        "hash": proof.hash_value,
+        "created_at": proof.created_at.isoformat(),
+        "tx_hash": proof.metadata_json.get("tx_hash"),
+        "verify_url": proof.metadata_json.get("verify_url"),
+        "network": "Polygon Amoy Testnet",
+        "testnet_notice": "Anchored on Polygon Amoy testnet. Not yet on mainnet.",
+        "anchor_status": anchor_status,
+    }
+
+
+# ── Profile Management ────────────────────────────────────────────────────────
+
+from pydantic import BaseModel
+
+class ProfileUpdate(BaseModel):
+    company: str
+
+@router.get("/profile")
+async def get_profile(current_user=Depends(get_current_user)):
+    """Return the authenticated vendor's profile."""
+    return {
+        "id": str(current_user.id),
+        "email": current_user.email,
+        "company": getattr(current_user, "company", None),
+        "role": getattr(current_user, "role", "VENDOR")
+    }
+
+@router.patch("/profile")
+async def update_profile(
+    body: ProfileUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Update vendor profile details."""
+    from app.core.models import User
+    user = db.query(User).filter(User.id == current_user.id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    user.company = body.company
+    db.commit()
+    return {"status": "success", "company": user.company}

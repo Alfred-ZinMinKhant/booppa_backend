@@ -109,18 +109,6 @@ def _build_qr_png(target: str) -> bytes | None:
     except Exception as exc:
         logger.warning("QR PNG generation failed: %s", exc)
         return None
-    try:
-        qr = qrcode.QRCode(version=1, box_size=4, border=2)
-        qr.add_data(target)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
-        buffer = BytesIO()
-        img.save(buffer, format="PNG")
-        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-        return f"data:image/png;base64,{encoded}"
-    except Exception as exc:
-        logger.warning("QR generation failed: %s", exc)
-        return None
 
 
 @router.post("", response_model=ReportResponse, status_code=status.HTTP_202_ACCEPTED)

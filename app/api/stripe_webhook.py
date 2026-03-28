@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Request, HTTPException
 from app.core.config import settings
 from app.core.db import SessionLocal
 from app.core.models import Report
@@ -19,8 +19,41 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+RFP_PRODUCT_TYPES = {"rfp_express", "rfp_complete"}
+
+
+async def _fulfill_rfp_package(
+    product_type: str,
+    vendor_id: str,
+    vendor_email: str,
+    vendor_url: str,
+    company_name: str,
+    rfp_description: str | None = None,
+) -> None:
+    """Background task: generate and deliver the RFP Kit package after payment."""
+    db = SessionLocal()
+    try:
+        from app.services.rfp_express_builder import RFPExpressBuilder
+        rfp_details = {"description": rfp_description} if rfp_description else None
+        builder = RFPExpressBuilder(vendor_id=vendor_id, vendor_email=vendor_email)
+        result = await builder.generate_express_package(
+            vendor_url=vendor_url,
+            company_name=company_name,
+            rfp_details=rfp_details,
+            db=db,
+        )
+        logger.info(
+            f"RFP package fulfilled: product={product_type} vendor={vendor_id} "
+            f"url={result.get('download_url')} errors={result.get('errors')}"
+        )
+    except Exception as e:
+        logger.error(f"RFP fulfillment failed for vendor {vendor_id}: {e}")
+    finally:
+        db.close()
+
+
 @router.post("/webhook")
-async def stripe_webhook(request: Request):
+async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
     """Handle Stripe webhooks. Verifies signature and processes checkout.session.completed events."""
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
@@ -101,15 +134,38 @@ async def stripe_webhook(request: Request):
             flag_modified(report, "assessment_data")
             db.commit()
 
-            # Trigger async processing for fulfillment (AI generation, PDF, Email)
-            try:
-                from app.workers.tasks import process_report_task
-                process_report_task.delay(str(report.id))
-                logger.info(f"Queued background processing for paid report {report_id}")
-            except Exception as e:
-                logger.error(f"Failed to queue background task for {report_id}: {e}")
-                # Fallback: try to run it via background tasks if celery fails? 
-                # For now just log, as celery is the main worker.
+            # RFP Express / Complete — generate PDF + email immediately
+            if product_type in RFP_PRODUCT_TYPES:
+                vendor_id   = metadata.get("vendor_id") or str(report.user_id)
+                vendor_url  = metadata.get("vendor_url") or metadata.get("website_url", "")
+                company_name = metadata.get("company_name") or metadata.get("company", "")
+                rfp_desc    = metadata.get("rfp_description")
+                if not vendor_url or not company_name:
+                    logger.error(
+                        f"RFP fulfillment missing vendor_url or company_name for report {report_id}; "
+                        f"metadata={metadata}"
+                    )
+                else:
+                    background_tasks.add_task(
+                        _fulfill_rfp_package,
+                        product_type=product_type,
+                        vendor_id=vendor_id,
+                        vendor_email=customer_email or "",
+                        vendor_url=vendor_url,
+                        company_name=company_name,
+                        rfp_description=rfp_desc,
+                    )
+                    logger.info(
+                        f"Queued RFP {product_type} fulfillment for vendor {vendor_id}"
+                    )
+            else:
+                # Standard report: trigger async processing via Celery
+                try:
+                    from app.workers.tasks import process_report_task
+                    process_report_task.delay(str(report.id))
+                    logger.info(f"Queued background processing for paid report {report_id}")
+                except Exception as e:
+                    logger.error(f"Failed to queue background task for {report_id}: {e}")
 
         finally:
             db.close()

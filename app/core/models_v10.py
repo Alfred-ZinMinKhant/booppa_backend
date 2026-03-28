@@ -16,6 +16,7 @@ CertificateLog         — PDF certificate generation audit
 DiscoveredVendor       — vendors found via GeBIZ / ACRA import
 ImportBatch            — CSV import batch tracking
 FeatureFlag            — Redis-backed feature flags persisted to DB
+TenderShortlist        — GeBIZ tender catalogue for win-probability tool
 """
 
 import uuid
@@ -258,6 +259,31 @@ class SubscriptionSnapshot(Base):
 
     __table_args__ = (
         UniqueConstraint("month", name="uq_subscription_snapshot_month"),
+    )
+
+
+# ── TenderShortlist ────────────────────────────────────────────────────────────
+# GeBIZ tender catalogue used by the Tender Win Probability tool.
+# Populated via admin import from GeBIZ open data or manual entry.
+# base_rate is the sector/agency-calibrated baseline win rate (0.0–1.0).
+class TenderShortlist(Base):
+    __tablename__ = "tender_shortlists"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    tender_no = Column(String(100), unique=True, nullable=False, index=True)
+    sector = Column(String(100), nullable=False, index=True)
+    agency = Column(String(255), nullable=False, index=True)
+    description = Column(Text, nullable=True)
+
+    # Baseline win rate calibrated per sector/agency (0.0–1.0)
+    base_rate = Column(Float, nullable=False, default=0.20)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_tender_shortlists_sector_agency", "sector", "agency"),
     )
 
 

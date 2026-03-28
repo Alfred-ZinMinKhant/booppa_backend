@@ -1,217 +1,291 @@
-# app/services/rfp_express_builder.py
+"""
+RFP Kit Express Builder — SGD 129
+==================================
+Generates a 2-page evidence certificate for vendors responding to GeBIZ RFPs.
 
-import os
-import asyncio
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Dict, Any, Optional
+Flow:
+  1. Derive vendor context from DB (company, UEN, sector, score)
+  2. Generate 5 essential RFP Q&A answers via BooppaAIService
+  3. Build PDF certificate via PDFService
+  4. Upload PDF to S3 via S3Service
+  5. Send delivery email via RFPExpressEmailer
+  6. Return download URL + metadata
+
+RFP Kit Complete (SGD 499) follows the same flow with 15 questions and
+an editable DOCX — handled by a separate builder.
+"""
+
+from __future__ import annotations
+
 import logging
-
-from app.scanners.pdpa_scanner import PDPAScanner
-from app.services.blockchain import BlockchainNotary
-from app.services.pdf_service import PDFService
-from app.services.storage import StorageService
-from app.services.email_service import EmailService
-from app.core.exceptions import RFPExpressGenerationError, ScannerError, BlockchainError
+import uuid
+from datetime import datetime, timedelta
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# ── Essential question keys ───────────────────────────────────────────────────
+ESSENTIAL_QUESTIONS = [
+    "data_policy",       # PDPA / data handling policy
+    "dpo_appointed",     # DPO appointment status
+    "security_measures", # Technical/organisational security controls
+    "breach_history",    # Incident history (last 24 months)
+    "third_party",       # Third-party vendor / sub-processor management
+]
+
 
 class RFPExpressBuilder:
-    """
-    RFP Kit Express Builder - SGD 129 Entry Product
-    
-    Simplified version of RFP Kit Complete (SGD 499) with:
-    - ✅ PDPA compliance scan
-    - ✅ 5 essential RFP Q&A answers (vs 15 in Complete)
-    - ✅ RFP Kit Evidence certificate (PDF)
-    - ✅ Blockchain timestamp
-    - ✅ QR verification
-    - ✅ 2-page executive summary
-    - ❌ NO editable DOCX (Complete only)
-    - ❌ NO AI narrative (Complete only)
-    - ❌ NO full appendix (Complete only)
-    
-    Perfect for:
-    - Simple RFPs (contract value < SGD 20k)
-    - Basic vendor verification
-    - Quick compliance check
-    - Procurement pre-qualification
-    
-    Upsell to RFP Kit Complete (SGD 499) when:
-    - Complex RFP (15 questions needed)
-    - High-value contract (> SGD 50k)
-    - Editable DOCX required
-    - AI-powered narrative needed
-    """
-    
-    # 5 Essential RFP Questions (vs 15 in Complete)
-    ESSENTIAL_QUESTIONS = [
-        "data_policy",          # Do you have a PDPA policy?
-        "dpo_appointed",        # Is DPO appointed?
-        "security_measures",    # What security measures?
-        "breach_history",       # Any data breaches?
-        "third_party"          # Third-party compliance?
-    ]
-    
+    """Generate RFP Kit Express package for a vendor."""
+
     def __init__(self, vendor_id: str, vendor_email: str):
-        self.vendor_id = vendor_id
+        self.vendor_id    = vendor_id
         self.vendor_email = vendor_email
-        self.output_path = Path(f"/tmp/rfp_express/{vendor_id}")
-        self.output_path.mkdir(parents=True, exist_ok=True)
-        
-        # Services
-        self.storage = StorageService()
-        self.email_service = EmailService()
-        self.pdf_service = PDFService()
-        
-        # Track generation
-        self.generation_start = datetime.utcnow()
-        self.errors = []
-        self.warnings = []
-    
+        self.report_id    = str(uuid.uuid4())
+        self.errors: list[str]    = []
+        self.warnings: list[str]  = []
+        self.generation_start     = datetime.utcnow()
+
+    # ── Public entry point ────────────────────────────────────────────────────
+
     async def generate_express_package(
         self,
         vendor_url: str,
         company_name: str,
-        rfp_details: Optional[Dict] = None
+        rfp_details: Optional[Dict] = None,
+        db=None,
     ) -> Dict[str, Any]:
-        """
-        Generate RFP Kit Express package (SGD 129).
-        
-        Flow:
-        1. PDPA scan (same as RFP Kit)
-        2. Generate 5 essential Q&A answers
-        3. Build RFP Kit Evidence certificate (PDF)
-        4. Blockchain timestamp
-        5. Generate QR verification
-        6. Upload to Cloud
-        7. Email customer
-        
-        Returns:
-            Dict with download URL and metadata
-        """
-        
-        logger.info(f"🚀 Starting RFP Kit Express generation")
-        logger.info(f"   Vendor: {company_name}")
-        logger.info(f"   URL: {vendor_url}")
-        logger.info(f"   Product: RFP Kit Express (SGD 129)")
-        
+        logger.info(f"RFP Kit Express: starting for {company_name} ({vendor_url})")
+
+        # 1. Gather vendor context for personalised answers
+        vendor_ctx = self._build_vendor_context(company_name, vendor_url, db)
+
+        # 2. Generate 5 RFP Q&A answers via AI
+        qa_answers = await self._generate_qa(vendor_ctx, rfp_details)
+
+        # 2.5. Anchor report ID to blockchain (Polygon Amoy testnet)
+        tx_hash = await self._anchor_to_blockchain()
+
+        # 3. Build PDF (embed tx_hash if available)
+        pdf_bytes = self._build_pdf(company_name, vendor_url, qa_answers, vendor_ctx, tx_hash)
+
+        # 4. Upload to S3
+        download_url = await self._upload_pdf(pdf_bytes)
+
+        # 5. Send email
+        await self._send_email(company_name, download_url)
+
+        elapsed = (datetime.utcnow() - self.generation_start).total_seconds()
+        logger.info(f"RFP Kit Express complete in {elapsed:.1f}s for {company_name}")
+
+        from app.core.config import settings
+        explorer_base = settings.POLYGON_EXPLORER_URL.rstrip("/")
+
+        return {
+            "success":        True,
+            "product":        "rfp_kit_express",
+            "price":          "SGD 129",
+            "vendor_id":      self.vendor_id,
+            "company_name":   company_name,
+            "vendor_url":     vendor_url,
+            "download_url":   download_url,
+            "qa_answers_count": len(ESSENTIAL_QUESTIONS),
+            "tx_hash":        tx_hash,
+            "polygonscan_url": f"{explorer_base}/tx/{tx_hash}" if tx_hash else None,
+            "network":        "Polygon Amoy Testnet",
+            "testnet_notice": "Anchored on Polygon Amoy testnet. Not yet on mainnet.",
+            "upsell_available": True,
+            "upsell_product": "rfp_kit_complete",
+            "upsell_price":   "SGD 499",
+            "errors":         self.errors,
+            "warnings":       self.warnings,
+            "generated_at":   self.generation_start.isoformat(),
+            "generation_time_seconds": elapsed,
+            "expires_at":     (datetime.utcnow() + timedelta(days=7)).isoformat(),
+        }
+
+    # ── Step 1: vendor context ────────────────────────────────────────────────
+
+    def _build_vendor_context(self, company_name: str, vendor_url: str, db) -> Dict:
+        ctx: Dict[str, Any] = {
+            "company_name": company_name,
+            "vendor_url":   vendor_url,
+            "uen":          None,
+            "sector":       None,
+            "trust_score":  None,
+            "verification_depth": None,
+        }
+        if db is None:
+            return ctx
         try:
-            # STEP 1: PDPA SCAN
-            logger.info("📊 Step 1/5: Executing PDPA scan...")
-            scan_results = await self._execute_scan(vendor_url)
-            logger.info(f"   ✓ Scan complete - Risk score: {scan_results['risk_score']}/100")
-            
-            # STEP 2: GENERATE 5 ESSENTIAL Q&A
-            logger.info("📝 Step 2/5: Generating 5 essential RFP answers...")
-            qa_answers = self._generate_essential_qa(
-                company_name,
-                vendor_url,
-                scan_results
-            )
-            logger.info("   ✓ Answers generated")
-            
-            # STEP 3: BUILD RFP KIT EVIDENCE PDF
-            logger.info("📄 Step 3/5: Building RFP Kit Evidence certificate...")
-            pdf_path = await self._build_evidence_pdf(
-                company_name,
-                vendor_url,
-                scan_results,
-                qa_answers,
-                rfp_details
-            )
-            logger.info("   ✓ PDF created")
-            
-            # STEP 4: BLOCKCHAIN TIMESTAMP
-            logger.info("⛓️  Step 4/5: Blockchain timestamp...")
-            blockchain_proof = await self._create_blockchain_timestamp(scan_results)
-            if blockchain_proof:
-                logger.info(f"   ✓ Blockchain: {blockchain_proof.get('tx_hash', 'N/A')[:20]}...")
-            else:
-                logger.warning("   ⚠ Blockchain pending (non-critical)")
-                self.warnings.append("Blockchain timestamp pending")
-            
-            # STEP 5: UPLOAD & EMAIL
-            logger.info("☁️  Step 5/5: Upload and notification...")
-            download_url = await self._upload_and_notify(
-                pdf_path,
-                company_name,
-                scan_results,
-                blockchain_proof
-            )
-            logger.info("   ✓ Package delivered")
-            
-            generation_time = (datetime.utcnow() - self.generation_start).total_seconds()
-            logger.info(f"✅ RFP Kit Express completed in {generation_time:.1f}s")
-            
-            return {
-                "success": True,
-                "product": "rfp_kit_express",
-                "price": "SGD 129",
-                "vendor_id": self.vendor_id,
-                "company_name": company_name,
-                "vendor_url": vendor_url,
-                "download_url": download_url,
-                "blockchain_proof": blockchain_proof,
-                "scan_summary": {
-                    "risk_score": scan_results["risk_score"],
-                    "risk_level": scan_results["risk_level"],
-                    "health_score": 100 - scan_results["risk_score"]
-                },
-                "qa_answers_count": len(self.ESSENTIAL_QUESTIONS),
-                "upsell_available": True,
-                "upsell_product": "rfp_kit_complete",
-                "upsell_price": "SGD 499",
-                "errors": self.errors,
-                "warnings": self.warnings,
-                "generated_at": self.generation_start.isoformat(),
-                "generation_time_seconds": generation_time,
-                "expires_at": (datetime.utcnow() + timedelta(days=7)).isoformat()
-            }
-            
+            from app.core.models import User, VendorScore
+            from app.core.models_v6 import VendorSector
+            user = db.query(User).filter(User.id == self.vendor_id).first()
+            if user:
+                ctx["uen"] = getattr(user, "uen", None)
+            score = db.query(VendorScore).filter(VendorScore.vendor_id == self.vendor_id).first()
+            if score:
+                ctx["trust_score"] = score.total_score
+            sector_row = db.query(VendorSector).filter(
+                VendorSector.vendor_id == self.vendor_id
+            ).first()
+            if sector_row:
+                ctx["sector"] = sector_row.sector
         except Exception as e:
-            logger.error(f"❌ RFP Kit Express generation failed: {e}", exc_info=True)
-            
-            # Send failure email
-            try:
-                # Actual production emailer call would go here
-                pass
-            except:
-                pass
-            
-            raise RFPExpressGenerationError(f"Failed to generate RFP Kit Express: {str(e)}")
-    
-    async def _execute_scan(self, vendor_url: str) -> Dict:
-        """Execute PDPA scan with retry logic"""
-        # Logic would interact with app scanners
-        return {"risk_score": 15, "risk_level": "LOW", "pdpa_obligations": {}}
-    
-    def _generate_essential_qa(
+            logger.warning(f"Could not fetch vendor context for {self.vendor_id}: {e}")
+        return ctx
+
+    # ── Step 2: AI-generated Q&A ──────────────────────────────────────────────
+
+    async def _generate_qa(self, ctx: Dict, rfp_details: Optional[Dict]) -> Dict[str, str]:
+        try:
+            from app.services.booppa_ai_service import BooppaAIService
+            ai = BooppaAIService()
+
+            sector_hint = f" in the {ctx['sector']} sector" if ctx.get("sector") else ""
+            rfp_hint    = f" The RFP is for: {rfp_details.get('description', '')}." if rfp_details else ""
+
+            prompt = (
+                f"You are generating RFP compliance answers for {ctx['company_name']}"
+                f"{sector_hint} (website: {ctx['vendor_url']}).{rfp_hint}\n\n"
+                f"Write concise, professional answers for a Singapore government procurement RFP. "
+                f"Each answer should be 1-3 sentences. Return ONLY a JSON object with these keys:\n"
+                f"data_policy, dpo_appointed, security_measures, breach_history, third_party.\n\n"
+                f"Base the answers on what a well-run Singapore SME in this sector would truthfully state."
+            )
+
+            response = await ai.analyze(prompt)
+
+            import json, re
+            # Extract JSON block from AI response
+            match = re.search(r'\{.*\}', response, re.DOTALL)
+            if match:
+                return json.loads(match.group())
+        except Exception as e:
+            logger.warning(f"AI Q&A generation failed, using template fallback: {e}")
+            self.warnings.append("AI Q&A used template fallback")
+
+        # Fallback: template answers
+        return self._template_qa(ctx)
+
+    def _template_qa(self, ctx: Dict) -> Dict[str, str]:
+        name = ctx["company_name"]
+        url  = ctx["vendor_url"]
+        return {
+            "data_policy":       f"{name} maintains a PDPA-compliant Personal Data Protection Policy, accessible at {url}. All personal data is collected with consent and retained only for its stated purpose.",
+            "dpo_appointed":     f"{name} has appointed a Data Protection Officer (DPO) responsible for overseeing data protection compliance and serving as the point of contact for data-related inquiries.",
+            "security_measures": f"{name} implements encryption at rest and in transit, role-based access controls, multi-factor authentication for privileged accounts, and conducts quarterly security reviews.",
+            "breach_history":    f"{name} has not experienced any notifiable data breaches in the past 24 months. An incident response plan is in place and tested annually.",
+            "third_party":       f"{name} conducts due diligence assessments on all third-party vendors and requires Data Processing Agreements (DPAs) before any personal data is shared with sub-processors.",
+        }
+
+    # ── Step 2.5: blockchain anchor ───────────────────────────────────────────
+
+    async def _anchor_to_blockchain(self) -> Optional[str]:
+        try:
+            from app.services.blockchain import BlockchainService
+            blockchain = BlockchainService()
+            tx = await blockchain.anchor_evidence(
+                self.report_id,
+                metadata=f"rfp_express:vendor:{self.vendor_id}",
+            )
+            logger.info(f"RFP Express anchored on Polygon Amoy testnet: {tx}")
+            return tx
+        except Exception as e:
+            logger.warning(f"Blockchain anchor failed for RFP Express (non-blocking): {e}")
+            self.warnings.append(f"Blockchain anchor skipped: {e}")
+            return None
+
+    # ── Step 3: build PDF ─────────────────────────────────────────────────────
+
+    def _build_pdf(
         self,
         company_name: str,
         vendor_url: str,
-        scan_results: Dict
-    ) -> Dict[str, str]:
-        """Generate 5 essential RFP Q&A answers."""
-        return {
-            "data_policy": f"Yes. {company_name} maintains a PDPA policy at {vendor_url}.",
-            "dpo_appointed": "Yes. A Data Protection Officer has been appointed.",
-            "security_measures": "Encryption at rest and in transit, RBAC, and regular audits.",
-            "breach_history": "No data breaches in the past 24 months.",
-            "third_party": "Strict vendor assessments and data processing agreements."
+        qa_answers: Dict[str, str],
+        ctx: Dict,
+        tx_hash: Optional[str] = None,
+    ) -> bytes:
+        try:
+            from app.services.pdf_service import PDFService
+            from app.core.config import settings
+            pdf = PDFService()
+
+            qa_section = "\n\n".join(
+                f"Q: {self._q_label(k)}\nA: {v}"
+                for k, v in qa_answers.items()
+            )
+
+            explorer_base = settings.POLYGON_EXPLORER_URL.rstrip("/")
+            blockchain_info = (
+                f"Blockchain TX: {tx_hash}\n"
+                f"Network: Polygon Amoy Testnet\n"
+                f"Note: Anchored on Polygon Amoy testnet. Not yet on mainnet.\n"
+                f"Verify: {explorer_base}/tx/{tx_hash}"
+            ) if tx_hash else "Blockchain anchor pending."
+
+            report_data = {
+                "company_name": company_name,
+                "created_at":   datetime.utcnow().strftime("%d %b %Y %H:%M UTC"),
+                "framework":    "RFP Kit Express Evidence Certificate",
+                "product_type": "rfp_express",
+                "summary":      (
+                    f"This certificate confirms that {company_name} has completed the "
+                    f"BOOPPA RFP Kit Express process, generating blockchain-anchored "
+                    f"evidence for procurement submission."
+                ),
+                "key_issues":   [],
+                "recommendations": [
+                    f"Vendor URL: {vendor_url}",
+                    f"Report ID: {self.report_id}",
+                    f"Sector: {ctx.get('sector') or 'General'}",
+                    f"UEN: {ctx.get('uen') or 'Not provided'}",
+                    blockchain_info,
+                ],
+                "qa_section": qa_section,
+                "audit_hash": self.report_id,
+                "verify_url": f"https://booppa.io/verify/{self.report_id}",
+                "tx_hash": tx_hash,
+            }
+            return pdf.generate_pdf(report_data)
+        except Exception as e:
+            logger.error(f"PDF generation failed: {e}")
+            self.errors.append(f"PDF generation error: {e}")
+            raise
+
+    def _q_label(self, key: str) -> str:
+        labels = {
+            "data_policy":       "Do you have a PDPA data protection policy?",
+            "dpo_appointed":     "Has a Data Protection Officer (DPO) been appointed?",
+            "security_measures": "What security measures are in place to protect personal data?",
+            "breach_history":    "Have there been any data breaches in the past 24 months?",
+            "third_party":       "How do you manage third-party vendors who handle personal data?",
         }
-    
-    async def _build_evidence_pdf(self, *args, **kwargs) -> str:
-        """Mock PDF path for migration logic"""
-        return "/tmp/evidence.pdf"
+        return labels.get(key, key.replace("_", " ").title())
 
-    async def _create_blockchain_timestamp(self, scan_results: Dict) -> Optional[Dict]:
-        return {"tx_hash": "0x123", "verify_url": "https://polygonscan.com/tx/0x123"}
+    # ── Step 4: upload to S3 ──────────────────────────────────────────────────
 
-    async def _upload_and_notify(self, pdf_path: str, company_name: str, scan_results: Dict, blockchain_proof: Optional[Dict]) -> str:
-        return "https://storage.booppa.io/kit/evidence.pdf"
+    async def _upload_pdf(self, pdf_bytes: bytes) -> str:
+        try:
+            from app.services.storage import S3Service
+            s3 = S3Service()
+            url = await s3.upload_pdf(pdf_bytes, f"rfp-express/{self.report_id}")
+            return url
+        except Exception as e:
+            logger.error(f"S3 upload failed: {e}")
+            self.errors.append(f"Upload error: {e}")
+            raise
 
+    # ── Step 5: email ─────────────────────────────────────────────────────────
 
-class RFPExpressGenerationError(Exception):
-    pass
+    async def _send_email(self, company_name: str, download_url: str):
+        try:
+            from app.services.rfp_express_emailer import RFPExpressEmailer
+            emailer = RFPExpressEmailer()
+            await emailer.send_express_ready_email(
+                customer_email=self.vendor_email,
+                vendor_name=company_name,
+                download_url=download_url,
+            )
+        except Exception as e:
+            logger.warning(f"Email delivery failed (non-blocking): {e}")
+            self.warnings.append(f"Email not sent: {e}")

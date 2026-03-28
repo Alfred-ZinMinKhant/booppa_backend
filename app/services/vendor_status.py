@@ -78,8 +78,12 @@ def compute_verification_depth(db: Session, vendor_id: str) -> str:
     doc_count = db.query(Proof).filter(Proof.verify_id == record.id).count()
 
     # Check for open HIGH/CRITICAL anomalies (blocks CERTIFIED)
-    from app.core.models_v8 import _get_open_high_anomalies
-    has_high_anomaly = _get_open_high_anomalies(db, vendor_id)
+    from app.core.models_v8 import AnomalyEvent
+    has_high_anomaly = db.query(AnomalyEvent).filter(
+        AnomalyEvent.vendor_id == vendor_id,
+        AnomalyEvent.status == "OPEN",
+        AnomalyEvent.severity.in_(["HIGH", "CRITICAL"]),
+    ).first() is not None
 
     if (
         compliance >= DEPTH_COMPLIANCE_THRESHOLDS["CERTIFIED"]
