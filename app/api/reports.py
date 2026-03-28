@@ -265,7 +265,19 @@ async def get_report_by_session(
 
     stripe.api_key = stripe_key
     try:
-        session = stripe.checkout.Session.retrieve(session_id)
+        _session_obj = stripe.checkout.Session.retrieve(session_id)
+        # Convert StripeObject to plain dict (newer SDK v5+ stores data in ._data)
+        import json as _json
+        try:
+            # Primary: ._data is the raw dict in stripe SDK v5+
+            session = _json.loads(_json.dumps(_session_obj._data))
+        except Exception:
+            try:
+                session = _json.loads(str(_session_obj))
+            except Exception:
+                session = dict(_session_obj)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to retrieve Stripe session {session_id}: {e}")
         raise HTTPException(status_code=400, detail="Invalid session_id")
