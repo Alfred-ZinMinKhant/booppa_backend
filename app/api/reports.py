@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status, 
 from pydantic import BaseModel
 from typing import Optional
 from uuid import UUID
-from app.core.db import get_db, get_current_user, SessionLocal
+from app.core.db import get_db, get_current_user, get_optional_user, SessionLocal
 from app.core.config import settings
 import stripe
 import logging
@@ -460,14 +460,13 @@ async def get_report_by_session(
 async def get_report(
     report_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_optional_user),
 ):
-    """Get report status and details"""
-    report = (
-        db.query(Report)
-        .filter(Report.id == report_id, Report.owner_id == current_user.id)
-        .first()
-    )
+    """Get report status and details. No login required (public reports accessible by ID)."""
+    query = db.query(Report).filter(Report.id == report_id)
+    if current_user:
+        query = query.filter(Report.owner_id == current_user.id)
+    report = query.first()
 
     if not report:
         raise HTTPException(
@@ -509,14 +508,13 @@ async def get_report(
 async def get_report_qr(
     report_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_optional_user),
 ):
     """Return a QR code PNG for the report verification URL (read-only)."""
-    report = (
-        db.query(Report)
-        .filter(Report.id == report_id, Report.owner_id == current_user.id)
-        .first()
-    )
+    query = db.query(Report).filter(Report.id == report_id)
+    if current_user:
+        query = query.filter(Report.owner_id == current_user.id)
+    report = query.first()
 
     if not report:
         raise HTTPException(
