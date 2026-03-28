@@ -232,7 +232,9 @@ async def stripe_webhook(request: Request):
 
     # Handle the checkout.session.completed event
     if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
+        # Parse session from raw payload (plain dict) — avoids StripeObject .get() issues
+        raw = json.loads(payload)
+        session = raw.get("data", {}).get("object", {})
         metadata = session.get("metadata") or {}
 
         # Try multiple metadata keys for report id
@@ -242,13 +244,10 @@ async def stripe_webhook(request: Request):
             or session.get("client_reference_id")
         )
         product_type = metadata.get("product_type")
-        customer_email = None
-        try:
-            customer_email = session.get("customer_details", {}).get(
-                "email"
-            ) or session.get("customer_email")
-        except Exception:
-            customer_email = session.get("customer_email")
+        customer_email = (
+            (session.get("customer_details") or {}).get("email")
+            or session.get("customer_email")
+        )
 
         if not report_id:
             # RFP products are self-contained — no pre-existing Report record required
@@ -288,7 +287,7 @@ async def stripe_webhook(request: Request):
             report = db.query(Report).filter(Report.id == report_id).first()
             if not report:
                 logger.error(
-                    f"Report {report_id} not found for Stripe session {session.get('id')}"
+                    f"Report {report_id} not found for Stripe session {session.get('id', '?')}"
                 )
                 return {"received": True}
 
