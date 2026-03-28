@@ -69,7 +69,14 @@ async def start_event_relay():
     """
     Background task to relay events from Redis or internal event bus
     to WebSockets in production.
-    For this implementation, direct function calls from the API
-    endpoints (`emit_to_vendor`) will be used to broadcast real-time data.
+    Currently using direct emit_to_vendor() calls from API endpoints.
+    Full Redis pub/sub relay is not yet implemented.
     """
-    pass
+    import asyncio
+    logger.info(
+        "[WebSocket] start_event_relay: direct emit mode active. "
+        "Redis pub/sub relay is not yet implemented."
+    )
+    # Keep alive so the task doesn't exit immediately
+    while True:
+        await asyncio.sleep(3600)

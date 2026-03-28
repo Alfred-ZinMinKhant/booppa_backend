@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Request, HTTPException, Query, Depends
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from typing import List
+from pydantic import BaseModel, Field
+from typing import List, Optional
 from app.core.db import SessionLocal
 from app.core.models import ConsentLog, EnterpriseProfile, ActivityLog, VendorScore
 from app.core.config import settings
@@ -87,53 +88,189 @@ def get_ecosystem_intelligence(
             EnterpriseProfile.procurement_intent_score.isnot(None)
         ).all()
         
-        global_pulse = 0
+        global_pulse = 0.0
         if profiles:
             global_pulse = sum((p.procurement_intent_score or 0) for p in profiles) / len(profiles)
-        else:
-            global_pulse = 81.4 # graceful fallback if no data
-            
+
         # Get top enterprises by intent score
         top_profiles = db.query(EnterpriseProfile).filter(
             EnterpriseProfile.procurement_intent_score.isnot(None)
         ).order_by(
             EnterpriseProfile.procurement_intent_score.desc()
         ).limit(5).all()
-        
+
         top_enterprises = []
         for p in top_profiles:
             top_enterprises.append({
-                "domain": p.domain, 
-                "score": p.procurement_intent_score, 
-                "industry": p.organization_type.value if hasattr(p, 'organization_type') and p.organization_type else "Enterprise", 
-                "value": "High Intent", 
+                "domain": p.domain,
+                "score": p.procurement_intent_score,
+                "industry": p.organization_type.value if hasattr(p, 'organization_type') and p.organization_type else "Enterprise",
+                "value": "High Intent",
                 "status": "Triggered" if p.active_procurement else "Monitoring"
             })
-            
-        # Fallback to display data if database is completely empty on fresh install
-        if not top_enterprises:
-            top_enterprises = [
-                {"domain": "enterprisesg.gov.sg", "score": 96, "industry": "Government", "value": "High Intent", "status": "Triggered"},
-                {"domain": "singtel.com", "score": 92, "industry": "Telecommunications", "value": "High Intent", "status": "Monitoring"}
-            ]
 
-        # Mock historical data points until a proper timeseries pipeline is built
-        index_data = [
-            {"p": "Jun", "score": 65, "triggers": 12},
-            {"p": "Jul", "score": 68, "triggers": 18},
-            {"p": "Aug", "score": 66, "triggers": 15},
-            {"p": "Sep", "score": 72, "triggers": 24},
-            {"p": "Oct", "score": 78, "triggers": 45},
-            {"p": "Nov", "score": round(global_pulse), "triggers": active_windows + 62},
-        ]
+        # Historical index data — populated by timeseries pipeline (empty until data exists)
+        index_data: list = []
 
         return {
             "globalPulse": round(float(global_pulse), 1),
-            "activeWindows": active_windows + 412, # add baseline for visual effect in empty DBs
-            "vulnerableVectors": 14,
-            "enterpriseValue": len(profiles) * 50000 + 4100000,
+            "activeWindows": active_windows,
+            "vulnerableVectors": 0,
+            "enterpriseValue": len(profiles) * 50000,
             "indexData": index_data,
             "topEnterprises": top_enterprises
         }
+    finally:
+        db.close()
+
+
+# ── TenderShortlist CRUD ──────────────────────────────────────────────────────
+
+class TenderIn(BaseModel):
+    tender_no:   str
+    sector:      str
+    agency:      str
+    description: Optional[str] = None
+    base_rate:   float = Field(default=0.20, ge=0.0, le=1.0)
+
+
+@router.post("/tenders", status_code=201)
+def create_tender(
+    body: TenderIn,
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    """Create a single TenderShortlist entry."""
+    from app.core.models_v10 import TenderShortlist
+    db = SessionLocal()
+    try:
+        existing = db.query(TenderShortlist).filter(
+            TenderShortlist.tender_no == body.tender_no
+        ).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="tender_no already exists")
+        row = TenderShortlist(**body.model_dump())
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return {"id": str(row.id), "tender_no": row.tender_no}
+    finally:
+        db.close()
+
+
+@router.post("/tenders/bulk", status_code=201)
+def bulk_create_tenders(
+    body: List[TenderIn],
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    """Upsert a list of tender entries (insert or update by tender_no)."""
+    from app.core.models_v10 import TenderShortlist
+    db = SessionLocal()
+    inserted = 0
+    updated  = 0
+    try:
+        for item in body:
+            existing = db.query(TenderShortlist).filter(
+                TenderShortlist.tender_no == item.tender_no
+            ).first()
+            if existing:
+                for k, v in item.model_dump().items():
+                    setattr(existing, k, v)
+                updated += 1
+            else:
+                db.add(TenderShortlist(**item.model_dump()))
+                inserted += 1
+        db.commit()
+        return {"inserted": inserted, "updated": updated, "total": len(body)}
+    finally:
+        db.close()
+
+
+@router.get("/tenders")
+def list_tenders(
+    sector: Optional[str] = Query(None),
+    agency: Optional[str] = Query(None),
+    limit:  int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    """List TenderShortlist entries with optional sector/agency filters."""
+    from app.core.models_v10 import TenderShortlist
+    db = SessionLocal()
+    try:
+        q = db.query(TenderShortlist)
+        if sector:
+            q = q.filter(TenderShortlist.sector == sector)
+        if agency:
+            q = q.filter(TenderShortlist.agency == agency)
+        total = q.count()
+        rows  = q.order_by(TenderShortlist.created_at.desc()).offset(offset).limit(limit).all()
+        return {
+            "total":  total,
+            "items": [
+                {
+                    "id":          str(r.id),
+                    "tender_no":   r.tender_no,
+                    "sector":      r.sector,
+                    "agency":      r.agency,
+                    "description": r.description,
+                    "base_rate":   r.base_rate,
+                    "created_at":  r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        db.close()
+
+
+@router.put("/tenders/{tender_id}")
+def update_tender(
+    tender_id: str,
+    body: TenderIn,
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    """Update a single TenderShortlist entry by UUID."""
+    from app.core.models_v10 import TenderShortlist
+    import uuid as _uuid
+    db = SessionLocal()
+    try:
+        try:
+            uid = _uuid.UUID(tender_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid UUID")
+        row = db.query(TenderShortlist).filter(TenderShortlist.id == uid).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Tender not found")
+        
+        # Update fields
+        for k, v in body.model_dump().items():
+            setattr(row, k, v)
+            
+        db.commit()
+        db.refresh(row)
+        return {"id": str(row.id), "tender_no": row.tender_no, "status": "updated"}
+    finally:
+        db.close()
+
+
+@router.delete("/tenders/{tender_id}", status_code=204)
+def delete_tender(
+    tender_id: str,
+    _auth: bool = Depends(_admin_auth),
+):
+    """Delete a TenderShortlist entry by UUID."""
+    from app.core.models_v10 import TenderShortlist
+    import uuid as _uuid
+    db = SessionLocal()
+    try:
+        try:
+            uid = _uuid.UUID(tender_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid UUID")
+        row = db.query(TenderShortlist).filter(TenderShortlist.id == uid).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Tender not found")
+        db.delete(row)
+        db.commit()
     finally:
         db.close()

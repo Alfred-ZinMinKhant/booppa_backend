@@ -16,6 +16,7 @@ from .vendor_status import router as vendor_status_router
 from .procurement import router as procurement_router
 from .rfp_requirements import router as rfp_requirements_router
 # V10 new routes
+from .tender_check import router as tender_check_router
 from .marketplace import router as marketplace_router
 from .feature_flags import router as feature_flags_router
 from .comparison import router as comparison_router
@@ -72,3 +73,8 @@ router.include_router(widget_router, prefix="/widget", tags=["widget"])
 router.include_router(sse_router, prefix="/sse", tags=["sse"])
 # V10 — Notarization Upload
 router.include_router(notarize_router, prefix="/notarize", tags=["notarization"])
+# V10 — Tender Win Probability
+router.include_router(tender_check_router, prefix="/tender-check", tags=["tender-check"])
+# Dashboard — real vendor data
+from .dashboard import router as dashboard_router
+router.include_router(dashboard_router, prefix="/dashboard", tags=["dashboard"])

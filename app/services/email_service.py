@@ -22,6 +22,23 @@ class EmailService:
 
         self.ses_client = boto3.client("ses", **client_kwargs)
 
+    async def send_html_email(self, to_email: str, subject: str, body_html: str) -> bool:
+        """Send an email with a custom HTML body."""
+        try:
+            response = self.ses_client.send_email(
+                Source=settings.SUPPORT_EMAIL,
+                Destination={"ToAddresses": [to_email]},
+                Message={
+                    "Subject": {"Data": subject},
+                    "Body": {"Html": {"Data": body_html}},
+                },
+            )
+            logger.info(f"Email sent to {to_email}: {response['MessageId']}")
+            return True
+        except ClientError as e:
+            logger.error(f"Email sending failed: {e}")
+            return False
+
     async def send_report_ready_email(self, to_email: str, report_url: str | None, user_name: str, report_id: str):
         """Send email notification when report is ready"""
         try:

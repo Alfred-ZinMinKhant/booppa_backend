@@ -98,8 +98,8 @@ def is_feature_enabled(flag_name: str) -> bool:
             val = r.get(f"feature_flag:{flag_name}")
             if val is not None:
                 return val.lower() in ("true", "1", "yes")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("[FeatureFlags] Redis lookup error for %s: %s", flag_name, exc)
 
     # 3. Check DB as last resort
     try:
@@ -111,8 +111,8 @@ def is_feature_enabled(flag_name: str) -> bool:
                 return flag.enabled
         finally:
             db.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("[FeatureFlags] DB lookup error for %s: %s", flag_name, exc)
 
     return False
 
