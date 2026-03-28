@@ -9,6 +9,9 @@ class EmailService:
     """Email service — uses Resend if RESEND_API_KEY is set, falls back to AWS SES."""
 
     async def send_html_email(self, to_email: str, subject: str, body_html: str) -> bool:
+        if getattr(settings, "SKIP_EMAIL", True):
+            logger.info(f"[Email] Skipped (SKIP_EMAIL=True): to={to_email} subject={subject}")
+            return True
         if getattr(settings, "RESEND_API_KEY", None):
             return await self._send_resend(to_email, subject, body_html)
         return await self._send_ses(to_email, subject, body_html)

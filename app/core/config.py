@@ -69,6 +69,7 @@ class Settings(BaseSettings):
 
     # Report generation
     SKIP_PDF_GENERATION: bool = False
+    SKIP_EMAIL: bool = True  # disable until sending domain is verified
     VERIFY_BASE_URL: str = "https://www.booppa.io"
 
     # Monitor v5.5++

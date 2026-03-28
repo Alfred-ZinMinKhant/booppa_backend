@@ -241,9 +241,8 @@ async def _resolve_website_url(raw_url: str | None) -> dict:
 def process_report_task(self, report_id: str):
     """Main report processing task - orchestrates the entire workflow"""
     try:
-        # Run async workflow in sync context
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(process_report_workflow(report_id))
+        # Run async workflow in sync context (use asyncio.run to create a fresh event loop)
+        result = asyncio.run(process_report_workflow(report_id))
 
         logger.info(f"Report {report_id} processed successfully")
         return result
