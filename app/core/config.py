@@ -30,7 +30,7 @@ class Settings(BaseSettings):
 
     # AWS SES
     AWS_SES_REGION: str = "ap-southeast-1"
-    SUPPORT_EMAIL: str = "support@booppa.com"
+    SUPPORT_EMAIL: str = "support@booppa.io"
 
     # Resend (preferred over SES — set RESEND_API_KEY to enable)
     RESEND_API_KEY: Optional[str] = None
@@ -69,7 +69,7 @@ class Settings(BaseSettings):
 
     # Report generation
     SKIP_PDF_GENERATION: bool = False
-    SKIP_EMAIL: bool = True  # disable until sending domain is verified
+    SKIP_EMAIL: bool = False
     VERIFY_BASE_URL: str = "https://www.booppa.io"
 
     # Monitor v5.5++
