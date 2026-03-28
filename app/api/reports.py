@@ -64,6 +64,9 @@ def _build_verify_payload(report: Report) -> dict:
         tx_confirmed = status.get("tx_confirmed")
 
     qr_image = _build_qr_image(verify_url) if verify_url else None
+    polygonscan_url = (
+        f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{tx_hash}" if tx_hash else None
+    )
 
     return {
         "qr_target": verify_url,
@@ -72,6 +75,7 @@ def _build_verify_payload(report: Report) -> dict:
         "schema_version": "1.0",
         "verify_url": verify_url,
         "tx_hash": tx_hash,
+        "polygonscan_url": polygonscan_url,
         "anchored": anchored,
         "anchored_at": anchored_at,
         "tx_confirmed": tx_confirmed,
@@ -431,22 +435,6 @@ async def get_report_by_session(
             # Fulfillment is handled by the webhook.
             # We just return "Not Ready" (202) here.
 
-            if debug:
-                raise HTTPException(
-                    status_code=404,
-                    detail={
-                        "message": "Report not ready",
-                        "report_id": str(report.id),
-                        "status": report.status,
-                        "has_pdf": bool(report.s3_url),
-                        "has_report": bool(structured_report),
-                        "payment_status": session.get("payment_status"),
-                        "last_processing_error": last_processing_error,
-                        "processing_attempts": processing_attempts,
-                        "last_processing_attempt_at": last_processing_attempt_at,
-                        "workflow": workflow_flags,
-                    },
-                )
             if debug:
                 raise HTTPException(
                     status_code=404,

@@ -19,6 +19,7 @@ PRO_PRODUCT_KEYS = {
     "compliance_notarization_1",
     "compliance_notarization_10",
     "compliance_notarization_50",
+    "vendor_proof",
 }
 
 
