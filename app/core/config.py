@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     AWS_SES_REGION: str = "ap-southeast-1"
     SUPPORT_EMAIL: str = "support@booppa.com"
 
+    # Resend (preferred over SES — set RESEND_API_KEY to enable)
+    RESEND_API_KEY: Optional[str] = None
+
     # Blockchain
     POLYGON_RPC_URL: str = "https://polygon-rpc.com"
     POLYGON_EXPLORER_URL: str = "https://amoy.polygonscan.com"
