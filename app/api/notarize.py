@@ -194,13 +194,15 @@ async def get_certificate(report_id: str, background_tasks: BackgroundTasks = No
         payment_confirmed = bool(assessment.get("payment_confirmed"))
         pdf_generated = bool(assessment.get("pdf_generated"))
         s3_uploaded = bool(assessment.get("s3_uploaded"))
-        has_tx = bool(report.tx_hash)
+        # Only treat a real hex tx hash as valid (not the legacy "already_anchored" sentinel)
+        real_tx = report.tx_hash if (report.tx_hash and report.tx_hash != "already_anchored") else None
+        has_tx = bool(assessment.get("blockchain_anchored"))
 
         # Verification payload
         verification = None
         if report.audit_hash:
             verify_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/verify/{report.audit_hash}"
-            polygonscan_url = f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{report.tx_hash}" if report.tx_hash else None
+            polygonscan_url = f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{real_tx}" if real_tx else None
 
             anchored = bool(assessment.get("blockchain_anchored", False))
             anchored_at = assessment.get("blockchain_anchored_at")
@@ -227,7 +229,7 @@ async def get_certificate(report_id: str, background_tasks: BackgroundTasks = No
             "company_name": report.company_name,
             # Blockchain & evidence
             "audit_hash": report.audit_hash,
-            "tx_hash": report.tx_hash,
+            "tx_hash": real_tx,
             # Plan
             "plan": assessment.get("product_type"),
             "contact_email": assessment.get("contact_email"),
