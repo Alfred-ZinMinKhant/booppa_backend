@@ -106,6 +106,8 @@ async def checkout_post(request: Request):
         # Notarization products redirect to the certificate result page
         if product_type and "compliance_notarization" in product_type and report_id:
             success_url = f"{base_url}/notarization/result?session_id={{CHECKOUT_SESSION_ID}}&report_id={report_id}"
+        elif product_type and "rfp_" in product_type:
+            success_url = f"{base_url}/rfp-acceleration/result?session_id={{CHECKOUT_SESSION_ID}}"
         # simple cancel URL mapping
         cancel_path = (
             "pdpa"
@@ -148,11 +150,9 @@ async def checkout_post(request: Request):
             metadata["company_name"] = company_name
         if rfp_description:
             metadata["rfp_description"] = rfp_description
-        # Buyer-supplied facts (JSON, truncated to 500 chars for Stripe metadata limit)
+        # Buyer-supplied facts indicator
         if intake_data:
-            import json as _json
-            intake_str = _json.dumps(intake_data, ensure_ascii=False)[:500]
-            metadata["intake_data"] = intake_str
+            metadata["has_intake"] = "1"
 
         session = stripe_client.checkout.Session.create(
             mode=mode,
@@ -168,6 +168,14 @@ async def checkout_post(request: Request):
         logger.info(
             f"Created Stripe session id={getattr(session, 'id', None)} url={getattr(session, 'url', None)} metadata={metadata}"
         )
+
+        if intake_data and hasattr(session, "id"):
+            from app.core.cache import cache as cache_mod
+            cache_mod.set(
+                cache_mod.cache_key(f"rfp_intake:{session.id}"),
+                intake_data,
+                ttl=86400  # 24 hours
+            )
 
         return JSONResponse({"url": session.url})
     except RuntimeError as e:
@@ -334,6 +342,7 @@ async def rfp_result(session_id: str | None = None):
     from app.core.cache import cache as cache_mod
     data = cache_mod.get(cache_mod.cache_key(f"rfp_result:{session_id}"))
     if not data:
-        return JSONResponse(status_code=202, content={"detail": "Not ready"})
+        return JSONResponse(status_code=202, content={"detail": "Not ready"}, headers={"Cache-Control": "no-store, max-age=0"})
 
-    return JSONResponse(data)
+    return JSONResponse(data, headers={"Cache-Control": "no-store, max-age=0"})
+
