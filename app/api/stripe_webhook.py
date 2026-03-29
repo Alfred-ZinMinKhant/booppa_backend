@@ -188,7 +188,7 @@ async def _fulfill_rfp_package(
         rfp_details = {"description": rfp_description} if rfp_description else None
         if intake_data:
             rfp_details = {**(rfp_details or {}), "intake": intake_data}
-        builder = RFPExpressBuilder(vendor_id=vendor_id, vendor_email=vendor_email)
+        builder = RFPExpressBuilder(vendor_id=vendor_id, vendor_email=vendor_email, session_id=session_id)
         result = await builder.generate_express_package(
             vendor_url=vendor_url,
             company_name=company_name,
@@ -208,6 +208,7 @@ async def _fulfill_rfp_package(
                 cache_mod.cache_key(f"rfp_result:{session_id}"),
                 {
                     "download_url": download_url,
+                    "docx_url": result.get("docx_url"),
                     "product_type": product_type,
                     "company_name": company_name,
                     "vendor_url": vendor_url,

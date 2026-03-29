@@ -1030,6 +1030,171 @@ def fulfill_rfp_task(
         raise self.retry(exc=exc, countdown=countdown)
 
 
+@celery_app.task(name="refresh_gebiz_base_rates")
+def refresh_gebiz_base_rates():
+    """
+    4.5: Fetch GeBIZ Government Procurement Awards from data.gov.sg and
+    update TenderShortlist.base_rate with real sector/agency win rates.
+
+    Algorithm:
+      base_rate = (unique vendors awarded in sector) / (total unique tenders in sector)
+      clamped to [0.05, 0.60]
+
+    Runs weekly via Celery Beat. Non-fatal — failures logged, no rollback needed.
+    """
+    import asyncio as _asyncio
+
+    async def _fetch_and_update():
+        from app.core.models_v10 import TenderShortlist
+        db = SessionLocal()
+        try:
+            # ── 1. Fetch GeBIZ award data from data.gov.sg ──────────────────────
+            # Dataset: Government Procurement Awards
+            # Resource IDs to try in order (primary + fallback)
+            GEBIZ_DATASET_IDS = [
+                "d_a2c0b1c04e3e55e4e8d39f86b42b0e57",  # Government Procurement Awards
+                "5ab68aac-91f6-4f39-9b21-698610bdf3f7",  # Fallback
+            ]
+            SECTOR_KEYWORDS = {
+                "IT": ["information technology", "ict", "software", "hardware", "digital", "cyber", "data"],
+                "CONSTRUCTION": ["construction", "building", "infrastructure", "civil"],
+                "PROFESSIONAL_SERVICES": ["consultancy", "consulting", "professional services", "advisory"],
+                "HEALTHCARE": ["healthcare", "health", "medical", "hospital"],
+                "SECURITY": ["security", "surveillance", "guarding"],
+                "FACILITIES": ["facilities", "maintenance", "cleaning", "property"],
+                "LOGISTICS": ["logistics", "transport", "delivery", "freight"],
+                "EDUCATION": ["education", "training", "learning"],
+            }
+            DEFAULT_BASE_RATE = 0.20
+            CLAMP_MIN = 0.05
+            CLAMP_MAX = 0.60
+            PAGE_SIZE = 1000
+
+            sector_awards: dict[str, int] = {}   # sector → awarded tender count
+            sector_tenders: dict[str, int] = {}  # sector → total tenders seen
+            agency_awards: dict[str, int] = {}   # agency → awarded count
+            agency_tenders: dict[str, int] = {}  # agency → total seen
+
+            fetched_any = False
+            async with httpx.AsyncClient(timeout=30) as client:
+                for dataset_id in GEBIZ_DATASET_IDS:
+                    offset = 0
+                    while True:
+                        try:
+                            resp = await client.get(
+                                "https://data.gov.sg/api/action/datastore_search",
+                                params={
+                                    "resource_id": dataset_id,
+                                    "limit": PAGE_SIZE,
+                                    "offset": offset,
+                                },
+                                headers={"User-Agent": "BooppaBot/1.0"},
+                            )
+                        except Exception as e:
+                            logger.warning(f"[GeBIZ] Fetch error dataset={dataset_id} offset={offset}: {e}")
+                            break
+
+                        if resp.status_code != 200:
+                            logger.warning(f"[GeBIZ] HTTP {resp.status_code} for dataset {dataset_id}")
+                            break
+
+                        data = resp.json()
+                        records = data.get("result", {}).get("records", [])
+                        if not records:
+                            break
+
+                        fetched_any = True
+                        for rec in records:
+                            # Normalise field names across dataset schema variants
+                            description = (
+                                rec.get("tender_description")
+                                or rec.get("award_details")
+                                or rec.get("description", "")
+                            ).lower()
+                            agency = (
+                                rec.get("agency")
+                                or rec.get("procuring_entity", "UNKNOWN")
+                            ).upper().strip()
+                            awarded = bool(
+                                rec.get("awarded_date")
+                                or rec.get("supplier_name")
+                                or rec.get("award_amt")
+                            )
+
+                            # Classify sector from description keywords
+                            matched_sector = "OTHER"
+                            for sector, keywords in SECTOR_KEYWORDS.items():
+                                if any(kw in description for kw in keywords):
+                                    matched_sector = sector
+                                    break
+
+                            sector_tenders[matched_sector] = sector_tenders.get(matched_sector, 0) + 1
+                            agency_tenders[agency] = agency_tenders.get(agency, 0) + 1
+                            if awarded:
+                                sector_awards[matched_sector] = sector_awards.get(matched_sector, 0) + 1
+                                agency_awards[agency] = agency_awards.get(agency, 0) + 1
+
+                        total = data.get("result", {}).get("total", 0)
+                        offset += PAGE_SIZE
+                        if offset >= total:
+                            break
+
+                    if fetched_any:
+                        break  # got data from first working dataset
+
+            if not fetched_any:
+                logger.warning("[GeBIZ] No data fetched from any dataset — base_rates unchanged")
+                return
+
+            # ── 2. Compute sector rates ─────────────────────────────────────────
+            def _rate(awarded: int, total: int) -> float:
+                if total == 0:
+                    return DEFAULT_BASE_RATE
+                return max(CLAMP_MIN, min(CLAMP_MAX, awarded / total))
+
+            sector_rates = {
+                s: _rate(sector_awards.get(s, 0), sector_tenders[s])
+                for s in sector_tenders
+            }
+            agency_rates = {
+                a: _rate(agency_awards.get(a, 0), agency_tenders[a])
+                for a in agency_tenders
+            }
+
+            logger.info(f"[GeBIZ] Sector rates computed: {sector_rates}")
+            logger.info(f"[GeBIZ] Top agency rates (sample): {dict(list(agency_rates.items())[:5])}")
+
+            # ── 3. Update TenderShortlist.base_rate ─────────────────────────────
+            tenders = db.query(TenderShortlist).all()
+            updated = 0
+            for tender in tenders:
+                # Prefer agency-specific rate; fall back to sector rate; then default
+                agency_key = (tender.agency or "").upper().strip()
+                sector_key = (tender.sector or "OTHER").upper().strip()
+                new_rate = (
+                    agency_rates.get(agency_key)
+                    or sector_rates.get(sector_key)
+                    or DEFAULT_BASE_RATE
+                )
+                if abs(new_rate - tender.base_rate) > 0.005:
+                    tender.base_rate = round(new_rate, 4)
+                    updated += 1
+
+            db.commit()
+            logger.info(
+                f"[GeBIZ] base_rate refresh complete: {updated}/{len(tenders)} tenders updated "
+                f"from {sum(sector_tenders.values())} award records"
+            )
+
+        except Exception as e:
+            logger.error(f"[GeBIZ] base_rate refresh failed: {e}")
+            db.rollback()
+        finally:
+            db.close()
+
+    _asyncio.run(_fetch_and_update())
+
+
 @celery_app.task(name="cleanup_old_tasks")
 def cleanup_old_tasks():
     """Clean up old completed reports and temporary data"""
