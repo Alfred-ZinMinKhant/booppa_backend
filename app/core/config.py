@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: Optional[str] = None
     ANTHROPIC_MODEL: str = "claude-haiku-4.5"
 
+    # Security intelligence (free tiers)
+    # VirusTotal: free API key from https://www.virustotal.com/gui/join-us
+    # Limits: 4 req/min, 500 req/day — sufficient for RFP generation use case
+    VIRUSTOTAL_API_KEY: Optional[str] = None
+
     # Stripe
     STRIPE_SECRET_KEY: Optional[str] = None
     STRIPE_WEBHOOK_SECRET: Optional[str] = None

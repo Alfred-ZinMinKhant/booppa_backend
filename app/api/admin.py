@@ -253,6 +253,19 @@ def update_tender(
         db.close()
 
 
+@router.post("/tenders/refresh-base-rates", status_code=202)
+def trigger_gebiz_base_rate_refresh(
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    """
+    Trigger an immediate GeBIZ base_rate refresh from data.gov.sg.
+    Enqueues the Celery task and returns immediately.
+    """
+    from app.workers.tasks import refresh_gebiz_base_rates
+    task = refresh_gebiz_base_rates.delay()
+    return {"queued": True, "task_id": task.id}
+
+
 @router.delete("/tenders/{tender_id}", status_code=204)
 def delete_tender(
     tender_id: str,

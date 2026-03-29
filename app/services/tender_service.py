@@ -16,6 +16,7 @@ or RFP Complete, showing the realistic delta achievable through each tier.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 from sqlalchemy.orm import Session
 
@@ -23,6 +24,8 @@ from app.core.models_v10 import TenderShortlist
 from app.core.models_v8 import VendorStatusSnapshot
 
 logger = logging.getLogger(__name__)
+
+SNAPSHOT_STALE_DAYS = 7
 
 # ── Probability cap ────────────────────────────────────────────────────────────
 # Even a perfect profile can't exceed this ceiling (market reality)
@@ -152,6 +155,21 @@ def compute_tender_win_probability(
             VendorStatusSnapshot.vendor_id == vendor_id
         ).first()
 
+        # 4.6: Auto-refresh stale snapshots before computing probability
+        if snapshot and snapshot.updated_at:
+            age = datetime.utcnow() - snapshot.updated_at
+            if age > timedelta(days=SNAPSHOT_STALE_DAYS):
+                try:
+                    from app.services.scoring import VendorScoreEngine
+                    VendorScoreEngine.update_vendor_score(db, vendor_id)
+                    db.refresh(snapshot)
+                    logger.info(
+                        f"[TenderService] Refreshed stale snapshot for vendor={vendor_id} "
+                        f"(age={age.days}d)"
+                    )
+                except Exception as e:
+                    logger.warning(f"[TenderService] Snapshot refresh failed for {vendor_id}: {e}")
+
     # Fall back to unverified defaults when no snapshot exists
     verification_depth = snapshot.verification_depth if snapshot else "UNVERIFIED"
     sector_percentile  = snapshot.risk_adjusted_pct  if snapshot else 50.0
@@ -191,6 +209,19 @@ def compute_tender_win_probability(
         verification_depth, sector_percentile, evidence_count, risk_signal
     )
 
+    # 4.7: Data freshness metadata
+    data_freshness: dict | None = None
+    if vendor_id and snapshot:
+        snapshot_ts = snapshot.updated_at.isoformat() if snapshot.updated_at else None
+        data_freshness = {
+            "vendorSnapshot": snapshot_ts,
+            "snapshotAgeDays": (
+                (datetime.utcnow() - snapshot.updated_at).days
+                if snapshot.updated_at else None
+            ),
+            "tenderData": tender.updated_at.isoformat() if getattr(tender, "updated_at", None) else None,
+        }
+
     return {
         "tenderNo":          tender.tender_no,
         "tenderDescription": tender.description or "",
@@ -218,6 +249,7 @@ def compute_tender_win_probability(
             },
         } if vendor_id else None,
         "gapReasons": gap_reasons if vendor_id else [],
+        "dataFreshness": data_freshness,
     }
 
 

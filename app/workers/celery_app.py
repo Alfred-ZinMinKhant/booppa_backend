@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.schedules import crontab
 from app.core.config import settings
 
 celery_app = Celery(
@@ -33,6 +34,13 @@ celery_app.conf.update(
         "cleanup-old-tasks": {
             "task": "app.workers.tasks.cleanup_old_tasks",
             "schedule": 3600.0,  # Every hour
+        },
+        # Refresh GeBIZ tender base rates from data.gov.sg every Monday at 02:00 UTC.
+        # Uses real procurement award data to calibrate win probability calculations.
+        # Task registered as name="refresh_gebiz_base_rates" in tasks.py.
+        "refresh-gebiz-base-rates-weekly": {
+            "task": "refresh_gebiz_base_rates",
+            "schedule": crontab(day_of_week="monday", hour=2, minute=0),
         },
     },
 )
