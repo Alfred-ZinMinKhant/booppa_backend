@@ -66,6 +66,11 @@ class BlockchainService:
         hex_value = evidence_hash.strip().lower()
         if hex_value.startswith("0x"):
             hex_value = hex_value[2:]
+        if not hex_value or len(hex_value) != 64 or not all(c in "0123456789abcdef" for c in hex_value):
+            raise ValueError(
+                f"Invalid evidence_hash: expected a 64-char SHA-256 hex string, "
+                f"got {len(hex_value)!r}-char value {hex_value[:16]!r}{'...' if len(hex_value) > 16 else ''}"
+            )
         return Web3.to_bytes(hexstr="0x" + hex_value)
 
     def _get_private_key(self) -> str:

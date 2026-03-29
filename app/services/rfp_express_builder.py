@@ -598,10 +598,14 @@ class RFPExpressBuilder:
 
     async def _anchor_to_blockchain(self) -> Optional[str]:
         try:
+            import hashlib
             from app.services.blockchain import BlockchainService
+            # report_id is a UUID string; derive a 64-char SHA-256 hex so it is
+            # valid input for the EvidenceAnchorV3 bytes32 contract parameter.
+            evidence_hash = hashlib.sha256(self.report_id.encode()).hexdigest()
             blockchain = BlockchainService()
             tx = await blockchain.anchor_evidence(
-                self.report_id,
+                evidence_hash,
                 metadata=f"rfp_express:vendor:{self.vendor_id}",
             )
             logger.info(f"RFP Express anchored on Polygon Amoy testnet: {tx}")
