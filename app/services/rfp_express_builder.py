@@ -92,8 +92,9 @@ class RFPExpressBuilder:
 
         questions = COMPLETE_QUESTIONS if product_type == "rfp_complete" else ESSENTIAL_QUESTIONS
 
+        intake = (rfp_details or {}).get("intake", {})
         # 1. Gather vendor context for personalised answers
-        vendor_ctx = self._build_vendor_context(company_name, vendor_url, db)
+        vendor_ctx = self._build_vendor_context(company_name, vendor_url, db, intake=intake)
 
         # 2. Generate RFP Q&A answers via AI
         qa_answers = await self._generate_qa(vendor_ctx, rfp_details, questions)
@@ -117,6 +118,12 @@ class RFPExpressBuilder:
         explorer_base = settings.POLYGON_EXPLORER_URL.rstrip("/")
 
         is_complete = product_type == "rfp_complete"
+        # Build labelled Q&A for frontend display
+        qa_display = [
+            {"question": self._q_label(k), "answer": v}
+            for k, v in qa_answers.items()
+        ]
+
         return {
             "success":        True,
             "product":        "rfp_kit_complete" if is_complete else "rfp_kit_express",
@@ -125,7 +132,8 @@ class RFPExpressBuilder:
             "company_name":   company_name,
             "vendor_url":     vendor_url,
             "download_url":   download_url,
-            "qa_answers_count": len(COMPLETE_QUESTIONS if is_complete else ESSENTIAL_QUESTIONS),
+            "qa_answers":     qa_display,
+            "qa_answers_count": len(qa_display),
             "tx_hash":        tx_hash,
             "polygonscan_url": f"{explorer_base}/tx/{tx_hash}" if tx_hash else None,
             "network":        "Polygon Amoy Testnet",
@@ -142,13 +150,15 @@ class RFPExpressBuilder:
 
     # ── Step 1: vendor context ────────────────────────────────────────────────
 
-    def _build_vendor_context(self, company_name: str, vendor_url: str, db) -> Dict:
+    def _build_vendor_context(self, company_name: str, vendor_url: str, db, intake: dict | None = None) -> Dict:
         ctx: Dict[str, Any] = {
             "company_name": company_name,
             "vendor_url":   vendor_url,
-            "uen":          None,
+            "uen":          intake.get("uen") if intake else None,
             "sector":       None,
             "trust_score":  None,
+            "acra_name":    None,
+            "acra_entity_type": None,
             "verification_depth": None,
         }
         if db is None:
@@ -164,19 +174,58 @@ class RFPExpressBuilder:
                 user = db.query(User).filter(User.email == self.vendor_id).first()
             if user:
                 ctx["uen"] = getattr(user, "uen", None)
-            score = db.query(VendorScore).filter(VendorScore.vendor_id == self.vendor_id).first()
-            if score:
-                ctx["trust_score"] = score.total_score
+            # VendorScore / VendorSector are keyed by UUID — skip if vendor_id is an email
+            is_uuid = _re.match(r'^[0-9a-f-]{36}$', self.vendor_id or '', _re.IGNORECASE)
+            if is_uuid:
+                score = db.query(VendorScore).filter(VendorScore.vendor_id == self.vendor_id).first()
+                if score:
+                    ctx["trust_score"] = score.total_score
             sector_row = db.query(VendorSector).filter(
-                VendorSector.vendor_id == self.vendor_id
-            ).first()
+                VendorSector.vendor_id == (user.id if user else self.vendor_id)
+            ).first() if is_uuid or user else None
             if sector_row:
                 ctx["sector"] = sector_row.sector
+
+            # ACRA lookup — enrich with registered company name and entity type
+            uen_to_check = ctx.get("uen") or (intake.get("uen") if intake else None)
+            if uen_to_check:
+                try:
+                    from app.core.models_v10 import MarketplaceVendor
+                    acra_row = db.query(MarketplaceVendor).filter(
+                        MarketplaceVendor.uen == uen_to_check
+                    ).first()
+                    if acra_row:
+                        ctx["acra_name"] = getattr(acra_row, "name", None) or getattr(acra_row, "company_name", None)
+                        ctx["acra_entity_type"] = getattr(acra_row, "entity_type", None)
+                        if not ctx.get("sector"):
+                            ctx["sector"] = getattr(acra_row, "sector", None)
+                        logger.info(f"ACRA match for UEN {uen_to_check}: {ctx['acra_name']}")
+                except Exception as acra_err:
+                    logger.warning(f"ACRA lookup failed for UEN {uen_to_check}: {acra_err}")
         except Exception as e:
             logger.warning(f"Could not fetch vendor context for {self.vendor_id}: {e}")
         return ctx
 
     # ── Step 2: AI-generated Q&A ──────────────────────────────────────────────
+
+    async def _fetch_website_context(self, vendor_url: str) -> str:
+        """Fetch and extract readable text from the vendor's website for AI grounding."""
+        import httpx, re
+        texts = []
+        pages = [vendor_url, vendor_url.rstrip("/") + "/privacy-policy", vendor_url.rstrip("/") + "/about"]
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; BooppaBot/1.0)"}
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            for url in pages:
+                try:
+                    resp = await client.get(url, headers=headers)
+                    if resp.status_code == 200:
+                        # Strip HTML tags and collapse whitespace
+                        text = re.sub(r'<[^>]+>', ' ', resp.text)
+                        text = re.sub(r'\s+', ' ', text).strip()
+                        texts.append(text[:1500])
+                except Exception:
+                    pass
+        return "\n\n---\n\n".join(texts)[:4000] if texts else ""
 
     async def _generate_qa(self, ctx: Dict, rfp_details: Optional[Dict], questions: list) -> Dict[str, str]:
         try:
@@ -187,13 +236,52 @@ class RFPExpressBuilder:
             rfp_hint    = f" The RFP is for: {rfp_details.get('description', '')}." if rfp_details else ""
             keys_list   = ", ".join(questions)
 
+            # Buyer-supplied facts ground the answers in reality
+            intake = (rfp_details or {}).get("intake", {})
+            intake_lines = []
+            fact_map = {
+                "uen":             "Company UEN (Singapore registration number)",
+                "description":     "What the company does",
+                "dpo_appointed":   "DPO appointed",
+                "iso_status":      "ISO 27001 / SOC 2 certification status",
+                "data_hosting":    "Where data is hosted",
+                "breach_history":  "Data breaches in last 24 months",
+                "extra_notes":     "Additional notes from the vendor",
+            }
+            for key, label in fact_map.items():
+                val = intake.get(key)
+                if val and val != "unknown":
+                    intake_lines.append(f"- {label}: {val}")
+            if ctx.get("uen") and not intake.get("uen"):
+                intake_lines.append(f"- Company UEN: {ctx['uen']}")
+            if ctx.get("acra_name"):
+                intake_lines.append(f"- ACRA registered name: {ctx['acra_name']}")
+            if ctx.get("acra_entity_type"):
+                intake_lines.append(f"- Entity type: {ctx['acra_entity_type']}")
+
+            facts_section = (
+                "Known facts about this company (use these to make answers specific and accurate):\n"
+                + "\n".join(intake_lines)
+                if intake_lines else ""
+            )
+
+            # Scrape website for additional context
+            website_text = await self._fetch_website_context(ctx["vendor_url"])
+            website_section = (
+                f"Website content extract (use to infer actual products/services/practices):\n{website_text}"
+                if website_text else ""
+            )
+
+            context_block = "\n\n".join(filter(None, [facts_section, website_section]))
+
             prompt = (
                 f"You are generating RFP compliance answers for {ctx['company_name']}"
                 f"{sector_hint} (website: {ctx['vendor_url']}).{rfp_hint}\n\n"
-                f"Write concise, professional answers for a Singapore government procurement RFP. "
-                f"Each answer should be 1-3 sentences. Return ONLY a JSON object with these keys:\n"
-                f"{keys_list}.\n\n"
-                f"Base the answers on what a well-run Singapore SME in this sector would truthfully state."
+                + (f"{context_block}\n\n" if context_block else "")
+                + f"Write concise, professional answers for a Singapore government procurement RFP. "
+                f"Each answer should be 1-3 sentences. Where specific facts above contradict a generic "
+                f"assumption, use the facts. Return ONLY a JSON object with these keys:\n"
+                f"{keys_list}."
             )
 
             response = await ai._call_deepseek([{"role": "user", "content": prompt}])

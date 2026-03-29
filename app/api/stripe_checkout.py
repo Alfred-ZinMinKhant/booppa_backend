@@ -133,6 +133,7 @@ async def checkout_post(request: Request):
         vendor_url = data.get("vendor_url", "")
         company_name = data.get("company_name", "")
         rfp_description = data.get("rfp_description", "")
+        intake_data = data.get("intake_data") or {}  # dict of buyer-supplied facts
 
         metadata = {"product_type": product_type or "", "client_ip": client_ip}
         if report_id:
@@ -147,6 +148,11 @@ async def checkout_post(request: Request):
             metadata["company_name"] = company_name
         if rfp_description:
             metadata["rfp_description"] = rfp_description
+        # Buyer-supplied facts (JSON, truncated to 500 chars for Stripe metadata limit)
+        if intake_data:
+            import json as _json
+            intake_str = _json.dumps(intake_data, ensure_ascii=False)[:500]
+            metadata["intake_data"] = intake_str
 
         session = stripe_client.checkout.Session.create(
             mode=mode,

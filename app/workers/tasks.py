@@ -1008,6 +1008,7 @@ def fulfill_rfp_task(
     company_name: str,
     rfp_description: str | None = None,
     session_id: str | None = None,
+    intake_data: dict | None = None,
 ):
     """Celery task: generate and deliver the RFP Kit evidence package."""
     try:
@@ -1020,6 +1021,7 @@ def fulfill_rfp_task(
             company_name=company_name,
             rfp_description=rfp_description,
             session_id=session_id,
+            intake_data=intake_data,
         ))
         logger.info(f"RFP package fulfilled for vendor {vendor_id} session {session_id}")
     except Exception as exc:

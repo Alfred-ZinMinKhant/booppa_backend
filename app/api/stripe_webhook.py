@@ -179,12 +179,15 @@ async def _fulfill_rfp_package(
     company_name: str,
     rfp_description: str | None = None,
     session_id: str | None = None,
+    intake_data: dict | None = None,
 ) -> None:
     """Background task: generate and deliver the RFP Kit package after payment."""
     db = SessionLocal()
     try:
         from app.services.rfp_express_builder import RFPExpressBuilder
         rfp_details = {"description": rfp_description} if rfp_description else None
+        if intake_data:
+            rfp_details = {**(rfp_details or {}), "intake": intake_data}
         builder = RFPExpressBuilder(vendor_id=vendor_id, vendor_email=vendor_email)
         result = await builder.generate_express_package(
             vendor_url=vendor_url,
@@ -198,12 +201,22 @@ async def _fulfill_rfp_package(
             f"RFP package fulfilled: product={product_type} vendor={vendor_id} "
             f"url={download_url} errors={result.get('errors')}"
         )
-        # Store the download URL keyed by session_id so the result page can retrieve it
+        # Store result keyed by session_id so the result page can retrieve it
         if session_id and download_url:
             from app.core.cache import cache as cache_mod
             cache_mod.set(
                 cache_mod.cache_key(f"rfp_result:{session_id}"),
-                {"download_url": download_url, "product_type": product_type, "company_name": company_name},
+                {
+                    "download_url": download_url,
+                    "product_type": product_type,
+                    "company_name": company_name,
+                    "vendor_url": vendor_url,
+                    "qa_answers": result.get("qa_answers", []),
+                    "tx_hash": result.get("tx_hash"),
+                    "polygonscan_url": result.get("polygonscan_url"),
+                    "generated_at": result.get("generated_at"),
+                    "expires_at": result.get("expires_at"),
+                },
             )
     except Exception as e:
         logger.error(f"RFP fulfillment failed for vendor {vendor_id}: {e}")
@@ -258,6 +271,13 @@ async def stripe_webhook(request: Request):
                 company_name = metadata.get("company_name", "")
                 if vendor_url and company_name:
                     vendor_id = metadata.get("vendor_id") or customer_email or "anonymous"
+                    intake_raw = metadata.get("intake_data")
+                    intake_dict = None
+                    if intake_raw:
+                        try:
+                            intake_dict = json.loads(intake_raw)
+                        except Exception:
+                            pass
                     from app.workers.tasks import fulfill_rfp_task
                     fulfill_rfp_task.delay(
                         product_type=product_type,
@@ -267,6 +287,7 @@ async def stripe_webhook(request: Request):
                         company_name=company_name,
                         rfp_description=metadata.get("rfp_description"),
                         session_id=session.get("id"),
+                        intake_data=intake_dict,
                     )
                     logger.info(
                         f"Queued RFP {product_type} fulfillment (no report_id) "
@@ -338,6 +359,13 @@ async def stripe_webhook(request: Request):
                     )
                 else:
                     from app.workers.tasks import fulfill_rfp_task
+                    intake_raw = metadata.get("intake_data")
+                    intake_dict = None
+                    if intake_raw:
+                        try:
+                            intake_dict = json.loads(intake_raw)
+                        except Exception:
+                            pass
                     fulfill_rfp_task.delay(
                         product_type=product_type,
                         vendor_id=vendor_id,
@@ -346,6 +374,7 @@ async def stripe_webhook(request: Request):
                         company_name=company_name,
                         rfp_description=rfp_desc,
                         session_id=session.get("id"),
+                        intake_data=intake_dict,
                     )
                     logger.info(
                         f"Queued RFP {product_type} fulfillment for vendor {vendor_id}"
