@@ -1026,8 +1026,20 @@ def fulfill_rfp_task(
         logger.info(f"RFP package fulfilled for vendor {vendor_id} session {session_id}")
     except Exception as exc:
         logger.error(f"RFP fulfillment failed for vendor {vendor_id}: {exc}")
-        countdown = 60 * (2 ** self.request.retries)
-        raise self.retry(exc=exc, countdown=countdown)
+        try:
+            from celery.exceptions import MaxRetriesExceededError
+            countdown = 60 * (2 ** self.request.retries)
+            raise self.retry(exc=exc, countdown=countdown)
+        except MaxRetriesExceededError:
+            logger.error(f"RFP fulfillment permanently failed for vendor {vendor_id} after {self.max_retries} retries")
+            if session_id:
+                from app.core.cache import cache as cache_mod
+                cache_mod.set(
+                    cache_mod.cache_key(f"rfp_result:{session_id}"),
+                    {"error": True, "detail": "Generation failed. Please contact support."},
+                    ttl=86400
+                )
+            raise
 
 
 @celery_app.task(name="refresh_gebiz_base_rates")

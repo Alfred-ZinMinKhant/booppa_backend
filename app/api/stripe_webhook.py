@@ -217,7 +217,12 @@ async def _fulfill_rfp_package(
                     "polygonscan_url": result.get("polygonscan_url"),
                     "generated_at": result.get("generated_at"),
                     "expires_at": result.get("expires_at"),
+                    "data_sources": result.get("data_sources", {}),
+                    "discrepancies": result.get("discrepancies", []),
+                    "warnings": result.get("warnings", []),
+                    "answer_source": result.get("answer_source", "ai_grounded"),
                 },
+                ttl=604800,  # 7 days
             )
     except Exception as e:
         logger.error(f"RFP fulfillment failed for vendor {vendor_id}: {e}")
@@ -272,13 +277,13 @@ async def stripe_webhook(request: Request):
                 company_name = metadata.get("company_name", "")
                 if vendor_url and company_name:
                     vendor_id = metadata.get("vendor_id") or customer_email or "anonymous"
-                    intake_raw = metadata.get("intake_data")
+                    session_id = session.get("id")
                     intake_dict = None
-                    if intake_raw:
-                        try:
-                            intake_dict = json.loads(intake_raw)
-                        except Exception:
-                            pass
+                    if metadata.get("has_intake") == "1" and session_id:
+                        from app.core.cache import cache as cache_mod
+                        cached_intake = cache_mod.get(cache_mod.cache_key(f"rfp_intake:{session_id}"))
+                        if isinstance(cached_intake, dict):
+                            intake_dict = cached_intake
                     from app.workers.tasks import fulfill_rfp_task
                     fulfill_rfp_task.delay(
                         product_type=product_type,
@@ -360,13 +365,13 @@ async def stripe_webhook(request: Request):
                     )
                 else:
                     from app.workers.tasks import fulfill_rfp_task
-                    intake_raw = metadata.get("intake_data")
+                    session_id = session.get("id")
                     intake_dict = None
-                    if intake_raw:
-                        try:
-                            intake_dict = json.loads(intake_raw)
-                        except Exception:
-                            pass
+                    if metadata.get("has_intake") == "1" and session_id:
+                        from app.core.cache import cache as cache_mod
+                        cached_intake = cache_mod.get(cache_mod.cache_key(f"rfp_intake:{session_id}"))
+                        if isinstance(cached_intake, dict):
+                            intake_dict = cached_intake
                     fulfill_rfp_task.delay(
                         product_type=product_type,
                         vendor_id=vendor_id,
