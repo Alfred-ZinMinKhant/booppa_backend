@@ -28,6 +28,8 @@ from .referrals import router as referrals_router
 from .widget import router as widget_router
 from .sse import router as sse_router
 from .notarize import router as notarize_router
+# v17 Hardened — Legal consent endpoint
+from .legal_consent import router as legal_consent_router
 
 router = APIRouter()
 
@@ -73,8 +75,13 @@ router.include_router(widget_router, prefix="/widget", tags=["widget"])
 router.include_router(sse_router, prefix="/sse", tags=["sse"])
 # V10 — Notarization Upload
 router.include_router(notarize_router, prefix="/notarize", tags=["notarization"])
+# v17 Hardened — Legal consent
+router.include_router(legal_consent_router, prefix="", tags=["legal-consent"])
 # V10 — Tender Win Probability
 router.include_router(tender_check_router, prefix="/tender-check", tags=["tender-check"])
+# GeBIZ — Live Tender Feed
+from .gebiz import router as gebiz_router
+router.include_router(gebiz_router, prefix="/gebiz", tags=["gebiz"])
 # Dashboard — real vendor data
 from .dashboard import router as dashboard_router
 router.include_router(dashboard_router, prefix="/dashboard", tags=["dashboard"])

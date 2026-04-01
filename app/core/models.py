@@ -92,6 +92,18 @@ class ConsentLog(Base):
     metadata_json = Column("metadata", JSON, nullable=True)
 
 
+class HardenedConsent(Base):
+    __tablename__ = "hardened_consents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_email = Column(String(255), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    ip_address = Column(String(45), nullable=True)
+    user_agent = Column(String(500), nullable=True)
+    legal_version = Column(String(100), nullable=False, default="v17_Hardened")
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class DemoBooking(Base):
     __tablename__ = "demo_bookings"
 
