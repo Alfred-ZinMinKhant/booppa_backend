@@ -35,6 +35,11 @@ celery_app.conf.update(
             "task": "app.workers.tasks.cleanup_old_tasks",
             "schedule": 3600.0,  # Every hour
         },
+        # Sync live GeBIZ open tenders every 30 minutes.
+        "sync-gebiz-tenders": {
+            "task": "sync_gebiz_tenders",
+            "schedule": 1800.0,  # 30 minutes
+        },
         # Refresh GeBIZ tender base rates from data.gov.sg every Monday at 02:00 UTC.
         # Uses real procurement award data to calibrate win probability calculations.
         # Task registered as name="refresh_gebiz_base_rates" in tasks.py.

@@ -1207,6 +1207,27 @@ def refresh_gebiz_base_rates():
     _asyncio.run(_fetch_and_update())
 
 
+@celery_app.task(name="sync_gebiz_tenders")
+def sync_gebiz_tenders():
+    """
+    Fetch live GeBIZ open tenders via RSS (primary) then scrape the public
+    listing (supplementary). Runs every 30 minutes via Celery Beat.
+    Respects robots.txt: only public pages are accessed.
+    """
+    from app.services.gebiz_service import fetch_from_rss, scrape_gebiz_page
+
+    db = SessionLocal()
+    try:
+        rss_count = fetch_from_rss(db)
+        scrape_count = scrape_gebiz_page(db)
+        logger.info(f"[GeBIZ] sync complete: rss={rss_count}, scrape={scrape_count}")
+    except Exception as exc:
+        logger.error(f"[GeBIZ] sync_gebiz_tenders failed: {exc}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 @celery_app.task(name="cleanup_old_tasks")
 def cleanup_old_tasks():
     """Clean up old completed reports and temporary data"""
