@@ -1,4 +1,4 @@
-"""Add gebiz_tenders table and fix marketplace_vendors schema
+"""Add gebiz_tenders table and fix marketplace_vendors/import_batches schema
 
 Revision ID: 2026_04_01_0001
 Revises: v10_tender_shortlist
@@ -13,6 +13,9 @@ Changes:
   scan_status, scan_completed_at, claimed_by_user_id, claimed_at,
   import_batch_id, source)
 - Add composite index ix_marketplace_vendors_industry_country
+- Fix import_batches: rename/add columns to match current model
+  (inserted->imported_count, skipped->skipped_count, imported_by->created_by,
+   add error_count, status, started_at, completed_at; drop updated)
 """
 from alembic import op
 import sqlalchemy as sa
@@ -89,8 +92,33 @@ def upgrade() -> None:
         ondelete="SET NULL",
     )
 
+    # ── import_batches: align with current model ──────────────────────────────
+    # Rename columns that were renamed in the model
+    op.alter_column("import_batches", "inserted", new_column_name="imported_count")
+    op.alter_column("import_batches", "skipped", new_column_name="skipped_count")
+    op.alter_column("import_batches", "imported_by", new_column_name="created_by")
+    # Drop column not in model
+    op.drop_column("import_batches", "updated")
+    # Add columns missing from the original migration
+    op.add_column("import_batches", sa.Column("error_count", sa.Integer(), server_default="0"))
+    op.add_column("import_batches", sa.Column("status", sa.String(20), nullable=False, server_default="PENDING"))
+    op.add_column("import_batches", sa.Column("started_at", sa.DateTime(), nullable=True))
+    op.add_column("import_batches", sa.Column("completed_at", sa.DateTime(), nullable=True))
+    op.create_index("ix_import_batches_status", "import_batches", ["status"])
+
 
 def downgrade() -> None:
+    # Revert import_batches changes
+    op.drop_index("ix_import_batches_status", "import_batches")
+    op.drop_column("import_batches", "completed_at")
+    op.drop_column("import_batches", "started_at")
+    op.drop_column("import_batches", "status")
+    op.drop_column("import_batches", "error_count")
+    op.add_column("import_batches", sa.Column("updated", sa.Integer(), server_default="0"))
+    op.alter_column("import_batches", "created_by", new_column_name="imported_by")
+    op.alter_column("import_batches", "skipped_count", new_column_name="skipped")
+    op.alter_column("import_batches", "imported_count", new_column_name="inserted")
+
     op.drop_constraint("fk_marketplace_vendors_claimed_by_user_id", "marketplace_vendors", type_="foreignkey")
 
     op.drop_index("ix_marketplace_vendors_industry_country", "marketplace_vendors")

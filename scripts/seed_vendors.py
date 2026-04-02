@@ -96,12 +96,14 @@ def run(csv_path: str, dry_run: bool, limit: int | None) -> None:
                 row = parse_csv_row(headers, values)
 
                 company_name = row.get("company_name") or row.get("companyname") or ""
-                domain = row.get("domain") or None
+                domain = row.get("domain") or row.get("website") or None
+                website = row.get("website") or None
                 sector = row.get("industry") or None
                 uen = row.get("uen") or None
                 entity_type = row.get("entitytype") or row.get("entity_type") or None
                 reg_date = row.get("registrationdate") or row.get("registration_date") or None
                 short_desc = row.get("shortdescription") or row.get("short_description") or None
+                source = row.get("source") or "CSV_IMPORT"
                 country = row.get("country") or "Singapore"
                 city = row.get("city") or "Singapore"
 
@@ -129,6 +131,10 @@ def run(csv_path: str, dry_run: bool, limit: int | None) -> None:
                                 existing.industry = sector
                             if reg_date:
                                 existing.registration_date = reg_date
+                            if website:
+                                existing.website = website
+                            if source:
+                                existing.source = source.lower()
                             db.commit()
                             updated += 1
                         else:
@@ -137,6 +143,7 @@ def run(csv_path: str, dry_run: bool, limit: int | None) -> None:
                                 company_name=company_name,
                                 seo_slug=seo_slug,
                                 domain=domain,
+                                website=website,
                                 industry=sector,
                                 country=country,
                                 city=city,
@@ -145,6 +152,7 @@ def run(csv_path: str, dry_run: bool, limit: int | None) -> None:
                                 registration_date=reg_date,
                                 short_description=short_desc,
                                 discovery_source="CSV_IMPORT",
+                                source=source.lower() if source else "csv",
                             )
                             db.add(vendor)
                             db.commit()
@@ -159,7 +167,9 @@ def run(csv_path: str, dry_run: bool, limit: int | None) -> None:
                         if existing:
                             existing.company_name = company_name
                             if sector:
-                                existing.sector = sector
+                                existing.industry = sector
+                            if source:
+                                existing.source = source.lower()
                             db.commit()
                             updated += 1
                         else:
@@ -167,9 +177,10 @@ def run(csv_path: str, dry_run: bool, limit: int | None) -> None:
                             discovered = DiscoveredVendor(
                                 company_name=company_name,
                                 domain=domain,
-                                sector=sector,
+                                industry=sector,
                                 scan_status="SCANNING",
                                 claim_token=claim_token,
+                                source=source.lower() if source else "acra",
                             )
                             db.add(discovered)
                             db.commit()
