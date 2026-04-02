@@ -266,6 +266,19 @@ def trigger_gebiz_base_rate_refresh(
     return {"queued": True, "task_id": task.id}
 
 
+@router.post("/tenders/sync-gebiz", status_code=202)
+def trigger_gebiz_sync(
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    """
+    Trigger an immediate GeBIZ live tender sync (RSS + scrape).
+    Enqueues the Celery task and returns immediately.
+    """
+    from app.workers.tasks import sync_gebiz_tenders
+    task = sync_gebiz_tenders.delay()
+    return {"queued": True, "task_id": task.id}
+
+
 @router.delete("/tenders/{tender_id}", status_code=204)
 def delete_tender(
     tender_id: str,
