@@ -428,7 +428,7 @@ jobs:
           subs_json=$(printf '%s\n' "${SUBS[@]}" | jq -R . | jq -s .)
           sgs_json=$(printf '%s\n' "${SGS[@]}" | jq -R . | jq -s .)
 
-          network_config=$(jq -n --argjson subs "$subs_json" --argjson sgs "$sgs_json" '{awsvpcConfiguration: {subnets: $subs, securityGroups: $sgs, assignPublicIp: "DISABLED"}}')
+          network_config=$(jq -n --argjson subs "$subs_json" --argjson sgs "$sgs_json" '{awsvpcConfiguration: {subnets: $subs, securityGroups: $sgs, assignPublicIp: "ENABLED"}}')
 
           # Run the task with an override to execute alembic migrations. The task definition contains the DATABASE_URL secret.
           run_output=$(aws ecs run-task \
@@ -497,7 +497,7 @@ jobs:
           subs_json=$(printf '%s\n' "${SUBS[@]}" | jq -R . | jq -s .)
           sgs_json=$(printf '%s\n' "${SGS[@]}" | jq -R . | jq -s .)
 
-          network_config=$(jq -n --argjson subs "$subs_json" --argjson sgs "$sgs_json" '{awsvpcConfiguration: {subnets: $subs, securityGroups: $sgs, assignPublicIp: "DISABLED"}}')
+          network_config=$(jq -n --argjson subs "$subs_json" --argjson sgs "$sgs_json" '{awsvpcConfiguration: {subnets: $subs, securityGroups: $sgs, assignPublicIp: "ENABLED"}}')
 
           run_output=$(aws ecs run-task \
             --cluster "$ECS_CLUSTER" \
@@ -615,7 +615,7 @@ jobs:
           IFS=',' read -ra SGS <<< "$AWS_SECURITY_GROUPS"
           subs_json=$(printf '%s\n' "${SUBS[@]}" | jq -R . | jq -s .)
           sgs_json=$(printf '%s\n' "${SGS[@]}" | jq -R . | jq -s .)
-          network_config=$(jq -n --argjson subs "$subs_json" --argjson sgs "$sgs_json" '{awsvpcConfiguration: {subnets: $subs, securityGroups: $sgs, assignPublicIp: "DISABLED"}}')
+          network_config=$(jq -n --argjson subs "$subs_json" --argjson sgs "$sgs_json" '{awsvpcConfiguration: {subnets: $subs, securityGroups: $sgs, assignPublicIp: "ENABLED"}}')
 
           run_output=$(aws ecs run-task \
             --cluster "$ECS_CLUSTER" \
@@ -687,7 +687,7 @@ jobs:
           IFS=',' read -ra SGS <<< "$AWS_SECURITY_GROUPS"
           subs_json=$(printf '%s\n' "${SUBS[@]}" | jq -R . | jq -s .)
           sgs_json=$(printf '%s\n' "${SGS[@]}" | jq -R . | jq -s .)
-          network_config=$(jq -n --argjson subs "$subs_json" --argjson sgs "$sgs_json" '{awsvpcConfiguration: {subnets: $subs, securityGroups: $sgs, assignPublicIp: "DISABLED"}}')
+          network_config=$(jq -n --argjson subs "$subs_json" --argjson sgs "$sgs_json" '{awsvpcConfiguration: {subnets: $subs, securityGroups: $sgs, assignPublicIp: "ENABLED"}}')
 
           # Run the ECS task to create the superuser if it doesn't exist
           run_output=$(aws ecs run-task \
