@@ -35,6 +35,17 @@ class TenderOut(BaseModel):
         from_attributes = True
 
 
+@router.get("/status")
+def get_status(db: Session = Depends(get_db)):
+    """Returns the current count of Open tenders for production health checks."""
+    count = (
+        db.query(GebizTender)
+        .filter(GebizTender.status == "Open")
+        .count()
+    )
+    return {"open_tender_count": count}
+
+
 @router.get("/latest-tenders", response_model=List[TenderOut])
 def get_latest_tenders(
     limit: int = Query(default=20, ge=1, le=100),
