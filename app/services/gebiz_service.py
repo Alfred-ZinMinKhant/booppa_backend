@@ -51,7 +51,9 @@ def fetch_from_rss(db: Session) -> int:
     Returns the number of tenders upserted.
     """
     try:
-        feed = feedparser.parse(GEBIZ_RSS_URL)
+        response = httpx.get(GEBIZ_RSS_URL, headers=_HEADERS, timeout=30, follow_redirects=True)
+        response.raise_for_status()
+        feed = feedparser.parse(response.content)
     except Exception as exc:
         logger.error(f"[GeBIZ] RSS fetch failed: {exc}")
         return 0
