@@ -25,7 +25,32 @@ from app.core.models_gebiz import GebizTender
 
 logger = logging.getLogger(__name__)
 
-GEBIZ_RSS_URL = "https://www.gebiz.gov.sg/rss/opportunities.xml"
+_GEBIZ_RSS_BASE = "https://www.gebiz.gov.sg/rss/{category}-CREATE_BO_FEED.xml"
+
+# GeBIZ restructured RSS into per-category feeds in 2025. The old single URL
+# (rss/opportunities.xml) is dead. Each feed covers tenders published in the
+# last 2 days for that category.
+_GEBIZ_RSS_CATEGORIES = [
+    "Professional_Services",
+    "IT_%26_Telecommunication",
+    "Security_Services",
+    "Maintenance_Services",
+    "Environmental_Services",
+    "Training_Services",
+    "Medical_%26_Healthcare",
+    "Marketing_%26_Advertising",
+    "Research_%26_Development",
+    "General_Building_%26_Minor_Construction_Works",
+    "Facilities_Management",
+    "Transportation",
+    "Administration_%26_Training",
+    "Event_Organising_Food_%26_Beverages",
+    "Furniture_Office_Equipment_%26_AudioVisual",
+    "Miscellaneous",
+    "Works",
+    "Consultancy_Services",
+]
+
 GEBIZ_OPEN_TENDERS_URL = "https://www.gebiz.gov.sg/ptt/menu/ITTWorkspaceForPublic.xhtml"
 
 _HEADERS = {
@@ -47,62 +72,68 @@ def _parse_closing_date(raw: Optional[str]) -> Optional[datetime]:
 
 def fetch_from_rss(db: Session) -> int:
     """
-    Parse the GeBIZ RSS feed and upsert tenders into the database.
-    Returns the number of tenders upserted.
+    Fetch all GeBIZ per-category RSS feeds and upsert tenders into the database.
+    Returns the total number of tenders upserted across all categories.
     """
-    try:
-        response = httpx.get(GEBIZ_RSS_URL, headers=_HEADERS, timeout=30, follow_redirects=True)
-        response.raise_for_status()
-        feed = feedparser.parse(response.content)
-    except Exception as exc:
-        logger.error(f"[GeBIZ] RSS fetch failed: {exc}")
-        return 0
-
-    if feed.bozo:
-        logger.warning(f"[GeBIZ] RSS feed parse warning: {feed.bozo_exception}")
-
     count = 0
     now = datetime.utcnow()
 
-    for entry in feed.entries:
-        tender_no = getattr(entry, "id", None) or getattr(entry, "link", None) or ""
-        title = getattr(entry, "title", "").strip()
-        url = getattr(entry, "link", None)
-        agency = getattr(entry, "author", "") or getattr(entry, "source", {}).get("title", "")
-        closing_raw = getattr(entry, "published", None) or getattr(entry, "updated", None)
-        closing_date = _parse_closing_date(closing_raw)
-
-        if not tender_no or not title:
+    for category in _GEBIZ_RSS_CATEGORIES:
+        feed_url = _GEBIZ_RSS_BASE.format(category=category)
+        try:
+            response = httpx.get(feed_url, headers=_HEADERS, timeout=15, follow_redirects=True)
+            response.raise_for_status()
+            feed = feedparser.parse(response.content)
+        except Exception as exc:
+            logger.warning(f"[GeBIZ] RSS fetch failed for {category}: {exc}")
             continue
 
-        raw_data = {
-            "summary": getattr(entry, "summary", ""),
-            "tags": [t.get("term", "") for t in getattr(entry, "tags", [])],
-        }
+        if feed.bozo and feed.bozo_exception:
+            logger.debug(f"[GeBIZ] RSS parse warning for {category}: {feed.bozo_exception}")
 
-        existing = db.query(GebizTender).filter(GebizTender.tender_no == tender_no).first()
-        if existing:
-            existing.title = title
-            existing.agency = agency or existing.agency
-            existing.closing_date = closing_date or existing.closing_date
-            existing.url = url or existing.url
-            existing.raw_data = raw_data
-            existing.last_fetched_at = now
-        else:
-            db.add(GebizTender(
-                tender_no=tender_no,
-                title=title,
-                agency=agency,
-                closing_date=closing_date,
-                status="Open",
-                url=url,
-                raw_data=raw_data,
-                last_fetched_at=now,
-            ))
-        count += 1
+        for entry in feed.entries:
+            tender_no = getattr(entry, "id", None) or getattr(entry, "link", None) or ""
+            title = getattr(entry, "title", "").strip()
+            entry_url = getattr(entry, "link", None)
+            agency = getattr(entry, "author", "") or getattr(entry, "source", {}).get("title", "")
+            closing_raw = getattr(entry, "published", None) or getattr(entry, "updated", None)
+            closing_date = _parse_closing_date(closing_raw)
+
+            if not tender_no or not title:
+                continue
+
+            # Skip placeholder "no RSS feed available" entries
+            if "no rss feed available" in title.lower():
+                continue
+
+            raw_data = {
+                "summary": getattr(entry, "summary", ""),
+                "tags": [t.get("term", "") for t in getattr(entry, "tags", [])],
+            }
+
+            existing = db.query(GebizTender).filter(GebizTender.tender_no == tender_no).first()
+            if existing:
+                existing.title = title
+                existing.agency = agency or existing.agency
+                existing.closing_date = closing_date or existing.closing_date
+                existing.url = entry_url or existing.url
+                existing.raw_data = raw_data
+                existing.last_fetched_at = now
+            else:
+                db.add(GebizTender(
+                    tender_no=tender_no,
+                    title=title,
+                    agency=agency,
+                    closing_date=closing_date,
+                    status="Open",
+                    url=entry_url,
+                    raw_data=raw_data,
+                    last_fetched_at=now,
+                ))
+            count += 1
 
     db.commit()
-    logger.info(f"[GeBIZ] RSS sync upserted {count} tenders")
+    logger.info(f"[GeBIZ] RSS sync upserted {count} tenders across {len(_GEBIZ_RSS_CATEGORIES)} categories")
     return count
 
 
