@@ -1,8 +1,11 @@
 import asyncio
+import logging
 import socketio
 from typing import Dict, Set
 
 from app.core.auth import verify_access_token
+
+logger = logging.getLogger(__name__)
 
 sio = socketio.AsyncServer(
     async_mode='asgi',
