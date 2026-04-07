@@ -8,6 +8,7 @@ GET /api/gebiz/latest-tenders  — Returns open tenders sorted by closing_date a
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import List, Optional
 
@@ -19,6 +20,7 @@ from app.core.db import get_db
 from app.core.models_gebiz import GebizTender
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class TenderOut(BaseModel):
@@ -54,7 +56,18 @@ def get_latest_tenders(
     """
     Return open GeBIZ tenders sorted by closing date (soonest first).
     Closed or expired tenders are excluded.
+
+    If the database has no open tenders (e.g. Celery Beat hasn't run yet),
+    an on-demand sync from GeBIZ RSS feeds is triggered automatically.
     """
+    from app.services.gebiz_service import ensure_tenders_loaded
+
+    # On-demand fallback: populate tenders if DB is empty
+    try:
+        ensure_tenders_loaded(db)
+    except Exception as exc:
+        logger.warning(f"[GeBIZ] On-demand sync failed in API: {exc}")
+
     now = datetime.utcnow()
     tenders = (
         db.query(GebizTender)

@@ -13,6 +13,7 @@ accessible "Open Tenders" listing; we do not crawl deeper pages.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -58,16 +59,56 @@ _HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
+# ── Regex patterns for parsing the description field ──
+# Example description:
+#   "ITQ: CDVHQ0ETQ26000008 | Published Date: 07/04/2026 | Closing Date: 16/04/2026 13:00:00 | Calling Entity: Ministry of Social and Family Development |"
+_RE_TENDER_NO = re.compile(r"^(?:ITQ|ITT|RFQ|RFP|EOI)\s*:\s*(\S+)", re.IGNORECASE)
+_RE_CLOSING_DATE = re.compile(r"Closing\s+Date\s*:\s*([\d/]+ [\d:]+|[\d/]+)", re.IGNORECASE)
+_RE_AGENCY = re.compile(r"Calling\s+Entity\s*:\s*(.+?)(?:\s*\||\s*$)", re.IGNORECASE)
+
 
 def _parse_closing_date(raw: Optional[str]) -> Optional[datetime]:
     if not raw:
         return None
-    for fmt in ("%d %b %Y %H:%M", "%d %b %Y", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
+    for fmt in (
+        "%d/%m/%Y %H:%M:%S",  # GeBIZ description format: 16/04/2026 13:00:00
+        "%d/%m/%Y %H:%M",     # Without seconds
+        "%d/%m/%Y",           # Date only
+        "%d %b %Y %H:%M",    # e.g. 16 Apr 2026 13:00
+        "%d %b %Y",
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%d",
+    ):
         try:
             return datetime.strptime(raw.strip(), fmt)
         except ValueError:
             continue
     return None
+
+
+def _parse_description(description: str) -> dict:
+    """
+    Parse the GeBIZ RSS description field to extract structured data.
+    Returns dict with keys: tender_no, closing_date, agency (all optional).
+    """
+    result = {}
+
+    if not description:
+        return result
+
+    m = _RE_TENDER_NO.search(description)
+    if m:
+        result["tender_no"] = m.group(1).strip()
+
+    m = _RE_CLOSING_DATE.search(description)
+    if m:
+        result["closing_date"] = _parse_closing_date(m.group(1).strip())
+
+    m = _RE_AGENCY.search(description)
+    if m:
+        result["agency"] = m.group(1).strip()
+
+    return result
 
 
 def fetch_from_rss(db: Session) -> int:
@@ -92,23 +133,38 @@ def fetch_from_rss(db: Session) -> int:
             logger.debug(f"[GeBIZ] RSS parse warning for {category}: {feed.bozo_exception}")
 
         for entry in feed.entries:
-            tender_no = getattr(entry, "id", None) or getattr(entry, "link", None) or ""
             title = getattr(entry, "title", "").strip()
             entry_url = getattr(entry, "link", None)
-            agency = getattr(entry, "author", "") or getattr(entry, "source", {}).get("title", "")
-            closing_raw = getattr(entry, "published", None) or getattr(entry, "updated", None)
-            closing_date = _parse_closing_date(closing_raw)
-
-            if not tender_no or not title:
-                continue
 
             # Skip placeholder "no RSS feed available" entries
-            if "no rss feed available" in title.lower():
+            if not title or "no rss feed available" in title.lower():
                 continue
 
+            # Parse the description field to get structured data
+            description = getattr(entry, "summary", "") or getattr(entry, "description", "")
+            parsed = _parse_description(description)
+
+            # tender_no: prefer parsed from description, fall back to entry id/link
+            tender_no = parsed.get("tender_no") or ""
+            if not tender_no:
+                raw_id = getattr(entry, "id", None) or entry_url or ""
+                # Try to extract code param from URL: ...?code=CDVHQ0ETQ26000008&...
+                code_match = re.search(r"[?&]code=([^&]+)", raw_id)
+                tender_no = code_match.group(1) if code_match else raw_id
+
+            if not tender_no:
+                continue
+
+            # closing_date: from parsed description
+            closing_date = parsed.get("closing_date")
+
+            # agency: from parsed description, fall back to feed author
+            agency = parsed.get("agency") or getattr(entry, "author", "") or ""
+
             raw_data = {
-                "summary": getattr(entry, "summary", ""),
+                "summary": description,
                 "tags": [t.get("term", "") for t in getattr(entry, "tags", [])],
+                "category": category.replace("_", " ").replace("%26", "&"),
             }
 
             existing = db.query(GebizTender).filter(GebizTender.tender_no == tender_no).first()
@@ -196,3 +252,28 @@ def scrape_gebiz_page(db: Session) -> int:
     db.commit()
     logger.info(f"[GeBIZ] Scrape upserted {count} new tenders")
     return count
+
+
+def ensure_tenders_loaded(db: Session) -> int:
+    """
+    On-demand sync: if the DB has no open tenders, fetch from RSS immediately.
+    Called by the API endpoint as a fallback when Celery Beat hasn't run yet.
+    Returns the count of open tenders after the check.
+    """
+    open_count = (
+        db.query(GebizTender)
+        .filter(GebizTender.status == "Open")
+        .count()
+    )
+    if open_count > 0:
+        return open_count
+
+    logger.info("[GeBIZ] No open tenders in DB — triggering on-demand RSS sync")
+    try:
+        rss_count = fetch_from_rss(db)
+        logger.info(f"[GeBIZ] On-demand sync upserted {rss_count} tenders")
+        return rss_count
+    except Exception as exc:
+        logger.error(f"[GeBIZ] On-demand sync failed: {exc}")
+        db.rollback()
+        return 0
