@@ -15,6 +15,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 from app.core.models_v10 import MarketplaceVendor, ImportBatch
+from app.core.models_v6 import VerifyRecord, Proof, LifecycleStatus
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +215,53 @@ def get_vendor_by_slug(db: Session, slug: str) -> Optional[dict]:
         "scan_status": v.scan_status,
         "claimed": v.claimed_by_user_id is not None,
         "created_at": v.created_at.isoformat() if v.created_at else None,
+    }
+
+
+def get_trust_status(db: Session, company_name: str) -> Optional[dict]:
+    """
+    Public trust status lookup by company name.
+    Returns verified/not-verified based on claimed profile + VerifyRecord proofs.
+    """
+    search = f"%{company_name}%"
+    vendor = (
+        db.query(MarketplaceVendor)
+        .filter(MarketplaceVendor.company_name.ilike(search))
+        .order_by(
+            # Prefer claimed vendors first, then exact-ish matches
+            MarketplaceVendor.claimed_by_user_id.isnot(None).desc(),
+            MarketplaceVendor.company_name,
+        )
+        .first()
+    )
+
+    if not vendor:
+        return None
+
+    claimed = vendor.claimed_by_user_id is not None
+    evidence_count = 0
+    verification_date = None
+
+    if claimed:
+        verify = (
+            db.query(VerifyRecord)
+            .filter(
+                VerifyRecord.vendor_id == vendor.claimed_by_user_id,
+                VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE,
+            )
+            .first()
+        )
+        if verify:
+            evidence_count = db.query(Proof).filter(Proof.verify_id == verify.id).count()
+            verification_date = (vendor.claimed_at or verify.created_at)
+
+    return {
+        "company_name": vendor.company_name,
+        "verified": claimed,
+        "verification_date": verification_date.isoformat() if verification_date else None,
+        "evidence_count": evidence_count,
+        "profile_url": f"/vendors/{vendor.slug}",
+        "slug": vendor.slug,
     }
 
 

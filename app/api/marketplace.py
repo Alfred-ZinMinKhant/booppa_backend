@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from app.core.db import get_db
 from app.services.marketplace import (
-    import_csv_data, search_marketplace, get_vendor_by_slug, get_industries,
+    import_csv_data, search_marketplace, get_vendor_by_slug, get_industries, get_trust_status,
 )
 
 router = APIRouter()
@@ -42,6 +42,22 @@ async def search_vendors(
 async def list_industries(db: Session = Depends(get_db)):
     """List all industries with vendor counts."""
     return get_industries(db)
+
+
+@router.get("/trust-status")
+async def trust_status(
+    q: str = Query(..., description="Company name to look up"),
+    db: Session = Depends(get_db),
+):
+    """
+    Public trust status lookup by company name.
+    Returns verified/not-verified status for the /check-status page.
+    No authentication required.
+    """
+    result = get_trust_status(db, q)
+    if not result:
+        raise HTTPException(status_code=404, detail="Company not found in BOOPPA network")
+    return result
 
 
 @router.get("/vendor/{slug}")
