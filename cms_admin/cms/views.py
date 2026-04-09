@@ -3,7 +3,7 @@ import os
 from django.conf import settings
 from django.http import JsonResponse
 
-from .models import BlogPost
+from .models import BlogPost, RfpTip, CompliancePost, VendorGuide
 
 
 def health(request):
@@ -81,3 +81,70 @@ def public_blog_detail(request, slug):
         "images": images,
     }
     return JsonResponse(data)
+
+
+# ── Generic helper for content models without images ─────────────────────────
+
+def _public_list(request, model):
+    posts = (
+        model.objects.filter(published=True)
+        .order_by("-published_at")
+        .values(
+            "id", "title", "slug", "content", "author",
+            "cta1_text", "cta1_url", "cta2_text", "cta2_url",
+            "published_at", "created_at", "updated_at",
+        )
+    )
+    results = [dict(p, id=str(p["id"])) for p in posts]
+    return JsonResponse({"results": results})
+
+
+def _public_detail(request, model, slug):
+    try:
+        post = model.objects.get(slug=slug, published=True)
+    except model.DoesNotExist:
+        return JsonResponse({"detail": "Not found"}, status=404)
+    return JsonResponse({
+        "id": str(post.id),
+        "title": post.title,
+        "slug": post.slug,
+        "content": post.content,
+        "author": post.author,
+        "cta1_text": post.cta1_text,
+        "cta1_url": post.cta1_url,
+        "cta2_text": post.cta2_text,
+        "cta2_url": post.cta2_url,
+        "published_at": post.published_at,
+        "created_at": post.created_at,
+        "updated_at": post.updated_at,
+    })
+
+
+# ── RFP Tips ──────────────────────────────────────────────────────────────────
+
+def public_rfp_tips(request):
+    return _public_list(request, RfpTip)
+
+
+def public_rfp_tip_detail(request, slug):
+    return _public_detail(request, RfpTip, slug)
+
+
+# ── Compliance Education ──────────────────────────────────────────────────────
+
+def public_compliance(request):
+    return _public_list(request, CompliancePost)
+
+
+def public_compliance_detail(request, slug):
+    return _public_detail(request, CompliancePost, slug)
+
+
+# ── Vendor Guides ─────────────────────────────────────────────────────────────
+
+def public_vendor_guides(request):
+    return _public_list(request, VendorGuide)
+
+
+def public_vendor_guide_detail(request, slug):
+    return _public_detail(request, VendorGuide, slug)
