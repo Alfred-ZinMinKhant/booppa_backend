@@ -85,3 +85,6 @@ router.include_router(gebiz_router, prefix="/gebiz", tags=["gebiz"])
 # Dashboard — real vendor data
 from .dashboard import router as dashboard_router
 router.include_router(dashboard_router, prefix="/dashboard", tags=["dashboard"])
+# Resources/Guides CMS
+from .resources import router as resources_router
+router.include_router(resources_router, prefix="/resources", tags=["resources"])
