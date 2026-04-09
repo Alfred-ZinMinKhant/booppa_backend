@@ -3,7 +3,7 @@ from django import forms
 from django.urls import reverse
 from django.utils.html import format_html
 
-from .models import BlogPost, BlogImage, DemoBooking, SupportTicket, SupportTicketReply
+from .models import BlogPost, BlogImage, DemoBooking, SupportTicket, SupportTicketReply, RfpTip, CompliancePost, VendorGuide
 from django.utils.html import format_html
 
 
@@ -124,3 +124,43 @@ class SupportTicketReplyAdmin(admin.ModelAdmin):
         if ticket_id:
             initial["ticket_id"] = ticket_id
         return initial
+
+
+# ── Shared fieldsets for content models ──────────────────────────────────────
+
+_CONTENT_FIELDSETS = (
+    ("Identifiers", {"fields": ("id", "slug")}),
+    (None, {"fields": ("title", "author", "content")}),
+    ("Call To Action (Buttons)", {"fields": ("cta1_text", "cta1_url", "cta2_text", "cta2_url")}),
+    ("Publication", {"fields": ("published", "published_at")}),
+    ("Timestamps", {"fields": ("created_at", "updated_at")}),
+)
+
+_CONTENT_READONLY = ("id", "slug", "published_at", "created_at", "updated_at")
+
+
+@admin.register(RfpTip)
+class RfpTipAdmin(admin.ModelAdmin):
+    list_display = ("title", "slug", "author", "published", "published_at")
+    search_fields = ("title", "slug", "author")
+    list_filter = ("published",)
+    readonly_fields = _CONTENT_READONLY
+    fieldsets = _CONTENT_FIELDSETS
+
+
+@admin.register(CompliancePost)
+class CompliancePostAdmin(admin.ModelAdmin):
+    list_display = ("title", "slug", "author", "published", "published_at")
+    search_fields = ("title", "slug", "author")
+    list_filter = ("published",)
+    readonly_fields = _CONTENT_READONLY
+    fieldsets = _CONTENT_FIELDSETS
+
+
+@admin.register(VendorGuide)
+class VendorGuideAdmin(admin.ModelAdmin):
+    list_display = ("title", "slug", "author", "published", "published_at")
+    search_fields = ("title", "slug", "author")
+    list_filter = ("published",)
+    readonly_fields = _CONTENT_READONLY
+    fieldsets = _CONTENT_FIELDSETS

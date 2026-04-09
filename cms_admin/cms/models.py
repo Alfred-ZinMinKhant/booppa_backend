@@ -62,6 +62,108 @@ class BlogImage(models.Model):
         return f"Image for {self.blog_post_id}"
 
 
+class RfpTip(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    title = models.CharField(max_length=255)
+    slug = models.SlugField(max_length=255, unique=True)
+    content = RichTextField()
+    author = models.CharField(max_length=255, null=True, blank=True)
+    cta1_text = models.CharField(max_length=255, null=True, blank=True)
+    cta1_url = models.CharField(max_length=1024, null=True, blank=True)
+    cta2_text = models.CharField(max_length=255, null=True, blank=True)
+    cta2_url = models.CharField(max_length=1024, null=True, blank=True)
+    published = models.BooleanField(default=False)
+    published_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "rfp_tips"
+        verbose_name = "RFP Tip"
+        verbose_name_plural = "RFP Tips"
+
+    def __str__(self):
+        return self.title
+
+    def save(self, *args, **kwargs):
+        if self.published and not self.published_at:
+            self.published_at = timezone.now()
+        if not self.published:
+            self.published_at = None
+        if not self.slug and self.title:
+            from django.utils.text import slugify
+            self.slug = slugify(self.title)[:240]
+        super().save(*args, **kwargs)
+
+
+class CompliancePost(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    title = models.CharField(max_length=255)
+    slug = models.SlugField(max_length=255, unique=True)
+    content = RichTextField()
+    author = models.CharField(max_length=255, null=True, blank=True)
+    cta1_text = models.CharField(max_length=255, null=True, blank=True)
+    cta1_url = models.CharField(max_length=1024, null=True, blank=True)
+    cta2_text = models.CharField(max_length=255, null=True, blank=True)
+    cta2_url = models.CharField(max_length=1024, null=True, blank=True)
+    published = models.BooleanField(default=False)
+    published_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "compliance_posts"
+        verbose_name = "Compliance Education"
+        verbose_name_plural = "Compliance Education"
+
+    def __str__(self):
+        return self.title
+
+    def save(self, *args, **kwargs):
+        if self.published and not self.published_at:
+            self.published_at = timezone.now()
+        if not self.published:
+            self.published_at = None
+        if not self.slug and self.title:
+            from django.utils.text import slugify
+            self.slug = slugify(self.title)[:240]
+        super().save(*args, **kwargs)
+
+
+class VendorGuide(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    title = models.CharField(max_length=255)
+    slug = models.SlugField(max_length=255, unique=True)
+    content = RichTextField()
+    author = models.CharField(max_length=255, null=True, blank=True)
+    cta1_text = models.CharField(max_length=255, null=True, blank=True)
+    cta1_url = models.CharField(max_length=1024, null=True, blank=True)
+    cta2_text = models.CharField(max_length=255, null=True, blank=True)
+    cta2_url = models.CharField(max_length=1024, null=True, blank=True)
+    published = models.BooleanField(default=False)
+    published_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "vendor_guides"
+        verbose_name = "Vendor Guide"
+        verbose_name_plural = "Vendor Guides"
+
+    def __str__(self):
+        return self.title
+
+    def save(self, *args, **kwargs):
+        if self.published and not self.published_at:
+            self.published_at = timezone.now()
+        if not self.published:
+            self.published_at = None
+        if not self.slug and self.title:
+            from django.utils.text import slugify
+            self.slug = slugify(self.title)[:240]
+        super().save(*args, **kwargs)
+
+
 class DemoBooking(models.Model):
     id = models.UUIDField(primary_key=True)
     slot_id = models.CharField(max_length=32)
