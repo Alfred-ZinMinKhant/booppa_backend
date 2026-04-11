@@ -158,7 +158,7 @@ def render_message(ctx: dict) -> str:
     suggestion = ctx.get("suggestion", {})
     next_level = gap.get("nextLevel")
     progress   = gap.get("progressPct", 0)
-    sector     = ctx.get("sector", "your sector")
+    sector     = ctx.get("sector") or "your sector"
     total      = ctx.get("totalElevatedPeers", 0)
     active     = ctx.get("recentlyActiveCount", 0)
 

@@ -87,7 +87,7 @@ def _draw_page(canvas, doc):
         try:
             canvas.saveState()
             canvas.setFillAlpha(0.06)
-            wm_w = 3.2 * inch
+            wm_w = 5.5 * inch
             wm_h = wm_w * 0.35          # approximate logo aspect ratio
             canvas.translate(PAGE_W / 2, PAGE_H / 2)
             canvas.rotate(35)
