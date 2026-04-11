@@ -60,8 +60,7 @@ async def dashboard(
     vendor_id = current_user.id
 
     # ── 1. Trust score ────────────────────────────────────────────────────────
-    from app.core.models_v6 import VendorScore, VerifyRecord, ProofView, EnterpriseProfile, GovernanceRecord
-    from app.core.models_v6 import GeBizActivity
+    from app.core.models_v6 import VendorScore, VerifyRecord, ProofView, GovernanceRecord
 
     score_row = db.query(VendorScore).filter(VendorScore.vendor_id == vendor_id).first()
     trust_score = score_row.total_score if score_row else 0
@@ -167,24 +166,66 @@ async def dashboard(
                 "bg":     bg,
             })
 
-    # ── 3. Active procurements (GeBiz signals in last 30d) ───────────────────
-    cutoff_30d = datetime.utcnow() - timedelta(days=30)
-    active_procurements = (
-        db.query(func.count(GeBizActivity.id))
-        .filter(
-            GeBizActivity.vendor_id == vendor_id,
-            GeBizActivity.created_at >= cutoff_30d,
-        )
-        .scalar()
-        or 0
+    # ── 3. Active procurements — open GeBIZ tenders in vendor's sector ───────
+    from app.core.models_gebiz import GebizTender
+    from app.core.models import VendorSector
+
+    vendor_sector_row = db.query(VendorSector).filter(
+        VendorSector.vendor_id == vendor_id
+    ).first()
+    primary_sector = vendor_sector_row.sector if vendor_sector_row else None
+
+    active_procurements = 0
+    if primary_sector:
+        from app.services.tender_service import _CATEGORY_TO_SECTOR
+        # Reverse map: sector → list of category strings
+        matching_categories = [cat for cat, sec in _CATEGORY_TO_SECTOR.items() if sec == primary_sector]
+        now = datetime.utcnow()
+        if matching_categories:
+            active_procurements = (
+                db.query(func.count(GebizTender.id))
+                .filter(
+                    GebizTender.status == "Open",
+                    (GebizTender.closing_date == None) | (GebizTender.closing_date >= now),
+                )
+                .scalar()
+                or 0
+            )
+            # Narrow to matching categories via raw_data JSON if possible, else use total open
+            category_matches = (
+                db.query(func.count(GebizTender.id))
+                .filter(
+                    GebizTender.status == "Open",
+                    (GebizTender.closing_date == None) | (GebizTender.closing_date >= now),
+                    GebizTender.raw_data["category"].astext.in_(matching_categories),
+                )
+                .scalar()
+                or 0
+            )
+            if category_matches > 0:
+                active_procurements = category_matches
+
+    # ── 4. Trust score delta (compare to previous ScoreSnapshot) ─────────────
+    from app.core.models_v8 import ScoreSnapshot
+    trust_score_delta = None
+    snapshots = (
+        db.query(ScoreSnapshot)
+        .filter(ScoreSnapshot.vendor_id == vendor_id)
+        .order_by(ScoreSnapshot.snapshot_at.desc())
+        .limit(2)
+        .all()
     )
+    if len(snapshots) >= 2:
+        trust_score_delta = int(snapshots[0].final_score) - int(snapshots[1].final_score)
 
     return {
         "stats": {
-            "trustScore":          trust_score,
-            "enterpriseViews":     enterprise_views,
-            "activeProcurements":  active_procurements,
-            "govAgencies":         len(gov_agency_domains),
+            "trustScore":                 trust_score,
+            "trustScoreDelta":            trust_score_delta,
+            "enterpriseViews":            enterprise_views,
+            "activeProcurements":         active_procurements,
+            "activeProcurementsSector":   primary_sector,
+            "govAgencies":                len(gov_agency_domains),
         },
         "chartData":      chart_data,
         "recentActivity": recent_activity,
