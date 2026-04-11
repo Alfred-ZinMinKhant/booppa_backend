@@ -1410,26 +1410,45 @@ def sync_gebiz_tenders():
 
 
 def _bridge_gebiz_to_shortlist(db) -> None:
-    """Upsert open GebizTenders into TenderShortlist with a default base_rate."""
+    """
+    Upsert open GebizTenders into TenderShortlist with a default base_rate.
+    Also writes GeBizActivity rows linking vendors to open tenders in their sector.
+    """
     from app.core.models_gebiz import GebizTender
     from app.core.models_v10 import TenderShortlist
+    from app.core.models_v6 import GeBizActivity
+    from app.core.models import VendorSector
     from app.services.tender_service import _CATEGORY_TO_SECTOR
+    from datetime import datetime
 
     open_tenders = (
         db.query(GebizTender)
         .filter(GebizTender.status == "Open")
         .all()
     )
+
+    # Build sector → [vendor_id] map once
+    sector_vendor_map: dict = {}
+    for sv in db.query(VendorSector).all():
+        sector_vendor_map.setdefault(sv.sector, []).append(sv.vendor_id)
+
+    # Existing GeBizActivity tender_ids to avoid duplicates
+    existing_activities: set = set(
+        row[0] for row in db.query(GeBizActivity.tender_id).all()
+    )
+
     bridged = 0
+    activities_added = 0
     for gt in open_tenders:
-        existing = db.query(TenderShortlist).filter(
-            TenderShortlist.tender_no == gt.tender_no
-        ).first()
         raw = gt.raw_data or {}
         cat = raw.get("category", "")
         sector = _CATEGORY_TO_SECTOR.get(cat, "General")
+
+        # ── TenderShortlist upsert ──────────────────────────────────────────
+        existing = db.query(TenderShortlist).filter(
+            TenderShortlist.tender_no == gt.tender_no
+        ).first()
         if existing:
-            # Keep base_rate; just refresh description and agency
             existing.description = gt.title or existing.description
             existing.agency = gt.agency or existing.agency
         else:
@@ -1441,9 +1460,27 @@ def _bridge_gebiz_to_shortlist(db) -> None:
                 base_rate=0.20,
             ))
             bridged += 1
+
+        # ── GeBizActivity: link matching vendors ────────────────────────────
+        if gt.tender_no not in existing_activities:
+            vendors_in_sector = sector_vendor_map.get(sector, [])
+            for vendor_id in vendors_in_sector:
+                db.add(GeBizActivity(
+                    vendor_id=vendor_id,
+                    tender_id=gt.tender_no,
+                    domain=gt.agency or "gov.sg",
+                    status="Open",
+                    correlation_id=f"gebiz:{gt.tender_no}",
+                    created_at=datetime.utcnow(),
+                ))
+                activities_added += 1
+            existing_activities.add(gt.tender_no)
+
     db.commit()
     if bridged:
         logger.info(f"[GeBIZ] Bridged {bridged} new tenders into TenderShortlist")
+    if activities_added:
+        logger.info(f"[GeBIZ] Created {activities_added} GeBizActivity rows for vendor sector matching")
 
 
 @celery_app.task(name="cleanup_old_tasks")

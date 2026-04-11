@@ -18,14 +18,7 @@ def _record_score_snapshot_lazy(db: Session, vendor_id: str, score_record):
         record_score_snapshot(
             db=db,
             vendor_id=str(vendor_id),
-            final_score=score_record.total_score,
-            breakdown={
-                "compliance":          score_record.compliance_score,
-                "visibility":          score_record.visibility_score,
-                "engagement":          score_record.engagement_score,
-                "recency":             score_record.recency_score,
-                "procurement_interest": score_record.procurement_interest_score,
-            },
+            vendor_score=score_record,
         )
         upsert_status_snapshot(db=db, vendor_id=str(vendor_id))
     except Exception as e:

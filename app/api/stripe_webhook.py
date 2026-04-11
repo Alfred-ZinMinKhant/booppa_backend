@@ -634,7 +634,14 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
 
         logger.info(f"[VendorProof] VerifyRecord + snapshot created for vendor {vendor_id}")
 
-        # Step 4: Email with embeddable badge
+        # Step 4: Seed ScoreSnapshot so monitoring shows ACTIVE immediately
+        try:
+            from app.services.scoring import VendorScoreEngine
+            VendorScoreEngine.update_vendor_score(db, str(vendor_id))
+        except Exception as e:
+            logger.warning(f"[VendorProof] Score update failed for {vendor_id}: {e}")
+
+        # Step 5: Email with embeddable badge
         if contact_email:
             badge_html = (
                 f'<a href="{verify_url}" target="_blank" rel="noopener noreferrer" '
