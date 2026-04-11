@@ -408,7 +408,50 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
         # Step 7: Update elevation metadata so CAL advances to NOTARIZED
         try:
             from app.services.notarization_elevation import create_or_update_elevation
-            vendor_id = str(report.owner_id)
+            from app.core.models import User
+            from app.core.models_v6 import VerifyRecord, Proof
+
+            # Resolve real user from contact_email (report.owner_id may be a random UUID
+            # if the report was created via the public unauthenticated endpoint)
+            real_vendor_id = None
+            if contact_email:
+                real_user = db.query(User).filter(User.email == contact_email).first()
+                if real_user:
+                    real_vendor_id = str(real_user.id)
+                    # Also remap the report so future lookups are consistent
+                    if str(report.owner_id) != real_vendor_id:
+                        report.owner_id = real_user.id
+                        db.flush()
+
+            vendor_id = real_vendor_id or str(report.owner_id)
+
+            # create_or_update_elevation counts Proof records linked to the vendor's
+            # VerifyRecord. The notarization flow doesn't create Proof rows, so we
+            # create one now to represent this completed notarization.
+            verify = db.query(VerifyRecord).filter(
+                VerifyRecord.vendor_id == vendor_id
+            ).first()
+            if verify and file_hash:
+                existing_proof = db.query(Proof).filter(
+                    Proof.verify_id == verify.id,
+                    Proof.hash_value == file_hash,
+                ).first()
+                if not existing_proof:
+                    proof = Proof(
+                        verify_id=verify.id,
+                        hash_value=file_hash,
+                        title=original_filename or "Notarized Document",
+                        compliance_score=5,
+                        metadata_json={
+                            "report_id": report_id,
+                            "tx_hash": tx_hash,
+                            "notarized_at": datetime.utcnow().isoformat(),
+                        },
+                    )
+                    db.add(proof)
+                    db.commit()
+                    logger.info(f"[Notarize] Created Proof record for vendor {vendor_id}")
+
             create_or_update_elevation(db, vendor_id)
             logger.info(f"[Notarize] Elevation metadata updated for vendor {vendor_id}")
         except Exception as e:
