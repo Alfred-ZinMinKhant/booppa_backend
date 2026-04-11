@@ -697,11 +697,32 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None) -> None:
                 "risk_level":    assessment.get("risk_level") or assessment.get("risk_assessment", {}).get("level", "MEDIUM"),
                 "findings":      assessment.get("findings") or assessment.get("detailed_findings", []),
                 "summary":       assessment.get("executive_summary", ""),
-                "payment_confirmed": True,
+                # Pass structured report sections so PDF renders full findings + recommendations
+                "executive_summary":  assessment.get("executive_summary", ""),
+                "detailed_findings":  assessment.get("detailed_findings") or assessment.get("findings", []),
+                "recommendations":    assessment.get("recommendations", []),
+                "legal_references":   assessment.get("legal_references", []),
+                "risk_assessment":    assessment.get("risk_assessment", {}),
+                # Screenshot — prefer stored base64, fallback to live capture
+                "site_screenshot":    assessment.get("site_screenshot") or assessment.get("screenshot"),
+                "payment_confirmed":  True,
                 "tier":          assessment.get("tier", "pro"),
                 "contact_email": contact_email,
                 "base_url":      "https://www.booppa.io",
             }
+            # Capture screenshot live if not already stored
+            if not pdf_data["site_screenshot"] and website_url:
+                try:
+                    from app.services.screenshot_service import capture_screenshot_base64
+                    ss = capture_screenshot_base64(website_url)
+                    if ss:
+                        pdf_data["site_screenshot"] = ss
+                        assessment["site_screenshot"] = ss
+                        flag_modified(report, "assessment_data")
+                        db.commit()
+                except Exception as ss_err:
+                    logger.warning(f"[PDPA] Screenshot capture failed for {report_id}: {ss_err}")
+
             pdf_bytes = pdf_service.generate_pdf(pdf_data)
         except Exception as e:
             logger.error(f"[PDPA] PDF generation failed for {report_id}: {e}")
