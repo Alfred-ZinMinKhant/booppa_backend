@@ -179,6 +179,17 @@ async def _fulfill_bundle(
 
         base_report = db.query(Report).filter(Report.id == report_id).first() if report_id else None
         owner_id = base_report.owner_id if base_report else None
+
+        # Resolve owner from customer_email when no base report exists (all bundle purchases)
+        if not owner_id and customer_email:
+            from app.core.models import User
+            user = db.query(User).filter(User.email == customer_email).first()
+            if user:
+                owner_id = user.id
+                logger.info(f"[Bundle:{product_type}] Resolved owner_id={owner_id} from email={customer_email}")
+            else:
+                logger.warning(f"[Bundle:{product_type}] No user found for email={customer_email} — stubs will have no owner")
+
         company_name = (base_report.company_name if base_report else None) or metadata.get("company_name", "")
         website = (base_report.company_website if base_report else None) or metadata.get("vendor_url", "")
 
@@ -479,11 +490,26 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             return
 
         vendor_id = report.owner_id
-        if not vendor_id:
-            logger.error(f"[VendorProof] No owner_id on report {report_id}")
-            return
-
         contact_email = customer_email or (report.assessment_data or {}).get("contact_email")
+
+        # If the report was created via the public endpoint, owner_id is a random UUID.
+        # Resolve the real user by email so VerifyRecord is linked to an actual account.
+        if contact_email:
+            from app.core.models import User
+            real_user = db.query(User).filter(User.email == contact_email).first()
+            if real_user:
+                if str(vendor_id) != str(real_user.id):
+                    logger.info(
+                        f"[VendorProof] Remapping owner_id {vendor_id} → {real_user.id} "
+                        f"via email={contact_email}"
+                    )
+                    vendor_id = real_user.id
+                    report.owner_id = real_user.id
+                    db.flush()
+
+        if not vendor_id:
+            logger.error(f"[VendorProof] No owner_id on report {report_id} and no user resolved from email")
+            return
         company_name  = report.company_name or "Vendor"
         verify_url    = f"https://www.booppa.io/verify/{report_id}"
 

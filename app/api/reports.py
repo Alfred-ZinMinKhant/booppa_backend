@@ -183,8 +183,17 @@ async def create_report_public(request: ReportRequest):
             assessment["on_page_only"] = True
             assessment["tier"] = "free"
 
+        # Try to link to an existing user account by contact_email
+        contact_email = getattr(request, "contact_email", None) or assessment.get("contact_email")
+        owner_id = uuid.uuid4()
+        if contact_email:
+            from app.core.models import User
+            existing_user = db.query(User).filter(User.email == contact_email).first()
+            if existing_user:
+                owner_id = existing_user.id
+
         report = Report(
-            owner_id=str(uuid.uuid4()),
+            owner_id=owner_id,
             framework=request.framework,
             company_name=request.company_name,
             company_website=request.website,
