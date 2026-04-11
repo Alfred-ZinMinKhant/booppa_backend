@@ -84,7 +84,7 @@ async def sector_pressure(
 
 
 _EMPTY_SECTOR_PRESSURE = {
-    "sector": None,
+    "sector": "General",
     "totalInSector": 0,
     "totalElevated": 0,
     "elevationRate": 0.0,

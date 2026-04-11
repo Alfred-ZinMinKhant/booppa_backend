@@ -405,6 +405,15 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
             except Exception as e:
                 logger.error(f"[Notarize] Email failed for {report_id}: {e}")
 
+        # Step 7: Update elevation metadata so CAL advances to NOTARIZED
+        try:
+            from app.services.notarization_elevation import create_or_update_elevation
+            vendor_id = str(report.owner_id)
+            create_or_update_elevation(db, vendor_id)
+            logger.info(f"[Notarize] Elevation metadata updated for vendor {vendor_id}")
+        except Exception as e:
+            logger.warning(f"[Notarize] Elevation update failed for {report_id}: {e}")
+
         logger.info(f"[Notarize] Fulfilled {report_id}: tx={tx_hash} pdf={pdf_url}")
     except Exception as e:
         logger.error(f"[Notarize] Fulfillment error for {report_id}: {e}")
