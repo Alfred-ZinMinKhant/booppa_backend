@@ -82,6 +82,26 @@ FOOTER_H  = 0.40 * inch
 def _draw_page(canvas, doc):
     canvas.saveState()
 
+    # ── Watermark (logo centred, diagonal, low opacity) ───────────────────────
+    if _LOGO_PATH:
+        try:
+            canvas.saveState()
+            canvas.setFillAlpha(0.06)
+            wm_w = 3.2 * inch
+            wm_h = wm_w * 0.35          # approximate logo aspect ratio
+            canvas.translate(PAGE_W / 2, PAGE_H / 2)
+            canvas.rotate(35)
+            canvas.drawImage(
+                _LOGO_PATH,
+                -wm_w / 2, -wm_h / 2,
+                width=wm_w, height=wm_h,
+                preserveAspectRatio=True,
+                mask="auto",
+            )
+            canvas.restoreState()
+        except Exception:
+            pass  # silently skip watermark if logo unavailable
+
     # ── Header band ──────────────────────────────────────────────────────────
     canvas.setFillColor(NAVY)
     canvas.rect(0, PAGE_H - HEADER_H, PAGE_W, HEADER_H, fill=1, stroke=0)
