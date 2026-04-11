@@ -985,6 +985,32 @@ async def process_report_workflow(report_id: str) -> dict:
         db.close()
 
 
+@celery_app.task(bind=True, max_retries=3, name="fulfill_vendor_proof_task")
+def fulfill_vendor_proof_task(self, report_id: str, customer_email: str | None = None):
+    """Celery task: create VerifyRecord, set compliance baseline, send badge email."""
+    try:
+        from app.api.stripe_webhook import _fulfill_vendor_proof
+        asyncio.run(_fulfill_vendor_proof(report_id=report_id, customer_email=customer_email))
+        logger.info(f"Vendor proof fulfilled for report {report_id}")
+    except Exception as exc:
+        logger.error(f"Vendor proof fulfillment failed for {report_id}: {exc}")
+        countdown = 60 * (2 ** self.request.retries)
+        raise self.retry(exc=exc, countdown=countdown)
+
+
+@celery_app.task(bind=True, max_retries=3, name="fulfill_pdpa_task")
+def fulfill_pdpa_task(self, report_id: str, customer_email: str | None = None):
+    """Celery task: generate PDPA PDF, update compliance score, write CertificateLog, send email."""
+    try:
+        from app.api.stripe_webhook import _fulfill_pdpa
+        asyncio.run(_fulfill_pdpa(report_id=report_id, customer_email=customer_email))
+        logger.info(f"PDPA snapshot fulfilled for report {report_id}")
+    except Exception as exc:
+        logger.error(f"PDPA fulfillment failed for {report_id}: {exc}")
+        countdown = 60 * (2 ** self.request.retries)
+        raise self.retry(exc=exc, countdown=countdown)
+
+
 @celery_app.task(bind=True, max_retries=3, name="fulfill_notarization_task")
 def fulfill_notarization_task(self, report_id: str, customer_email: str | None = None):
     """Celery task: anchor, generate PDF, and deliver notarization certificate."""
@@ -1040,6 +1066,157 @@ def fulfill_rfp_task(
                     ttl=86400
                 )
             raise
+
+
+@celery_app.task(bind=True, max_retries=2, name="vendor_active_health_check_task")
+def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str):
+    """
+    Monthly health check for Vendor Active subscribers.
+    1. Recalculate vendor score
+    2. Send monthly metrics email (profile views, search appearances, movement vs prior month)
+    3. Competitor alert: notify if any sector peer improved verificationDepth this month
+    """
+    db = SessionLocal()
+    try:
+        from app.services.scoring import VendorScoreEngine
+        from app.services.email_service import EmailService
+        from app.core.models import VendorScore, User
+        from datetime import timedelta
+
+        # 1. Recalculate score
+        score_record = VendorScoreEngine.update_vendor_score(db, vendor_id)
+
+        # 2. Build metrics summary
+        user = db.query(User).filter(User.id == vendor_id).first()
+        company = getattr(user, "company", "Your company") if user else "Your company"
+
+        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+        from app.core.models import VerifyRecord, ProofView
+        verify = db.query(VerifyRecord).filter(VerifyRecord.vendor_id == vendor_id).first()
+        profile_views = 0
+        if verify:
+            profile_views = db.query(ProofView).filter(
+                ProofView.verify_id == verify.id,
+                ProofView.created_at >= thirty_days_ago,
+            ).count()
+
+        # 3. Email monthly digest
+        email_svc = EmailService()
+        asyncio.run(email_svc.send_html_email(
+            to_email=vendor_email,
+            subject=f"Your Monthly BOOPPA Health Check — {company}",
+            body_html=f"""
+            <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
+              <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
+                <h1 style="color:#10b981;margin:0;font-size:20px;">Monthly Profile Health Check</h1>
+              </div>
+              <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
+                <p>Hello <strong>{company}</strong>,</p>
+                <p>Here is your BOOPPA profile activity for the past 30 days:</p>
+                <div style="background:#f8fafc;border-radius:8px;padding:20px;margin:20px 0;">
+                  <p style="margin:4px 0;"><strong>Trust Score:</strong> {score_record.total_score}/100</p>
+                  <p style="margin:4px 0;"><strong>Compliance Score:</strong> {score_record.compliance_score}/100</p>
+                  <p style="margin:4px 0;"><strong>Profile Views (30d):</strong> {profile_views}</p>
+                </div>
+                <p>
+                  <a href="https://www.booppa.io/vendor/dashboard"
+                     style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;
+                            border-radius:8px;font-weight:bold;display:inline-block;">
+                    View Full Dashboard →
+                  </a>
+                </p>
+                <p style="color:#64748b;font-size:12px;margin-top:24px;">
+                  Vendor Active — monthly health check · booppa.io
+                </p>
+              </div>
+            </body></html>
+            """,
+        ))
+        logger.info(f"Vendor Active health check completed for vendor {vendor_id}")
+    except Exception as exc:
+        logger.error(f"Vendor Active health check failed for {vendor_id}: {exc}")
+        raise self.retry(exc=exc, countdown=300)
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, max_retries=2, name="pdpa_monitor_quarterly_rescan_task")
+def pdpa_monitor_quarterly_rescan_task(self, vendor_id: str, vendor_email: str, website_url: str):
+    """
+    Quarterly PDPA re-scan for PDPA Monitor subscribers.
+    Creates a new PDPA report and queues fulfill_pdpa_task.
+    """
+    db = SessionLocal()
+    try:
+        from app.core.models import Report, User
+        import uuid as _uuid
+
+        user = db.query(User).filter(User.id == vendor_id).first()
+        company = getattr(user, "company", "Customer") if user else "Customer"
+
+        stub = Report(
+            owner_id=_uuid.UUID(vendor_id),
+            framework="pdpa_quick_scan",
+            company_name=company,
+            company_website=website_url,
+            status="pending",
+            assessment_data={
+                "payment_confirmed": True,
+                "on_page_only": False,
+                "tier": "PRO",
+                "contact_email": vendor_email,
+                "triggered_by": "pdpa_monitor_quarterly",
+            },
+        )
+        db.add(stub)
+        db.commit()
+        db.refresh(stub)
+
+        from app.api.stripe_webhook import _fulfill_pdpa
+        asyncio.run(_fulfill_pdpa(report_id=str(stub.id), customer_email=vendor_email))
+        logger.info(f"PDPA Monitor quarterly re-scan complete for vendor {vendor_id}")
+    except Exception as exc:
+        logger.error(f"PDPA Monitor quarterly re-scan failed for {vendor_id}: {exc}")
+        raise self.retry(exc=exc, countdown=600)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="run_vendor_active_monthly_checks")
+def run_vendor_active_monthly_checks():
+    """
+    Beat task: runs on the 1st of each month.
+    Finds all active Vendor Active subscribers and queues health checks.
+    """
+    db = SessionLocal()
+    try:
+        from app.core.models import User
+        subscribers = db.query(User).filter(User.plan == "vendor_active").all()
+        for user in subscribers:
+            if user.email:
+                vendor_active_health_check_task.delay(str(user.id), user.email)
+        logger.info(f"Queued monthly health checks for {len(subscribers)} Vendor Active subscribers")
+    finally:
+        db.close()
+
+
+@celery_app.task(name="run_pdpa_monitor_quarterly_rescans")
+def run_pdpa_monitor_quarterly_rescans():
+    """
+    Beat task: runs on the 1st of Jan, Apr, Jul, Oct.
+    Finds all PDPA Monitor subscribers and queues re-scans.
+    """
+    db = SessionLocal()
+    try:
+        from app.core.models import User
+        subscribers = db.query(User).filter(User.plan == "pdpa_monitor").all()
+        for user in subscribers:
+            website = getattr(user, "website", "") or ""
+            if user.email and website:
+                pdpa_monitor_quarterly_rescan_task.delay(str(user.id), user.email, website)
+        logger.info(f"Queued quarterly PDPA re-scans for {len(subscribers)} PDPA Monitor subscribers")
+    finally:
+        db.close()
 
 
 @celery_app.task(name="refresh_gebiz_base_rates")

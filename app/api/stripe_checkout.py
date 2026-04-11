@@ -17,20 +17,33 @@ def _get_price(product_type: str) -> str | None:
     )
 
 MODE_MAP = {
+    # One-time products
     "pdpa_quick_scan": "payment",
+    "vendor_proof": "payment",
+    "rfp_express": "payment",
+    "rfp_complete": "payment",
+    "compliance_notarization_1": "payment",
+    "compliance_notarization_10": "payment",
+    "compliance_notarization_50": "payment",
+    "supply_chain_1": "payment",
+    "supply_chain_10": "payment",
+    "supply_chain_50": "payment",
+    # Bundles (one-time)
+    "vendor_trust_pack": "payment",
+    "rfp_accelerator": "payment",
+    "enterprise_bid_kit": "payment",
+    # Subscriptions
+    "vendor_active_monthly": "subscription",
+    "vendor_active_annual": "subscription",
+    "pdpa_monitor_monthly": "subscription",
+    "pdpa_monitor_annual": "subscription",
+    "enterprise_monthly": "subscription",
+    "enterprise_pro_monthly": "subscription",
+    # Legacy subscription keys
     "pdpa_basic": "subscription",
     "pdpa_pro": "subscription",
     "compliance_standard": "subscription",
     "compliance_pro": "subscription",
-    "supply_chain_1": "payment",
-    "supply_chain_10": "payment",
-    "supply_chain_50": "payment",
-    "compliance_notarization_1": "payment",
-    "compliance_notarization_10": "payment",
-    "compliance_notarization_50": "payment",
-    "vendor_proof": "payment",
-    "rfp_express": "payment",
-    "rfp_complete": "payment",
 }
 
 
@@ -109,27 +122,27 @@ async def checkout_post(request: Request):
         elif product_type and "rfp_" in product_type:
             success_url = f"{base_url}/rfp-acceleration/result?session_id={{CHECKOUT_SESSION_ID}}"
         # simple cancel URL mapping
-        cancel_path = (
-            "pdpa"
-            if "pdpa" in (product_type or "")
-            else (
-                "notarization"
-                if "compliance_notarization" in (product_type or "")
-                else (
-                    "supply-chain"
-                    if "supply_chain" in (product_type or "")
-                    else (
-                        "rfp-acceleration"
-                        if "rfp_" in (product_type or "")
-                        else (
-                            "vendor-proof"
-                            if (product_type or "") == "vendor_proof"
-                            else "compliance"
-                        )
-                    )
-                )
-            )
-        )
+        _pt = product_type or ""
+        if _pt in ("vendor_trust_pack", "rfp_accelerator", "enterprise_bid_kit"):
+            cancel_path = "pricing"
+        elif "pdpa" in _pt:
+            cancel_path = "pdpa"
+        elif "compliance_notarization" in _pt:
+            cancel_path = "notarization"
+        elif "supply_chain" in _pt:
+            cancel_path = "supply-chain"
+        elif "rfp_" in _pt:
+            cancel_path = "rfp-acceleration"
+        elif _pt == "vendor_proof":
+            cancel_path = "vendor-proof"
+        elif _pt in ("vendor_active_monthly", "vendor_active_annual"):
+            cancel_path = "pricing"
+        elif _pt in ("pdpa_monitor_monthly", "pdpa_monitor_annual"):
+            cancel_path = "pricing"
+        elif _pt in ("enterprise_monthly", "enterprise_pro_monthly"):
+            cancel_path = "pricing"
+        else:
+            cancel_path = "pricing"
         cancel_url = f"{base_url}/{cancel_path}"
 
         vendor_url = data.get("vendor_url", "")

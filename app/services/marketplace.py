@@ -145,10 +145,11 @@ def search_marketplace(
     query: Optional[str] = None,
     industry: Optional[str] = None,
     country: Optional[str] = None,
+    verified: Optional[bool] = None,
     page: int = 1,
     per_page: int = 20,
 ) -> dict:
-    """Search marketplace vendors with pagination."""
+    """Search marketplace vendors with pagination. verified=True filters to active VerifyRecords."""
     q = db.query(MarketplaceVendor)
 
     if query:
@@ -167,8 +168,31 @@ def search_marketplace(
     if country:
         q = q.filter(MarketplaceVendor.country.ilike(f"%{country}%"))
 
+    # verified=True: only show vendors with an ACTIVE VerifyRecord (i.e. paid Vendor Proof)
+    if verified is True:
+        active_user_ids = (
+            db.query(VerifyRecord.vendor_id)
+            .filter(VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE)
+            .subquery()
+        )
+        q = q.filter(MarketplaceVendor.claimed_by_user_id.in_(active_user_ids))
+
     total = q.count()
     vendors = q.order_by(MarketplaceVendor.company_name).offset((page - 1) * per_page).limit(per_page).all()
+
+    # Bulk-fetch verified status for result set to avoid N+1
+    claimed_user_ids = [v.claimed_by_user_id for v in vendors if v.claimed_by_user_id]
+    verified_set: set = set()
+    if claimed_user_ids:
+        rows = (
+            db.query(VerifyRecord.vendor_id)
+            .filter(
+                VerifyRecord.vendor_id.in_(claimed_user_ids),
+                VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE,
+            )
+            .all()
+        )
+        verified_set = {str(r.vendor_id) for r in rows}
 
     return {
         "vendors": [
@@ -184,6 +208,7 @@ def search_marketplace(
                 "short_description": v.short_description,
                 "scan_status": v.scan_status,
                 "claimed": v.claimed_by_user_id is not None,
+                "verified": str(v.claimed_by_user_id) in verified_set if v.claimed_by_user_id else False,
             }
             for v in vendors
         ],

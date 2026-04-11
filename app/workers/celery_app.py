@@ -26,7 +26,11 @@ celery_app.conf.update(
     task_routes={
         "process_report_task": {"queue": "reports"},
         "fulfill_notarization_task": {"queue": "reports"},
+        "fulfill_pdpa_task": {"queue": "reports"},
+        "fulfill_vendor_proof_task": {"queue": "reports"},
         "fulfill_rfp_task": {"queue": "reports"},
+        "vendor_active_health_check_task": {"queue": "default"},
+        "pdpa_monitor_quarterly_rescan_task": {"queue": "reports"},
         "app.workers.tasks.*": {"queue": "default"},
     },
     # Beat schedule
@@ -57,6 +61,16 @@ celery_app.conf.update(
         "send-weekly-vendor-scores": {
             "task": "send_weekly_vendor_scores",
             "schedule": crontab(day_of_week="monday", hour=8, minute=0),
+        },
+        # Vendor Active: run monthly profile health checks on the 1st of each month at 06:00 UTC.
+        "vendor-active-monthly-health-checks": {
+            "task": "run_vendor_active_monthly_checks",
+            "schedule": crontab(day_of_month=1, hour=6, minute=0),
+        },
+        # PDPA Monitor: quarterly re-scans on the 1st of Jan, Apr, Jul, Oct at 03:00 UTC.
+        "pdpa-monitor-quarterly-rescans": {
+            "task": "run_pdpa_monitor_quarterly_rescans",
+            "schedule": crontab(month_of_year="1,4,7,10", day_of_month=1, hour=3, minute=0),
         },
     },
 )
