@@ -29,7 +29,7 @@ SNAPSHOT_STALE_DAYS = 7
 
 # ── Probability cap ────────────────────────────────────────────────────────────
 # Even a perfect profile can't exceed this ceiling (market reality)
-MAX_PROBABILITY = 0.65
+MAX_PROBABILITY = 0.85
 
 # ── Profile multiplier (verification depth) ───────────────────────────────────
 PROFILE_MULT = {

@@ -30,12 +30,13 @@ async def search_vendors(
     q: Optional[str] = Query(None, description="Search query"),
     industry: Optional[str] = Query(None),
     country: Optional[str] = Query(None),
+    verified: Optional[bool] = Query(None, description="Filter to verified vendors only"),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
     """Search marketplace vendors."""
-    return search_marketplace(db, query=q, industry=industry, country=country, page=page, per_page=per_page)
+    return search_marketplace(db, query=q, industry=industry, country=country, verified=verified, page=page, per_page=per_page)
 
 
 @router.get("/industries")

@@ -60,7 +60,18 @@ async def sector_pressure(
     ).first()
 
     if not sector_row:
-        raise HTTPException(status_code=404, detail="No sector registered for this vendor.")
+        return {
+            "snapshot": {
+                "sector": None,
+                "totalInSector": 0,
+                "totalElevated": 0,
+                "elevationRate": 0.0,
+                "vendorRank": None,
+                "avgEvidence": 0.0,
+                "vendorEvidence": 0,
+            },
+            "message": "Register your sector to see how you compare with peers in your industry.",
+        }
 
     primary_sector = sector_row.sector
 
@@ -70,6 +81,17 @@ async def sector_pressure(
     message           = generate_sector_pressure_message(snapshot, recently_active)
 
     return {"snapshot": snapshot, "message": message}
+
+
+_EMPTY_SECTOR_PRESSURE = {
+    "sector": None,
+    "totalInSector": 0,
+    "totalElevated": 0,
+    "elevationRate": 0.0,
+    "vendorRank": None,
+    "avgEvidence": 0.0,
+    "vendorEvidence": 0,
+}
 
 
 @router.get("/dashboard-cal")
@@ -91,10 +113,7 @@ async def dashboard_cal(
         VendorSector.vendor_id == current_user.id
     ).first()
 
-    if not sector_row:
-        raise HTTPException(status_code=404, detail="No sector registered for this vendor.")
-
-    primary_sector = sector_row.sector
+    primary_sector = sector_row.sector if sector_row else None
 
     # Elevation metadata & vendor score data
     elevation = fetch_elevation_metadata(db, vendor_id)
@@ -114,10 +133,15 @@ async def dashboard_cal(
         "tier":              "STANDARD",
     }
 
-    # Sector pressure (cache-first, at most 1 DB query)
-    sector_pressure = get_sector_competitive_pressure(db, primary_sector, vendor_id)
-    cached_rows     = get_cached_rows(primary_sector)
-    recently_active = count_recently_active(cached_rows, 30)
+    # Sector pressure — empty if no sector registered yet
+    if primary_sector:
+        sector_pressure = get_sector_competitive_pressure(db, primary_sector, vendor_id)
+        cached_rows     = get_cached_rows(primary_sector)
+        recently_active = count_recently_active(cached_rows, 30)
+    else:
+        sector_pressure = _EMPTY_SECTOR_PRESSURE
+        cached_rows     = []
+        recently_active = 0
 
     # Peer evidence top-3 avg
     peer_evidences = sorted(
@@ -155,6 +179,53 @@ async def dashboard_cal(
         "suggestion":     suggestion,
         "message":        message,
         "sectorPressure": sector_pressure,
+    }
+
+
+@router.get("/badge")
+async def vendor_badge(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Returns the embeddable HTML badge snippet for the authenticated vendor.
+    Only available when VerifyRecord is ACTIVE.
+    """
+    from app.core.models import VerifyRecord, LifecycleStatus
+    from app.core.models_v10 import MarketplaceVendor
+    from app.core.config import settings
+
+    verify = db.query(VerifyRecord).filter(
+        VerifyRecord.vendor_id == current_user.id,
+        VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE,
+    ).first()
+
+    if not verify:
+        return {"active": False, "html": None, "profile_url": None}
+
+    # Resolve slug from marketplace vendor record
+    mv = db.query(MarketplaceVendor).filter(
+        MarketplaceVendor.claimed_by_user_id == current_user.id
+    ).first()
+
+    base_url = getattr(settings, "VERIFY_BASE_URL", "https://www.booppa.io")
+    slug = mv.slug if mv else str(current_user.id)
+    profile_url = f"{base_url}/vendors/{slug}"
+    badge_img   = f"{base_url}/booppa-verified-badge.svg"
+
+    html = (
+        f'<a href="{profile_url}" target="_blank" rel="noopener">'
+        f'<img src="{badge_img}" alt="Verified on BOOPPA" width="160" height="48" />'
+        f'</a>'
+    )
+
+    return {
+        "active":       True,
+        "html":         html,
+        "profile_url":  profile_url,
+        "slug":         slug,
+        "compliance_score": verify.compliance_score,
+        "verification_level": verify.verification_level.value if hasattr(verify.verification_level, 'value') else str(verify.verification_level),
     }
 
 

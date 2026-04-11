@@ -52,23 +52,54 @@ class VendorScoreEngine:
 
     @classmethod
     def calculate_compliance_score(cls, db: Session, vendor_id: str) -> int:
+        from app.core.models import Report
+
         verifications = db.query(VerifyRecord).filter(
             VerifyRecord.vendor_id == vendor_id,
             VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE
         ).all()
-        
+
         if not verifications:
-            return 0
-            
-        total = 0
-        weight_sum = 0
-        for v in verifications:
-            lvl = v.verification_level.value if v.verification_level else "BASIC"
-            level_weight = 1.5 if lvl == "GOVERNMENT" else 1.3 if lvl == "PREMIUM" else 1.1 if lvl == "STANDARD" else 1.0
-            total += (v.compliance_score or 0) * level_weight
-            weight_sum += level_weight
-            
-        return min(round(total / weight_sum) if weight_sum > 0 else 0, 100)
+            base_score = 0
+        else:
+            total = 0
+            weight_sum = 0
+            for v in verifications:
+                lvl = v.verification_level.value if v.verification_level else "BASIC"
+                level_weight = 1.5 if lvl == "GOVERNMENT" else 1.3 if lvl == "PREMIUM" else 1.1 if lvl == "STANDARD" else 1.0
+                total += (v.compliance_score or 0) * level_weight
+                weight_sum += level_weight
+            base_score = round(total / weight_sum) if weight_sum > 0 else 0
+
+        # PDPA Snapshot bonus: +8 to +25 pts based on risk score
+        # Only the most recent completed PDPA report counts.
+        pdpa_bonus = 0
+        try:
+            pdpa_report = (
+                db.query(Report)
+                .filter(
+                    Report.owner_id == vendor_id,
+                    Report.framework.in_(["pdpa_quick_scan", "pdpa_basic", "pdpa_pro", "pdpa_snapshot"]),
+                    Report.status == "completed",
+                )
+                .order_by(Report.completed_at.desc())
+                .first()
+            )
+            if pdpa_report:
+                ad = pdpa_report.assessment_data or {}
+                risk_score = (
+                    ad.get("risk_score")
+                    or (ad.get("risk_assessment") or {}).get("score")
+                    or 0
+                )
+                # risk_score is 0–100 where 0 = clean, 100 = critical.
+                # Invert: low risk → high bonus (up to +25). High risk → small bonus (+8).
+                inverted = 100 - int(risk_score)
+                pdpa_bonus = round(8 + (inverted / 100) * 17)  # 8–25 pts
+        except Exception as e:
+            logger.warning(f"PDPA bonus calculation failed for vendor {vendor_id}: {e}")
+
+        return min(base_score + pdpa_bonus, 100)
 
     @classmethod
     def calculate_visibility_score(cls, db: Session, vendor_id: str) -> int:
