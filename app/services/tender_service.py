@@ -22,6 +22,29 @@ from sqlalchemy.orm import Session
 
 from app.core.models_v10 import TenderShortlist
 from app.core.models_v8 import VendorStatusSnapshot
+from app.core.models_gebiz import GebizTender
+
+# Map GeBIZ RSS category strings to normalised sector labels
+_CATEGORY_TO_SECTOR: dict[str, str] = {
+    "Professional Services":                        "Professional Services",
+    "IT & Telecommunication":                       "IT",
+    "Security Services":                            "Security",
+    "Maintenance Services":                         "Maintenance",
+    "Environmental Services":                       "Environmental",
+    "Training Services":                            "Training",
+    "Medical & Healthcare":                         "Healthcare",
+    "Marketing & Advertising":                      "Marketing",
+    "Research & Development":                       "R&D",
+    "General Building & Minor Construction Works":  "Construction",
+    "Facilities Management":                        "Facilities Management",
+    "Transportation":                               "Transportation",
+    "Administration & Training":                    "Administration",
+    "Event Organising Food & Beverages":            "Events",
+    "Furniture Office Equipment & AudioVisual":     "Equipment",
+    "Miscellaneous":                                "General",
+    "Works":                                        "Construction",
+    "Consultancy Services":                         "Consultancy",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +168,37 @@ def compute_tender_win_probability(
     tender = db.query(TenderShortlist).filter(
         TenderShortlist.tender_no == tender_no
     ).first()
+
+    # Fallback: auto-create a TenderShortlist stub from GebizTender so any
+    # RSS-synced tender is immediately available for probability scoring.
+    if not tender:
+        gebiz = db.query(GebizTender).filter(
+            GebizTender.tender_no == tender_no
+        ).first()
+        if gebiz:
+            raw = gebiz.raw_data or {}
+            cat = raw.get("category", "")
+            sector = _CATEGORY_TO_SECTOR.get(cat, "General")
+            try:
+                tender = TenderShortlist(
+                    tender_no=gebiz.tender_no,
+                    description=gebiz.title,
+                    agency=gebiz.agency or "Government Agency",
+                    sector=sector,
+                    base_rate=0.20,
+                )
+                db.add(tender)
+                db.commit()
+                db.refresh(tender)
+                logger.info(
+                    f"[TenderService] Auto-created TenderShortlist from GebizTender "
+                    f"tender_no={tender_no} sector={sector}"
+                )
+            except Exception as e:
+                db.rollback()
+                logger.warning(f"[TenderService] Failed to auto-create shortlist for {tender_no}: {e}")
+                tender = None
+
     if not tender:
         return {"error": "tender_not_found", "tender_no": tender_no}
 

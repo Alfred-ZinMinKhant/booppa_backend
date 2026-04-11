@@ -1398,11 +1398,52 @@ def sync_gebiz_tenders():
         rss_count = fetch_from_rss(db)
         scrape_count = scrape_gebiz_page(db)
         logger.info(f"[GeBIZ] sync complete: rss={rss_count}, scrape={scrape_count}")
+
+        # Bridge GebizTender → TenderShortlist so the probability engine can
+        # score any RSS-synced tender without requiring a manual admin entry.
+        _bridge_gebiz_to_shortlist(db)
     except Exception as exc:
         logger.error(f"[GeBIZ] sync_gebiz_tenders failed: {exc}")
         db.rollback()
     finally:
         db.close()
+
+
+def _bridge_gebiz_to_shortlist(db) -> None:
+    """Upsert open GebizTenders into TenderShortlist with a default base_rate."""
+    from app.core.models_gebiz import GebizTender
+    from app.core.models_v10 import TenderShortlist
+    from app.services.tender_service import _CATEGORY_TO_SECTOR
+
+    open_tenders = (
+        db.query(GebizTender)
+        .filter(GebizTender.status == "Open")
+        .all()
+    )
+    bridged = 0
+    for gt in open_tenders:
+        existing = db.query(TenderShortlist).filter(
+            TenderShortlist.tender_no == gt.tender_no
+        ).first()
+        raw = gt.raw_data or {}
+        cat = raw.get("category", "")
+        sector = _CATEGORY_TO_SECTOR.get(cat, "General")
+        if existing:
+            # Keep base_rate; just refresh description and agency
+            existing.description = gt.title or existing.description
+            existing.agency = gt.agency or existing.agency
+        else:
+            db.add(TenderShortlist(
+                tender_no=gt.tender_no,
+                description=gt.title,
+                agency=gt.agency or "Government Agency",
+                sector=sector,
+                base_rate=0.20,
+            ))
+            bridged += 1
+    db.commit()
+    if bridged:
+        logger.info(f"[GeBIZ] Bridged {bridged} new tenders into TenderShortlist")
 
 
 @celery_app.task(name="cleanup_old_tasks")
