@@ -161,6 +161,8 @@ jobs:
           ANCHOR_CONTRACT_ADDRESS: ${{ secrets.ANCHOR_CONTRACT_ADDRESS }}
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
           DB_SECRET_ARN: ${{ secrets.AWS_SECRETSMANAGER_DATABASE_URL_ARN }}
+          # Feature flags
+          FEATURE_SEO: ${{ secrets.FEATURE_SEO }}
         run: |
           CPU=${APP_CPU:-256}
           MEMORY=${APP_MEMORY:-512}
@@ -216,6 +218,7 @@ jobs:
                   { "name": "DB_MAX_OVERFLOW", "value": "${DB_MAX_OVERFLOW}" },
                   { "name": "DB_POOL_TIMEOUT", "value": "${DB_POOL_TIMEOUT}" },
                   { "name": "DB_POOL_RECYCLE", "value": "${DB_POOL_RECYCLE}" },
+                  { "name": "FEATURE_SEO", "value": "${FEATURE_SEO}" },
                   { "name": "ENVIRONMENT", "value": "production" },
                   { "name": "ALLOWED_HOSTS", "value": "api.booppa.io" },
                   { "name": "ALLOWED_ORIGINS", "value": "https://booppa.io,https://www.booppa.io,https://api.booppa.io,https://cms.booppa.io" },
@@ -273,6 +276,8 @@ jobs:
           ANCHOR_CONTRACT_ADDRESS: ${{ secrets.ANCHOR_CONTRACT_ADDRESS }}
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
           DB_SECRET_ARN: ${{ secrets.AWS_SECRETSMANAGER_DATABASE_URL_ARN }}
+          # Feature flags
+          FEATURE_SEO: ${{ secrets.FEATURE_SEO }}
         run: |
           CPU=${APP_CPU:-256}
           MEMORY=${APP_MEMORY:-512}
@@ -330,6 +335,7 @@ jobs:
                   { "name": "DB_MAX_OVERFLOW", "value": "${DB_MAX_OVERFLOW}" },
                   { "name": "DB_POOL_TIMEOUT", "value": "${DB_POOL_TIMEOUT}" },
                   { "name": "DB_POOL_RECYCLE", "value": "${DB_POOL_RECYCLE}" },
+                  { "name": "FEATURE_SEO", "value": "${FEATURE_SEO}" },
                   { "name": "ENVIRONMENT", "value": "production" }
                 ],
                 "secrets": [

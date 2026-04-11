@@ -1,13 +1,14 @@
 from fastapi import APIRouter, Request, HTTPException
 from app.core.config import settings
 from app.core.db import SessionLocal
-from app.core.models import Report
+from app.core.models import Report, User
 from app.services.blockchain import BlockchainService
 from app.services.pdf_service import PDFService
 from app.services.booppa_ai_service import BooppaAIService
 from app.services.storage import S3Service
 from app.services.email_service import EmailService
 from app.billing.enforcement import enforce_tier
+from app.core.models_v10 import Referral
 from datetime import datetime
 import stripe
 import logging
@@ -24,6 +25,10 @@ NOTARIZATION_PRODUCT_TYPES = {
     "compliance_notarization_1",
     "compliance_notarization_10",
     "compliance_notarization_50",
+    # Supply chain packages use the same blockchain anchoring fulfillment
+    "supply_chain_1",
+    "supply_chain_10",
+    "supply_chain_50",
 }
 
 
@@ -396,5 +401,47 @@ async def stripe_webhook(request: Request):
 
         finally:
             db.close()
+
+    # ── Post-checkout: upgrade user plan + close referral reward loop ────────
+    if event["type"] == "checkout.session.completed":
+        raw = json.loads(payload) if isinstance(payload, (str, bytes)) else {}
+        session = raw.get("data", {}).get("object", {}) if raw else {}
+        customer_email = (
+            (session.get("customer_details") or {}).get("email")
+            or session.get("customer_email")
+        )
+        if customer_email:
+            _db = SessionLocal()
+            try:
+                user = _db.query(User).filter(User.email == customer_email).first()
+                if user and getattr(user, "plan", "free") != "enterprise":
+                    metadata = session.get("metadata") or {}
+                    product = metadata.get("product_type") or ""
+                    new_plan = "enterprise" if "enterprise" in product else "pro"
+                    user.plan = new_plan
+                    # Close the referral reward loop: find a SIGNED_UP referral for this
+                    # user and mark reward_claimed so the referrer gets credit.
+                    referral = (
+                        _db.query(Referral)
+                        .filter(
+                            Referral.referred_id == user.id,
+                            Referral.status == "SIGNED_UP",
+                            Referral.reward_claimed == False,
+                        )
+                        .first()
+                    )
+                    if referral:
+                        referral.status = "REWARDED"
+                        referral.reward_claimed = True
+                        referral.reward_claimed_at = datetime.utcnow()
+                    _db.commit()
+                    logger.info(
+                        f"[Webhook] Upgraded user {customer_email} to plan={new_plan}"
+                        + (f"; referral {referral.referral_code} rewarded" if referral else "")
+                    )
+            except Exception as exc:
+                logger.error(f"[Webhook] Plan upgrade failed for {customer_email}: {exc}")
+            finally:
+                _db.close()
 
     return {"received": True}

@@ -1254,3 +1254,193 @@ def cleanup_old_tasks():
         logger.error(f"Cleanup failed: {e}")
     finally:
         db.close()
+
+
+@celery_app.task(name="send_weekly_vendor_scores")
+def send_weekly_vendor_scores():
+    """
+    Send every active vendor their weekly compliance score summary.
+    Runs every Monday at 08:00 UTC via Celery Beat.
+    Non-fatal — individual email failures are logged and skipped.
+    """
+    from app.core.models import User
+    from app.core.models_v6 import VendorScore
+
+    db = SessionLocal()
+    sent = 0
+    failed = 0
+    try:
+        rows = (
+            db.query(User, VendorScore)
+            .join(VendorScore, VendorScore.vendor_id == User.id)
+            .filter(User.is_active == True)
+            .all()
+        )
+        email_svc = EmailService()
+        for user, score in rows:
+            try:
+                subject = f"Your BOOPPA Vendor Score This Week — {score.total_score} pts"
+                body_html = f"""
+                <html><body style="font-family:Arial,sans-serif;background:#0a0a0a;color:#e5e5e5;padding:32px;">
+                <div style="max-width:560px;margin:0 auto;">
+                  <h2 style="color:#ffffff;">Your Weekly Vendor Score</h2>
+                  <p>Hi {user.full_name or user.company or user.email},</p>
+                  <p>Here's how your BOOPPA compliance profile performed this week:</p>
+                  <table style="width:100%;border-collapse:collapse;margin:16px 0;">
+                    <tr><td style="padding:8px 0;color:#a3a3a3;">Compliance</td>
+                        <td style="padding:8px 0;text-align:right;font-weight:bold;color:#60a5fa;">{score.compliance_score}</td></tr>
+                    <tr><td style="padding:8px 0;color:#a3a3a3;">Visibility</td>
+                        <td style="padding:8px 0;text-align:right;font-weight:bold;color:#60a5fa;">{score.visibility_score}</td></tr>
+                    <tr><td style="padding:8px 0;color:#a3a3a3;">Engagement</td>
+                        <td style="padding:8px 0;text-align:right;font-weight:bold;color:#60a5fa;">{score.engagement_score}</td></tr>
+                    <tr><td style="padding:8px 0;color:#a3a3a3;">Procurement Interest</td>
+                        <td style="padding:8px 0;text-align:right;font-weight:bold;color:#60a5fa;">{score.procurement_interest_score}</td></tr>
+                    <tr style="border-top:1px solid #262626;">
+                      <td style="padding:12px 0;color:#ffffff;font-weight:bold;">Total Score</td>
+                      <td style="padding:12px 0;text-align:right;font-size:1.4em;font-weight:bold;color:#a78bfa;">{score.total_score}</td>
+                    </tr>
+                  </table>
+                  <a href="https://www.booppa.io/vendor/dashboard"
+                     style="display:inline-block;background:#7c3aed;color:#ffffff;padding:12px 24px;
+                            border-radius:8px;text-decoration:none;font-weight:bold;margin-top:8px;">
+                    View Full Dashboard
+                  </a>
+                  <p style="margin-top:24px;font-size:0.8em;color:#525252;">
+                    You're receiving this because you have an active BOOPPA vendor profile.
+                    <a href="https://www.booppa.io/vendor/profile" style="color:#7c3aed;">Manage preferences</a>
+                  </p>
+                </div>
+                </body></html>
+                """
+                import asyncio as _asyncio
+                _asyncio.run(email_svc.send_html_email(user.email, subject, body_html))
+                sent += 1
+            except Exception as exc:
+                logger.warning(f"[WeeklyScore] Failed to send to {user.email}: {exc}")
+                failed += 1
+    except Exception as exc:
+        logger.error(f"[WeeklyScore] Task aborted: {exc}")
+    finally:
+        db.close()
+
+    logger.info(f"[WeeklyScore] Sent={sent} Failed={failed}")
+
+
+@celery_app.task(name="send_gebiz_alert_newsletter")
+def send_gebiz_alert_newsletter():
+    """
+    Send every active vendor a curated list of GeBIZ tenders closing within 14 days.
+    Runs every Monday at 07:00 UTC via Celery Beat (one hour before the score digest).
+    Non-fatal — individual email failures are logged and skipped.
+    """
+    from app.core.models import User
+    from app.core.models_gebiz import GebizTender
+    from datetime import timedelta
+
+    db = SessionLocal()
+    sent = 0
+    failed = 0
+    try:
+        now = datetime.utcnow()
+        deadline = now + timedelta(days=14)
+
+        tenders = (
+            db.query(GebizTender)
+            .filter(
+                GebizTender.status == "Open",
+                GebizTender.closing_date >= now,
+                GebizTender.closing_date <= deadline,
+            )
+            .order_by(GebizTender.closing_date.asc())
+            .limit(10)
+            .all()
+        )
+
+        if not tenders:
+            logger.info("[GeBIZAlert] No tenders closing within 14 days — skipping newsletter")
+            return
+
+        # Build the tender rows HTML once, reuse per vendor
+        rows_html = ""
+        for t in tenders:
+            days_left = (t.closing_date - now).days if t.closing_date else "?"
+            value_str = f"S${t.estimated_value:,.0f}" if t.estimated_value else "Not disclosed"
+            tender_url = t.url or f"https://www.gebiz.gov.sg"
+            rows_html += f"""
+            <tr>
+              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#e5e5e5;">
+                <a href="{tender_url}" style="color:#a78bfa;text-decoration:none;font-weight:500;">{t.tender_no}</a><br>
+                <span style="font-size:0.85em;color:#a3a3a3;">{t.title[:120]}</span>
+              </td>
+              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#a3a3a3;white-space:nowrap;">{t.agency}</td>
+              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#60a5fa;white-space:nowrap;">{value_str}</td>
+              <td style="padding:10px 8px;border-bottom:1px solid #262626;white-space:nowrap;">
+                <span style="color:{'#ef4444' if isinstance(days_left, int) and days_left <= 3 else '#f59e0b' if isinstance(days_left, int) and days_left <= 7 else '#10b981'}">
+                  {days_left}d left
+                </span>
+              </td>
+            </tr>"""
+
+        vendors = db.query(User).filter(User.is_active == True).all()
+        email_svc = EmailService()
+
+        for vendor in vendors:
+            try:
+                subject = f"GeBIZ Alert: {len(tenders)} tenders closing in the next 14 days"
+                body_html = f"""
+                <html><body style="font-family:Arial,sans-serif;background:#0a0a0a;color:#e5e5e5;padding:32px;">
+                <div style="max-width:640px;margin:0 auto;">
+                  <p style="font-size:0.8em;color:#525252;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px;">
+                    BOOPPA · GeBIZ Intelligence
+                  </p>
+                  <h2 style="color:#ffffff;margin-top:0;">Tenders Closing Soon</h2>
+                  <p style="color:#a3a3a3;">
+                    Hi {vendor.full_name or vendor.company or vendor.email},<br>
+                    Here are the GeBIZ opportunities closing within the next 14 days.
+                    Check your win probability before you bid.
+                  </p>
+
+                  <table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:0.9em;">
+                    <thead>
+                      <tr style="border-bottom:1px solid #404040;">
+                        <th style="padding:8px;text-align:left;color:#737373;font-weight:600;">Tender</th>
+                        <th style="padding:8px;text-align:left;color:#737373;font-weight:600;">Agency</th>
+                        <th style="padding:8px;text-align:left;color:#737373;font-weight:600;">Est. Value</th>
+                        <th style="padding:8px;text-align:left;color:#737373;font-weight:600;">Deadline</th>
+                      </tr>
+                    </thead>
+                    <tbody>{rows_html}</tbody>
+                  </table>
+
+                  <div style="margin:24px 0;display:flex;gap:12px;">
+                    <a href="https://www.booppa.io/tender-check"
+                       style="display:inline-block;background:#7c3aed;color:#ffffff;padding:12px 24px;
+                              border-radius:8px;text-decoration:none;font-weight:bold;">
+                      Check Win Probability →
+                    </a>
+                    <a href="https://www.booppa.io/opportunities"
+                       style="display:inline-block;background:#1a1a1a;color:#a78bfa;padding:12px 24px;
+                              border-radius:8px;text-decoration:none;font-weight:bold;border:1px solid #404040;">
+                      View All Open Tenders
+                    </a>
+                  </div>
+
+                  <p style="margin-top:24px;font-size:0.8em;color:#525252;">
+                    You're receiving this because you have an active BOOPPA vendor profile.
+                    <a href="https://www.booppa.io/vendor/profile" style="color:#7c3aed;">Manage preferences</a>
+                  </p>
+                </div>
+                </body></html>
+                """
+                import asyncio as _asyncio
+                _asyncio.run(email_svc.send_html_email(vendor.email, subject, body_html))
+                sent += 1
+            except Exception as exc:
+                logger.warning(f"[GeBIZAlert] Failed to send to {vendor.email}: {exc}")
+                failed += 1
+    except Exception as exc:
+        logger.error(f"[GeBIZAlert] Task aborted: {exc}")
+    finally:
+        db.close()
+
+    logger.info(f"[GeBIZAlert] Tenders={len(tenders)} Sent={sent} Failed={failed}")

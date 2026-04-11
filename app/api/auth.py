@@ -3,6 +3,7 @@ import redis as _redis_lib
 from fastapi import APIRouter, Depends, HTTPException, status, Body, Security
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr
+from typing import Optional
 from sqlalchemy.orm import Session
 from app.core.auth import (
     authenticate_user, register_user,
@@ -72,6 +73,7 @@ class TokenWithRefresh(BaseModel):
     access_token: str
     token_type: str
     refresh_token: str
+    plan: str = "free"
 
 
 class LoginRequest(BaseModel):
@@ -83,6 +85,7 @@ class RegisterRequest(BaseModel):
     email: str
     password: str
     company: str = ""
+    uen: Optional[str] = None
 
 
 class MeOut(BaseModel):
@@ -111,7 +114,8 @@ async def login_form(
     refresh_token = create_refresh_token(data={"sub": user.email})
     _store_token(refresh_token)
     return TokenWithRefresh(
-        access_token=access_token, token_type="bearer", refresh_token=refresh_token
+        access_token=access_token, token_type="bearer", refresh_token=refresh_token,
+        plan=getattr(user, "plan", "free") or "free",
     )
 
 
@@ -126,7 +130,8 @@ async def login_json(body: LoginRequest, db: Session = Depends(get_db)):
     refresh_token = create_refresh_token(data={"sub": user.email})
     _store_token(refresh_token)
     return TokenWithRefresh(
-        access_token=access_token, token_type="bearer", refresh_token=refresh_token
+        access_token=access_token, token_type="bearer", refresh_token=refresh_token,
+        plan=getattr(user, "plan", "free") or "free",
     )
 
 
@@ -135,14 +140,15 @@ async def login_json(body: LoginRequest, db: Session = Depends(get_db)):
 @router.post("/register", status_code=201, response_model=TokenWithRefresh)
 async def register(body: RegisterRequest, db: Session = Depends(get_db)):
     try:
-        user = register_user(db, email=body.email, password=body.password, company=body.company)
+        user = register_user(db, email=body.email, password=body.password, company=body.company, uen=body.uen)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     access_token  = create_access_token(data={"sub": user.email})
     refresh_token = create_refresh_token(data={"sub": user.email})
     _store_token(refresh_token)
     return TokenWithRefresh(
-        access_token=access_token, token_type="bearer", refresh_token=refresh_token
+        access_token=access_token, token_type="bearer", refresh_token=refresh_token,
+        plan="free",
     )
 
 

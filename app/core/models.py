@@ -21,6 +21,7 @@ class User(Base):
     role = Column(String(50), default="VENDOR")
     company = Column(String(255), nullable=True)
     uen = Column(String(50), unique=True, nullable=True)
+    plan = Column(String(20), default="free", nullable=False, server_default="free")
     temp_password = Column(Boolean, default=False)
     verified_at = Column(DateTime, nullable=True)
 
