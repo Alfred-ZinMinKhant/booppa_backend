@@ -47,5 +47,16 @@ celery_app.conf.update(
             "task": "refresh_gebiz_base_rates",
             "schedule": crontab(day_of_week="monday", hour=2, minute=0),
         },
+        # Send every active vendor curated GeBIZ tender alerts every Monday at 07:00 UTC.
+        # Runs one hour before the score digest so vendors open the score email in context.
+        "send-gebiz-alert-newsletter": {
+            "task": "send_gebiz_alert_newsletter",
+            "schedule": crontab(day_of_week="monday", hour=7, minute=0),
+        },
+        # Send every active vendor their weekly score digest every Monday at 08:00 UTC.
+        "send-weekly-vendor-scores": {
+            "task": "send_weekly_vendor_scores",
+            "schedule": crontab(day_of_week="monday", hour=8, minute=0),
+        },
     },
 )

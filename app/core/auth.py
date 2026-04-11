@@ -71,7 +71,7 @@ def authenticate_user(db, email: str, password: str):
     return user
 
 
-def register_user(db, email: str, password: str, company: str = None):
+def register_user(db, email: str, password: str, company: str = None, uen: str = None):
     """Create a new vendor user. Returns the user or raises ValueError on duplicate."""
     from app.core.models import User
     if db.query(User).filter(User.email == email).first():
@@ -80,6 +80,7 @@ def register_user(db, email: str, password: str, company: str = None):
         email=email,
         hashed_password=get_password_hash(password),
         company=company or "",
+        uen=uen or None,
         role="VENDOR",
     )
     db.add(user)
