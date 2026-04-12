@@ -182,6 +182,23 @@ async def checkout_post(request: Request):
             f"Created Stripe session id={getattr(session, 'id', None)} url={getattr(session, 'url', None)} metadata={metadata}"
         )
 
+        # Record CHECKOUT funnel event (non-blocking)
+        try:
+            from app.core.db import SessionLocal as _SL
+            from app.services.funnel_analytics import record_funnel_event
+            _fdb = _SL()
+            record_funnel_event(
+                _fdb,
+                stage="CHECKOUT",
+                session_id=getattr(session, "id", None),
+                source="stripe",
+                metadata={"product_type": product_type},
+            )
+            _fdb.commit()
+            _fdb.close()
+        except Exception:
+            pass  # never break checkout
+
         if intake_data and hasattr(session, "id"):
             from app.core.cache import cache as cache_mod
             cache_mod.set(
