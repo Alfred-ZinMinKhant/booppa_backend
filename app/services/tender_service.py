@@ -209,20 +209,25 @@ def compute_tender_win_probability(
             VendorStatusSnapshot.vendor_id == vendor_id
         ).first()
 
-        # 4.6: Auto-refresh stale snapshots before computing probability
+        # 4.6: Schedule stale snapshot refresh as background task (non-blocking)
         if snapshot and snapshot.updated_at:
             age = datetime.utcnow() - snapshot.updated_at
             if age > timedelta(days=SNAPSHOT_STALE_DAYS):
                 try:
-                    from app.services.scoring import VendorScoreEngine
-                    VendorScoreEngine.update_vendor_score(db, vendor_id)
-                    db.refresh(snapshot)
-                    logger.info(
-                        f"[TenderService] Refreshed stale snapshot for vendor={vendor_id} "
-                        f"(age={age.days}d)"
-                    )
+                    from app.core.models import User
+                    from app.workers.tasks import vendor_active_health_check_task
+                    user = db.query(User).filter(User.id == vendor_id).first()
+                    if user:
+                        vendor_active_health_check_task.apply_async(
+                            kwargs={"vendor_id": vendor_id, "vendor_email": user.email},
+                            countdown=0,
+                        )
+                        logger.info(
+                            f"[TenderService] Queued background snapshot refresh for vendor={vendor_id} "
+                            f"(age={age.days}d)"
+                        )
                 except Exception as e:
-                    logger.warning(f"[TenderService] Snapshot refresh failed for {vendor_id}: {e}")
+                    logger.warning(f"[TenderService] Could not queue snapshot refresh for {vendor_id}: {e}")
 
     # Fall back to unverified defaults when no snapshot exists
     verification_depth = snapshot.verification_depth if snapshot else "UNVERIFIED"
