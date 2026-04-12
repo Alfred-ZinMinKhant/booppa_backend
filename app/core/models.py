@@ -24,6 +24,9 @@ class User(Base):
     plan = Column(String(20), default="free", nullable=False, server_default="free")
     temp_password = Column(Boolean, default=False)
     verified_at = Column(DateTime, nullable=True)
+    subscription_tier = Column(String(50), nullable=True)
+    subscription_started_at = Column(DateTime, nullable=True)
+    stripe_customer_id = Column(String(255), nullable=True)
 
 
 class Report(Base):
@@ -174,6 +177,16 @@ class ResourceItem(Base):
     is_active = Column(Boolean, default=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ProcessedWebhookEvent(Base):
+    """Idempotency guard: records every Stripe event ID we have processed."""
+    __tablename__ = "processed_webhook_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id = Column(String(255), unique=True, nullable=False, index=True)
+    event_type = Column(String(100), nullable=True)
+    processed_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
 # Import V6 extensions so Alembic picks them up correctly

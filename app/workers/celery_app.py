@@ -72,5 +72,11 @@ celery_app.conf.update(
             "task": "run_pdpa_monitor_quarterly_rescans",
             "schedule": crontab(month_of_year="1,4,7,10", day_of_month=1, hour=3, minute=0),
         },
+        # Weekly intelligence brief — all vendors with completed reports.
+        # Monday 00:00 UTC = 08:00 SGT, fires before the score digest.
+        "weekly-intelligence-brief": {
+            "task": "weekly_intelligence_brief",
+            "schedule": crontab(day_of_week="monday", hour=0, minute=0),
+        },
     },
 )

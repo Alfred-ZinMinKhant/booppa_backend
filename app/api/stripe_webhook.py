@@ -998,6 +998,26 @@ async def stripe_webhook(request: Request):
         logger.error(f"Stripe webhook signature verification failed: {e}")
         raise HTTPException(status_code=400, detail="Invalid signature")
 
+    # Idempotency guard: skip events we've already processed
+    event_id = event.get("id")
+    if event_id:
+        try:
+            from app.core.models import ProcessedWebhookEvent
+            _idem_db = SessionLocal()
+            try:
+                already_processed = _idem_db.query(ProcessedWebhookEvent).filter(
+                    ProcessedWebhookEvent.event_id == event_id
+                ).first()
+                if already_processed:
+                    logger.info(f"[Webhook] Duplicate event {event_id} — skipping")
+                    return {"status": "already_processed"}
+                _idem_db.add(ProcessedWebhookEvent(event_id=event_id, event_type=event.get("type")))
+                _idem_db.commit()
+            finally:
+                _idem_db.close()
+        except Exception as e:
+            logger.warning(f"[Webhook] Idempotency check failed (non-fatal): {e}")
+
     # Handle the checkout.session.completed event
     if event["type"] == "checkout.session.completed":
         # Parse session from raw payload (plain dict) — avoids StripeObject .get() issues
@@ -1016,6 +1036,22 @@ async def stripe_webhook(request: Request):
             (session.get("customer_details") or {}).get("email")
             or session.get("customer_email")
         )
+
+        # Record PAYMENT funnel event (non-blocking)
+        try:
+            from app.services.funnel_analytics import record_funnel_event
+            _fdb = SessionLocal()
+            record_funnel_event(
+                _fdb,
+                stage="PAYMENT",
+                session_id=session.get("id"),
+                source="stripe",
+                metadata={"product_type": product_type, "email": customer_email},
+            )
+            _fdb.commit()
+            _fdb.close()
+        except Exception:
+            pass
 
         if not report_id:
             # Subscriptions have no report — activate directly
@@ -1223,11 +1259,52 @@ async def stripe_webhook(request: Request):
                         referral.status = "REWARDED"
                         referral.reward_claimed = True
                         referral.reward_claimed_at = datetime.utcnow()
-                    _db.commit()
+                        referral.reward_type = "30_DAYS_FREE"
+                        _db.commit()
+                        # Email the referrer their reward notification
+                        try:
+                            referrer = _db.query(User).filter(
+                                User.id == referral.referrer_id
+                            ).first()
+                            if referrer and referrer.email:
+                                import asyncio as _ref_aio
+                                _ref_aio.create_task(EmailService().send_html_email(
+                                    to_email=referrer.email,
+                                    subject="Your referral converted — free month added",
+                                    body_html=(
+                                        "<html><body style='font-family:Arial;max-width:600px;'>"
+                                        "<h2 style='color:#0f172a;'>Your referral paid off!</h2>"
+                                        "<p>A vendor you referred just made their first purchase. "
+                                        "30 free days have been added to your account.</p>"
+                                        "<a href='https://www.booppa.io/vendor/dashboard' "
+                                        "style='background:#10b981;color:#fff;padding:10px 20px;"
+                                        "text-decoration:none;border-radius:6px;font-weight:bold;'>"
+                                        "View dashboard</a>"
+                                        "</body></html>"
+                                    ),
+                                ))
+                        except Exception as ref_email_exc:
+                            logger.warning(f"[Referral] Referrer email failed: {ref_email_exc}")
+                    else:
+                        _db.commit()
                     logger.info(
                         f"[Webhook] Upgraded user {customer_email} to plan={new_plan}"
                         + (f"; referral {referral.referral_code} rewarded" if referral else "")
                     )
+                    # Queue post-payment D+1 drip (24h delay per brief)
+                    try:
+                        from app.workers.tasks import post_payment_drip
+                        post_payment_drip.apply_async(
+                            kwargs={
+                                "vendor_email": customer_email,
+                                "product_type": product,
+                                "company_name": metadata.get("company_name", ""),
+                                "report_id": str(report_id) if report_id else "",
+                            },
+                            countdown=86400,  # 24 hours
+                        )
+                    except Exception as drip_exc:
+                        logger.warning(f"[Webhook] post_payment_drip queue failed: {drip_exc}")
             except Exception as exc:
                 logger.error(f"[Webhook] Plan upgrade failed for {customer_email}: {exc}")
             finally:
@@ -1309,5 +1386,19 @@ async def stripe_webhook(request: Request):
                     logger.error(f"[Webhook] Invoice renewal hook failed: {exc}")
                 finally:
                     _db4.close()
+
+    # Record ACTIVE funnel event after all fulfillment (non-blocking)
+    try:
+        from app.services.funnel_analytics import record_funnel_event
+        _adb = SessionLocal()
+        record_funnel_event(
+            _adb,
+            stage="ACTIVE",
+            metadata={"event_type": event.get("type", "unknown")},
+        )
+        _adb.commit()
+        _adb.close()
+    except Exception:
+        pass
 
     return {"received": True}

@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     # Anthropic / Claude
     ANTHROPIC_API_KEY: Optional[str] = None
-    ANTHROPIC_MODEL: str = "claude-haiku-4.5"
+    ANTHROPIC_MODEL: str = "claude-haiku-4-5"
 
     # Security intelligence (free tiers)
     # VirusTotal: free API key from https://www.virustotal.com/gui/join-us

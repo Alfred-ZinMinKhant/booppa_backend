@@ -1581,6 +1581,65 @@ def send_weekly_vendor_scores():
     logger.info(f"[WeeklyScore] Sent={sent} Failed={failed}")
 
 
+@celery_app.task(name="post_payment_drip")
+def post_payment_drip(vendor_email: str, product_type: str = "",
+                      company_name: str = "", report_id: str = ""):
+    """
+    D+1 drip email — queued with countdown=86400 (24h) from the Stripe webhook.
+    Tells the vendor their 3 next steps to get value from their purchase.
+    """
+    import asyncio as _asyncio
+
+    labels = {
+        "vendor_proof": "Vendor Proof",
+        "pdpa_quick_scan": "PDPA Snapshot",
+        "rfp_express": "RFP Express",
+        "rfp_complete": "RFP Complete",
+        "compliance_notarization_1": "Notarization",
+        "vendor_trust_pack": "Vendor Trust Pack",
+        "rfp_accelerator": "RFP Accelerator",
+        "enterprise_bid_kit": "Enterprise Bid Kit",
+    }
+    label = labels.get(product_type, "your BOOPPA product")
+    name = company_name or vendor_email
+
+    body_html = f"""<html><body style="font-family:Arial;max-width:600px;margin:0 auto;color:#0f172a;">
+    <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
+      <h1 style="color:#10b981;margin:0;font-size:18px;">What to do next with your {label}</h1>
+    </div>
+    <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
+      <p>Hello {name},</p>
+      <ol style="line-height:2;">
+        <li><strong>Add your QR badge to your email signature.</strong>
+            Every email is a buyer touchpoint.</li>
+        <li><strong>Check your sector percentile</strong> on your dashboard.
+            Below median = add notarized documents.</li>
+        <li><strong>Run the Tender Win Calculator</strong> at
+            booppa.io/tender-check to see your exact win probability.</li>
+      </ol>
+      <p>
+        <a href="https://www.booppa.io/vendor/dashboard"
+           style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;
+                  border-radius:6px;font-weight:bold;display:inline-block;">
+          Go to your dashboard
+        </a>
+      </p>
+      <p style="color:#64748b;font-size:12px;margin-top:24px;">booppa.io</p>
+    </div>
+    </body></html>"""
+
+    try:
+        email_svc = EmailService()
+        _asyncio.run(email_svc.send_html_email(
+            to_email=vendor_email,
+            subject=f"What to do next with your {label} — 3 steps",
+            body_html=body_html,
+        ))
+        logger.info(f"[PostPaymentDrip] Sent to {vendor_email} product={product_type}")
+    except Exception as exc:
+        logger.error(f"[PostPaymentDrip] Failed for {vendor_email}: {exc}")
+
+
 @celery_app.task(name="send_gebiz_alert_newsletter")
 def send_gebiz_alert_newsletter():
     """
@@ -1699,3 +1758,83 @@ def send_gebiz_alert_newsletter():
         db.close()
 
     logger.info(f"[GeBIZAlert] Tenders={len(tenders)} Sent={sent} Failed={failed}")
+
+
+@celery_app.task(name="weekly_intelligence_brief")
+def weekly_intelligence_brief():
+    """
+    Send every vendor with a completed report their weekly intelligence brief.
+    Runs Monday 00:00 UTC (08:00 SGT) via Celery Beat.
+    Distinct from send_weekly_vendor_scores — this targets all vendors with any
+    completed report, not just those with a VendorScore record.
+    """
+    from app.core.models import Report, User
+    from app.core.models_v6 import VendorScore
+    import asyncio as _asyncio
+
+    db = SessionLocal()
+    email_svc = EmailService()
+    sent = 0
+    failed = 0
+    try:
+        owner_ids = [
+            str(r[0])
+            for r in db.query(Report.owner_id)
+            .filter(Report.status == "completed")
+            .distinct()
+            .all()
+        ]
+        for owner_id in owner_ids:
+            try:
+                user = db.query(User).filter(User.id == owner_id).first()
+                if not user or not user.email:
+                    continue
+                score_row = db.query(VendorScore).filter(
+                    VendorScore.vendor_id == owner_id
+                ).first()
+                score = score_row.total_score if score_row else 0
+                if score >= 80:
+                    position = "top 10% of your sector"
+                elif score >= 60:
+                    position = "above median"
+                elif score >= 40:
+                    position = "below median"
+                else:
+                    position = "bottom 25% — take action now"
+
+                body_html = f"""<html><body style="font-family:Arial;max-width:600px;margin:0 auto;">
+                <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
+                  <h1 style="color:#10b981;margin:0;font-size:16px;">Weekly intelligence brief</h1>
+                </div>
+                <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;color:#0f172a;">
+                  <p>Trust Score: <strong>{score}/100</strong> — {position}.</p>
+                  <p style="font-size:14px;color:#475569;">
+                    {"Your score is strong. Consider adding notarized documents to reach DEEP verification." if score >= 60
+                     else "Add PDPA Snapshot or Notarization to improve your score and move above median."}
+                  </p>
+                  <a href="https://www.booppa.io/vendor/dashboard"
+                     style="background:#0f172a;color:#fff;padding:10px 20px;text-decoration:none;
+                            border-radius:6px;font-weight:bold;display:inline-block;margin-top:16px;">
+                    View dashboard
+                  </a>
+                  <p style="margin-top:24px;font-size:11px;color:#94a3b8;">
+                    You're receiving this because you have an active BOOPPA vendor profile.
+                  </p>
+                </div>
+                </body></html>"""
+
+                _asyncio.run(email_svc.send_html_email(
+                    to_email=user.email,
+                    subject="Your weekly BOOPPA profile brief",
+                    body_html=body_html,
+                ))
+                sent += 1
+            except Exception as exc:
+                logger.warning(f"[WeeklyBrief] Failed for {owner_id}: {exc}")
+                failed += 1
+    except Exception as exc:
+        logger.error(f"[WeeklyBrief] Task aborted: {exc}")
+    finally:
+        db.close()
+
+    logger.info(f"[WeeklyBrief] Sent={sent} Failed={failed}")
