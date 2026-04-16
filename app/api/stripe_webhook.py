@@ -1366,7 +1366,7 @@ async def stripe_webhook(request: Request):
                     customer_email=cust_email,
                     stripe_subscription_id=stripe_sub_id,
                     stripe_customer_id=stripe_cust_id,
-                ))
+                )
                 logger.info(f"[Webhook] Subscription {event['type']} → plan={product_type_sub} email={cust_email}")
 
         elif sub_status == "canceled":
