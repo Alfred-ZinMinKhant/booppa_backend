@@ -468,6 +468,15 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
 
             create_or_update_elevation(db, vendor_id)
             logger.info(f"[Notarize] Elevation metadata updated for vendor {vendor_id}")
+
+            # Refresh the procurement snapshot so tender win probability
+            # reflects the newly created Proof and elevation data.
+            try:
+                from app.services.vendor_status import upsert_status_snapshot
+                upsert_status_snapshot(db, vendor_id)
+                logger.info(f"[Notarize] Status snapshot refreshed for vendor {vendor_id}")
+            except Exception as snap_err:
+                logger.warning(f"[Notarize] Snapshot refresh failed for {vendor_id}: {snap_err}")
         except Exception as e:
             logger.warning(f"[Notarize] Elevation update failed for {report_id}: {e}")
 
