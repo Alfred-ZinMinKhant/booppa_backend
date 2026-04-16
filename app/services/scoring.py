@@ -30,6 +30,30 @@ def _record_score_snapshot_lazy(db: Session, vendor_id: str, score_record):
     except Exception as e:
         logger.warning(f"ScoreSnapshot hook failed for vendor={vendor_id}: {e}")
 
+    # Sync VerifyRecord.verification_level to match actual depth (fixes stale BASIC level)
+    try:
+        from app.services.notarization_elevation import compute_verification_depth
+        from app.core.models_v6 import VerifyRecord as _VR, VerificationLevel as _VL
+        _depth = compute_verification_depth(db, str(vendor_id))
+        _depth_to_level = {
+            "STANDARD":  _VL.STANDARD,
+            "DEEP":      _VL.PREMIUM,
+            "CERTIFIED": _VL.GOVERNMENT,
+            "ENTERPRISE": _VL.GOVERNMENT,
+        }
+        _new_level = _depth_to_level.get(_depth)
+        if _new_level:
+            _vr = db.query(_VR).filter(_VR.vendor_id == vendor_id).first()
+            if _vr and _vr.verification_level != _new_level:
+                logger.info(
+                    f"[scoring] Syncing verification_level for vendor={vendor_id}: "
+                    f"{_vr.verification_level} → {_new_level} (depth={_depth})"
+                )
+                _vr.verification_level = _new_level
+                db.commit()
+    except Exception as e:
+        logger.warning(f"VerifyRecord level sync failed for vendor={vendor_id}: {e}")
+
 class VendorScoreEngine:
     WEIGHTS = {
         "COMPLIANCE": 0.30,
