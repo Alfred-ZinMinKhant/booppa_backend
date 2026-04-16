@@ -27,6 +27,7 @@ class FunnelEventRequest(BaseModel):
     metadata: Optional[dict] = None
 
 
+@router.post("/track")
 @router.post("/event")
 async def track_funnel_event(
     body: FunnelEventRequest,
