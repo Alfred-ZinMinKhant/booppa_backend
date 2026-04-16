@@ -235,6 +235,29 @@ def compute_tender_win_probability(
     evidence_count     = snapshot.evidence_count      if snapshot else 0
     risk_signal        = snapshot.risk_signal         if snapshot else "CLEAN"
 
+    # If snapshot exists but evidence_count is 0, count Proof rows directly.
+    # The snapshot's evidence_count comes from NotarizationMetadata (elevation),
+    # which is only populated via the elevation pipeline. Proof rows are created
+    # immediately on vendor-proof purchase, so they are the authoritative count.
+    if vendor_id and evidence_count == 0:
+        try:
+            from app.core.models_v6 import VerifyRecord, Proof
+            verify = db.query(VerifyRecord).filter(
+                VerifyRecord.vendor_id == vendor_id
+            ).first()
+            if verify:
+                proof_count = db.query(Proof).filter(
+                    Proof.verify_id == verify.id
+                ).count()
+                if proof_count > 0:
+                    evidence_count = proof_count
+                    logger.debug(
+                        f"[TenderService] Using direct Proof count ({proof_count}) "
+                        f"for vendor={vendor_id} (snapshot evidence_count was 0)"
+                    )
+        except Exception as e:
+            logger.warning(f"[TenderService] Could not count Proof rows for {vendor_id}: {e}")
+
     # ── Current probability ───────────────────────────────────────────────────
     current_prob = _compute_raw_probability(
         tender.base_rate,
