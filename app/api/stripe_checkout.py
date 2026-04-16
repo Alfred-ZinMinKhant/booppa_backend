@@ -193,9 +193,7 @@ async def checkout_post(request: Request):
             allow_promotion_codes=True,
             idempotency_key=_idem_key,
         )
-        if mode == "payment":
-            _session_kwargs["automatic_payment_methods"] = {"enabled": True}
-        else:
+        if mode != "payment":
             _session_kwargs["payment_method_types"] = ["card"]
         session = stripe_client.checkout.Session.create(**_session_kwargs)
         logger.info(
@@ -290,9 +288,7 @@ async def checkout_get(
             allow_promotion_codes=True,
             idempotency_key=_idem_key,
         )
-        if _mode == "payment":
-            _session_kwargs2["automatic_payment_methods"] = {"enabled": True}
-        else:
+        if _mode != "payment":
             _session_kwargs2["payment_method_types"] = ["card"]
         session = stripe_client.checkout.Session.create(**_session_kwargs2)
 
