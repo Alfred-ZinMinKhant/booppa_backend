@@ -469,6 +469,28 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
             create_or_update_elevation(db, vendor_id)
             logger.info(f"[Notarize] Elevation metadata updated for vendor {vendor_id}")
 
+            # Sync VerifyRecord.verification_level to match the new depth so the
+            # compliance score weight (1.0×BASIC → 1.1×STANDARD) updates correctly.
+            try:
+                from app.core.models_v6 import VerifyRecord as _VR, VerificationLevel as _VL
+                from app.services.vendor_status import compute_verification_depth
+                _new_depth = compute_verification_depth(db, vendor_id)
+                _depth_to_level = {
+                    "STANDARD":  _VL.STANDARD,
+                    "DEEP":      _VL.PREMIUM,
+                    "CERTIFIED": _VL.GOVERNMENT,
+                    "ENTERPRISE": _VL.GOVERNMENT,
+                }
+                _new_level = _depth_to_level.get(_new_depth)
+                if _new_level:
+                    _vr = db.query(_VR).filter(_VR.vendor_id == vendor_id).first()
+                    if _vr and _vr.verification_level != _new_level:
+                        _vr.verification_level = _new_level
+                        db.commit()
+                        logger.info(f"[Notarize] VerifyRecord.verification_level → {_new_level.value} for {vendor_id}")
+            except Exception as lvl_err:
+                logger.warning(f"[Notarize] verification_level sync failed for {vendor_id}: {lvl_err}")
+
             # Recalculate compliance score so the dashboard reflects the new document.
             try:
                 from app.services.scoring import VendorScoreEngine
