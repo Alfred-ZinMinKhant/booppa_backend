@@ -469,6 +469,14 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
             create_or_update_elevation(db, vendor_id)
             logger.info(f"[Notarize] Elevation metadata updated for vendor {vendor_id}")
 
+            # Recalculate compliance score so the dashboard reflects the new document.
+            try:
+                from app.services.scoring import VendorScoreEngine
+                VendorScoreEngine.update_vendor_score(db, vendor_id)
+                logger.info(f"[Notarize] Vendor score recalculated for {vendor_id}")
+            except Exception as score_err:
+                logger.warning(f"[Notarize] Score update failed for {vendor_id}: {score_err}")
+
             # Refresh the procurement snapshot so tender win probability
             # reflects the newly created Proof and elevation data.
             try:
