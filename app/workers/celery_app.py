@@ -21,6 +21,8 @@ celery_app.conf.update(
     task_soft_time_limit=250,  # 4 minutes
     worker_prefetch_multiplier=1,
     task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    broker_connection_retry_on_startup=True,
     worker_max_tasks_per_child=100,
     # Queue routing
     task_routes={
