@@ -15,10 +15,16 @@ def _record_score_snapshot_lazy(db: Session, vendor_id: str, score_record):
     """Write a ScoreSnapshot and refresh VendorStatusSnapshot after every score update."""
     try:
         from app.services.vendor_status import record_score_snapshot, upsert_status_snapshot
+        from app.core.models_v6 import VendorSector
+        sector_row = db.query(VendorSector).filter(
+            VendorSector.vendor_id == vendor_id
+        ).first()
+        sector = sector_row.sector if sector_row else None
         record_score_snapshot(
             db=db,
             vendor_id=str(vendor_id),
             vendor_score=score_record,
+            sector=sector,
         )
         upsert_status_snapshot(db=db, vendor_id=str(vendor_id))
     except Exception as e:
