@@ -1,7 +1,7 @@
 import uuid
 import enum
 from datetime import datetime
-from sqlalchemy import Column, String, Integer, Float, DateTime, Text, JSON, Boolean, ForeignKey, Enum as SQLEnum
+from sqlalchemy import Column, String, Integer, Float, DateTime, Text, JSON, Boolean, ForeignKey, Enum as SQLEnum, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.core.db import Base
@@ -66,6 +66,7 @@ class VerifyRecord(Base):
     __tablename__ = "verify_records"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     vendor_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    company_name = Column(String(255), nullable=True)
     compliance_score = Column(Integer, default=0)
     visibility_score = Column(Integer, default=0)
     verification_level = Column(SQLEnum(VerificationLevel), default=VerificationLevel.BASIC)
@@ -203,6 +204,7 @@ class VendorSector(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     vendor_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     sector = Column(String(255), index=True)
+    __table_args__ = (UniqueConstraint("vendor_id", "sector", name="uq_vendor_sector"),)
 
 class ActivityLog(Base):
     __tablename__ = "activity_logs"

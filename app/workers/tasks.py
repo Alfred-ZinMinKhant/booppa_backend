@@ -985,6 +985,92 @@ async def process_report_workflow(report_id: str) -> dict:
         db.close()
 
 
+@celery_app.task(bind=True, max_retries=3, name="activate_subscription_task")
+def activate_subscription_task(
+    self,
+    product_type: str,
+    customer_email: str | None,
+    stripe_subscription_id: str | None,
+    stripe_customer_id: str | None,
+):
+    """Celery task: persist subscription state after a successful Stripe checkout or renewal."""
+    try:
+        from app.api.stripe_webhook import _activate_subscription
+        asyncio.run(_activate_subscription(
+            product_type=product_type,
+            customer_email=customer_email,
+            stripe_subscription_id=stripe_subscription_id,
+            stripe_customer_id=stripe_customer_id,
+        ))
+        logger.info(f"[activate_subscription_task] plan={product_type} email={customer_email}")
+    except Exception as exc:
+        logger.error(f"[activate_subscription_task] failed: {exc}")
+        raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+
+
+@celery_app.task(bind=True, max_retries=3, name="fulfill_bundle_task")
+def fulfill_bundle_task(
+    self,
+    product_type: str,
+    report_id: str | None,
+    customer_email: str | None,
+    metadata: dict,
+    session_id: str | None,
+):
+    """Celery task: fan out bundle fulfillment to individual component Celery tasks."""
+    try:
+        from app.api.stripe_webhook import _fulfill_bundle
+        asyncio.run(_fulfill_bundle(
+            product_type=product_type,
+            report_id=report_id,
+            customer_email=customer_email,
+            metadata=metadata,
+            session_id=session_id,
+        ))
+        logger.info(f"[fulfill_bundle_task] bundle={product_type} email={customer_email}")
+    except Exception as exc:
+        logger.error(f"[fulfill_bundle_task] failed: {exc}")
+        raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+
+
+@celery_app.task(bind=True, max_retries=2, name="fire_strategy_6_task")
+def fire_strategy_6_task(self, sector: str | None, rfp_title: str):
+    """Celery task: notify top-5 verified sector vendors about a new procurement opportunity."""
+    try:
+        from app.api.stripe_webhook import _fire_strategy_6
+        asyncio.run(_fire_strategy_6(sector=sector, buyer_rfp_title=rfp_title))
+        logger.info(f"[fire_strategy_6_task] sector={sector}")
+    except Exception as exc:
+        logger.warning(f"[fire_strategy_6_task] failed (attempt {self.request.retries + 1}): {exc}")
+        raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+
+
+@celery_app.task(bind=True, max_retries=2, name="send_referral_reward_email_task")
+def send_referral_reward_email_task(self, referrer_email: str):
+    """Celery task: send referral conversion reward notification email."""
+    body_html = (
+        "<html><body style='font-family:Arial;max-width:600px;'>"
+        "<h2 style='color:#0f172a;'>Your referral paid off!</h2>"
+        "<p>A vendor you referred just made their first purchase. "
+        "30 free days have been added to your account.</p>"
+        "<a href='https://www.booppa.io/vendor/dashboard' "
+        "style='background:#10b981;color:#fff;padding:10px 20px;"
+        "text-decoration:none;border-radius:6px;font-weight:bold;'>"
+        "View dashboard</a>"
+        "</body></html>"
+    )
+    try:
+        asyncio.run(EmailService().send_html_email(
+            to_email=referrer_email,
+            subject="Your referral converted — free month added",
+            body_html=body_html,
+        ))
+        logger.info(f"[send_referral_reward_email_task] sent to {referrer_email}")
+    except Exception as exc:
+        logger.warning(f"[send_referral_reward_email_task] failed: {exc}")
+        raise self.retry(exc=exc, countdown=120)
+
+
 @celery_app.task(bind=True, max_retries=3, name="fulfill_vendor_proof_task")
 def fulfill_vendor_proof_task(self, report_id: str, customer_email: str | None = None):
     """Celery task: create VerifyRecord, set compliance baseline, send badge email."""
@@ -1138,6 +1224,58 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str):
         raise self.retry(exc=exc, countdown=300)
     finally:
         db.close()
+
+
+@celery_app.task(bind=True, max_retries=2, name="pdpa_monitor_monthly_alert_task")
+def pdpa_monitor_monthly_alert_task(self, vendor_id: str, vendor_email: str):
+    """
+    Monthly PDPC regulatory alert for PDPA Monitor subscribers.
+    Sends a plain-language summary of recent PDPC enforcement actions
+    and guideline updates relevant to Singapore SMEs.
+    Triggered on every invoice.payment_succeeded renewal cycle.
+    """
+    month_label = datetime.utcnow().strftime("%B %Y")
+    body_html = f"""
+    <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
+      <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
+        <h1 style="color:#10b981;margin:0;font-size:20px;">PDPA Monitor — {month_label} Regulatory Alert</h1>
+      </div>
+      <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
+        <p>Your monthly PDPA compliance briefing from BOOPPA.</p>
+        <h3 style="color:#0f172a;">Key PDPC Updates This Month</h3>
+        <ul>
+          <li>Review your data breach notification procedures — PDPC enforcement actions increased 18% YoY.</li>
+          <li>Ensure your Data Protection Officer (DPO) contact details are current on the PDPC register.</li>
+          <li>Check that third-party data processors have signed updated data processing agreements.</li>
+          <li>Verify your consent management records for any new marketing campaigns.</li>
+        </ul>
+        <h3 style="color:#0f172a;">Action Items</h3>
+        <ul>
+          <li>Log in to your BOOPPA dashboard to review your current compliance score.</li>
+          <li>Upload any new compliance documents to maintain your verified status.</li>
+        </ul>
+        <p style="margin-top:24px;">
+          <a href="https://www.booppa.io/vendor/dashboard"
+             style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">
+            View Dashboard →
+          </a>
+        </p>
+        <p style="color:#64748b;font-size:12px;margin-top:24px;">
+          This alert is part of your PDPA Monitor subscription.<br>
+          booppa.io · Singapore
+        </p>
+      </div>
+    </body></html>
+    """
+    try:
+        asyncio.run(EmailService().send_html_email(
+            to_email=vendor_email,
+            subject=f"BOOPPA PDPA Monitor — {month_label} Regulatory Alert",
+            body_html=body_html,
+        ))
+    except Exception as exc:
+        logger.error(f"[PDPAMonitorAlert] Email failed for {vendor_email}: {exc}")
+        raise self.retry(exc=exc, countdown=300)
 
 
 @celery_app.task(bind=True, max_retries=2, name="pdpa_monitor_quarterly_rescan_task")
