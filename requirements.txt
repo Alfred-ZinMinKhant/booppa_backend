@@ -46,6 +46,7 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 bcrypt>=3.2.0,<4.0.0
 cryptography==41.0.7
+slowapi==0.1.9
 
 # Monitoring
 opentelemetry-api==1.21.0

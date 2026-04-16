@@ -213,29 +213,43 @@ async def _fulfill_bundle(
             db.flush()
             return str(stub.id)
 
+        # Collect all stub IDs before committing — single atomic commit for all stubs
+        tasks_to_queue = []
+
         # 1. Vendor Proof
         if components.get("vendor_proof"):
             vp_id = str(base_report.id) if base_report and base_report.framework in ("vendor_proof",) else _make_stub("vendor_proof")
-            db.commit()
-            fulfill_vendor_proof_task.delay(vp_id, customer_email)
-            logger.info(f"[Bundle:{product_type}] Queued vendor_proof for report {vp_id}")
+            tasks_to_queue.append(("vendor_proof", vp_id))
 
         # 2. PDPA Snapshot
         if components.get("pdpa"):
             pdpa_id = _make_stub("pdpa_quick_scan")
-            db.commit()
-            fulfill_pdpa_task.delay(pdpa_id, customer_email)
-            logger.info(f"[Bundle:{product_type}] Queued pdpa for report {pdpa_id}")
+            tasks_to_queue.append(("pdpa", pdpa_id))
 
-        # 3. Notarization credits (one task per document credit)
+        # 3. Notarization credits (one stub per credit)
         notarization_count = components.get("notarization_count", 0)
-        for i in range(notarization_count):
-            notarization_id = _make_stub("compliance_notarization_1")
-            db.commit()
-            fulfill_notarization_task.delay(notarization_id, customer_email)
-            logger.info(f"[Bundle:{product_type}] Queued notarization #{i+1} for report {notarization_id}")
+        notarization_ids = []
+        for _ in range(notarization_count):
+            notarization_ids.append(_make_stub("compliance_notarization_1"))
+        tasks_to_queue.append(("notarization", notarization_ids))
 
-        # 4. RFP component
+        # Commit all stubs atomically before queuing any tasks
+        db.commit()
+
+        # Now queue tasks — stubs are safely persisted
+        for task_type, payload in tasks_to_queue:
+            if task_type == "vendor_proof":
+                fulfill_vendor_proof_task.delay(payload, customer_email)
+                logger.info(f"[Bundle:{product_type}] Queued vendor_proof for report {payload}")
+            elif task_type == "pdpa":
+                fulfill_pdpa_task.delay(payload, customer_email)
+                logger.info(f"[Bundle:{product_type}] Queued pdpa for report {payload}")
+            elif task_type == "notarization":
+                for i, nid in enumerate(payload):
+                    fulfill_notarization_task.delay(nid, customer_email)
+                    logger.info(f"[Bundle:{product_type}] Queued notarization #{i+1} for report {nid}")
+
+        # 4. RFP component (no stub needed — self-contained task)
         rfp_type = components.get("rfp")
         if rfp_type:
             vendor_url  = metadata.get("vendor_url", website)
@@ -256,8 +270,8 @@ async def _fulfill_bundle(
                 if rfp_type == "rfp_express":
                     sector = metadata.get("sector")
                     rfp_title = rfp_desc or "New procurement opportunity"
-                    import asyncio as _asyncio
-                    _asyncio.create_task(_fire_strategy_6(sector, rfp_title))
+                    from app.workers.tasks import fire_strategy_6_task
+                    fire_strategy_6_task.delay(sector, rfp_title)
             else:
                 logger.warning(f"[Bundle:{product_type}] RFP skipped — missing vendor_url or company_name")
 
@@ -533,7 +547,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
     """
     db = SessionLocal()
     try:
-        from app.core.models_v6 import VerifyRecord, LifecycleStatus, VerificationLevel, VendorScore
+        from app.core.models_v6 import VerifyRecord, LifecycleStatus, VerificationLevel, VendorScore, VendorSector
         from app.core.models_v8 import VendorStatusSnapshot
 
         report = db.query(Report).filter(Report.id == report_id).first()
@@ -572,9 +586,11 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             verify.compliance_score  = max(verify.compliance_score or 0, 30)
             verify.verification_level = VerificationLevel.BASIC
             verify.last_refreshed_at = datetime.utcnow()
+            verify.company_name      = company_name
         else:
             verify = VerifyRecord(
                 vendor_id=vendor_id,
+                company_name=company_name,
                 compliance_score=30,
                 verification_level=VerificationLevel.BASIC,
                 lifecycle_status=LifecycleStatus.ACTIVE,
@@ -582,6 +598,21 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             )
             db.add(verify)
         db.flush()
+
+        # Step 1b: Seed VendorSector from report metadata or assessment data
+        sector = (
+            (report.assessment_data or {}).get("sector")
+            or (report.assessment_data or {}).get("industry")
+            or (report.assessment_data or {}).get("business_sector")
+        )
+        if sector:
+            existing_sector = db.query(VendorSector).filter(
+                VendorSector.vendor_id == vendor_id,
+                VendorSector.sector == sector,
+            ).first()
+            if not existing_sector:
+                db.add(VendorSector(vendor_id=vendor_id, sector=sector))
+                db.flush()
 
         # Step 2: Create or upsert VendorStatusSnapshot
         snapshot = db.query(VendorStatusSnapshot).filter(VendorStatusSnapshot.vendor_id == vendor_id).first()
@@ -648,7 +679,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                 f'style="display:inline-flex;align-items:center;gap:8px;background:#0f172a;'
                 f'color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none;'
                 f'font-family:Arial,sans-serif;font-size:13px;font-weight:600;">'
-                f'<span style="color:#10b981;">✓</span> Verified on BOOPPA</a>'
+                f'<span style="color:#10b981;">✓</span> {company_name} — Verified on BOOPPA</a>'
             )
             body_html = f"""
             <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
@@ -1058,26 +1089,26 @@ async def stripe_webhook(request: Request):
             if product_type in SUBSCRIPTION_PRODUCT_TYPES:
                 stripe_sub_id = session.get("subscription")
                 stripe_cust_id = session.get("customer")
-                import asyncio as _aio
-                _aio.create_task(_activate_subscription(
+                from app.workers.tasks import activate_subscription_task
+                activate_subscription_task.delay(
                     product_type=product_type,
                     customer_email=customer_email,
                     stripe_subscription_id=stripe_sub_id,
                     stripe_customer_id=stripe_cust_id,
-                ))
+                )
                 logger.info(f"Queued subscription activation for {product_type} email={customer_email}")
                 return {"received": True}
 
             # Bundles are self-contained — fan out to component fulfillment tasks
             if product_type in BUNDLE_COMPONENTS:
-                import asyncio as _aio
-                _aio.create_task(_fulfill_bundle(
+                from app.workers.tasks import fulfill_bundle_task
+                fulfill_bundle_task.delay(
                     product_type=product_type,
                     report_id=None,
                     customer_email=customer_email,
                     metadata=metadata,
                     session_id=session.get("id"),
-                ))
+                )
                 logger.info(f"Queued bundle fulfillment for {product_type} email={customer_email}")
                 return {"received": True}
 
@@ -1212,8 +1243,8 @@ async def stripe_webhook(request: Request):
                     if product_type == "rfp_express":
                         sector = metadata.get("sector") or (intake_dict or {}).get("sector")
                         rfp_title = rfp_desc or metadata.get("rfp_description") or "New procurement opportunity"
-                        import asyncio as _asyncio
-                        _asyncio.create_task(_fire_strategy_6(sector, rfp_title))
+                        from app.workers.tasks import fire_strategy_6_task
+                        fire_strategy_6_task.delay(sector, rfp_title)
 
             else:
                 # Standard report: trigger async processing via Celery
@@ -1267,22 +1298,8 @@ async def stripe_webhook(request: Request):
                                 User.id == referral.referrer_id
                             ).first()
                             if referrer and referrer.email:
-                                import asyncio as _ref_aio
-                                _ref_aio.create_task(EmailService().send_html_email(
-                                    to_email=referrer.email,
-                                    subject="Your referral converted — free month added",
-                                    body_html=(
-                                        "<html><body style='font-family:Arial;max-width:600px;'>"
-                                        "<h2 style='color:#0f172a;'>Your referral paid off!</h2>"
-                                        "<p>A vendor you referred just made their first purchase. "
-                                        "30 free days have been added to your account.</p>"
-                                        "<a href='https://www.booppa.io/vendor/dashboard' "
-                                        "style='background:#10b981;color:#fff;padding:10px 20px;"
-                                        "text-decoration:none;border-radius:6px;font-weight:bold;'>"
-                                        "View dashboard</a>"
-                                        "</body></html>"
-                                    ),
-                                ))
+                                from app.workers.tasks import send_referral_reward_email_task
+                                send_referral_reward_email_task.delay(referrer.email)
                         except Exception as ref_email_exc:
                             logger.warning(f"[Referral] Referrer email failed: {ref_email_exc}")
                     else:
@@ -1343,8 +1360,8 @@ async def stripe_webhook(request: Request):
                             product_type_sub = key
                             break
             if product_type_sub and cust_email:
-                import asyncio as _aio2
-                _aio2.create_task(_activate_subscription(
+                from app.workers.tasks import activate_subscription_task
+                activate_subscription_task.delay(
                     product_type=product_type_sub,
                     customer_email=cust_email,
                     stripe_subscription_id=stripe_sub_id,
@@ -1378,10 +1395,15 @@ async def stripe_webhook(request: Request):
                 _db4 = SessionLocal()
                 try:
                     user = _db4.query(User).filter(User.email == cust_email_inv).first()
-                    if user and getattr(user, "plan", "") == "vendor_active":
+                    user_plan = getattr(user, "plan", "") if user else ""
+                    if user and user_plan == "vendor_active":
                         from app.workers.tasks import vendor_active_health_check_task
                         vendor_active_health_check_task.delay(str(user.id), cust_email_inv)
                         logger.info(f"[Webhook] Queued monthly health check for {cust_email_inv}")
+                    elif user and user_plan == "pdpa_monitor":
+                        from app.workers.tasks import pdpa_monitor_monthly_alert_task
+                        pdpa_monitor_monthly_alert_task.delay(str(user.id), cust_email_inv)
+                        logger.info(f"[Webhook] Queued PDPA monthly alert for {cust_email_inv}")
                 except Exception as exc:
                     logger.error(f"[Webhook] Invoice renewal hook failed: {exc}")
                 finally:

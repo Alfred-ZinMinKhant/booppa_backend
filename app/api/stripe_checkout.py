@@ -1,11 +1,15 @@
 from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse, RedirectResponse
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 import os
+import hashlib
 import stripe
 import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+_limiter = Limiter(key_func=get_remote_address)
 
 # Price map: resolved at request time so env vars set after import are picked up.
 def _get_price(product_type: str) -> str | None:
@@ -65,7 +69,14 @@ def get_base_url():
     )
 
 
+def _checkout_idempotency_key(product_type: str, price_id: str, client_ip: str, report_id=None, email=None) -> str:
+    # Include client_ip so anonymous checkouts (no report/email) don't collide across users.
+    raw = f"{product_type}:{price_id}:{client_ip}:{report_id or ''}:{email or ''}"
+    return "checkout-" + hashlib.sha256(raw.encode()).hexdigest()[:40]
+
+
 @router.post("/checkout")
+@_limiter.limit("20/minute")
 async def checkout_post(request: Request):
     """Create a Stripe Checkout session via POST with JSON body { productType, priceId (optional), prefill_email (optional) }"""
     try:
@@ -167,16 +178,20 @@ async def checkout_post(request: Request):
         if intake_data:
             metadata["has_intake"] = "1"
 
+        # PayNow is only supported for one-time payments, not subscriptions
+        payment_methods = ["card", "paynow"] if mode == "payment" else ["card"]
+        _idem_key = _checkout_idempotency_key(product_type or "", price_id, client_ip, report_id, prefill_email)
         session = stripe_client.checkout.Session.create(
             mode=mode,
             line_items=[{"price": price_id, "quantity": 1}],
             success_url=success_url,
             cancel_url=cancel_url,
-            payment_method_types=["card"],
+            payment_method_types=payment_methods,
             metadata=metadata,
             client_reference_id=str(report_id) if report_id else None,
             customer_email=prefill_email if prefill_email else None,
             allow_promotion_codes=True,
+            idempotency_key=_idem_key,
         )
         logger.info(
             f"Created Stripe session id={getattr(session, 'id', None)} url={getattr(session, 'url', None)} metadata={metadata}"
@@ -217,6 +232,7 @@ async def checkout_post(request: Request):
 
 
 @router.get("/checkout")
+@_limiter.limit("20/minute")
 async def checkout_get(
     product: str | None = None,
     prefill_email: str | None = None,
@@ -258,14 +274,18 @@ async def checkout_get(
         )
         cancel_url = f"{base_url}/{cancel_path}"
 
+        _mode = MODE_MAP.get(product_type, "payment") if product_type else "payment"
+        _payment_methods = ["card", "paynow"] if _mode == "payment" else ["card"]
+        _idem_key = _checkout_idempotency_key(product_type or "", price_id, client_ip, email=prefill_email)
         session = stripe_client.checkout.Session.create(
-            mode=MODE_MAP.get(product_type, "payment") if product_type else "payment",
+            mode=_mode,
             line_items=[{"price": price_id, "quantity": 1}],
             success_url=success_url,
             cancel_url=cancel_url,
-            payment_method_types=["card"],
+            payment_method_types=_payment_methods,
             metadata={"product_type": product_type or "", "client_ip": client_ip},
             allow_promotion_codes=True,
+            idempotency_key=_idem_key,
         )
 
         return RedirectResponse(url=session.url)

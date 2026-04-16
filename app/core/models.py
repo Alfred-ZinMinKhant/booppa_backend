@@ -27,6 +27,8 @@ class User(Base):
     subscription_tier = Column(String(50), nullable=True)
     subscription_started_at = Column(DateTime, nullable=True)
     stripe_customer_id = Column(String(255), nullable=True)
+    stripe_subscription_id = Column(String(255), nullable=True)
+    website = Column(String(500), nullable=True)
 
 
 class Report(Base):
