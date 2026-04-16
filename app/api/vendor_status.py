@@ -6,6 +6,7 @@ GET /api/vendor/sector-pressure  → sector competitive pressure snapshot + mess
 GET /api/vendor/dashboard-cal    → CAL payload: ladder + suggestion + message + sectorPressure
 """
 
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -36,9 +37,33 @@ async def vendor_status(
     """
     Full VendorStatusProfile for the authenticated vendor.
     Derived from trust facts only — no payment data.
+    Auto-refreshes score if monitoring is stale (>7 days).
     """
+    from app.core.models import ScoreSnapshot
     vendor_id = str(current_user.id)
-    status    = get_vendor_status(db, vendor_id)
+
+    # Auto-refresh stale scores so the dashboard always shows live numbers
+    latest_snapshot = (
+        db.query(ScoreSnapshot)
+        .filter(ScoreSnapshot.vendor_id == vendor_id)
+        .order_by(ScoreSnapshot.snapshot_at.desc())
+        .first()
+    )
+    snapshot_age_days = (
+        (datetime.utcnow() - latest_snapshot.snapshot_at).days
+        if latest_snapshot else 999
+    )
+    if snapshot_age_days >= 7:
+        try:
+            from app.services.scoring import VendorScoreEngine
+            VendorScoreEngine.update_vendor_score(db, vendor_id)
+        except Exception as _e:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "Auto-refresh score failed for vendor=%s: %s", vendor_id, _e
+            )
+
+    status = get_vendor_status(db, vendor_id)
     return status
 
 
