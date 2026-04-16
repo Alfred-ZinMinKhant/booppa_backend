@@ -226,6 +226,14 @@ def get_vendor_status(db: Session, vendor_id: str) -> dict:
     if record:
         doc_count = db.query(Proof).filter(Proof.verify_id == record.id).count()
 
+    # Use dynamic VendorScore.compliance_score if available; fall back to VerifyRecord baseline
+    score_row = db.query(VendorScore).filter(VendorScore.vendor_id == vendor_id).first()
+    live_compliance_score = (
+        score_row.compliance_score
+        if score_row and score_row.compliance_score
+        else (record.compliance_score if record else 0)
+    )
+
     # Monitoring detail
     latest_snapshot = db.query(ScoreSnapshot).filter(
         ScoreSnapshot.vendor_id == vendor_id
@@ -281,7 +289,7 @@ def get_vendor_status(db: Session, vendor_id: str) -> dict:
         "verificationDepth":   depth,
         "verificationDetail": {
             "lifecycleStatus":    record.lifecycle_status.value if record else "NONE",
-            "complianceScore":    record.compliance_score if record else 0,
+            "complianceScore":    live_compliance_score,
             "documentsSubmitted": doc_count,
             "expiresAt":          expiry.isoformat() if expiry else None,
             "daysUntilExpiry":    days_until_expiry,
