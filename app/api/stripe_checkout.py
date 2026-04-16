@@ -178,21 +178,26 @@ async def checkout_post(request: Request):
         if intake_data:
             metadata["has_intake"] = "1"
 
-        # PayNow is only supported for one-time payments, not subscriptions
-        payment_methods = ["card", "paynow"] if mode == "payment" else ["card"]
         _idem_key = _checkout_idempotency_key(product_type or "", price_id, client_ip, report_id, prefill_email)
-        session = stripe_client.checkout.Session.create(
+        # Use automatic_payment_methods so Stripe shows whatever is enabled in
+        # the dashboard (card, PayNow, etc.) without hardcoding method names.
+        # Subscriptions don't support automatic_payment_methods, so fall back to card only.
+        _session_kwargs: dict = dict(
             mode=mode,
             line_items=[{"price": price_id, "quantity": 1}],
             success_url=success_url,
             cancel_url=cancel_url,
-            payment_method_types=payment_methods,
             metadata=metadata,
             client_reference_id=str(report_id) if report_id else None,
             customer_email=prefill_email if prefill_email else None,
             allow_promotion_codes=True,
             idempotency_key=_idem_key,
         )
+        if mode == "payment":
+            _session_kwargs["automatic_payment_methods"] = {"enabled": True}
+        else:
+            _session_kwargs["payment_method_types"] = ["card"]
+        session = stripe_client.checkout.Session.create(**_session_kwargs)
         logger.info(
             f"Created Stripe session id={getattr(session, 'id', None)} url={getattr(session, 'url', None)} metadata={metadata}"
         )
@@ -275,18 +280,21 @@ async def checkout_get(
         cancel_url = f"{base_url}/{cancel_path}"
 
         _mode = MODE_MAP.get(product_type, "payment") if product_type else "payment"
-        _payment_methods = ["card", "paynow"] if _mode == "payment" else ["card"]
         _idem_key = _checkout_idempotency_key(product_type or "", price_id, client_ip, email=prefill_email)
-        session = stripe_client.checkout.Session.create(
+        _session_kwargs2: dict = dict(
             mode=_mode,
             line_items=[{"price": price_id, "quantity": 1}],
             success_url=success_url,
             cancel_url=cancel_url,
-            payment_method_types=_payment_methods,
             metadata={"product_type": product_type or "", "client_ip": client_ip},
             allow_promotion_codes=True,
             idempotency_key=_idem_key,
         )
+        if _mode == "payment":
+            _session_kwargs2["automatic_payment_methods"] = {"enabled": True}
+        else:
+            _session_kwargs2["payment_method_types"] = ["card"]
+        session = stripe_client.checkout.Session.create(**_session_kwargs2)
 
         return RedirectResponse(url=session.url)
     except RuntimeError as e:
