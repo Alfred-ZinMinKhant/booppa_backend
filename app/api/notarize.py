@@ -156,7 +156,7 @@ def _build_qr_base64(target: str) -> str | None:
 
 
 @router.get("/certificate/{report_id}")
-async def get_certificate(report_id: str, background_tasks: BackgroundTasks = None):
+async def get_certificate(report_id: str, session_id: str | None = None, background_tasks: BackgroundTasks = None):
     """
     Public endpoint: return notarization certificate data for display on the frontend.
     Mirrors exactly what the PDF certificate contains.
@@ -171,8 +171,43 @@ async def get_certificate(report_id: str, background_tasks: BackgroundTasks = No
 
         assessment = report.assessment_data if isinstance(report.assessment_data, dict) else {}
 
-        # Self-heal: if payment confirmed but fulfillment never ran, trigger it once
+        # Self-heal: if fulfillment never ran, trigger it once.
+        # Primary path: webhook already set payment_confirmed=True.
+        # Fallback path: webhook may have been delayed/missed — verify payment
+        # directly with Stripe using the session_id passed by the frontend poller.
         payment_confirmed_flag = bool(assessment.get("payment_confirmed"))
+
+        if (
+            not payment_confirmed_flag
+            and session_id
+            and report.status in {"pending", "processing"}
+            and not assessment.get("pdf_generated")
+            and not assessment.get("fulfillment_triggered")
+            and background_tasks is not None
+        ):
+            # Verify with Stripe directly (webhook may not have arrived yet)
+            try:
+                import stripe as _stripe
+                from app.core.config import settings as _settings
+                _stripe.api_key = _settings.STRIPE_SECRET_KEY
+                _session = _stripe.checkout.Session.retrieve(session_id)
+                _pstatus = getattr(_session, "payment_status", None) or (
+                    _session.get("payment_status") if hasattr(_session, "get") else None
+                )
+                if _pstatus == "paid":
+                    payment_confirmed_flag = True
+                    assessment["payment_confirmed"] = True
+                    _meta = getattr(_session, "metadata", None) or {}
+                    if not assessment.get("contact_email") and _meta.get("customer_email"):
+                        assessment["contact_email"] = _meta["customer_email"]
+                    report.assessment_data = assessment
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(report, "assessment_data")
+                    db.commit()
+                    logger.info(f"[Notarize] Stripe-verified payment for {report_id}, setting payment_confirmed")
+            except Exception as _ve:
+                logger.warning(f"[Notarize] Stripe session verify failed for {report_id}: {_ve}")
+
         if (
             payment_confirmed_flag
             and report.status in {"pending", "processing"}
