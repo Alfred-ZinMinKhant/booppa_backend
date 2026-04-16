@@ -219,12 +219,22 @@ async def vendor_badge(
         f'</a>'
     )
 
+    from app.core.models import VendorScore
+    score_row = db.query(VendorScore).filter(
+        VendorScore.vendor_id == current_user.id
+    ).first()
+    compliance_score = (
+        score_row.compliance_score
+        if score_row and score_row.compliance_score
+        else verify.compliance_score
+    )
+
     return {
         "active":       True,
         "html":         html,
         "profile_url":  profile_url,
         "slug":         slug,
-        "compliance_score": verify.compliance_score,
+        "compliance_score": compliance_score,
         "verification_level": verify.verification_level.value if hasattr(verify.verification_level, 'value') else str(verify.verification_level),
     }
 
