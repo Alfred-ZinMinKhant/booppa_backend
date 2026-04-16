@@ -70,6 +70,16 @@ class VendorScoreEngine:
                 weight_sum += level_weight
             base_score = round(total / weight_sum) if weight_sum > 0 else 0
 
+        # Proof document bonus: each verified document adds +8 pts (max +40)
+        proof_bonus = 0
+        try:
+            verify_ids = [v.id for v in verifications]
+            if verify_ids:
+                proof_count = db.query(Proof).filter(Proof.verify_id.in_(verify_ids)).count()
+                proof_bonus = min(proof_count * 8, 40)
+        except Exception as e:
+            logger.warning(f"Proof bonus calculation failed for vendor {vendor_id}: {e}")
+
         # PDPA Snapshot bonus: +8 to +25 pts based on risk score
         # Only the most recent completed PDPA report counts.
         pdpa_bonus = 0
@@ -98,7 +108,7 @@ class VendorScoreEngine:
         except Exception as e:
             logger.warning(f"PDPA bonus calculation failed for vendor {vendor_id}: {e}")
 
-        return min(base_score + pdpa_bonus, 100)
+        return min(base_score + proof_bonus + pdpa_bonus, 100)
 
     @classmethod
     def calculate_visibility_score(cls, db: Session, vendor_id: str) -> int:
