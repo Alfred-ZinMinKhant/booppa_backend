@@ -1069,7 +1069,7 @@ async def stripe_webhook(request: Request):
         raise HTTPException(status_code=400, detail="Invalid signature")
 
     # Idempotency guard: atomic INSERT ON CONFLICT to prevent race conditions
-    event_id = event.get("id")
+    event_id = event["id"]
     if event_id:
         try:
             from app.core.models import ProcessedWebhookEvent
@@ -1077,7 +1077,7 @@ async def stripe_webhook(request: Request):
             _idem_db = SessionLocal()
             try:
                 stmt = pg_insert(ProcessedWebhookEvent).values(
-                    event_id=event_id, event_type=event.get("type")
+                    event_id=event_id, event_type=event["type"]
                 ).on_conflict_do_nothing(index_elements=["event_id"])
                 result = _idem_db.execute(stmt)
                 _idem_db.commit()
@@ -1456,7 +1456,7 @@ async def stripe_webhook(request: Request):
         record_funnel_event(
             _adb,
             stage="ACTIVE",
-            metadata={"event_type": event.get("type", "unknown")},
+            metadata={"event_type": event["type"]},
         )
         _adb.commit()
         _adb.close()
