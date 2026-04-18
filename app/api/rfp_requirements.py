@@ -17,7 +17,7 @@ DESIGN CONSTRAINTS:
 """
 
 import uuid as _uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -159,14 +159,14 @@ async def evaluate_vendors(
         if existing:
             existing.overall_status = overall
             existing.flag_details   = flag_details
-            existing.evaluated_at   = datetime.utcnow()
+            existing.evaluated_at   = datetime.now(timezone.utc)
         else:
             db.add(RfpRequirementFlag(
                 vendor_id      = vid,
                 requirement_id = req.id,
                 overall_status = overall,
                 flag_details   = flag_details,
-                evaluated_at   = datetime.utcnow(),
+                evaluated_at   = datetime.now(timezone.utc),
             ))
 
         results.append({"vendorId": vid, "overallStatus": overall, "details": flag_details})
@@ -179,7 +179,7 @@ async def evaluate_vendors(
 
     return {
         "requirementId": str(req.id),
-        "evaluatedAt":   datetime.utcnow().isoformat(),
+        "evaluatedAt":   datetime.now(timezone.utc).isoformat(),
         "summary":       {"total": len(results), "meets": meets, "partial": partial, "missing": missing},
         "results":       results,
     }
@@ -228,7 +228,7 @@ async def archive_requirement(
     _require_enterprise(current_user)
     req = _get_own_requirement(db, requirement_id, current_user.id)
     req.archived    = True
-    req.archived_at = datetime.utcnow()
+    req.archived_at = datetime.now(timezone.utc)
     db.commit()
     return {"archived": True, "id": str(req.id)}
 
@@ -339,7 +339,7 @@ def _evaluate_one(db: Session, req: RfpRequirement, vendor_id: str):
     if req.minimum_days_until_expiry and req.minimum_days_until_expiry > 0:
         days_left = None
         if verify and verify.expires_at:
-            days_left = (verify.expires_at - datetime.utcnow()).days
+            days_left = (verify.expires_at - datetime.now(timezone.utc)).days
         exp_status = "MISSING"
         if days_left is not None and days_left >= req.minimum_days_until_expiry:
             exp_status = "MEETS"

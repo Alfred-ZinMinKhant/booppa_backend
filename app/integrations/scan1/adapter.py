@@ -2,7 +2,7 @@ import asyncio
 import json
 import shlex
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Any, Optional
 
 from pydantic import BaseModel, Field, ConfigDict
@@ -78,7 +78,7 @@ async def run_scan_async(url: str) -> ScanResultModel:
                 "nric_found": nric_found,
                 "overall_risk_score": min(risk_score, 100),
                 "detected_laws": detected_laws if detected_laws else ["PDPA General Provisions"],
-                "scan_date": datetime.utcnow().strftime("%Y-%m-%d"),
+                "scan_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             }
             return ScanResultModel(**raw_data)
         else:
@@ -92,7 +92,7 @@ async def run_scan_async(url: str) -> ScanResultModel:
             nric_found=False,
             overall_risk_score=30,
             detected_laws=["PDPA General Provisions"],
-            scan_date=datetime.utcnow().strftime("%Y-%m-%d")
+            scan_date=datetime.now(timezone.utc).strftime("%Y-%m-%d")
         )
 
 def run_scan(url: str) -> ScanResultModel:
@@ -114,5 +114,5 @@ def run_scan(url: str) -> ScanResultModel:
             nric_found=False,
             overall_risk_score=20,
             detected_laws=["PDPA General Provisions"],
-            scan_date=datetime.utcnow().strftime("%Y-%m-%d")
+            scan_date=datetime.now(timezone.utc).strftime("%Y-%m-%d")
         )

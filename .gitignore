@@ -123,3 +123,10 @@ logs/
 
 # Docker
 docker-compose.override.yml
+
+# Terraform
+*.tfvars
+!*.tfvars.example
+*.tfstate
+*.tfstate.backup
+.terraform/

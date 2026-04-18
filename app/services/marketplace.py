@@ -8,7 +8,7 @@ import csv
 import io
 import re
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
@@ -56,7 +56,7 @@ def import_csv_data(
         filename=filename,
         source=source,
         status="PROCESSING",
-        started_at=datetime.utcnow(),
+        started_at=datetime.now(timezone.utc),
         created_by=created_by,
     )
     if not dry_run:
@@ -126,7 +126,7 @@ def import_csv_data(
         batch.error_count = len(errors)
         batch.errors = errors[:100]  # Limit stored errors
         batch.status = "COMPLETE"
-        batch.completed_at = datetime.utcnow()
+        batch.completed_at = datetime.now(timezone.utc)
         db.commit()
 
     return {

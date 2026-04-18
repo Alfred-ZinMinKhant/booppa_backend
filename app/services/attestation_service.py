@@ -35,7 +35,7 @@ class AttestationService:
             return {
                 "status": "success",
                 "attestation_id": f"attest-{report_id.hex[:8]}",
-                "generated_at": datetime.utcnow().isoformat(),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
                 "type": "AGGRESSIVE_REVENUE_ENGINE_V2"
             }
         except Exception as e:

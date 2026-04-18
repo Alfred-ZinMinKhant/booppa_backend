@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
+import "@openzeppelin/contracts/access/Ownable.sol";
+
 /**
  * @title EvidenceAnchorV3
  * @dev Smart contract for anchoring evidence hashes on Polygon blockchain
  * @notice Provides immutable timestamping and verification for audit evidence
  */
-contract EvidenceAnchorV3 {
+contract EvidenceAnchorV3 is Ownable {
 
     // Mapping of anchored hashes with timestamps
     mapping(bytes32 => uint256) public anchoredTimestamps;
@@ -26,12 +28,14 @@ contract EvidenceAnchorV3 {
         uint256 timestamp
     );
 
+    constructor() Ownable(msg.sender) {}
+
     /**
      * @dev Anchor a single evidence hash
      * @param fileHash The SHA-256 hash of the evidence to anchor
      * @param metadata Additional metadata about the evidence
      */
-    function anchorHash(bytes32 fileHash, string calldata metadata) external {
+    function anchorHash(bytes32 fileHash, string calldata metadata) external onlyOwner {
         require(fileHash != bytes32(0), "Invalid hash");
         require(anchoredTimestamps[fileHash] == 0, "Hash already anchored");
 
@@ -53,7 +57,7 @@ contract EvidenceAnchorV3 {
     function anchorBatch(
         bytes32[] calldata fileHashes,
         string[] calldata metadata
-    ) external {
+    ) external onlyOwner {
         require(fileHashes.length == metadata.length, "Array length mismatch");
         require(fileHashes.length > 0, "No hashes provided");
         require(fileHashes.length <= 100, "Too many hashes");

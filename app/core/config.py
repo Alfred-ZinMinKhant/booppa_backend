@@ -77,14 +77,6 @@ class Settings(BaseSettings):
     SKIP_EMAIL: bool = False
     VERIFY_BASE_URL: str = "https://www.booppa.io"
 
-    # Monitor v5.5++
-    MONITOR_CACHE_DIR: str = ".cache/monitor"
-    MONITOR_CONCURRENCY_LIMIT: int = 100
-    MONITOR_RISK_THRESHOLDS: dict = {
-        "LOW": 30,
-        "MEDIUM": 60,
-        "HIGH": 100,
-    }
     MONITOR_SCAN1_COMMAND: Optional[str] = "python Scan1.py {url}"
     MONITOR_ANCHOR_ENABLED: bool = True
 
@@ -124,3 +116,9 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+if settings.ENVIRONMENT == "production" and settings.SECRET_KEY == "change-me-in-production":
+    raise RuntimeError(
+        "FATAL: SECRET_KEY is still the default value. "
+        "Set a strong SECRET_KEY environment variable before running in production."
+    )

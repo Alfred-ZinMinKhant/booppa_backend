@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
 import logging
 import uuid
@@ -35,7 +35,7 @@ async def qr_scan(payload: QRScanRequest):
     try:
         website_url = payload.website_url.strip()
         uses_https = website_url.lower().startswith("https://")
-        month_ago = datetime.utcnow() - timedelta(days=30)
+        month_ago = datetime.now(timezone.utc) - timedelta(days=30)
 
         from sqlalchemy import String, cast
         existing = (
@@ -58,7 +58,7 @@ async def qr_scan(payload: QRScanRequest):
         scan_data = {
             "company_name": payload.company_name or "Free PDPA Scan",
             "url": website_url,
-            "scan_date": datetime.utcnow().strftime("%Y-%m-%d"),
+            "scan_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             "uses_https": uses_https,
             "assessment_source": "free_scan",
             "contact_email": payload.email,

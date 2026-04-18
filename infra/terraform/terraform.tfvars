@@ -4,9 +4,9 @@ create_vpc = true
 domain_name = "booppa.io"
 # hosted_zone_id = "ZXXXXXXXXXXXXX" # set your Route53 Hosted Zone ID here if you want Terraform to create DNS/ACM records
 
-# Database (DO NOT COMMIT; set a strong password locally)
+# Database — set via environment variable: TF_VAR_db_password
 db_username = "booppa_user"
-db_password = "4lfr3d2MK28##$"
+# db_password = "" # DO NOT hardcode — use: export TF_VAR_db_password="your-password"
 
 # Optional: provide a specific S3 bucket name or leave blank to let Terraform create one
 s3_bucket_name = ""

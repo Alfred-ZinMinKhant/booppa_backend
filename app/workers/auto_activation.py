@@ -57,10 +57,10 @@ def compute_quarterly_leaderboard_task(quarter: str = None):
 def compute_monthly_snapshot_task(month: str = None):
     """Compute monthly subscription snapshot."""
     from app.services.funnel_analytics import compute_monthly_snapshot
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     if not month:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         month = f"{now.year}-{now.month:02d}"
 
     db = SessionLocal()

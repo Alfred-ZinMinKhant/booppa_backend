@@ -5,7 +5,7 @@ P9 referral program endpoints.
 """
 
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
@@ -42,7 +42,7 @@ async def create_referral(body: CreateReferralRequest, db: Session = Depends(get
         referrer_id=body.referrer_id,
         referral_code=code,
         referred_email=body.referred_email,
-        expires_at=datetime.utcnow() + timedelta(days=90),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=90),
     )
     db.add(referral)
     db.commit()
@@ -82,7 +82,7 @@ async def redeem_referral(code: str, user_id: str, db: Session = Depends(get_db)
     if referral.status != "PENDING":
         raise HTTPException(status_code=400, detail=f"Referral already in status: {referral.status}")
 
-    if referral.expires_at and referral.expires_at < datetime.utcnow():
+    if referral.expires_at and referral.expires_at < datetime.now(timezone.utc):
         referral.status = "EXPIRED"
         db.commit()
         raise HTTPException(status_code=400, detail="Referral code has expired")

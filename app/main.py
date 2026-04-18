@@ -28,8 +28,8 @@ app = FastAPI(
     title="BOOPPA v10.0 Enterprise",
     version="10.0.0",
     description="Auditor-proof evidence generation with blockchain anchoring",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/docs" if settings.ENVIRONMENT != "production" else None,
+    redoc_url="/redoc" if settings.ENVIRONMENT != "production" else None,
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)

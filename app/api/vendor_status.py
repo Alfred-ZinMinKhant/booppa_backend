@@ -6,7 +6,7 @@ GET /api/vendor/sector-pressure  → sector competitive pressure snapshot + mess
 GET /api/vendor/dashboard-cal    → CAL payload: ladder + suggestion + message + sectorPressure
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -50,7 +50,7 @@ async def vendor_status(
         .first()
     )
     snapshot_age_days = (
-        (datetime.utcnow() - latest_snapshot.snapshot_at).days
+        (datetime.now(timezone.utc) - latest_snapshot.snapshot_at).days
         if latest_snapshot else 999
     )
     if snapshot_age_days >= 7:

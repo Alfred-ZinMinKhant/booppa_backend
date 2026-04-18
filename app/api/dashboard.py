@@ -11,7 +11,7 @@ Returns:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends
@@ -41,7 +41,7 @@ def _classify_view(domain: str | None, visit_count: int) -> tuple[str, str, str]
 
 
 def _relative_time(dt: datetime) -> str:
-    delta = datetime.utcnow() - dt
+    delta = datetime.now(timezone.utc) - dt
     secs = int(delta.total_seconds())
     if secs < 60:
         return f"{secs}s ago"
@@ -67,7 +67,7 @@ async def dashboard(
 
     # ── 2. Verify record → proof views ───────────────────────────────────────
     verify = db.query(VerifyRecord).filter(VerifyRecord.vendor_id == vendor_id).first()
-    cutoff_7d = datetime.utcnow() - timedelta(days=7)
+    cutoff_7d = datetime.now(timezone.utc) - timedelta(days=7)
 
     enterprise_views = 0
     gov_agency_domains: set[str] = set()
@@ -119,7 +119,7 @@ async def dashboard(
         trigger_map = {str(r.day): r.count for r in trigger_rows}
 
         for i in range(7):
-            day_dt = datetime.utcnow() - timedelta(days=6 - i)
+            day_dt = datetime.now(timezone.utc) - timedelta(days=6 - i)
             day_key = day_dt.strftime("%Y-%m-%d")
             chart_data.append({
                 "name":     _DAY_LABELS[day_dt.weekday()],
@@ -180,7 +180,7 @@ async def dashboard(
         from app.services.tender_service import _CATEGORY_TO_SECTOR
         # Reverse map: sector → list of category strings
         matching_categories = [cat for cat, sec in _CATEGORY_TO_SECTOR.items() if sec == primary_sector]
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         if matching_categories:
             active_procurements = (
                 db.query(func.count(GebizTender.id))

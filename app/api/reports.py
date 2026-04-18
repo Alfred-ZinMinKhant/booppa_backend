@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 import uuid
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 router = APIRouter()
@@ -322,7 +322,7 @@ async def get_report_by_session(
                 assessment = {}
             if session_paid and not assessment.get("payment_confirmed"):
                 assessment["payment_confirmed"] = True
-                assessment["payment_confirmed_at"] = datetime.utcnow().isoformat()
+                assessment["payment_confirmed_at"] = datetime.now(timezone.utc).isoformat()
                 assessment["payment_source"] = "stripe_session"
             product_type = metadata.get("product_type")
             if product_type:

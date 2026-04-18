@@ -111,7 +111,7 @@ def compute_monitoring_activity(db: Session, vendor_id: str) -> str:
     if not latest_snapshot:
         return "NONE"
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     snapshot_age_days = (now - latest_snapshot.snapshot_at).days
 
     latest_activity = db.query(ActivityLog).filter(
@@ -218,7 +218,7 @@ def get_vendor_status(db: Session, vendor_id: str) -> dict:
     days_until_expiry = None
     is_expiring_soon  = False
     if expiry:
-        days_until_expiry = (expiry - datetime.utcnow()).days
+        days_until_expiry = (expiry - datetime.now(timezone.utc)).days
         is_expiring_soon  = days_until_expiry <= 30
 
     from app.core.models import Proof
@@ -245,7 +245,7 @@ def get_vendor_status(db: Session, vendor_id: str) -> dict:
 
     activity_7d = db.query(ActivityLog).filter(
         ActivityLog.user_id == vendor_id,
-        ActivityLog.created_at >= datetime.utcnow() - timedelta(days=7),
+        ActivityLog.created_at >= datetime.now(timezone.utc) - timedelta(days=7),
     ).count()
 
     total_activities = db.query(ActivityLog).filter(
@@ -256,12 +256,12 @@ def get_vendor_status(db: Session, vendor_id: str) -> dict:
     if record:
         proof_views_30d = db.query(ProofView).filter(
             ProofView.verify_id == record.id,
-            ProofView.created_at >= datetime.utcnow() - timedelta(days=30),
+            ProofView.created_at >= datetime.now(timezone.utc) - timedelta(days=30),
         ).count()
 
     snapshot_age_days = None
     if latest_snapshot:
-        snapshot_age_days = (datetime.utcnow() - latest_snapshot.snapshot_at).days
+        snapshot_age_days = (datetime.now(timezone.utc) - latest_snapshot.snapshot_at).days
 
     # Risk detail — query AnomalyEvent directly
     open_anomalies = db.query(AnomalyEvent).filter(
@@ -313,7 +313,7 @@ def get_vendor_status(db: Session, vendor_id: str) -> dict:
         "procurementReadiness": readiness,
         "readinessSummary":     summary,
         "sectorPercentile":     sector_pct,
-        "computedAt":           datetime.utcnow().isoformat(),
+        "computedAt":           datetime.now(timezone.utc).isoformat(),
         "cacheKeyVersion":      STATUS_LOGIC_VERSION,
     }
 
@@ -359,7 +359,7 @@ def upsert_status_snapshot(db: Session, vendor_id: str) -> VendorStatusSnapshot:
         existing.evidence_count         = elevation.get("evidence_count", 0)
         existing.confidence_score       = elevation.get("confidence_score", 0.0)
         existing.version                = STATUS_LOGIC_VERSION
-        existing.computed_at            = datetime.utcnow()
+        existing.computed_at            = datetime.now(timezone.utc)
         snapshot = existing
     else:
         snapshot = VendorStatusSnapshot(
@@ -374,7 +374,7 @@ def upsert_status_snapshot(db: Session, vendor_id: str) -> VendorStatusSnapshot:
             evidence_count         = elevation.get("evidence_count", 0),
             confidence_score       = elevation.get("confidence_score", 0.0),
             version                = STATUS_LOGIC_VERSION,
-            computed_at            = datetime.utcnow(),
+            computed_at            = datetime.now(timezone.utc),
         )
         db.add(snapshot)
 
@@ -394,10 +394,10 @@ def record_score_snapshot(
     Called after VendorScoreEngine.update_vendor_score().
     Also triggers upsert_status_snapshot for procurement cache freshness.
     """
-    from datetime import datetime
+    from datetime import datetime, timezone
     import hashlib, json
 
-    now      = datetime.utcnow()
+    now      = datetime.now(timezone.utc)
     quarter  = f"Q{((now.month - 1) // 3) + 1} {now.year}"
     breakdown = {
         "compliance":             vendor_score.compliance_score,

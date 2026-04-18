@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 
@@ -16,7 +16,7 @@ def register_verification(
         "tx_hash": tx_hash,
         "format": format_name,
         "schema_version": schema_version,
-        "registered_at": datetime.utcnow().isoformat(),
+        "registered_at": datetime.now(timezone.utc).isoformat(),
     }
 
     registry = data.get("verification_registry")

@@ -159,7 +159,7 @@ class VendorScoreEngine:
 
     @classmethod
     def calculate_engagement_score(cls, db: Session, vendor_id: str) -> int:
-        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
         proofs = db.query(Proof).join(VerifyRecord).filter(VerifyRecord.vendor_id == vendor_id).count()
         recent_activity = db.query(ActivityLog).filter(
             ActivityLog.user_id == vendor_id,
@@ -178,7 +178,7 @@ class VendorScoreEngine:
         if not last_activity:
             return 0
             
-        hours_since = (datetime.utcnow() - last_activity.created_at).total_seconds() / 3600
+        hours_since = (datetime.now(timezone.utc) - last_activity.created_at).total_seconds() / 3600
         if hours_since <= 24: return 100
         if hours_since <= 72: return 80
         if hours_since <= 168: return 60
@@ -242,7 +242,7 @@ class VendorScoreEngine:
             score_record.recency_score = components["recencyScore"]
             score_record.procurement_interest_score = components["procurementInterestScore"]
             score_record.total_score = total_score
-            score_record.last_calculation = datetime.utcnow()
+            score_record.last_calculation = datetime.now(timezone.utc)
             score_record.calculation_count += 1
             
         # Add governance record
@@ -250,7 +250,7 @@ class VendorScoreEngine:
             event_type='SCORE_UPDATED',
             entity_type='VENDOR',
             entity_id=str(vendor_id),
-            correlation_id=correlation_id or f"score_{int(datetime.utcnow().timestamp())}",
+            correlation_id=correlation_id or f"score_{int(datetime.now(timezone.utc).timestamp())}",
             metadata_json={"components": components, "totalScore": total_score}
         )
         db.add(gov_record)
@@ -274,7 +274,7 @@ class EnterpriseBehavioralEngine:
             db.commit()
             db.refresh(profile)
             
-        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
         
         total_views = db.query(ProofView).filter(ProofView.domain == domain).count()
         unique_vendors = db.query(ProofView.verify_id).filter(ProofView.domain == domain).distinct().count()
@@ -288,7 +288,7 @@ class EnterpriseBehavioralEngine:
         profile.total_views = total_views
         profile.unique_vendors_viewed = unique_vendors
         profile.visit_frequency = visit_freq
-        profile.last_activity = datetime.utcnow()
+        profile.last_activity = datetime.now(timezone.utc)
         
         # Calculate behavioral score
         score = min(visit_freq * 10, 40) + min(unique_vendors * 5, 30) + min((total_views // 10) * 2, 20)
@@ -297,7 +297,7 @@ class EnterpriseBehavioralEngine:
         profile.behavioral_score = min(score, 100)
         
         # Calculate intent score
-        seven_days_ago = datetime.utcnow() - timedelta(days=7)
+        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
         views_7d = db.query(ProofView).filter(ProofView.domain == domain, ProofView.created_at >= seven_days_ago).count()
         vendors_7d = db.query(ProofView.verify_id).filter(ProofView.domain == domain, ProofView.created_at >= seven_days_ago).distinct().count()
         
@@ -318,7 +318,7 @@ class EnterpriseBehavioralEngine:
 
     @classmethod
     def detect_procurement_window(cls, db: Session, profile: EnterpriseProfile, correlation_id: str = None):
-        forty_eight_hours_ago = datetime.utcnow() - timedelta(hours=48)
+        forty_eight_hours_ago = datetime.now(timezone.utc) - timedelta(hours=48)
         recent_views = db.query(ProofView).filter(
             ProofView.domain == profile.domain,
             ProofView.created_at >= forty_eight_hours_ago
@@ -327,7 +327,7 @@ class EnterpriseBehavioralEngine:
         if len(recent_views) < 3:
             if profile.active_procurement:
                 profile.active_procurement = False
-                profile.procurement_window_end = datetime.utcnow()
+                profile.procurement_window_end = datetime.now(timezone.utc)
                 db.commit()
             return
 
@@ -337,17 +337,17 @@ class EnterpriseBehavioralEngine:
         if len(vendors) >= 2:
             if not profile.active_procurement:
                 profile.active_procurement = True
-                profile.procurement_window_start = datetime.utcnow()
+                profile.procurement_window_start = datetime.now(timezone.utc)
                 db.add(GovernanceRecord(
                     event_type='PROCUREMENT_WINDOW',
                     entity_type='ENTERPRISE',
                     entity_id=str(profile.id),
-                    correlation_id=correlation_id or f"window_{int(datetime.utcnow().timestamp())}",
+                    correlation_id=correlation_id or f"window_{int(datetime.now(timezone.utc).timestamp())}",
                     metadata_json={"vendors": len(vendors), "views": len(recent_views), "domain": profile.domain}
                 ))
                 db.commit()
                 # In full V6, this triggers a BullMQ queue to re-evaluate vendors
         elif profile.active_procurement:
             profile.active_procurement = False
-            profile.procurement_window_end = datetime.utcnow()
+            profile.procurement_window_end = datetime.now(timezone.utc)
             db.commit()

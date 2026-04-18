@@ -5,7 +5,7 @@ Quarterly leaderboard computation, achievements, milestones, and prestige slots.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 def get_current_quarter() -> str:
     """Get current quarter string e.g. 'Q1 2026'."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     q = (now.month - 1) // 3 + 1
     return f"Q{q} {now.year}"
 

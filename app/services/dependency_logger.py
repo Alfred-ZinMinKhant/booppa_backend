@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 
@@ -17,7 +17,7 @@ def log_dependency_event(
         "owner_id": owner_id,
         "report_id": report_id,
         "company_name": company_name,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     if isinstance(extra, dict) and extra:
         event.update(extra)

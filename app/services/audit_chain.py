@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
@@ -29,7 +29,7 @@ def append_audit_event(
         hash_prev=prev_hash,
         hash=hash_value,
         metadata_json=metadata or {},
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
     db.add(event)
     return event

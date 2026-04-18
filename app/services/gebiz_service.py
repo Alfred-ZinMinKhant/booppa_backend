@@ -117,7 +117,7 @@ def fetch_from_rss(db: Session) -> int:
     Returns the total number of tenders upserted across all categories.
     """
     count = 0
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     for category in _GEBIZ_RSS_CATEGORIES:
         feed_url = _GEBIZ_RSS_BASE.format(category=category)
@@ -208,7 +208,7 @@ def scrape_gebiz_page(db: Session) -> int:
         return 0
 
     soup = BeautifulSoup(response.text, "lxml")
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     count = 0
 
     # GeBIZ renders a table with class "listTable" or similar; rows contain tender info.

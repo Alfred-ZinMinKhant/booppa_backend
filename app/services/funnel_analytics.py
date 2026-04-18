@@ -5,7 +5,7 @@ Conversion funnel tracking, revenue analytics, and cohort analysis.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_
@@ -69,7 +69,7 @@ def record_funnel_event(
 
 def get_funnel_summary(db: Session, days: int = 30) -> dict:
     """Get funnel conversion summary for the last N days."""
-    since = datetime.utcnow() - timedelta(days=days)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
 
     stages = ["VISIT", "SIGNUP", "TRIAL", "SCAN", "CHECKOUT", "PAYMENT", "VERIFICATION", "ACTIVE"]
     counts = {}
@@ -128,7 +128,7 @@ def record_revenue_event(
 
 def get_revenue_summary(db: Session, days: int = 30) -> dict:
     """Get revenue summary for the last N days."""
-    since = datetime.utcnow() - timedelta(days=days)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
 
     events = db.query(RevenueEvent).filter(RevenueEvent.created_at >= since).all()
 
@@ -181,7 +181,7 @@ def compute_monthly_snapshot(db: Session, month: str) -> SubscriptionSnapshot:
         existing.contraction_cents = contraction
         existing.churn_cents = churn
         existing.total_mrr_cents = new_mrr + expansion - contraction - churn
-        existing.computed_at = datetime.utcnow()
+        existing.computed_at = datetime.now(timezone.utc)
         db.commit()
         return existing
 
@@ -192,7 +192,7 @@ def compute_monthly_snapshot(db: Session, month: str) -> SubscriptionSnapshot:
         expansion_cents=expansion,
         contraction_cents=contraction,
         churn_cents=churn,
-        computed_at=datetime.utcnow(),
+        computed_at=datetime.now(timezone.utc),
     )
     db.add(snapshot)
     db.commit()

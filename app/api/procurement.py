@@ -18,7 +18,7 @@ GET /api/procurement/vendor/{slug}/status        → VendorStatusProfile by slug
 import math
 import hashlib
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -310,7 +310,7 @@ async def rfp_signals(
         for p in profiles
     ]
 
-    return {"signals": signals, "count": len(signals), "asOf": datetime.utcnow().isoformat()}
+    return {"signals": signals, "count": len(signals), "asOf": datetime.now(timezone.utc).isoformat()}
 
 
 @router.get("/snapshot/{vendor_slug}")
@@ -334,7 +334,7 @@ async def procurement_snapshot(
     verify     = db.query(VerifyRecord).filter(VerifyRecord.vendor_id == user.id).first()
     elevation  = fetch_elevation_metadata(db, vendor_id)
 
-    cutoff  = datetime.utcnow() - timedelta(days=window)
+    cutoff  = datetime.now(timezone.utc) - timedelta(days=window)
     proof_view_count = 0
     if verify:
         from app.core.models import ProofView
@@ -374,7 +374,7 @@ async def procurement_snapshot(
             "proofViewsInWindow": proof_view_count,
         },
         "snapshotHash":       snapshot_hash,
-        "generatedAt":        datetime.utcnow().isoformat(),
+        "generatedAt":        datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -383,7 +383,7 @@ async def ordering_policy():
     """Public transparency endpoint — no auth required."""
     return {
         "policy":        ORDERING_POLICY,
-        "retrievedAt":   datetime.utcnow().isoformat(),
+        "retrievedAt":   datetime.now(timezone.utc).isoformat(),
         "documentation": "https://docs.booppa.com/procurement/ordering-policy",
     }
 
