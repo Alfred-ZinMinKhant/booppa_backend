@@ -79,6 +79,9 @@ router.include_router(notarize_router, prefix="/notarize", tags=["notarization"]
 router.include_router(legal_consent_router, prefix="", tags=["legal-consent"])
 # V10 — Tender Win Probability
 router.include_router(tender_check_router, prefix="/tender-check", tags=["tender-check"])
+# PDPA Free Scan
+from .pdpa_free_scan import router as pdpa_free_scan_router
+router.include_router(pdpa_free_scan_router, prefix="/pdpa", tags=["pdpa-free-scan"])
 # GeBIZ — Live Tender Feed
 from .gebiz import router as gebiz_router
 router.include_router(gebiz_router, prefix="/gebiz", tags=["gebiz"])
