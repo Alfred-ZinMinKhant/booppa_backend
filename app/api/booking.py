@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import List, Optional
 import uuid
@@ -252,7 +252,7 @@ def cancel_booking(token: str):
             raise HTTPException(status_code=404, detail="Active booking not found")
 
         booking.status = "cancelled"
-        booking.updated_at = datetime.utcnow()
+        booking.updated_at = datetime.now(timezone.utc)
         db.commit()
 
         return {"status": "cancelled", "id": str(booking.id)}

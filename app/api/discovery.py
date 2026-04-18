@@ -71,7 +71,7 @@ class ClaimRequest(BaseModel):
 @router.post("/claim")
 async def claim_vendor(body: ClaimRequest, db: Session = Depends(get_db)):
     """Claim a discovered vendor profile."""
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     vendor = db.query(DiscoveredVendor).filter(DiscoveredVendor.id == body.vendor_id).first()
     if not vendor:
@@ -88,7 +88,7 @@ async def claim_vendor(body: ClaimRequest, db: Session = Depends(get_db)):
         mv = db.query(MarketplaceVendor).filter(MarketplaceVendor.uen == vendor.uen).first()
         if mv and not mv.claimed_by_user_id:
             mv.claimed_by_user_id = body.user_id
-            mv.claimed_at = datetime.utcnow()
+            mv.claimed_at = datetime.now(timezone.utc)
             db.commit()
 
     return {"message": "Vendor claimed successfully", "vendor_id": str(vendor.id)}

@@ -9,7 +9,7 @@ GET /api/gebiz/latest-tenders  — Returns open tenders sorted by closing_date a
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -68,7 +68,7 @@ def get_latest_tenders(
     except Exception as exc:
         logger.warning(f"[GeBIZ] On-demand sync failed in API: {exc}")
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     tenders = (
         db.query(GebizTender)
         .filter(GebizTender.status == "Open")

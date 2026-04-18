@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.models import ConsentLog
-from datetime import datetime
+from datetime import datetime, timezone
 import re
 
 router = APIRouter()
@@ -46,7 +46,7 @@ def record_consent(payload: ConsentIn, request: Request, db: Session = Depends(g
         try:
             timestamp = datetime.fromisoformat(payload.timestamp)
         except Exception:
-            timestamp = datetime.utcnow()
+            timestamp = datetime.now(timezone.utc)
 
         entry = ConsentLog(
             timestamp=timestamp,

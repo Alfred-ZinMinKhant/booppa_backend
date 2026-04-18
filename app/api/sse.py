@@ -7,7 +7,7 @@ Lightweight one-way real-time push updates for frontend.
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -22,7 +22,7 @@ _event_subscribers: list = []
 
 def publish_event(event_type: str, data: dict):
     """Publish an event to all SSE subscribers."""
-    message = {"type": event_type, "data": data, "timestamp": datetime.utcnow().isoformat()}
+    message = {"type": event_type, "data": data, "timestamp": datetime.now(timezone.utc).isoformat()}
     for queue in _event_subscribers:
         try:
             queue.put_nowait(message)
@@ -40,7 +40,7 @@ async def _event_generator(request: Request, queue: asyncio.Queue):
                 event = await asyncio.wait_for(queue.get(), timeout=30)
                 yield f"event: {event['type']}\ndata: {json.dumps(event['data'])}\n\n"
             except asyncio.TimeoutError:
-                yield f": keepalive {datetime.utcnow().isoformat()}\n\n"
+                yield f": keepalive {datetime.now(timezone.utc).isoformat()}\n\n"
     finally:
         if queue in _event_subscribers:
             _event_subscribers.remove(queue)

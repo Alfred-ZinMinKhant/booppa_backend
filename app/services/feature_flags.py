@@ -12,7 +12,7 @@ Phase 4 (>3000 vendors, >1000 RFPs): Competition, Insight Dome, Procurement Auto
 
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -135,7 +135,7 @@ def set_feature_flag(flag_name: str, enabled: bool, enabled_by: str = "manual"):
             if flag:
                 flag.enabled = enabled
                 flag.enabled_by = enabled_by
-                flag.enabled_at = datetime.utcnow() if enabled else None
+                flag.enabled_at = datetime.now(timezone.utc) if enabled else None
             else:
                 definition = FEATURE_FLAGS.get(flag_name, {})
                 flag = FeatureFlag(
@@ -145,7 +145,7 @@ def set_feature_flag(flag_name: str, enabled: bool, enabled_by: str = "manual"):
                     phase=definition.get("phase", 1),
                     activation_thresholds=definition.get("thresholds"),
                     enabled_by=enabled_by,
-                    enabled_at=datetime.utcnow() if enabled else None,
+                    enabled_at=datetime.now(timezone.utc) if enabled else None,
                 )
                 db.add(flag)
             db.commit()

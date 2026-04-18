@@ -22,7 +22,7 @@ import httpx
 import base64
 import re
 from urllib.parse import urljoin
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -294,7 +294,7 @@ async def process_report_workflow(report_id: str) -> dict:
             _set_assessment_values(
                 report,
                 {
-                    "access_checked_at": datetime.utcnow().isoformat(),
+                    "access_checked_at": datetime.now(timezone.utc).isoformat(),
                     "access_allowed": policy.get("allowed"),
                     "access_paid": policy.get("paid"),
                     "access_reason": policy.get("reason"),
@@ -308,13 +308,13 @@ async def process_report_workflow(report_id: str) -> dict:
 
         if not policy.get("allowed"):
             report.status = "blocked"
-            report.completed_at = datetime.utcnow()
+            report.completed_at = datetime.now(timezone.utc)
             try:
                 _set_assessment_values(
                     report,
                     {
                         "access_blocked": True,
-                        "access_blocked_at": datetime.utcnow().isoformat(),
+                        "access_blocked_at": datetime.now(timezone.utc).isoformat(),
                     },
                 )
                 db.commit()
@@ -416,7 +416,7 @@ async def process_report_workflow(report_id: str) -> dict:
                     report,
                     {
                         "booppa_report": structured_report,
-                        "booppa_report_saved_at": datetime.utcnow().isoformat(),
+                        "booppa_report_saved_at": datetime.now(timezone.utc).isoformat(),
                     },
                 )
             except Exception:
@@ -430,7 +430,7 @@ async def process_report_workflow(report_id: str) -> dict:
             light_payload = {
                 "company_name": report.company_name,
                 "url": url_value or report.company_website,
-                "scan_date": datetime.utcnow().strftime("%Y-%m-%d"),
+                "scan_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                 "detected_laws": (
                     report.assessment_data.get("detected_laws", [])
                     if isinstance(report.assessment_data, dict)
@@ -457,7 +457,7 @@ async def process_report_workflow(report_id: str) -> dict:
                     report,
                     {
                         "light_ai_report": light_report,
-                        "light_ai_saved_at": datetime.utcnow().isoformat(),
+                        "light_ai_saved_at": datetime.now(timezone.utc).isoformat(),
                     },
                 )
             except Exception:
@@ -619,7 +619,7 @@ async def process_report_workflow(report_id: str) -> dict:
                     },
                 )
                 report.status = "completed"
-                report.completed_at = datetime.utcnow()
+                report.completed_at = datetime.now(timezone.utc)
                 db.commit()
 
                 # Send notification email without PDF link
@@ -665,7 +665,7 @@ async def process_report_workflow(report_id: str) -> dict:
             if on_page_only:
                 _set_assessment_values(report, {"on_page_ready": True})
                 report.status = "completed"
-                report.completed_at = datetime.utcnow()
+                report.completed_at = datetime.now(timezone.utc)
                 db.commit()
 
                 try:
@@ -697,7 +697,7 @@ async def process_report_workflow(report_id: str) -> dict:
             report.s3_url = None
             report.file_key = None
             report.status = "completed"
-            report.completed_at = datetime.utcnow()
+            report.completed_at = datetime.now(timezone.utc)
             try:
                 _set_assessment_values(
                     report,
@@ -869,7 +869,7 @@ async def process_report_workflow(report_id: str) -> dict:
                     report,
                     {
                         "pdf_generated": True,
-                        "pdf_generated_at": datetime.utcnow().isoformat(),
+                        "pdf_generated_at": datetime.now(timezone.utc).isoformat(),
                     },
                 )
                 db.commit()
@@ -894,14 +894,14 @@ async def process_report_workflow(report_id: str) -> dict:
                         report,
                         {
                             "s3_uploaded": True,
-                            "s3_uploaded_at": datetime.utcnow().isoformat(),
+                            "s3_uploaded_at": datetime.now(timezone.utc).isoformat(),
                         },
                     )
                 except Exception:
                     logger.warning(f"Failed to mark S3 upload status for {report_id}")
                 # Mark as completed once upload succeeds so frontend can access URL
                 report.status = "completed"
-                report.completed_at = datetime.utcnow()
+                report.completed_at = datetime.now(timezone.utc)
                 db.commit()
                 break
             except Exception as e:
@@ -936,7 +936,7 @@ async def process_report_workflow(report_id: str) -> dict:
         try:
             if report.status != "completed":
                 report.status = "completed"
-                report.completed_at = datetime.utcnow()
+                report.completed_at = datetime.now(timezone.utc)
                 db.commit()
         except Exception:
             db.rollback()
@@ -972,7 +972,7 @@ async def process_report_workflow(report_id: str) -> dict:
                 if not isinstance(assessment, dict):
                     assessment = {}
                 assessment["last_processing_error"] = str(e)[:500]
-                assessment["last_processing_error_at"] = datetime.utcnow().isoformat()
+                assessment["last_processing_error_at"] = datetime.now(timezone.utc).isoformat()
                 report.assessment_data = assessment
                 report.status = "failed"
                 db.commit()
@@ -1176,7 +1176,7 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str):
         user = db.query(User).filter(User.id == vendor_id).first()
         company = getattr(user, "company", "Your company") if user else "Your company"
 
-        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
         from app.core.models import VerifyRecord, ProofView
         verify = db.query(VerifyRecord).filter(VerifyRecord.vendor_id == vendor_id).first()
         profile_views = 0
@@ -1234,7 +1234,7 @@ def pdpa_monitor_monthly_alert_task(self, vendor_id: str, vendor_email: str):
     and guideline updates relevant to Singapore SMEs.
     Triggered on every invoice.payment_succeeded renewal cycle.
     """
-    month_label = datetime.utcnow().strftime("%B %Y")
+    month_label = datetime.now(timezone.utc).strftime("%B %Y")
     body_html = f"""
     <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
       <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
@@ -1609,7 +1609,7 @@ def _bridge_gebiz_to_shortlist(db) -> None:
                     domain=gt.agency or "gov.sg",
                     status="Open",
                     correlation_id=f"gebiz:{gt.tender_no}",
-                    created_at=datetime.utcnow(),
+                    created_at=datetime.now(timezone.utc),
                 ))
                 activities_added += 1
             existing_activities.add(gt.tender_no)
@@ -1627,7 +1627,7 @@ def cleanup_old_tasks():
     db = SessionLocal()
     try:
         # Delete reports older than 30 days
-        cutoff_date = datetime.utcnow() - timedelta(days=30)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=30)
 
         old_reports = (
             db.query(Report)
@@ -1793,7 +1793,7 @@ def send_gebiz_alert_newsletter():
     sent = 0
     failed = 0
     try:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         deadline = now + timedelta(days=14)
 
         tenders = (

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -82,7 +82,7 @@ class RFPExpressBuilder:
         self.errors: list[str]    = []
         self.warnings: list[str]  = []
         self.used_template: bool  = False  # 4.3: track if AI failed and template was used
-        self.generation_start     = datetime.utcnow()
+        self.generation_start     = datetime.now(timezone.utc)
 
     # ── Public entry point ────────────────────────────────────────────────────
 
@@ -196,7 +196,7 @@ class RFPExpressBuilder:
         # 5. Send email
         await self._send_email(company_name, download_url, product_type, docx_url=docx_url)
 
-        elapsed = (datetime.utcnow() - self.generation_start).total_seconds()
+        elapsed = (datetime.now(timezone.utc) - self.generation_start).total_seconds()
         logger.info(f"RFP Kit Express complete in {elapsed:.1f}s for {company_name}")
 
         from app.core.config import settings
@@ -258,7 +258,7 @@ class RFPExpressBuilder:
             },
             "generated_at":   self.generation_start.isoformat(),
             "generation_time_seconds": elapsed,
-            "expires_at":     (datetime.utcnow() + timedelta(days=7)).isoformat(),
+            "expires_at":     (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
         }
 
     # ── Step 1: vendor context ────────────────────────────────────────────────
@@ -735,7 +735,7 @@ class RFPExpressBuilder:
             ]))
             report_data = {
                 "company_name": company_name,
-                "created_at":   datetime.utcnow().strftime("%d %b %Y %H:%M UTC"),
+                "created_at":   datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC"),
                 "framework":    framework_label,
                 "product_type": product_type,
                 "summary":      (
@@ -853,7 +853,7 @@ class RFPExpressBuilder:
                     f"GeBIZ Registered Supplier — {count} prior government contract(s)" if count
                     else "GeBIZ Registered Supplier"
                 )
-            doc.add_paragraph(f"Generated: {datetime.utcnow().strftime('%d %b %Y %H:%M UTC')}")
+            doc.add_paragraph(f"Generated: {datetime.now(timezone.utc).strftime('%d %b %Y %H:%M UTC')}")
             doc.add_paragraph(f"Report ID: {self.report_id}")
             if tx_hash:
                 doc.add_paragraph(f"Blockchain TX: {tx_hash} (Polygon Amoy Testnet)")

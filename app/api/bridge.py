@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -80,15 +80,19 @@ async def refresh(req: RefreshRequest):
     }
 
 @router.get("/auth/me", tags=["bridge-auth"])
-async def get_me(token: str, db: Session = Depends(get_db)):
+async def get_me(
+    db: Session = Depends(get_db),
+    authorization: str = Header(..., description="Bearer token"),
+):
+    token = authorization.removeprefix("Bearer ").strip()
     payload = verify_access_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid token")
-        
+
     user = db.query(User).filter(User.email == payload["sub"]).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-        
+
     return {
         "id": str(user.id),
         "email": user.email,
@@ -114,8 +118,11 @@ def get_current_user_from_header(token: str, db: Session = Depends(get_db)):
 
 # Scoring Endpoint
 @router.get("/enterprise/score", tags=["bridge-scoring"])
-async def get_score(token: str, db: Session = Depends(get_db)):
-    user = get_current_user_from_header(token, db)
+async def get_score(
+    db: Session = Depends(get_db),
+    authorization: str = Header(..., description="Bearer token"),
+):
+    user = get_current_user_from_header(authorization, db)
     vendor_id = str(user.id)
     
     # Calculate fresh score
@@ -153,7 +160,7 @@ async def complete_verification(token: str, db: Session = Depends(get_db)):
     # Example updating status
     verify_record = db.query(VerifyRecord).filter(VerifyRecord.id == evidence.verify_id).first()
     if verify_record:
-        verify_record.last_refreshed_at = datetime.utcnow()
+        verify_record.last_refreshed_at = datetime.now(timezone.utc)
         db.commit()
     
     # In a full implementation, this should trigger a WebSocket event.

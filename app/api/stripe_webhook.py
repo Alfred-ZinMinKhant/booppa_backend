@@ -9,7 +9,7 @@ from app.services.storage import S3Service
 from app.services.email_service import EmailService
 from app.billing.enforcement import enforce_tier
 from app.core.models_v10 import Referral
-from datetime import datetime
+from datetime import datetime, timezone
 import stripe
 import logging
 import json
@@ -314,7 +314,7 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                 report.tx_hash = tx_hash
             report.audit_hash = file_hash  # keep as original file hash for verification
             assessment["blockchain_anchored"] = True
-            assessment["blockchain_anchored_at"] = datetime.utcnow().isoformat()
+            assessment["blockchain_anchored_at"] = datetime.now(timezone.utc).isoformat()
             report.assessment_data = assessment
             flag_modified(report, "assessment_data")
             db.commit()
@@ -336,7 +336,7 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                 "report_id": report_id,
                 "framework": "compliance_notarization",
                 "company_name": report.company_name,
-                "created_at": report.created_at.isoformat() if report.created_at else datetime.utcnow().isoformat(),
+                "created_at": report.created_at.isoformat() if report.created_at else datetime.now(timezone.utc).isoformat(),
                 "status": "completed",
                 "tx_hash": tx_hash,
                 "audit_hash": file_hash,
@@ -355,7 +355,7 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
             }
             pdf_bytes = pdf_service.generate_pdf(pdf_data)
             assessment["pdf_generated"] = True
-            assessment["pdf_generated_at"] = datetime.utcnow().isoformat()
+            assessment["pdf_generated_at"] = datetime.now(timezone.utc).isoformat()
             report.assessment_data = assessment
             flag_modified(report, "assessment_data")
             db.commit()
@@ -370,7 +370,7 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                 pdf_url = await storage.upload_pdf(pdf_bytes, report_id)
                 report.s3_url = pdf_url
                 assessment["s3_uploaded"] = True
-                assessment["s3_uploaded_at"] = datetime.utcnow().isoformat()
+                assessment["s3_uploaded_at"] = datetime.now(timezone.utc).isoformat()
                 assessment["verify_url"] = verify_url
                 assessment["polygonscan_url"] = polygonscan_url
                 report.assessment_data = assessment
@@ -381,7 +381,7 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
 
         # Step 5: Mark completed
         report.status = "completed"
-        report.completed_at = datetime.utcnow()
+        report.completed_at = datetime.now(timezone.utc)
         db.commit()
 
         # Step 6: Send email
@@ -459,7 +459,7 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                         metadata_json={
                             "report_id": report_id,
                             "tx_hash": tx_hash,
-                            "notarized_at": datetime.utcnow().isoformat(),
+                            "notarized_at": datetime.now(timezone.utc).isoformat(),
                         },
                     )
                     db.add(proof)
@@ -624,7 +624,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             verify.lifecycle_status  = LifecycleStatus.ACTIVE
             verify.compliance_score  = max(verify.compliance_score or 0, 30)
             verify.verification_level = VerificationLevel.BASIC
-            verify.last_refreshed_at = datetime.utcnow()
+            verify.last_refreshed_at = datetime.now(timezone.utc)
             verify.company_name      = company_name
         else:
             verify = VerifyRecord(
@@ -661,7 +661,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             if snapshot.procurement_readiness == "NOT_READY":
                 snapshot.procurement_readiness = "CONDITIONAL"
             snapshot.confidence_score = max(snapshot.confidence_score or 0.0, 30.0)
-            snapshot.computed_at = datetime.utcnow()
+            snapshot.computed_at = datetime.now(timezone.utc)
         else:
             snapshot = VendorStatusSnapshot(
                 vendor_id=vendor_id,
@@ -683,7 +683,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                 score_row.compliance_score = 30
             if (score_row.total_score or 0) < 30:
                 score_row.total_score = 30
-            score_row.updated_at = datetime.utcnow()
+            score_row.updated_at = datetime.now(timezone.utc)
         else:
             score_row = VendorScore(
                 vendor_id=vendor_id,
@@ -699,7 +699,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         report.assessment_data = ad
         flag_modified(report, "assessment_data")
         report.status = "completed"
-        report.completed_at = datetime.utcnow()
+        report.completed_at = datetime.now(timezone.utc)
         db.commit()
 
         logger.info(f"[VendorProof] VerifyRecord + snapshot created for vendor {vendor_id}")
@@ -748,7 +748,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                 </p>
                 <p style="color:#64748b;font-size:12px;margin-top:24px;">
                   Verification ID: {report_id}<br>
-                  Verified on: {datetime.utcnow().strftime('%d %B %Y')}<br>
+                  Verified on: {datetime.now(timezone.utc).strftime('%d %B %Y')}<br>
                   booppa.io
                 </p>
               </div>
@@ -820,7 +820,7 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None) -> None:
                 "framework":     report.framework or "pdpa_quick_scan",
                 "company_name":  company_name,
                 "company_url":   website_url,
-                "created_at":    report.created_at.isoformat() if report.created_at else datetime.utcnow().isoformat(),
+                "created_at":    report.created_at.isoformat() if report.created_at else datetime.now(timezone.utc).isoformat(),
                 "status":        "completed",
                 "risk_score":    risk_score,
                 "risk_level":    assessment.get("risk_level") or assessment.get("risk_assessment", {}).get("level", "MEDIUM"),
@@ -868,7 +868,7 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None) -> None:
 
         # Mark report completed
         report.status = "completed"
-        report.completed_at = datetime.utcnow()
+        report.completed_at = datetime.now(timezone.utc)
         assessment["pdf_generated"] = True
         assessment["pdf_url"] = pdf_url
         assessment["on_page_only"] = False
@@ -894,7 +894,7 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None) -> None:
                 certificate_type="PDPA",
                 report_id=report.id,
                 file_key=report.file_key,
-                generated_at=datetime.utcnow(),
+                generated_at=datetime.now(timezone.utc),
             )
             db.add(cert)
             db.commit()
@@ -927,7 +927,7 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None) -> None:
                                 border-radius:4px;margin:20px 0;">
                       <strong>Compliance Score:</strong> {100 - int(risk_score or 50)}/100<br>
                       <strong>Report ID:</strong> {report_id[:8].upper()}<br>
-                      <strong>Generated:</strong> {datetime.utcnow().strftime('%d %B %Y')}
+                      <strong>Generated:</strong> {datetime.now(timezone.utc).strftime('%d %B %Y')}
                     </div>
                     <p>Your compliance score on BOOPPA has been updated to reflect this scan.
                        Procurement officers searching for verified vendors will see your improved standing.</p>
@@ -1068,21 +1068,22 @@ async def stripe_webhook(request: Request):
         logger.error(f"Stripe webhook signature verification failed: {e}")
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    # Idempotency guard: skip events we've already processed
+    # Idempotency guard: atomic INSERT ON CONFLICT to prevent race conditions
     event_id = event.get("id")
     if event_id:
         try:
             from app.core.models import ProcessedWebhookEvent
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
             _idem_db = SessionLocal()
             try:
-                already_processed = _idem_db.query(ProcessedWebhookEvent).filter(
-                    ProcessedWebhookEvent.event_id == event_id
-                ).first()
-                if already_processed:
+                stmt = pg_insert(ProcessedWebhookEvent).values(
+                    event_id=event_id, event_type=event.get("type")
+                ).on_conflict_do_nothing(index_elements=["event_id"])
+                result = _idem_db.execute(stmt)
+                _idem_db.commit()
+                if result.rowcount == 0:
                     logger.info(f"[Webhook] Duplicate event {event_id} — skipping")
                     return {"status": "already_processed"}
-                _idem_db.add(ProcessedWebhookEvent(event_id=event_id, event_type=event.get("type")))
-                _idem_db.commit()
             finally:
                 _idem_db.close()
         except Exception as e:
@@ -1328,7 +1329,7 @@ async def stripe_webhook(request: Request):
                     if referral:
                         referral.status = "REWARDED"
                         referral.reward_claimed = True
-                        referral.reward_claimed_at = datetime.utcnow()
+                        referral.reward_claimed_at = datetime.now(timezone.utc)
                         referral.reward_type = "30_DAYS_FREE"
                         _db.commit()
                         # Email the referrer their reward notification

@@ -161,6 +161,8 @@ jobs:
           # Security intelligence
           VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          # Security
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
           # App config
           NEXT_PUBLIC_BASE_URL: ${{ secrets.NEXT_PUBLIC_BASE_URL }}
           BACKEND_BASE_URL: ${{ secrets.BACKEND_BASE_URL }}
@@ -238,6 +240,7 @@ jobs:
                   { "name": "DB_POOL_TIMEOUT", "value": "${DB_POOL_TIMEOUT}" },
                   { "name": "DB_POOL_RECYCLE", "value": "${DB_POOL_RECYCLE}" },
                   { "name": "FEATURE_SEO", "value": "${FEATURE_SEO}" },
+                  { "name": "SECRET_KEY", "value": "${SECRET_KEY}" },
                   { "name": "ENVIRONMENT", "value": "production" },
                   { "name": "ALLOWED_HOSTS", "value": "api.booppa.io" },
                   { "name": "ALLOWED_ORIGINS", "value": "https://booppa.io,https://www.booppa.io,https://api.booppa.io,https://cms.booppa.io" },
@@ -296,6 +299,8 @@ jobs:
           # Security intelligence
           VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          # Security
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
           NEXT_PUBLIC_BASE_URL: ${{ secrets.NEXT_PUBLIC_BASE_URL }}
           BACKEND_BASE_URL: ${{ secrets.BACKEND_BASE_URL }}
           VERIFY_BASE_URL: ${{ secrets.VERIFY_BASE_URL }}
@@ -374,6 +379,7 @@ jobs:
                   { "name": "DB_POOL_TIMEOUT", "value": "${DB_POOL_TIMEOUT}" },
                   { "name": "DB_POOL_RECYCLE", "value": "${DB_POOL_RECYCLE}" },
                   { "name": "FEATURE_SEO", "value": "${FEATURE_SEO}" },
+                  { "name": "SECRET_KEY", "value": "${SECRET_KEY}" },
                   { "name": "ENVIRONMENT", "value": "production" }
                 ],
                 "secrets": [

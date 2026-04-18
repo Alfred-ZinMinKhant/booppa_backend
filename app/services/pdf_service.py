@@ -14,7 +14,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 
 import qrcode
@@ -248,7 +248,7 @@ class PDFService:
 
     def _cover_strip(self, report_data: dict) -> Table:
         """Three-cell meta strip below the cover title."""
-        created = report_data.get("created_at") or datetime.utcnow().isoformat()
+        created = report_data.get("created_at") or datetime.now(timezone.utc).isoformat()
         try:
             dt = datetime.fromisoformat(created[:19])
             date_str = dt.strftime("%d %B %Y")
@@ -465,7 +465,7 @@ class PDFService:
                 ]))
 
             # ── Report details ─────────────────────────────────────────────
-            created_raw = report_data.get("created_at") or datetime.utcnow().isoformat()
+            created_raw = report_data.get("created_at") or datetime.now(timezone.utc).isoformat()
             story.append(KeepTogether([
                 self._section_header("Report Details"),
                 Spacer(1, 6),
@@ -646,7 +646,7 @@ class PDFService:
             ("REPORT ID",  report_data.get("report_id") or "N/A"),
             ("FRAMEWORK",  report_data.get("framework") or "N/A"),
             ("COMPANY",    report_data.get("company_name") or "N/A"),
-            ("GENERATED",  (report_data.get("created_at") or datetime.utcnow().isoformat())[:19]),
+            ("GENERATED",  (report_data.get("created_at") or datetime.now(timezone.utc).isoformat())[:19]),
             ("STATUS",     report_data.get("status") or "completed"),
         ])]
 

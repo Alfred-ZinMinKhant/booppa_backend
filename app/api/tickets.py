@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import secrets
 import uuid
@@ -56,7 +56,7 @@ def _send_email(to_address: str, subject: str, html_body: str) -> None:
 def _rate_limit_exceeded(db, ip_address: str) -> bool:
     if not ip_address:
         return False
-    window_start = datetime.utcnow() - timedelta(hours=1)
+    window_start = datetime.now(timezone.utc) - timedelta(hours=1)
     recent_count = (
         db.query(func.count(SupportTicket.id))
         .filter(SupportTicket.ip_address == ip_address)
@@ -200,7 +200,7 @@ def add_reply(payload: ReplyCreate, request: Request, _auth: bool = Depends(_adm
         )
         db.add(reply)
         ticket.status = "in_progress"
-        ticket.updated_at = datetime.utcnow()
+        ticket.updated_at = datetime.now(timezone.utc)
         db.commit()
 
         if not payload.is_internal:

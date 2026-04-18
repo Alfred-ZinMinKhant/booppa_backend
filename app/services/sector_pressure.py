@@ -8,7 +8,7 @@ Read-only — no writes to any table.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from sqlalchemy.orm import Session
 
@@ -38,7 +38,7 @@ def get_sector_competitive_pressure(db: Session, sector: str, vendor_id: str) ->
       competitorElevated   — bool: any ELEVATED competitor above this vendor?
     """
     cache_key = sector
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # Check cache
     if cache_key in _SECTOR_CACHE:
@@ -155,7 +155,7 @@ def get_cached_rows(sector: str) -> list:
 
 def count_recently_active(rows: list, days: int = 30) -> int:
     """Pure function: count rows with notarized_at within the last N days."""
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     return sum(
         1 for r in rows
         if r.get("notarized_at") and r["notarized_at"] >= cutoff
