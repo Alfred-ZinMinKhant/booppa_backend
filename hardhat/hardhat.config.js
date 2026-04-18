@@ -8,7 +8,7 @@ module.exports = {
   solidity: {
     compilers: [
       {
-        version: '0.8.19',
+        version: '0.8.24',
         settings: {
           optimizer: { enabled: true, runs: 200 }
         }
@@ -26,12 +26,8 @@ module.exports = {
     }
   },
   paths: {
-    // Treat the repository root as the Hardhat project root so
-    // contracts living at ../contracts are considered local sources.
-    root: path.resolve(__dirname, '..'),
-    sources: 'contracts',
-    // keep hardhat-specific artifacts/cache inside the hardhat folder
-    cache: path.resolve(__dirname, 'cache'),
-    artifacts: path.resolve(__dirname, 'artifacts')
+    sources: './contracts',
+    cache: './cache',
+    artifacts: './artifacts'
   }
 };
