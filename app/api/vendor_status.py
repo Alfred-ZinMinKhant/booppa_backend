@@ -50,10 +50,12 @@ async def vendor_status(
         .order_by(ScoreSnapshot.snapshot_at.desc())
         .first()
     )
-    snapshot_age_days = (
-        (datetime.now(timezone.utc) - latest_snapshot.snapshot_at).days
-        if latest_snapshot else 999
-    )
+    snapshot_age_days = 999
+    if latest_snapshot:
+        snap_at = latest_snapshot.snapshot_at
+        if snap_at.tzinfo is None:
+            snap_at = snap_at.replace(tzinfo=timezone.utc)
+        snapshot_age_days = (datetime.now(timezone.utc) - snap_at).days
     if snapshot_age_days >= 7:
         try:
             from app.services.scoring import VendorScoreEngine
