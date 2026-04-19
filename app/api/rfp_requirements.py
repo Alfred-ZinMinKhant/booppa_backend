@@ -339,7 +339,8 @@ def _evaluate_one(db: Session, req: RfpRequirement, vendor_id: str):
     if req.minimum_days_until_expiry and req.minimum_days_until_expiry > 0:
         days_left = None
         if verify and verify.expires_at:
-            days_left = (verify.expires_at - datetime.now(timezone.utc)).days
+            exp_at = verify.expires_at if verify.expires_at.tzinfo else verify.expires_at.replace(tzinfo=timezone.utc)
+            days_left = (exp_at - datetime.now(timezone.utc)).days
         exp_status = "MISSING"
         if days_left is not None and days_left >= req.minimum_days_until_expiry:
             exp_status = "MEETS"
