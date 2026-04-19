@@ -211,7 +211,8 @@ def compute_tender_win_probability(
 
         # 4.6: Schedule stale snapshot refresh as background task (non-blocking)
         if snapshot and snapshot.updated_at:
-            age = datetime.now(timezone.utc) - snapshot.updated_at
+            ua = snapshot.updated_at if snapshot.updated_at.tzinfo else snapshot.updated_at.replace(tzinfo=timezone.utc)
+            age = datetime.now(timezone.utc) - ua
             if age > timedelta(days=SNAPSHOT_STALE_DAYS):
                 try:
                     from app.core.models import User
@@ -298,7 +299,7 @@ def compute_tender_win_probability(
         data_freshness = {
             "vendorSnapshot": snapshot_ts,
             "snapshotAgeDays": (
-                (datetime.now(timezone.utc) - snapshot.updated_at).days
+                (datetime.now(timezone.utc) - (snapshot.updated_at if snapshot.updated_at.tzinfo else snapshot.updated_at.replace(tzinfo=timezone.utc))).days
                 if snapshot.updated_at else None
             ),
             "tenderData": tender.updated_at.isoformat() if getattr(tender, "updated_at", None) else None,
