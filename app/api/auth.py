@@ -74,6 +74,7 @@ class TokenWithRefresh(BaseModel):
     token_type: str
     refresh_token: str
     plan: str = "free"
+    role: str = "VENDOR"
 
 
 class LoginRequest(BaseModel):
@@ -85,6 +86,14 @@ class RegisterRequest(BaseModel):
     email: str
     password: str
     company: str = ""
+    uen: Optional[str] = None
+    industry: Optional[str] = None
+
+
+class ProcurementRegisterRequest(BaseModel):
+    email: str
+    password: str
+    company: str
     uen: Optional[str] = None
     industry: Optional[str] = None
 
@@ -118,6 +127,7 @@ async def login_form(
     return TokenWithRefresh(
         access_token=access_token, token_type="bearer", refresh_token=refresh_token,
         plan=getattr(user, "plan", "free") or "free",
+        role=getattr(user, "role", "VENDOR") or "VENDOR",
     )
 
 
@@ -134,6 +144,7 @@ async def login_json(body: LoginRequest, db: Session = Depends(get_db)):
     return TokenWithRefresh(
         access_token=access_token, token_type="bearer", refresh_token=refresh_token,
         plan=getattr(user, "plan", "free") or "free",
+        role=getattr(user, "role", "VENDOR") or "VENDOR",
     )
 
 
@@ -146,6 +157,48 @@ async def register(body: RegisterRequest, db: Session = Depends(get_db)):
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     access_token  = create_access_token(data={"sub": user.email})
+    refresh_token = create_refresh_token(data={"sub": user.email})
+    _store_token(refresh_token)
+    return TokenWithRefresh(
+        access_token=access_token, token_type="bearer", refresh_token=refresh_token,
+        plan="free",
+    )
+
+
+# ── Procurement Registration ─────────────────────────────────────────────────
+
+FREE_EMAIL_DOMAINS = {
+    "gmail.com", "yahoo.com", "yahoo.co.uk", "hotmail.com", "outlook.com",
+    "live.com", "aol.com", "icloud.com", "me.com", "mail.com",
+    "protonmail.com", "proton.me", "zoho.com", "yandex.com",
+    "gmx.com", "gmx.net", "tutanota.com", "fastmail.com",
+}
+
+
+@router.post("/register/procurement", status_code=201, response_model=TokenWithRefresh)
+async def register_procurement(body: ProcurementRegisterRequest, db: Session = Depends(get_db)):
+    # Reject free email providers
+    domain = body.email.rsplit("@", 1)[-1].lower()
+    if domain in FREE_EMAIL_DOMAINS:
+        raise HTTPException(
+            status_code=422,
+            detail="Please use your company email address. Free email providers (Gmail, Yahoo, etc.) are not accepted for procurement accounts.",
+        )
+
+    try:
+        user = register_user(
+            db,
+            email=body.email,
+            password=body.password,
+            company=body.company,
+            uen=body.uen,
+            industry=body.industry,
+            role="PROCUREMENT",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    access_token = create_access_token(data={"sub": user.email})
     refresh_token = create_refresh_token(data={"sub": user.email})
     _store_token(refresh_token)
     return TokenWithRefresh(
