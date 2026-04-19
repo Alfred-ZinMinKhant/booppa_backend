@@ -704,6 +704,64 @@ jobs:
             exit 1
           fi
 
+      - name: Backfill vendor industry data (ECS one-off)
+        continue-on-error: true
+        env:
+          APP_TASK_DEF_ARN: ${{ env.APP_TASK_DEF_ARN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          ECS_CLUSTER: ${{ env.ECS_CLUSTER }}
+          AWS_SUBNETS: ${{ secrets.AWS_SUBNETS }}
+          AWS_SECURITY_GROUPS: ${{ secrets.AWS_SECURITY_GROUPS }}
+        run: |
+          echo "Running industry backfill as an ECS one-off task..."
+          if [ -z "$APP_TASK_DEF_ARN" ]; then
+            echo "APP_TASK_DEF_ARN is empty. Skipping industry backfill." >&2
+            exit 0
+          fi
+
+          IFS=',' read -ra SUBS <<< "$AWS_SUBNETS"
+          IFS=',' read -ra SGS <<< "$AWS_SECURITY_GROUPS"
+          subs_json=$(printf '%s\n' "${SUBS[@]}" | jq -R . | jq -s .)
+          sgs_json=$(printf '%s\n' "${SGS[@]}" | jq -R . | jq -s .)
+          network_config=$(jq -n --argjson subs "$subs_json" --argjson sgs "$sgs_json" '{awsvpcConfiguration: {subnets: $subs, securityGroups: $sgs, assignPublicIp: "ENABLED"}}')
+
+          run_output=$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --launch-type FARGATE \
+            --task-definition "$APP_TASK_DEF_ARN" \
+            --network-configuration "$network_config" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"app\",\"command\":[\"python\",\"scripts/backfill_industry.py\"]}]}" \
+            --region "$AWS_REGION")
+
+          echo "$run_output"
+          failures=$(echo "$run_output" | jq -r '.failures | length')
+          if [ "$failures" -gt 0 ]; then
+            echo "Industry backfill task failed to start:" >&2
+            echo "$run_output" | jq -r '.failures[] | @json' >&2
+            exit 1
+          fi
+
+          task_arn=$(echo "$run_output" | jq -r '.tasks[0].taskArn')
+          echo "Waiting for industry backfill task to stop: $task_arn"
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$task_arn" --region "$AWS_REGION"
+
+          describe=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$task_arn" --region "$AWS_REGION")
+          container_exit=$(echo "$describe" | jq -r '.tasks[0].containers[0].exitCode')
+          task_id=$(echo "$task_arn" | awk -F'/' '{print $NF}')
+
+          echo "Industry backfill task exit code: $container_exit"
+          if [ "$container_exit" != "0" ]; then
+            echo "Industry backfill task failed — check logs." >&2
+            aws logs get-log-events \
+              --log-group-name "/ecs/${{ env.APP_ECR_REPO }}" \
+              --log-stream-name "ecs/app/${task_id}" \
+              --limit 100 \
+              --region "$AWS_REGION" \
+              --query 'events[].message' \
+              --output text || echo "Log fetch failed" >&2
+            exit 1
+          fi
+
       - name: Deploy Cloudflare Tunnel (optional)
         if: ${{ env.CLOUDFLARE_TUNNEL_SECRET_ARN != '' }}
         env:

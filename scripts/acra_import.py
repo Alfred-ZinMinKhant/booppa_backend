@@ -55,18 +55,22 @@ ACCEPTED_TYPES = {
 }
 
 SECTOR_KEYWORDS: list[tuple[str, list[str]]] = [
-    ("Cybersecurity",              ["cybersecurity", "cyber security", "infosec", "firewall", "pentest", "penetration test"]),
-    ("Financial Services",         ["financial", "fintech", "insurance", "investment", "fund", "capital", "banking", "wealth"]),
-    ("Health Technology",          ["health", "medical", "clinic", "hospital", "pharmacy", "biotech", "dental", "therapeutic"]),
-    ("Logistics & Supply Chain",   ["logistics", "transport", "freight", "courier", "shipping", "warehousing", "forwarding"]),
-    ("Manufacturing & Industrial", ["engineering", "manufacturing", "industrial", "construction", "fabrication", "contractor"]),
-    ("HR & People Tech",           ["recruitment", "staffing", "human resource", "manpower", "payroll", "talent"]),
-    ("Marketing Technology",       ["marketing", "media", "advertising", "public relations", "design", "creative", "branding"]),
-    ("Education & Training",       ["education", "training", "academy", "learning", "tuition", "school", "institute"]),
-    ("Food & Beverage",            ["food", "beverage", "restaurant", "catering", "bakery", "cafe", "cuisine"]),
-    ("Real Estate",                ["property", "real estate", "realty", "property development", "facilities management"]),
-    ("IT & Technology",            ["software", "technology", "digital", "ict", "cloud", "data", "ai ", "saas", "infocomm", "app development"]),
-    ("Professional Services",      ["consulting", "advisory", "audit", "accounting", "management", "professional", "legal", "law"]),
+    ("Aerospace & Defence",                ["aerospace", "aviation", "aircraft", "defence", "defense", "military", "satellite", "unmanned"]),
+    ("Construction & Engineering",         ["construction", "contractor", "building", "civil engineering", "architecture", "structural", "renovation", "plumbing", "electrical installation"]),
+    ("Consulting & Professional Services", ["consulting", "advisory", "audit", "accounting", "management consult", "professional", "legal", "law firm", "notary", "recruitment", "staffing", "human resource", "manpower", "payroll", "talent"]),
+    ("Education & Training",               ["education", "training", "academy", "learning", "tuition", "school", "institute", "university", "enrichment"]),
+    ("Energy & Utilities",                 ["energy", "power", "solar", "electricity", "gas supply", "utilities", "renewable", "petroleum", "oil and gas"]),
+    ("Financial Services",                 ["financial", "fintech", "insurance", "investment", "fund", "capital", "banking", "wealth", "credit", "securities"]),
+    ("Food & Beverage",                    ["food", "beverage", "restaurant", "catering", "bakery", "cafe", "cuisine", "coffee", "canteen"]),
+    ("Healthcare & Pharmaceuticals",       ["health", "medical", "clinic", "hospital", "pharmacy", "biotech", "dental", "therapeutic", "pharmaceutical", "nursing"]),
+    ("Information Technology",             ["software", "technology", "digital", "ict", "cloud", "data", "ai ", "saas", "infocomm", "app development", "cybersecurity", "cyber security", "infosec", "it solutions", "it services"]),
+    ("Logistics & Transportation",         ["logistics", "transport", "freight", "courier", "shipping", "warehousing", "forwarding", "cargo", "delivery", "moving"]),
+    ("Manufacturing",                      ["engineering", "manufacturing", "industrial", "fabrication", "precision", "machining", "assembly", "production"]),
+    ("Marine & Offshore",                  ["marine", "offshore", "shipyard", "ship", "vessel", "maritime", "port", "diving"]),
+    ("Media & Communications",             ["marketing", "media", "advertising", "public relations", "design", "creative", "branding", "publishing", "broadcasting", "film"]),
+    ("Real Estate & Property",             ["property", "real estate", "realty", "property development", "facilities management", "strata"]),
+    ("Retail & E-Commerce",               ["retail", "e-commerce", "ecommerce", "shop", "store", "trading", "wholesale", "merchandise", "supermarket"]),
+    ("Telecommunications",                 ["telecom", "telecommunication", "network", "broadband", "wireless", "mobile operator", "fibre"]),
 ]
 
 PAGE_SIZE = 100
@@ -78,7 +82,7 @@ def infer_sector(text: str) -> str:
     for sector, kws in SECTOR_KEYWORDS:
         if any(kw in t for kw in kws):
             return sector
-    return "Professional Services"
+    return "Other"
 
 
 def fetch_page(dataset_id: str, offset: int, limit: int = PAGE_SIZE) -> dict[str, Any]:
