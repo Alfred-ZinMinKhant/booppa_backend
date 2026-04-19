@@ -33,6 +33,13 @@ from app.core.models_v8 import VendorStatusSnapshot, ScoreSnapshot, AnomalyEvent
 
 logger = logging.getLogger(__name__)
 
+
+def _ensure_aware(dt: datetime) -> datetime:
+    """Ensure a datetime is timezone-aware (assume UTC if naive)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
 # ── Logic version — bump when thresholds change (invalidates cached rows) ──────
 STATUS_LOGIC_VERSION = "v2"
 
@@ -112,7 +119,7 @@ def compute_monitoring_activity(db: Session, vendor_id: str) -> str:
         return "NONE"
 
     now = datetime.now(timezone.utc)
-    snapshot_age_days = (now - latest_snapshot.snapshot_at).days
+    snapshot_age_days = (now - _ensure_aware(latest_snapshot.snapshot_at)).days
 
     latest_activity = db.query(ActivityLog).filter(
         ActivityLog.user_id == vendor_id
@@ -120,7 +127,7 @@ def compute_monitoring_activity(db: Session, vendor_id: str) -> str:
 
     has_recent_event = (
         latest_activity is not None
-        and (now - latest_activity.created_at).days <= TRUST_EVENT_ACTIVE_DAYS
+        and (now - _ensure_aware(latest_activity.created_at)).days <= TRUST_EVENT_ACTIVE_DAYS
     )
 
     if snapshot_age_days > SNAPSHOT_STALE_DAYS:
@@ -218,7 +225,7 @@ def get_vendor_status(db: Session, vendor_id: str) -> dict:
     days_until_expiry = None
     is_expiring_soon  = False
     if expiry:
-        days_until_expiry = (expiry - datetime.now(timezone.utc)).days
+        days_until_expiry = (_ensure_aware(expiry) - datetime.now(timezone.utc)).days
         is_expiring_soon  = days_until_expiry <= 30
 
     from app.core.models import Proof
@@ -261,7 +268,7 @@ def get_vendor_status(db: Session, vendor_id: str) -> dict:
 
     snapshot_age_days = None
     if latest_snapshot:
-        snapshot_age_days = (datetime.now(timezone.utc) - latest_snapshot.snapshot_at).days
+        snapshot_age_days = (datetime.now(timezone.utc) - _ensure_aware(latest_snapshot.snapshot_at)).days
 
     # Risk detail — query AnomalyEvent directly
     open_anomalies = db.query(AnomalyEvent).filter(

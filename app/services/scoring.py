@@ -178,7 +178,10 @@ class VendorScoreEngine:
         if not last_activity:
             return 0
             
-        hours_since = (datetime.now(timezone.utc) - last_activity.created_at).total_seconds() / 3600
+        ca = last_activity.created_at
+        if ca.tzinfo is None:
+            ca = ca.replace(tzinfo=timezone.utc)
+        hours_since = (datetime.now(timezone.utc) - ca).total_seconds() / 3600
         if hours_since <= 24: return 100
         if hours_since <= 72: return 80
         if hours_since <= 168: return 60
