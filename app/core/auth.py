@@ -71,7 +71,7 @@ def authenticate_user(db, email: str, password: str):
     return user
 
 
-def register_user(db, email: str, password: str, company: str = None, uen: str = None):
+def register_user(db, email: str, password: str, company: str = None, uen: str = None, industry: str = None):
     """Create a new vendor user. Returns the user or raises ValueError on duplicate."""
     from app.core.models import User
     if db.query(User).filter(User.email == email).first():
@@ -81,9 +81,24 @@ def register_user(db, email: str, password: str, company: str = None, uen: str =
         hashed_password=get_password_hash(password),
         company=company or "",
         uen=uen or None,
+        industry=industry or None,
         role="VENDOR",
     )
     db.add(user)
     db.commit()
     db.refresh(user)
+
+    # Propagate industry to MarketplaceVendor if one is linked
+    if industry:
+        try:
+            from app.core.models_v10 import MarketplaceVendor
+            mv = db.query(MarketplaceVendor).filter(
+                MarketplaceVendor.claimed_by_user_id == user.id
+            ).first()
+            if mv:
+                mv.industry = industry
+                db.commit()
+        except Exception:
+            pass
+
     return user
