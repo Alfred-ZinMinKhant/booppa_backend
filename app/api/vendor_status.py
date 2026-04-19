@@ -7,6 +7,7 @@ GET /api/vendor/dashboard-cal    → CAL payload: ladder + suggestion + message 
 """
 
 from datetime import datetime, timezone
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -392,7 +393,8 @@ async def upload_evidence(
 from pydantic import BaseModel
 
 class ProfileUpdate(BaseModel):
-    company: str
+    company: Optional[str] = None
+    industry: Optional[str] = None
 
 @router.get("/profile")
 async def get_profile(current_user=Depends(get_current_user)):
@@ -401,6 +403,7 @@ async def get_profile(current_user=Depends(get_current_user)):
         "id": str(current_user.id),
         "email": current_user.email,
         "company": getattr(current_user, "company", None),
+        "industry": getattr(current_user, "industry", None),
         "role": getattr(current_user, "role", "VENDOR")
     }
 
@@ -416,6 +419,23 @@ async def update_profile(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
         
-    user.company = body.company
+    if body.company is not None:
+        user.company = body.company
+    if body.industry is not None:
+        user.industry = body.industry
     db.commit()
-    return {"status": "success", "company": user.company}
+
+    # Propagate industry to MarketplaceVendor if linked
+    if body.industry is not None:
+        try:
+            from app.core.models_v10 import MarketplaceVendor
+            mv = db.query(MarketplaceVendor).filter(
+                MarketplaceVendor.claimed_by_user_id == user.id
+            ).first()
+            if mv:
+                mv.industry = body.industry
+                db.commit()
+        except Exception:
+            pass
+
+    return {"status": "success", "company": user.company, "industry": user.industry}
