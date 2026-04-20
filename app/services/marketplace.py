@@ -221,6 +221,7 @@ def search_marketplace(
                 "slug": v.slug,
                 "domain": v.domain,
                 "website": v.website,
+                "uen": v.uen,
                 "industry": v.industry,
                 "country": v.country,
                 "city": v.city,

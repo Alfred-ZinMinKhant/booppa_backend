@@ -10,30 +10,37 @@ from sqlalchemy.orm import Session
 from app.core.models import User
 from app.core.models_v6 import VendorScore, VerifyRecord, VendorSector
 from app.core.models_v8 import VendorStatusSnapshot, ScoreSnapshot
+from app.core.models_v10 import MarketplaceVendor
 
 logger = logging.getLogger(__name__)
 
 
 def compare_vendors(db: Session, vendor_ids: list[str]) -> dict:
-    """Generate comparison matrix for 2-4 vendors."""
+    """Generate comparison matrix for 2-4 vendors.
+
+    vendor_ids are MarketplaceVendor UUIDs (marketplace_vendors.id).
+    We join to users via claimed_by_user_id to fetch scores and status.
+    """
     if len(vendor_ids) < 2 or len(vendor_ids) > 4:
         return {"error": "Provide 2-4 vendor IDs for comparison"}
 
     vendors = []
     for vid in vendor_ids:
-        user = db.query(User).filter(User.id == vid, User.role == "vendor").first()
-        if not user:
+        mv = db.query(MarketplaceVendor).filter(MarketplaceVendor.id == vid).first()
+        if not mv:
             continue
 
-        score = db.query(VendorScore).filter(VendorScore.vendor_id == vid).first()
-        status = db.query(VendorStatusSnapshot).filter(VendorStatusSnapshot.vendor_id == vid).first()
-        verify = db.query(VerifyRecord).filter(VerifyRecord.vendor_id == vid).first()
-        sectors = db.query(VendorSector).filter(VendorSector.vendor_id == vid).all()
+        # Use the linked user for score/status lookups if available
+        user_id = str(mv.claimed_by_user_id) if mv.claimed_by_user_id else None
+        score = db.query(VendorScore).filter(VendorScore.vendor_id == user_id).first() if user_id else None
+        status = db.query(VendorStatusSnapshot).filter(VendorStatusSnapshot.vendor_id == user_id).first() if user_id else None
+        verify = db.query(VerifyRecord).filter(VerifyRecord.vendor_id == user_id).first() if user_id else None
+        sectors = db.query(VendorSector).filter(VendorSector.vendor_id == user_id).all() if user_id else []
 
         vendors.append({
-            "id": str(user.id),
-            "company": user.company or user.full_name,
-            "uen": user.uen,
+            "id": str(mv.id),
+            "company": mv.company_name,
+            "uen": mv.uen,
             "scores": {
                 "total_score": score.total_score if score else 0,
                 "compliance_score": score.compliance_score if score else 0,
