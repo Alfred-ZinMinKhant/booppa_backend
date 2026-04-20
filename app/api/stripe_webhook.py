@@ -384,8 +384,9 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
         report.completed_at = datetime.now(timezone.utc)
         db.commit()
 
-        # Step 6: Send email
-        if contact_email:
+        # Step 6: Send email (guard against duplicate sends on retry)
+        already_emailed = assessment.get("notarization_email_sent")
+        if contact_email and not already_emailed:
             try:
                 email_svc = EmailService()
                 download_section = (
@@ -416,6 +417,12 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                     subject=f"Your Notarization Certificate is Ready — {original_filename}",
                     body_html=body_html,
                 )
+                # Mark email as sent to prevent duplicates on retry
+                assessment["notarization_email_sent"] = True
+                assessment["notarization_email_sent_at"] = datetime.now(timezone.utc).isoformat()
+                report.assessment_data = assessment
+                flag_modified(report, "assessment_data")
+                db.commit()
             except Exception as e:
                 logger.error(f"[Notarize] Email failed for {report_id}: {e}")
 
