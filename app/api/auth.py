@@ -102,6 +102,7 @@ class MeOut(BaseModel):
     id: str
     email: str
     company: str | None
+    website: str | None = None
     role: str
     plan: str = "free"
     is_admin: bool = False
@@ -257,6 +258,7 @@ async def me(
         id=str(user.id),
         email=user.email,
         company=getattr(user, "company", None),
+        website=getattr(user, "website", None),
         role=getattr(user, "role", "VENDOR"),
         plan=getattr(user, "plan", "free") or "free",
         is_admin=is_admin,
