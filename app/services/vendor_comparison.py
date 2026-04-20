@@ -86,6 +86,8 @@ def compare_vendors(db: Session, vendor_ids: list[str]) -> dict:
                         status.procurement_readiness if status else "NOT_READY"
                     ),
                     "confidence_score": status.confidence_score if status else 0,
+                    "evidence_count": status.evidence_count if status else 0,
+                    "notarization_depth": status.notarization_depth if status else 0,
                 },
                 "verification": (
                     {
