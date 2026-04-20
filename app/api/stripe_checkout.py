@@ -69,9 +69,14 @@ def get_base_url():
     )
 
 
-def _checkout_idempotency_key(product_type: str, price_id: str, client_ip: str, report_id=None, email=None) -> str:
-    # Include client_ip so anonymous checkouts (no report/email) don't collide across users.
+def _checkout_idempotency_key(product_type: str, price_id: str, client_ip: str, report_id=None, email=None, **extra) -> str:
+    # Include all variable fields so retries with different form data don't collide.
     raw = f"{product_type}:{price_id}:{client_ip}:{report_id or ''}:{email or ''}"
+    # Add any extra fields (vendor_url, company_name, etc.) to avoid idempotency conflicts
+    for k in sorted(extra):
+        v = extra[k]
+        if v:
+            raw += f":{k}={v}"
     return "checkout-" + hashlib.sha256(raw.encode()).hexdigest()[:40]
 
 
@@ -178,7 +183,10 @@ async def checkout_post(request: Request):
         if intake_data:
             metadata["has_intake"] = "1"
 
-        _idem_key = _checkout_idempotency_key(product_type or "", price_id, client_ip, report_id, prefill_email)
+        _idem_key = _checkout_idempotency_key(
+            product_type or "", price_id, client_ip, report_id, prefill_email,
+            vendor_url=vendor_url, company_name=company_name, rfp_description=rfp_description,
+        )
         # Use automatic_payment_methods so Stripe shows whatever is enabled in
         # the dashboard (card, PayNow, etc.) without hardcoding method names.
         # Subscriptions don't support automatic_payment_methods, so fall back to card only.

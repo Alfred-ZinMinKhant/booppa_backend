@@ -93,6 +93,11 @@ class MarketplaceVendor(Base):
     linkedin_url = Column(String(500), nullable=True)
     crunchbase_url = Column(String(500), nullable=True)
 
+    # Contact scraping
+    contact_email = Column(String(255), nullable=True, index=True)
+    scraped_data = Column(JSON, nullable=True)  # {emails: [], social_links: [], dpo_email: ...}
+    last_scraped_at = Column(DateTime, nullable=True)
+
     # Scan status: NONE | QUEUED | SCANNING | COMPLETE | FAILED
     scan_status = Column(String(20), default="NONE", nullable=False, index=True)
     scan_completed_at = Column(DateTime, nullable=True)
@@ -135,6 +140,12 @@ class DiscoveredVendor(Base):
     industry = Column(String(100), nullable=True, index=True)
     country = Column(String(100), default="Singapore", nullable=False)
     city = Column(String(100), nullable=True)
+
+    # Contact scraping
+    website = Column(String(500), nullable=True)
+    contact_email = Column(String(255), nullable=True, index=True)
+    scraped_data = Column(JSON, nullable=True)
+    last_scraped_at = Column(DateTime, nullable=True)
 
     # GeBIZ data
     gebiz_supplier = Column(Boolean, default=False)
