@@ -61,7 +61,7 @@ ORDERING_POLICY = {
 
 
 def _require_enterprise(current_user):
-    if getattr(current_user, "role", "VENDOR") not in ("ENTERPRISE", "ADMIN"):
+    if getattr(current_user, "role", "VENDOR") not in ("ENTERPRISE", "ADMIN", "PROCUREMENT"):
         raise HTTPException(status_code=403, detail="Enterprise plan required.")
 
 
