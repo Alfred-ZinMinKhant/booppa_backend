@@ -63,6 +63,7 @@ def verify_access_token(token: str):
 def authenticate_user(db, email: str, password: str):
     """Authenticate user against the database."""
     from app.core.models import User
+
     user = db.query(User).filter(User.email == email).first()
     if not user:
         return None
@@ -71,9 +72,18 @@ def authenticate_user(db, email: str, password: str):
     return user
 
 
-def register_user(db, email: str, password: str, company: str = None, uen: str = None, industry: str = None, role: str = "VENDOR"):
+def register_user(
+    db,
+    email: str,
+    password: str,
+    company: str = None,
+    uen: str = None,
+    industry: str = None,
+    role: str = "VENDOR",
+):
     """Create a new user. Returns the user or raises ValueError on duplicate."""
     from app.core.models import User
+
     if db.query(User).filter(User.email == email).first():
         raise ValueError("Email already registered")
     user = User(
@@ -99,17 +109,25 @@ def register_user(db, email: str, password: str, company: str = None, uen: str =
 
             # 1. Match by UEN (most reliable)
             if uen:
-                mv = db.query(MarketplaceVendor).filter(
-                    MarketplaceVendor.uen == uen,
-                    MarketplaceVendor.claimed_by_user_id.is_(None),
-                ).first()
+                mv = (
+                    db.query(MarketplaceVendor)
+                    .filter(
+                        MarketplaceVendor.uen == uen,
+                        MarketplaceVendor.claimed_by_user_id.is_(None),
+                    )
+                    .first()
+                )
 
             # 2. Match by company name (case-insensitive)
             if mv is None:
-                mv = db.query(MarketplaceVendor).filter(
-                    MarketplaceVendor.company_name.ilike(company),
-                    MarketplaceVendor.claimed_by_user_id.is_(None),
-                ).first()
+                mv = (
+                    db.query(MarketplaceVendor)
+                    .filter(
+                        MarketplaceVendor.company_name.ilike(company),
+                        MarketplaceVendor.claimed_by_user_id.is_(None),
+                    )
+                    .first()
+                )
 
             if mv:
                 # Claim the existing entry
@@ -122,7 +140,11 @@ def register_user(db, email: str, password: str, company: str = None, uen: str =
                 base_slug = generate_slug(company)
                 slug = base_slug
                 counter = 1
-                while db.query(MarketplaceVendor).filter(MarketplaceVendor.slug == slug).first():
+                while (
+                    db.query(MarketplaceVendor)
+                    .filter(MarketplaceVendor.slug == slug)
+                    .first()
+                ):
                     slug = f"{base_slug}-{counter}"
                     counter += 1
 
