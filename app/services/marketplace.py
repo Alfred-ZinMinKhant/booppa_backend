@@ -224,6 +224,23 @@ def get_vendor_by_slug(db: Session, slug: str) -> Optional[dict]:
     v = db.query(MarketplaceVendor).filter(MarketplaceVendor.slug == slug).first()
     if not v:
         return None
+
+    claimed = v.claimed_by_user_id is not None
+    is_verified = False
+    verified_at = None
+    if claimed:
+        vr = (
+            db.query(VerifyRecord)
+            .filter(
+                VerifyRecord.vendor_id == v.claimed_by_user_id,
+                VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE,
+            )
+            .first()
+        )
+        if vr:
+            is_verified = True
+            verified_at = (v.claimed_at or vr.created_at).isoformat() if (v.claimed_at or vr.created_at) else None
+
     return {
         "id": str(v.id),
         "company_name": v.company_name,
@@ -238,7 +255,10 @@ def get_vendor_by_slug(db: Session, slug: str) -> Optional[dict]:
         "linkedin_url": v.linkedin_url,
         "crunchbase_url": v.crunchbase_url,
         "scan_status": v.scan_status,
-        "claimed": v.claimed_by_user_id is not None,
+        "claimed": claimed,
+        "verified": is_verified,
+        "verified_at": verified_at,
+        "claimed_at": v.claimed_at.isoformat() if v.claimed_at else None,
         "created_at": v.created_at.isoformat() if v.created_at else None,
     }
 
