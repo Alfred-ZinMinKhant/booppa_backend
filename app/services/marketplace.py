@@ -229,6 +229,7 @@ def search_marketplace(
                 "city": v.city,
                 "short_description": v.short_description,
                 "scan_status": v.scan_status,
+                "contact_email": v.contact_email,
                 "claimed": v.claimed_by_user_id is not None,
                 "verified": (
                     str(v.claimed_by_user_id) in verified_set
@@ -325,6 +326,7 @@ def get_vendor_by_slug(db: Session, slug: str) -> Optional[dict]:
         "claimed_at": v.claimed_at.isoformat() if v.claimed_at else None,
         "created_at": v.created_at.isoformat() if v.created_at else None,
         "trust_score": scores["total_score"] if scores else None,
+        "contact_email": v.contact_email,
         "scores": scores,
         "status": status,
     }
