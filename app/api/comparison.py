@@ -27,8 +27,10 @@ async def compare_get(
 from pydantic import BaseModel
 from typing import List
 
+
 class CompareRequest(BaseModel):
     vendor_ids: List[str]
+
 
 @router.post("/")
 async def compare_post(
