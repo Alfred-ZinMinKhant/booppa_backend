@@ -30,6 +30,7 @@ from app.core.models import (
     User, VendorScore, VerifyRecord, VendorSector,
     EnterpriseProfile, GovernanceRecord, ActivityLog,
 )
+from app.core.models_v10 import MarketplaceVendor
 from app.core.models_v8 import (
     VendorStatusSnapshot, ScoreSnapshot, NotarizationMetadata,
 )
@@ -135,6 +136,15 @@ async def procurement_vendors(
         if u:
             user_map[str(s.vendor_id)] = u
 
+    # Pull marketplace vendor data (website, contact_email) for enrichment
+    mv_map: dict = {}
+    for s in score_rows:
+        mv = db.query(MarketplaceVendor).filter(
+            MarketplaceVendor.claimed_by_user_id == s.vendor_id
+        ).first()
+        if mv:
+            mv_map[str(s.vendor_id)] = mv
+
     # Enrich each vendor
     enriched = []
     for s in score_rows:
@@ -158,9 +168,14 @@ async def procurement_vendors(
         pct  = snaps[0].sector_percentile if snaps else 50.0
         verify = db.query(VerifyRecord).filter(VerifyRecord.vendor_id == s.vendor_id).first()
 
+        mv = mv_map.get(vid)
+
         enriched.append({
             "slug":               user.email.split("@")[0] if user else vid[:8],
             "company":            user.company if user else None,
+            "website":            (mv.website if mv else None) or (user.website if user else None),
+            "contactEmail":       (mv.contact_email if mv else None) or (user.email if user else None),
+            "domain":             mv.domain if mv else None,
             "currentScore":       s.total_score,
             "breakdown": {
                 "compliance":    s.compliance_score,
