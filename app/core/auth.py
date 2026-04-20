@@ -77,6 +77,7 @@ def register_user(
     email: str,
     password: str,
     company: str = None,
+    website: str = None,
     uen: str = None,
     industry: str = None,
     role: str = "VENDOR",
@@ -90,6 +91,7 @@ def register_user(
         email=email,
         hashed_password=get_password_hash(password),
         company=company or "",
+        website=website or None,
         uen=uen or None,
         industry=industry or None,
         role=role,
@@ -135,6 +137,8 @@ def register_user(
                 mv.claimed_at = datetime.utcnow()
                 if industry and not mv.industry:
                     mv.industry = industry
+                if website and not mv.website:
+                    mv.website = website
             else:
                 # Create a fresh entry — ensure slug uniqueness
                 base_slug = generate_slug(company)
@@ -151,6 +155,7 @@ def register_user(
                 mv = MarketplaceVendor(
                     company_name=company,
                     slug=slug,
+                    website=website or None,
                     uen=uen or None,
                     industry=industry or None,
                     country="Singapore",
