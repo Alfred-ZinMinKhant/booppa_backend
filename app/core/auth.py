@@ -88,17 +88,59 @@ def register_user(db, email: str, password: str, company: str = None, uen: str =
     db.commit()
     db.refresh(user)
 
-    # Propagate industry to MarketplaceVendor if one is linked
-    if industry:
+    # Auto-claim or auto-create a MarketplaceVendor entry for vendor accounts
+    if role == "VENDOR" and company:
         try:
+            from datetime import timezone
             from app.core.models_v10 import MarketplaceVendor
-            mv = db.query(MarketplaceVendor).filter(
-                MarketplaceVendor.claimed_by_user_id == user.id
-            ).first()
+            from app.services.marketplace import generate_slug
+
+            mv = None
+
+            # 1. Match by UEN (most reliable)
+            if uen:
+                mv = db.query(MarketplaceVendor).filter(
+                    MarketplaceVendor.uen == uen,
+                    MarketplaceVendor.claimed_by_user_id.is_(None),
+                ).first()
+
+            # 2. Match by company name (case-insensitive)
+            if mv is None:
+                mv = db.query(MarketplaceVendor).filter(
+                    MarketplaceVendor.company_name.ilike(company),
+                    MarketplaceVendor.claimed_by_user_id.is_(None),
+                ).first()
+
             if mv:
-                mv.industry = industry
-                db.commit()
+                # Claim the existing entry
+                mv.claimed_by_user_id = user.id
+                mv.claimed_at = datetime.utcnow()
+                if industry and not mv.industry:
+                    mv.industry = industry
+            else:
+                # Create a fresh entry — ensure slug uniqueness
+                base_slug = generate_slug(company)
+                slug = base_slug
+                counter = 1
+                while db.query(MarketplaceVendor).filter(MarketplaceVendor.slug == slug).first():
+                    slug = f"{base_slug}-{counter}"
+                    counter += 1
+
+                mv = MarketplaceVendor(
+                    company_name=company,
+                    slug=slug,
+                    uen=uen or None,
+                    industry=industry or None,
+                    country="Singapore",
+                    source="manual",
+                    claimed_by_user_id=user.id,
+                    claimed_at=datetime.utcnow(),
+                )
+                db.add(mv)
+
+            db.commit()
         except Exception:
+            # Non-fatal: user account still created successfully
             pass
 
     return user
