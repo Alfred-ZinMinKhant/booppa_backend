@@ -1621,6 +1621,65 @@ def _bridge_gebiz_to_shortlist(db) -> None:
         logger.info(f"[GeBIZ] Created {activities_added} GeBizActivity rows for vendor sector matching")
 
 
+@celery_app.task(bind=True, max_retries=2, name="scrape_vendor_contact_task")
+def scrape_vendor_contact_task(self, vendor_id: str, model: str = "marketplace"):
+    """Scrape a single vendor's website for contact emails."""
+    from app.services.vendor_scraper import scrape_and_update_vendor
+
+    db = SessionLocal()
+    try:
+        result = scrape_and_update_vendor(db, vendor_id, model=model)
+        logger.info(f"[Scraper] vendor={vendor_id} result={result.get('status')} emails={result.get('email_count', 0)}")
+        return result
+    except Exception as exc:
+        logger.error(f"[Scraper] Task failed for {vendor_id}: {exc}")
+        raise self.retry(exc=exc, countdown=120 * (2 ** self.request.retries))
+    finally:
+        db.close()
+
+
+@celery_app.task(name="scrape_vendor_contacts_batch")
+def scrape_vendor_contacts_batch(model: str = "marketplace", limit: int = 50):
+    """
+    Batch scrape vendors missing contact emails.
+    Queues individual tasks with staggered countdown to respect rate limits.
+    Max 3 concurrent scrapes enforced by staggering.
+    """
+    db = SessionLocal()
+    try:
+        if model == "marketplace":
+            from app.core.models_v10 import MarketplaceVendor as Model
+        else:
+            from app.core.models_v10 import DiscoveredVendor as Model
+
+        from sqlalchemy import or_
+
+        vendors = (
+            db.query(Model)
+            .filter(
+                Model.contact_email.is_(None),
+                or_(Model.domain.isnot(None), Model.website.isnot(None)),
+                or_(Model.last_scraped_at.is_(None)),
+            )
+            .limit(limit)
+            .all()
+        )
+
+        queued = 0
+        for i, vendor in enumerate(vendors):
+            # Stagger by 5 seconds per vendor to cap at ~3 concurrent
+            scrape_vendor_contact_task.apply_async(
+                args=[str(vendor.id), model],
+                countdown=i * 5,
+            )
+            queued += 1
+
+        logger.info(f"[Scraper] Batch queued {queued} vendors for scraping (model={model})")
+        return {"queued": queued, "model": model}
+    finally:
+        db.close()
+
+
 @celery_app.task(name="cleanup_old_tasks")
 def cleanup_old_tasks():
     """Clean up old completed reports and temporary data"""

@@ -300,3 +300,60 @@ def delete_tender(
         db.commit()
     finally:
         db.close()
+
+
+# ── Vendor Contact Scraping ──────────────────────────────────────────────────
+
+
+@router.post("/scrape-vendors", status_code=202)
+def trigger_vendor_scrape(
+    model: str = Query("marketplace", regex="^(marketplace|discovered)$"),
+    limit: int = Query(50, ge=1, le=500),
+    _auth: bool = Depends(_admin_auth),
+):
+    """Queue batch scraping for vendors missing contact emails."""
+    from app.workers.tasks import scrape_vendor_contacts_batch
+    scrape_vendor_contacts_batch.delay(model=model, limit=limit)
+    return {"status": "queued", "model": model, "limit": limit}
+
+
+@router.post("/scrape-vendor/{vendor_id}", status_code=202)
+def trigger_single_vendor_scrape(
+    vendor_id: str,
+    model: str = Query("marketplace", regex="^(marketplace|discovered)$"),
+    _auth: bool = Depends(_admin_auth),
+):
+    """Queue scraping for a single vendor by ID."""
+    from app.workers.tasks import scrape_vendor_contact_task
+    scrape_vendor_contact_task.delay(vendor_id, model=model)
+    return {"status": "queued", "vendor_id": vendor_id, "model": model}
+
+
+@router.get("/scrape-stats")
+def scrape_stats(
+    model: str = Query("marketplace", regex="^(marketplace|discovered)$"),
+    _auth: bool = Depends(_admin_auth),
+):
+    """Get scraping coverage stats."""
+    from sqlalchemy import func
+    if model == "marketplace":
+        from app.core.models_v10 import MarketplaceVendor as Model
+    else:
+        from app.core.models_v10 import DiscoveredVendor as Model
+
+    db = SessionLocal()
+    try:
+        total = db.query(func.count(Model.id)).scalar()
+        with_email = db.query(func.count(Model.id)).filter(Model.contact_email.isnot(None)).scalar()
+        with_website = db.query(func.count(Model.id)).filter(Model.website.isnot(None)).scalar()
+        scraped = db.query(func.count(Model.id)).filter(Model.last_scraped_at.isnot(None)).scalar()
+        return {
+            "model": model,
+            "total": total,
+            "with_email": with_email,
+            "with_website": with_website,
+            "scraped": scraped,
+            "coverage_pct": round(with_email / total * 100, 1) if total else 0,
+        }
+    finally:
+        db.close()
