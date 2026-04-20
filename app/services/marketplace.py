@@ -16,6 +16,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 from app.core.models_v10 import MarketplaceVendor, ImportBatch
 from app.core.models_v6 import VerifyRecord, Proof, LifecycleStatus
+from app.core.models_v6 import VendorScore
+from app.core.models_v8 import VendorStatusSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -252,6 +254,9 @@ def get_vendor_by_slug(db: Session, slug: str) -> Optional[dict]:
     claimed = v.claimed_by_user_id is not None
     is_verified = False
     verified_at = None
+    scores = None
+    status = None
+
     if claimed:
         vr = (
             db.query(VerifyRecord)
@@ -268,6 +273,37 @@ def get_vendor_by_slug(db: Session, slug: str) -> Optional[dict]:
                 if (v.claimed_at or vr.created_at)
                 else None
             )
+
+        score_row = (
+            db.query(VendorScore)
+            .filter(VendorScore.vendor_id == v.claimed_by_user_id)
+            .first()
+        )
+        if score_row:
+            scores = {
+                "total_score": score_row.total_score,
+                "compliance_score": score_row.compliance_score,
+                "visibility_score": score_row.visibility_score,
+                "engagement_score": score_row.engagement_score,
+                "recency_score": score_row.recency_score,
+                "procurement_interest_score": score_row.procurement_interest_score,
+            }
+
+        status_row = (
+            db.query(VendorStatusSnapshot)
+            .filter(VendorStatusSnapshot.vendor_id == v.claimed_by_user_id)
+            .first()
+        )
+        if status_row:
+            status = {
+                "verification_depth": status_row.verification_depth,
+                "monitoring_activity": status_row.monitoring_activity,
+                "risk_signal": status_row.risk_signal,
+                "procurement_readiness": status_row.procurement_readiness,
+                "notarization_depth": status_row.notarization_depth,
+                "evidence_count": status_row.evidence_count,
+                "confidence_score": round(status_row.confidence_score),
+            }
 
     return {
         "id": str(v.id),
@@ -288,6 +324,9 @@ def get_vendor_by_slug(db: Session, slug: str) -> Optional[dict]:
         "verified_at": verified_at,
         "claimed_at": v.claimed_at.isoformat() if v.claimed_at else None,
         "created_at": v.created_at.isoformat() if v.created_at else None,
+        "trust_score": scores["total_score"] if scores else None,
+        "scores": scores,
+        "status": status,
     }
 
 
