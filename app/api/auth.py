@@ -86,6 +86,7 @@ class RegisterRequest(BaseModel):
     email: str
     password: str
     company: str = ""
+    website: Optional[str] = None
     uen: Optional[str] = None
     industry: Optional[str] = None
 
@@ -154,7 +155,7 @@ async def login_json(body: LoginRequest, db: Session = Depends(get_db)):
 @router.post("/register", status_code=201, response_model=TokenWithRefresh)
 async def register(body: RegisterRequest, db: Session = Depends(get_db)):
     try:
-        user = register_user(db, email=body.email, password=body.password, company=body.company, uen=body.uen, industry=body.industry)
+        user = register_user(db, email=body.email, password=body.password, company=body.company, website=body.website, uen=body.uen, industry=body.industry)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     access_token  = create_access_token(data={"sub": user.email})
