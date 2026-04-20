@@ -102,11 +102,20 @@ class ProcurementRegisterRequest(BaseModel):
 class MeOut(BaseModel):
     id: str
     email: str
+    full_name: str | None = None
     company: str | None
     website: str | None = None
     role: str
     plan: str = "free"
     is_admin: bool = False
+
+
+class ProfileUpdate(BaseModel):
+    full_name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    company: Optional[str] = None
+    website: Optional[str] = None
+    industry: Optional[str] = None
 
 
 # ── Form-based login (OAuth2 compatible) ─────────────────────────────────────
@@ -258,9 +267,73 @@ async def me(
     return MeOut(
         id=str(user.id),
         email=user.email,
+        full_name=getattr(user, "full_name", None),
         company=getattr(user, "company", None),
         website=getattr(user, "website", None),
         role=getattr(user, "role", "VENDOR"),
+        plan=getattr(user, "plan", "free") or "free",
+        is_admin=is_admin,
+    )
+
+
+@router.patch("/me", response_model=MeOut)
+async def update_me(
+    body: ProfileUpdate,
+    token: str = Security(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    payload = verify_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    from app.core.models import User
+    user = db.query(User).filter(User.email == payload.get("sub")).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    if body.full_name is not None:
+        user.full_name = body.full_name
+    if body.company is not None:
+        user.company = body.company
+    if body.website is not None:
+        user.website = body.website
+    if body.industry is not None:
+        user.industry = body.industry
+    
+    if body.email is not None and body.email != user.email:
+        # Check if email is already taken
+        existing = db.query(User).filter(User.email == body.email).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="Email already in use")
+        user.email = body.email
+        # Note: In a real app, we might want to re-issue tokens or require verification
+
+    db.commit()
+    db.refresh(user)
+
+    # If it's a vendor, also update MarketplaceVendor industry if needed
+    if body.industry is not None:
+        try:
+            from app.core.models_v10 import MarketplaceVendor
+            mv = db.query(MarketplaceVendor).filter(
+                MarketplaceVendor.claimed_by_user_id == user.id
+            ).first()
+            if mv:
+                mv.industry = body.industry
+                db.commit()
+        except Exception:
+            pass
+
+    is_admin = bool(settings.ADMIN_USER and user.email == settings.ADMIN_USER)
+    return MeOut(
+        id=str(user.id),
+        email=user.email,
+        full_name=user.full_name,
+        company=user.company,
+        website=user.website,
+        role=user.role,
         plan=getattr(user, "plan", "free") or "free",
         is_admin=is_admin,
     )
