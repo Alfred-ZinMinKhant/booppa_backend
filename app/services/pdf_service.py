@@ -37,6 +37,7 @@ from reportlab.platypus import (
 )
 
 from app.core.config import settings
+from app.core.company import COMPANY_LEGAL_FOOTER
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +142,7 @@ def _draw_page(canvas, doc):
 
     canvas.setFillColor(SLATE)
     canvas.setFont("Helvetica", 6.5)
-        canvas.drawString(MARGIN, FOOTER_H - 9, COMPANY_LEGAL_FOOTER)
+    canvas.drawString(MARGIN, FOOTER_H - 9, COMPANY_LEGAL_FOOTER)
     canvas.drawRightString(PAGE_W - MARGIN, FOOTER_H - 9, f"Page {doc.page}")
 
     canvas.restoreState()
