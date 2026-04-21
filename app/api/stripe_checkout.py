@@ -1,9 +1,12 @@
-from fastapi import APIRouter, Request, HTTPException, Depends
+from fastapi import APIRouter, Request, HTTPException, Depends, Security
 from fastapi.responses import JSONResponse, RedirectResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 from app.core.db import get_db
+from app.core.auth import verify_access_token
+from app.core.config import settings
+from fastapi.security import OAuth2PasswordBearer
 import os
 import hashlib
 import stripe
@@ -12,6 +15,7 @@ import logging
 logger = logging.getLogger(__name__)
 router = APIRouter()
 _limiter = Limiter(key_func=get_remote_address)
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token", auto_error=False)
 
 # Price map: resolved at request time so env vars set after import are picked up.
 def _get_price(product_type: str) -> str | None:
@@ -430,4 +434,40 @@ async def rfp_result(session_id: str | None = None):
         return JSONResponse(status_code=202, content={"detail": "Not ready"}, headers={"Cache-Control": "no-store, max-age=0"})
 
     return JSONResponse(data, headers={"Cache-Control": "no-store, max-age=0"})
+
+
+@router.get("/portal")
+async def create_portal_session(
+    token: str = Security(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    """Create a Stripe Billing Portal session for the current user."""
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    payload = verify_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    from app.core.models import User
+    user = db.query(User).filter(User.email == payload.get("sub")).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not user.stripe_customer_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No billing record found. Please purchase a product first.",
+        )
+
+    try:
+        stripe_client = get_stripe_client()
+        base_url = get_base_url()
+        session = stripe_client.billing_portal.Session.create(
+            customer=user.stripe_customer_id,
+            return_url=f"{base_url}/pricing",
+        )
+        return RedirectResponse(url=session.url)
+    except Exception as e:
+        logger.exception("Failed to create billing portal session")
+        raise HTTPException(status_code=500, detail=str(e))
 

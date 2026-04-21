@@ -92,6 +92,8 @@ async def _activate_subscription(
             "pdpa_monitor_annual":   "pdpa_monitor",
             "enterprise_monthly":    "enterprise",
             "enterprise_pro_monthly":"enterprise_pro",
+            "compliance_standard":   "standard_compliance",
+            "compliance_pro":        "pro_compliance",
         }
         new_plan = plan_map.get(product_type, "pro")
 

@@ -61,9 +61,9 @@ ORDERING_POLICY = {
 }
 
 
-def _require_enterprise(current_user):
-    if getattr(current_user, "role", "VENDOR") not in ("ENTERPRISE", "ADMIN", "PROCUREMENT"):
-        raise HTTPException(status_code=403, detail="Enterprise plan required.")
+def _require_procurement(current_user):
+    if getattr(current_user, "role", "VENDOR") not in ("ADMIN", "PROCUREMENT"):
+        raise HTTPException(status_code=403, detail="Procurement account required.")
 
 
 def _predict_downgrade_risk(risk_score: float, stability: float, volatility: float) -> dict:
@@ -90,7 +90,7 @@ async def procurement_vendors(
     current_user = Depends(get_current_user),
 ):
     """Ranked vendor list with score breakdown, risk, and stability."""
-    _require_enterprise(current_user)
+    _require_procurement(current_user)
 
     # Base score query
     query = db.query(VendorScore)
@@ -227,7 +227,7 @@ async def procurement_vendor_status(
     current_user = Depends(get_current_user),
 ):
     """Full VendorStatusProfile for a vendor identified by slug/email prefix."""
-    _require_enterprise(current_user)
+    _require_procurement(current_user)
     user = db.query(User).filter(User.email.like(f"{vendor_slug}@%")).first()
     if not user:
         user = db.query(User).filter(User.company == vendor_slug).first()
@@ -243,7 +243,7 @@ async def procurement_sector(
     current_user = Depends(get_current_user),
 ):
     """Sector intelligence: vendor count, avg score, tier distribution, top vendors."""
-    _require_enterprise(current_user)
+    _require_procurement(current_user)
 
     vendor_ids_in_sector = db.query(VendorSector.vendor_id).filter(
         VendorSector.sector == sector
@@ -305,7 +305,7 @@ async def rfp_signals(
     current_user = Depends(get_current_user),
 ):
     """Active high-intent enterprise clusters (procurement signals)."""
-    _require_enterprise(current_user)
+    _require_procurement(current_user)
 
     query = db.query(EnterpriseProfile).filter(
         EnterpriseProfile.procurement_intent_score >= 61
@@ -336,7 +336,7 @@ async def procurement_snapshot(
     current_user = Depends(get_current_user),
 ):
     """Institutional-grade, audit-ready vendor record."""
-    _require_enterprise(current_user)
+    _require_procurement(current_user)
 
     user = db.query(User).filter(
         (User.company == vendor_slug) | (User.email.like(f"{vendor_slug}@%"))
@@ -413,7 +413,7 @@ async def sector_percentiles(
     current_user = Depends(get_current_user),
 ):
     """Risk-adjusted percentile rankings for all vendors in a sector. No raw scores."""
-    _require_enterprise(current_user)
+    _require_procurement(current_user)
 
     ids = [v[0] for v in db.query(VendorSector.vendor_id).filter(
         VendorSector.sector == sector
