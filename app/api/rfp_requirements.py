@@ -44,9 +44,21 @@ DEPTH_ORDER = {
 }
 
 
+ENTERPRISE_PLANS = {"enterprise", "enterprise_pro", "standard_compliance", "pro_compliance"}
+
+
 def _require_procurement(current_user):
-    if getattr(current_user, "role", "VENDOR") not in ("ADMIN", "PROCUREMENT"):
+    role = getattr(current_user, "role", "VENDOR")
+    if role not in ("ADMIN", "PROCUREMENT"):
         raise HTTPException(status_code=403, detail="Procurement account required.")
+    if role == "ADMIN":
+        return
+    plan = getattr(current_user, "plan", "free") or "free"
+    if plan not in ENTERPRISE_PLANS:
+        raise HTTPException(
+            status_code=403,
+            detail="Enterprise plan required. Upgrade to access procurement tools.",
+        )
 
 
 # ── Pydantic schemas ──────────────────────────────────────────────────────────
