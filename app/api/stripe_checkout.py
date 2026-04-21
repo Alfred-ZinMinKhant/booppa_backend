@@ -2,6 +2,8 @@ from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse, RedirectResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from sqlalchemy.orm import Session
+from app.core.db import get_db
 import os
 import hashlib
 import stripe
@@ -101,6 +103,27 @@ async def checkout_post(request: Request):
 
     if not product_type and not price_id:
         raise HTTPException(status_code=400, detail="Missing productType or priceId")
+
+    # Block vendor_proof purchase if user is already verified
+    if product_type == "vendor_proof" and prefill_email:
+        from app.core.db import SessionLocal
+        from app.core.models import User
+        from app.core.models_v6 import VerifyRecord, LifecycleStatus
+        _db = SessionLocal()
+        try:
+            user = _db.query(User).filter(User.email == prefill_email).first()
+            if user:
+                already_verified = _db.query(VerifyRecord).filter(
+                    VerifyRecord.vendor_id == user.id,
+                    VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE,
+                ).first() is not None
+                if already_verified:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="You are already verified. No need to purchase Vendor Proof again.",
+                    )
+        finally:
+            _db.close()
 
     if not price_id:
         price_id = _get_price(product_type)

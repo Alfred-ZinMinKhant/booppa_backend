@@ -73,6 +73,18 @@ async def claim_vendor(body: ClaimRequest, db: Session = Depends(get_db)):
     """Claim a discovered vendor profile."""
     from datetime import datetime, timezone
 
+    # Check if user already has a claimed profile (one profile per user)
+    existing_claim = (
+        db.query(MarketplaceVendor).filter(
+            MarketplaceVendor.claimed_by_user_id == body.user_id
+        ).first()
+        or db.query(DiscoveredVendor).filter(
+            DiscoveredVendor.claimed_by_user_id == body.user_id
+        ).first()
+    )
+    if existing_claim:
+        raise HTTPException(status_code=409, detail="You have already claimed a vendor profile")
+
     vendor = db.query(DiscoveredVendor).filter(DiscoveredVendor.id == body.vendor_id).first()
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")

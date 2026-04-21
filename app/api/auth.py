@@ -108,6 +108,8 @@ class MeOut(BaseModel):
     role: str
     plan: str = "free"
     is_admin: bool = False
+    has_claimed_profile: bool = False
+    is_verified: bool = False
 
 
 class ProfileUpdate(BaseModel):
@@ -264,6 +266,17 @@ async def me(
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     is_admin = bool(settings.ADMIN_USER and user.email == settings.ADMIN_USER)
+
+    from app.core.models_v10 import MarketplaceVendor
+    from app.core.models_v6 import VerifyRecord, LifecycleStatus
+    has_claimed_profile = db.query(MarketplaceVendor).filter(
+        MarketplaceVendor.claimed_by_user_id == user.id
+    ).first() is not None
+    is_verified = db.query(VerifyRecord).filter(
+        VerifyRecord.vendor_id == user.id,
+        VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE,
+    ).first() is not None
+
     return MeOut(
         id=str(user.id),
         email=user.email,
@@ -273,6 +286,8 @@ async def me(
         role=getattr(user, "role", "VENDOR"),
         plan=getattr(user, "plan", "free") or "free",
         is_admin=is_admin,
+        has_claimed_profile=has_claimed_profile,
+        is_verified=is_verified,
     )
 
 
@@ -327,6 +342,17 @@ async def update_me(
             pass
 
     is_admin = bool(settings.ADMIN_USER and user.email == settings.ADMIN_USER)
+
+    from app.core.models_v10 import MarketplaceVendor
+    from app.core.models_v6 import VerifyRecord, LifecycleStatus
+    has_claimed_profile = db.query(MarketplaceVendor).filter(
+        MarketplaceVendor.claimed_by_user_id == user.id
+    ).first() is not None
+    is_verified = db.query(VerifyRecord).filter(
+        VerifyRecord.vendor_id == user.id,
+        VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE,
+    ).first() is not None
+
     return MeOut(
         id=str(user.id),
         email=user.email,
@@ -336,4 +362,6 @@ async def update_me(
         role=user.role,
         plan=getattr(user, "plan", "free") or "free",
         is_admin=is_admin,
+        has_claimed_profile=has_claimed_profile,
+        is_verified=is_verified,
     )
