@@ -108,6 +108,22 @@ async def checkout_post(request: Request):
     if not product_type and not price_id:
         raise HTTPException(status_code=400, detail="Missing productType or priceId")
 
+    # Block vendors from purchasing procurement plans
+    PROCUREMENT_PRODUCTS = {"enterprise_monthly", "enterprise_pro_monthly"}
+    if product_type in PROCUREMENT_PRODUCTS and prefill_email:
+        from app.core.db import SessionLocal
+        from app.core.models import User
+        _db = SessionLocal()
+        try:
+            user = _db.query(User).filter(User.email == prefill_email).first()
+            if user and getattr(user, "role", "VENDOR") == "VENDOR":
+                raise HTTPException(
+                    status_code=403,
+                    detail="This plan is for procurement teams. Switch to a procurement account or visit /solutions/vendors for vendor tools.",
+                )
+        finally:
+            _db.close()
+
     # Block vendor_proof purchase if user is already verified
     if product_type == "vendor_proof" and prefill_email:
         from app.core.db import SessionLocal
