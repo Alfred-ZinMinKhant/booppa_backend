@@ -13,8 +13,12 @@ GET /api/procurement/snapshot/{vendor_slug}      → audit-ready snapshot
 GET /api/procurement/ordering-policy             → public transparency
 GET /api/procurement/sector-percentiles/{sector} → percentile rankings
 GET /api/procurement/vendor/{slug}/status        → VendorStatusProfile by slug
+GET /api/procurement/export/csv                  → CSV export of vendor audit trail
+GET /api/procurement/export/pdf                  → PDF export of vendor audit trail
 """
 
+import csv
+import io
 import math
 import hashlib
 import json
@@ -22,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -474,3 +479,143 @@ async def sector_percentiles(
         "limit":      limit,
         "totalCount": total_count,
     }
+
+
+# ── Audit Trail Export ───────────────────────────────────────────────────────
+
+def _build_export_rows(db: Session, current_user) -> list[dict]:
+    """Build a flat list of vendor records for CSV/PDF export."""
+    scores = db.query(VendorScore).order_by(VendorScore.total_score.desc()).limit(500).all()
+    rows = []
+    for s in scores:
+        vid = str(s.vendor_id)
+        user = db.query(User).filter(User.id == s.vendor_id).first()
+        verify = db.query(VerifyRecord).filter(VerifyRecord.vendor_id == s.vendor_id).first()
+        status = db.query(VendorStatusSnapshot).filter(VendorStatusSnapshot.vendor_id == s.vendor_id).first()
+        mv = db.query(MarketplaceVendor).filter(MarketplaceVendor.claimed_by_user_id == s.vendor_id).first()
+        rows.append({
+            "Company":              user.company if user else "",
+            "Email":                user.email if user else "",
+            "Website":              (mv.website if mv else None) or (user.website if user else "") or "",
+            "Total Score":          s.total_score,
+            "Compliance Score":     s.compliance_score,
+            "Visibility Score":     s.visibility_score,
+            "Engagement Score":     s.engagement_score,
+            "Recency Score":        s.recency_score,
+            "Verified":             "Yes" if (verify and verify.lifecycle_status.value == "ACTIVE") else "No",
+            "Compliance Health":    verify.compliance_score if verify else 0,
+            "Verify Expiry":        verify.expires_at.isoformat() if verify and verify.expires_at else "",
+            "Verification Depth":   status.verification_depth if status else "UNVERIFIED",
+            "Monitoring Activity":  status.monitoring_activity if status else "NONE",
+            "Risk Signal":          status.risk_signal if status else "CLEAN",
+            "Procurement Readiness": status.procurement_readiness if status else "NOT_READY",
+        })
+    return rows
+
+
+@router.get("/export/csv")
+async def export_csv(
+    db: Session  = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    """Download vendor audit trail as CSV."""
+    _require_procurement(current_user)
+    rows = _build_export_rows(db, current_user)
+    if not rows:
+        raise HTTPException(status_code=404, detail="No vendor data to export.")
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=rows[0].keys())
+    writer.writeheader()
+    writer.writerows(rows)
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=booppa_audit_trail_{ts}.csv"},
+    )
+
+
+@router.get("/export/pdf")
+async def export_pdf(
+    db: Session  = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    """Download vendor audit trail as PDF."""
+    _require_procurement(current_user)
+    rows = _build_export_rows(db, current_user)
+    if not rows:
+        raise HTTPException(status_code=404, detail="No vendor data to export.")
+
+    ts_label = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    ts_file  = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+    # Build PDF using reportlab
+    try:
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib import colors
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet
+    except ImportError:
+        raise HTTPException(status_code=501, detail="PDF export requires reportlab. Install with: pip install reportlab")
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), topMargin=30, bottomMargin=30)
+    styles = getSampleStyleSheet()
+    elements = []
+
+    # Title
+    elements.append(Paragraph(f"BOOPPA — Vendor Audit Trail Export", styles["Title"]))
+    elements.append(Paragraph(f"Generated: {ts_label} | By: {current_user.email}", styles["Normal"]))
+    elements.append(Spacer(1, 12))
+
+    # Summary row
+    total = len(rows)
+    verified_count = sum(1 for r in rows if r["Verified"] == "Yes")
+    avg_score = round(sum(r["Total Score"] for r in rows) / total) if total else 0
+    elements.append(Paragraph(
+        f"Total Vendors: {total} | Verified: {verified_count} | Avg Score: {avg_score}/100",
+        styles["Normal"],
+    ))
+    elements.append(Spacer(1, 12))
+
+    # Table — pick key columns to fit on landscape A4
+    col_keys = ["Company", "Total Score", "Compliance Health", "Verified",
+                "Verification Depth", "Risk Signal", "Procurement Readiness"]
+    header = col_keys
+    data = [header]
+    for r in rows[:200]:  # cap at 200 rows for PDF readability
+        data.append([str(r.get(k, "")) for k in col_keys])
+
+    table = Table(data, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND",  (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+        ("TEXTCOLOR",   (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE",    (0, 0), (-1, 0), 8),
+        ("FONTSIZE",    (0, 1), (-1, -1), 7),
+        ("ALIGN",       (0, 0), (-1, -1), "CENTER"),
+        ("GRID",        (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+        ("TOPPADDING",  (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    elements.append(table)
+
+    if len(rows) > 200:
+        elements.append(Spacer(1, 8))
+        elements.append(Paragraph(f"Showing 200 of {len(rows)} vendors. Use CSV export for full data.", styles["Normal"]))
+
+    # Footer
+    elements.append(Spacer(1, 20))
+    snap_hash = hashlib.sha256(json.dumps([r["Company"] for r in rows], sort_keys=True).encode()).hexdigest()[:16]
+    elements.append(Paragraph(f"Snapshot hash: {snap_hash} | booppa.io", styles["Normal"]))
+
+    doc.build(elements)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=booppa_audit_trail_{ts_file}.pdf"},
+    )

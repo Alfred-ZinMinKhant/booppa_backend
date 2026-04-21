@@ -3,12 +3,14 @@ Notarization API
 =================
 Public endpoints for document upload, SHA-256 hash computation,
 and certificate status retrieval.
-No authentication required — payment is handled via Stripe afterwards.
+No authentication required for upload — payment is handled via Stripe afterwards.
+Enterprise subscribers use included monthly credits (no Stripe checkout needed).
 """
 
+from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks
 from app.core.db import SessionLocal
-from app.core.models import Report
+from app.core.models import Report, User
 from app.core.config import settings
 from app.services.storage import S3Service
 import hashlib
@@ -134,6 +136,215 @@ async def upload_document(
         db.rollback()
         logger.error(f"Failed to create notarization report: {e}")
         raise HTTPException(status_code=500, detail="Failed to process upload.")
+    finally:
+        db.close()
+
+
+def _check_enterprise_credits(db, user_id: str, plan: str) -> dict:
+    """
+    Check if an enterprise user has notarization credits remaining this month.
+    Returns {"has_credits": bool, "used": int, "limit": int, "month": str}.
+    """
+    from app.core.models_v8 import NotarizationCredit, ENTERPRISE_NOTARIZATION_LIMITS
+
+    monthly_limit = ENTERPRISE_NOTARIZATION_LIMITS.get(plan)
+    if monthly_limit is None:
+        return {"has_credits": False, "used": 0, "limit": 0, "month": ""}
+
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+
+    credit = db.query(NotarizationCredit).filter(
+        NotarizationCredit.user_id == user_id,
+        NotarizationCredit.month == current_month,
+    ).first()
+
+    used = credit.used if credit else 0
+
+    # -1 means unlimited
+    if monthly_limit == -1:
+        return {"has_credits": True, "used": used, "limit": -1, "month": current_month}
+
+    return {
+        "has_credits": used < monthly_limit,
+        "used": used,
+        "limit": monthly_limit,
+        "month": current_month,
+    }
+
+
+def _consume_credit(db, user_id: str, plan: str) -> None:
+    """Increment the used count for this user's current month. Creates row if needed."""
+    from app.core.models_v8 import NotarizationCredit, ENTERPRISE_NOTARIZATION_LIMITS
+
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    monthly_limit = ENTERPRISE_NOTARIZATION_LIMITS.get(plan, 5000)
+    if monthly_limit == -1:
+        monthly_limit = 999999  # store a large number for unlimited plans
+
+    credit = db.query(NotarizationCredit).filter(
+        NotarizationCredit.user_id == user_id,
+        NotarizationCredit.month == current_month,
+    ).first()
+
+    if credit:
+        credit.used += 1
+        credit.updated_at = datetime.now(timezone.utc)
+    else:
+        credit = NotarizationCredit(
+            user_id=user_id,
+            month=current_month,
+            used=1,
+            monthly_limit=monthly_limit,
+        )
+        db.add(credit)
+    db.flush()
+
+
+@router.post("/enterprise/upload")
+async def enterprise_upload_document(
+    file: UploadFile = File(...),
+    email: Optional[str] = Form(None),
+    company_name: Optional[str] = Form(None),
+):
+    """
+    Enterprise notarization — uses monthly credits instead of Stripe.
+    Requires a logged-in enterprise user (identified by email).
+    Automatically triggers fulfillment (no checkout step).
+    """
+    if not email:
+        raise HTTPException(status_code=400, detail="Email required for enterprise notarization.")
+
+    if not file.filename or not _validate_extension(file.filename):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
+        )
+
+    contents = await file.read()
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File too large. Maximum 50 MB.")
+    if len(contents) == 0:
+        raise HTTPException(status_code=400, detail="File is empty.")
+
+    db = SessionLocal()
+    try:
+        # Verify enterprise user
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found.")
+
+        plan = getattr(user, "plan", "free") or "free"
+        enterprise_plans = {"enterprise", "enterprise_pro", "standard_compliance", "pro_compliance"}
+        if plan not in enterprise_plans:
+            raise HTTPException(status_code=403, detail="Enterprise plan required for included notarizations.")
+
+        # Check credits
+        credit_info = _check_enterprise_credits(db, str(user.id), plan)
+        if not credit_info["has_credits"]:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Monthly notarization limit reached ({credit_info['limit']} / month). "
+                       f"Purchase additional notarizations or upgrade to Enterprise Pro for unlimited.",
+            )
+
+        # Compute hash + upload to S3
+        file_hash = hashlib.sha256(contents).hexdigest()
+        report_id = str(uuid.uuid4())
+        s3_key = f"notarization/{report_id}/{file.filename}"
+        try:
+            s3 = S3Service()
+            s3.s3_client.put_object(
+                Bucket=s3.bucket,
+                Key=s3_key,
+                Body=contents,
+                ContentType=file.content_type or "application/octet-stream",
+                Metadata={
+                    "report-id": report_id,
+                    "file-hash": file_hash,
+                    "original-filename": file.filename,
+                },
+            )
+        except Exception as e:
+            logger.error(f"S3 upload failed for enterprise notarization: {e}")
+            raise HTTPException(status_code=500, detail="File upload failed. Please try again.")
+
+        # Create report (already paid via credits)
+        assessment_data = {
+            "file_hash": file_hash,
+            "original_filename": file.filename,
+            "file_size_bytes": len(contents),
+            "s3_key": s3_key,
+            "plan": "enterprise_credit",
+            "product_type": "compliance_notarization_1",
+            "notarization_type": "document",
+            "payment_confirmed": True,
+            "enterprise_credit": True,
+            "contact_email": email,
+        }
+
+        report = Report(
+            id=report_id,
+            owner_id=user.id,
+            framework="compliance_notarization",
+            company_name=company_name or user.company or "Enterprise Notarization",
+            assessment_data=assessment_data,
+            status="pending",
+        )
+        report.audit_hash = file_hash
+        db.add(report)
+
+        # Consume credit
+        _consume_credit(db, str(user.id), plan)
+
+        db.commit()
+
+        # Trigger fulfillment immediately (no Stripe checkout step)
+        from app.workers.tasks import fulfill_notarization_task
+        fulfill_notarization_task.delay(str(report.id), email)
+        logger.info(f"Enterprise notarization queued for {email}, report={report_id}, credits used={credit_info['used'] + 1}")
+
+        return {
+            "report_id": report_id,
+            "file_hash": file_hash,
+            "file_name": file.filename,
+            "file_size": len(contents),
+            "product_type": "compliance_notarization_1",
+            "enterprise_credit": True,
+            "credits_used": credit_info["used"] + 1,
+            "credits_limit": credit_info["limit"],
+            "credits_remaining": (credit_info["limit"] - credit_info["used"] - 1) if credit_info["limit"] != -1 else -1,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Enterprise notarization failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process upload.")
+    finally:
+        db.close()
+
+
+@router.get("/enterprise/credits")
+async def get_enterprise_credits(email: str):
+    """Check remaining notarization credits for an enterprise user."""
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found.")
+
+        plan = getattr(user, "plan", "free") or "free"
+        enterprise_plans = {"enterprise", "enterprise_pro", "standard_compliance", "pro_compliance"}
+        if plan not in enterprise_plans:
+            return {"has_credits": False, "used": 0, "limit": 0, "plan": plan, "enterprise": False}
+
+        credit_info = _check_enterprise_credits(db, str(user.id), plan)
+        return {
+            **credit_info,
+            "plan": plan,
+            "enterprise": True,
+            "remaining": (credit_info["limit"] - credit_info["used"]) if credit_info["limit"] != -1 else -1,
+        }
     finally:
         db.close()
 

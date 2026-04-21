@@ -336,3 +336,48 @@ class EvidencePackage(Base):
         Index("ix_evidence_packages_vendor_status", "vendor_id", "status"),
         Index("ix_evidence_packages_vendor_sector", "vendor_id", "sector"),
     )
+
+
+# ── NotarizationCredit ────────────────────────────────────────────────────────
+# Monthly notarization credit tracking for enterprise subscribers.
+# One row per user per calendar month. Resets automatically each month.
+#
+# Enterprise plan: 5,000 credits/month
+# Enterprise Pro:  unlimited (tracked but never capped)
+#
+# Credits are consumed when an enterprise user notarizes via the
+# /notarize/upload endpoint without going through Stripe checkout.
+ENTERPRISE_NOTARIZATION_LIMITS = {
+    "enterprise":           5_000,
+    "enterprise_pro":       -1,      # unlimited
+    "standard_compliance":  5_000,
+    "pro_compliance":       -1,      # unlimited
+}
+
+
+class NotarizationCredit(Base):
+    __tablename__ = "notarization_credits"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # e.g. "2026-04" — one row per month
+    month = Column(String(7), nullable=False, index=True)
+
+    # How many notarizations used this month
+    used = Column(Integer, nullable=False, default=0)
+
+    # Monthly cap at time of row creation (snapshot for audit trail)
+    monthly_limit = Column(Integer, nullable=False, default=5000)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "month", name="uq_notarization_credit_user_month"),
+    )
