@@ -1,6 +1,6 @@
-# BOOPPA v10.0 Enterprise - Production Ready
+# BOOPPA v10.0 Enterprise - Production Ready (Booppa Smart Care LLC)
 
-**Auditor-Proof Evidence Generation with Blockchain Anchoring**
+**Auditor-Proof Evidence Generation with Blockchain Anchoring — operated by Booppa Smart Care LLC (Singapore)**
 
 ## 🚀 Quick Start
 

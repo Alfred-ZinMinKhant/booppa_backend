@@ -9,6 +9,7 @@ Metadata renders in a two-column label/value table.
 Blockchain verification shows details + QR side-by-side.
 Findings carry severity-colour badges (red/orange/amber/green).
 """
+
 from __future__ import annotations
 
 import base64
@@ -40,20 +41,20 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 # ── Brand palette ──────────────────────────────────────────────────────────────
-NAVY       = colors.HexColor("#0f172a")
-EMERALD    = colors.HexColor("#10b981")
-SLATE      = colors.HexColor("#64748b")
-LIGHT_BG   = colors.HexColor("#f8fafc")
-BORDER     = colors.HexColor("#e2e8f0")
-TEXT_DARK  = colors.HexColor("#1e293b")
-WHITE      = colors.white
+NAVY = colors.HexColor("#0f172a")
+EMERALD = colors.HexColor("#10b981")
+SLATE = colors.HexColor("#64748b")
+LIGHT_BG = colors.HexColor("#f8fafc")
+BORDER = colors.HexColor("#e2e8f0")
+TEXT_DARK = colors.HexColor("#1e293b")
+WHITE = colors.white
 
 SEVERITY_HEX = {
     "CRITICAL": "#ef4444",
-    "HIGH":     "#f97316",
-    "MEDIUM":   "#f59e0b",
-    "LOW":      "#10b981",
-    "INFO":     "#64748b",
+    "HIGH": "#f97316",
+    "MEDIUM": "#f59e0b",
+    "LOW": "#10b981",
+    "INFO": "#64748b",
 }
 
 # ── Logo resolution (tried at import time) ─────────────────────────────────────
@@ -71,13 +72,14 @@ for _c in _LOGO_CANDIDATES:
 
 # ── Page geometry ──────────────────────────────────────────────────────────────
 PAGE_W, PAGE_H = A4
-MARGIN    = 0.75 * inch
+MARGIN = 0.75 * inch
 CONTENT_W = PAGE_W - 2 * MARGIN
-HEADER_H  = 0.65 * inch
-FOOTER_H  = 0.40 * inch
+HEADER_H = 0.65 * inch
+FOOTER_H = 0.40 * inch
 
 
 # ── Per-page canvas callback ───────────────────────────────────────────────────
+
 
 def _draw_page(canvas, doc):
     canvas.saveState()
@@ -88,13 +90,15 @@ def _draw_page(canvas, doc):
             canvas.saveState()
             canvas.setFillAlpha(0.06)
             wm_w = 5.5 * inch
-            wm_h = wm_w * 0.35          # approximate logo aspect ratio
+            wm_h = wm_w * 0.35  # approximate logo aspect ratio
             canvas.translate(PAGE_W / 2, PAGE_H / 2)
             canvas.rotate(35)
             canvas.drawImage(
                 _LOGO_PATH,
-                -wm_w / 2, -wm_h / 2,
-                width=wm_w, height=wm_h,
+                -wm_w / 2,
+                -wm_h / 2,
+                width=wm_w,
+                height=wm_h,
                 preserveAspectRatio=True,
                 mask="auto",
             )
@@ -137,7 +141,7 @@ def _draw_page(canvas, doc):
 
     canvas.setFillColor(SLATE)
     canvas.setFont("Helvetica", 6.5)
-    canvas.drawString(MARGIN, FOOTER_H - 9, "www.booppa.io  ·  Booppa Pte Ltd  ·  Singapore")
+        canvas.drawString(MARGIN, FOOTER_H - 9, COMPANY_LEGAL_FOOTER)
     canvas.drawRightString(PAGE_W - MARGIN, FOOTER_H - 9, f"Page {doc.page}")
 
     canvas.restoreState()
@@ -154,6 +158,7 @@ def _draw_logo_text(canvas, y: float):
 
 # ── PDFService ─────────────────────────────────────────────────────────────────
 
+
 class PDFService:
     """Generate branded Booppa PDF reports."""
 
@@ -169,44 +174,86 @@ class PDFService:
 
         return {
             "CoverTitle": ps(
-                "CoverTitle", fontSize=24, fontName="Helvetica-Bold",
-                textColor=NAVY, spaceAfter=6, leading=28,
+                "CoverTitle",
+                fontSize=24,
+                fontName="Helvetica-Bold",
+                textColor=NAVY,
+                spaceAfter=6,
+                leading=28,
             ),
             "CoverSub": ps(
-                "CoverSub", fontSize=12, fontName="Helvetica",
-                textColor=SLATE, spaceAfter=4, leading=17,
+                "CoverSub",
+                fontSize=12,
+                fontName="Helvetica",
+                textColor=SLATE,
+                spaceAfter=4,
+                leading=17,
             ),
             "SecHead": ps(
-                "SecHead", fontSize=10, fontName="Helvetica-Bold",
-                textColor=NAVY, spaceAfter=0, leading=13,
+                "SecHead",
+                fontSize=10,
+                fontName="Helvetica-Bold",
+                textColor=NAVY,
+                spaceAfter=0,
+                leading=13,
             ),
             "Body": ps(
-                "Body", fontSize=9, fontName="Helvetica",
-                textColor=TEXT_DARK, spaceAfter=4, leading=13,
+                "Body",
+                fontSize=9,
+                fontName="Helvetica",
+                textColor=TEXT_DARK,
+                spaceAfter=4,
+                leading=13,
             ),
             "Label": ps(
-                "Label", fontSize=7, fontName="Helvetica-Bold",
-                textColor=SLATE, spaceAfter=2, leading=10,
+                "Label",
+                fontSize=7,
+                fontName="Helvetica-Bold",
+                textColor=SLATE,
+                spaceAfter=2,
+                leading=10,
             ),
             "Value": ps(
-                "Value", fontSize=9, fontName="Helvetica",
-                textColor=TEXT_DARK, spaceAfter=2, leading=12,
+                "Value",
+                fontSize=9,
+                fontName="Helvetica",
+                textColor=TEXT_DARK,
+                spaceAfter=2,
+                leading=12,
             ),
             "Mono": ps(
-                "Mono", fontSize=6.5, fontName="Courier",
-                textColor=SLATE, spaceAfter=2, leading=9, wordWrap="LTR",
+                "Mono",
+                fontSize=6.5,
+                fontName="Courier",
+                textColor=SLATE,
+                spaceAfter=2,
+                leading=9,
+                wordWrap="LTR",
             ),
             "FindHead": ps(
-                "FindHead", fontSize=9, fontName="Helvetica-Bold",
-                textColor=NAVY, spaceAfter=3, leading=12,
+                "FindHead",
+                fontSize=9,
+                fontName="Helvetica-Bold",
+                textColor=NAVY,
+                spaceAfter=3,
+                leading=12,
             ),
             "Bullet": ps(
-                "Bullet", fontSize=9, fontName="Helvetica",
-                textColor=TEXT_DARK, leftIndent=10, spaceAfter=3, leading=13,
+                "Bullet",
+                fontSize=9,
+                fontName="Helvetica",
+                textColor=TEXT_DARK,
+                leftIndent=10,
+                spaceAfter=3,
+                leading=13,
             ),
             "Disclaimer": ps(
-                "Disclaimer", fontSize=7.5, fontName="Helvetica-Oblique",
-                textColor=SLATE, spaceAfter=4, leading=11,
+                "Disclaimer",
+                fontSize=7.5,
+                fontName="Helvetica-Oblique",
+                textColor=SLATE,
+                spaceAfter=4,
+                leading=11,
             ),
         }
 
@@ -216,15 +263,19 @@ class PDFService:
         """Emerald left-bar + label on light background."""
         cell = Paragraph(title.upper(), self._s["SecHead"])
         t = Table([[cell]], colWidths=[CONTENT_W])
-        t.setStyle(TableStyle([
-            ("LEFTPADDING",   (0, 0), (-1, -1), 10),
-            ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
-            ("TOPPADDING",    (0, 0), (-1, -1), 7),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-            ("BACKGROUND",    (0, 0), (-1, -1), LIGHT_BG),
-            ("LINEBEFORE",    (0, 0), (0, -1),  3, EMERALD),
-            ("LINEBELOW",     (0, -1), (-1, -1), 0.5, BORDER),
-        ]))
+        t.setStyle(
+            TableStyle(
+                [
+                    ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                    ("TOPPADDING", (0, 0), (-1, -1), 7),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                    ("BACKGROUND", (0, 0), (-1, -1), LIGHT_BG),
+                    ("LINEBEFORE", (0, 0), (0, -1), 3, EMERALD),
+                    ("LINEBELOW", (0, -1), (-1, -1), 0.5, BORDER),
+                ]
+            )
+        )
         return t
 
     def _meta_table(self, rows: list[tuple[str, str]]) -> Table:
@@ -235,20 +286,26 @@ class PDFService:
             for lbl, val in rows
         ]
         t = Table(data, colWidths=[label_w, CONTENT_W - label_w])
-        t.setStyle(TableStyle([
-            ("VALIGN",         (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING",    (0, 0), (-1, -1), 8),
-            ("RIGHTPADDING",   (0, 0), (-1, -1), 8),
-            ("TOPPADDING",     (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING",  (0, 0), (-1, -1), 4),
-            ("ROWBACKGROUNDS", (0, 0), (-1, -1), [WHITE, LIGHT_BG]),
-            ("LINEBELOW",      (0, -1), (-1, -1), 0.5, BORDER),
-        ]))
+        t.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("ROWBACKGROUNDS", (0, 0), (-1, -1), [WHITE, LIGHT_BG]),
+                    ("LINEBELOW", (0, -1), (-1, -1), 0.5, BORDER),
+                ]
+            )
+        )
         return t
 
     def _cover_strip(self, report_data: dict) -> Table:
         """Three-cell meta strip below the cover title."""
-        created = report_data.get("created_at") or datetime.now(timezone.utc).isoformat()
+        created = (
+            report_data.get("created_at") or datetime.now(timezone.utc).isoformat()
+        )
         try:
             dt = datetime.fromisoformat(created[:19])
             date_str = dt.strftime("%d %B %Y")
@@ -256,26 +313,41 @@ class PDFService:
             date_str = created[:10]
 
         cells = [
-            Paragraph(f'<font color="#64748b"><b>DATE</b></font><br/>{date_str}', self._s["Body"]),
-            Paragraph(f'<font color="#64748b"><b>REPORT ID</b></font><br/>{report_data.get("report_id") or "—"}', self._s["Body"]),
-            Paragraph(f'<font color="#64748b"><b>STATUS</b></font><br/>{(report_data.get("status") or "Completed").title()}', self._s["Body"]),
+            Paragraph(
+                f'<font color="#64748b"><b>DATE</b></font><br/>{date_str}',
+                self._s["Body"],
+            ),
+            Paragraph(
+                f'<font color="#64748b"><b>REPORT ID</b></font><br/>{report_data.get("report_id") or "—"}',
+                self._s["Body"],
+            ),
+            Paragraph(
+                f'<font color="#64748b"><b>STATUS</b></font><br/>{(report_data.get("status") or "Completed").title()}',
+                self._s["Body"],
+            ),
         ]
         t = Table([cells], colWidths=[CONTENT_W / 3] * 3)
-        t.setStyle(TableStyle([
-            ("BACKGROUND",    (0, 0), (-1, -1), LIGHT_BG),
-            ("LEFTPADDING",   (0, 0), (-1, -1), 12),
-            ("RIGHTPADDING",  (0, 0), (-1, -1), 12),
-            ("TOPPADDING",    (0, 0), (-1, -1), 10),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-            ("VALIGN",        (0, 0), (-1, -1), "TOP"),
-            ("LINEAFTER",     (0, 0), (1, -1),  0.5, BORDER),
-            ("BOX",           (0, 0), (-1, -1), 0.5, BORDER),
-        ]))
+        t.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), LIGHT_BG),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 12),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+                    ("TOPPADDING", (0, 0), (-1, -1), 10),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LINEAFTER", (0, 0), (1, -1), 0.5, BORDER),
+                    ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
+                ]
+            )
+        )
         return t
 
     @staticmethod
     def _hr() -> HRFlowable:
-        return HRFlowable(width="100%", thickness=0.5, color=BORDER, spaceAfter=8, spaceBefore=4)
+        return HRFlowable(
+            width="100%", thickness=0.5, color=BORDER, spaceAfter=8, spaceBefore=4
+        )
 
     @staticmethod
     def _sev_badge(severity: str) -> str:
@@ -285,11 +357,11 @@ class PDFService:
     # ── Blockchain section ─────────────────────────────────────────────────────
 
     def _blockchain_block(self, report_data: dict) -> list:
-        tx_hash    = report_data.get("tx_hash") or "—"
+        tx_hash = report_data.get("tx_hash") or "—"
         audit_hash = report_data.get("audit_hash") or "—"
         payment_ok = bool(report_data.get("payment_confirmed"))
         verify_url = report_data.get("verify_url") or ""
-        report_id  = report_data.get("report_id") or ""
+        report_id = report_data.get("report_id") or ""
 
         if payment_ok and verify_url and audit_hash != "—":
             qr_target = verify_url
@@ -348,17 +420,21 @@ class PDFService:
         detail_w = CONTENT_W - 1.8 * inch - 6
         row = [[details_items, qr_items]]
         t = Table(row, colWidths=[detail_w, 1.8 * inch])
-        t.setStyle(TableStyle([
-            ("VALIGN",        (0, 0), (-1, -1), "TOP"),
-            ("ALIGN",         (1, 0), (1, -1),  "CENTER"),
-            ("LEFTPADDING",   (0, 0), (-1, -1), 10),
-            ("RIGHTPADDING",  (0, 0), (-1, -1), 10),
-            ("TOPPADDING",    (0, 0), (-1, -1), 10),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-            ("BACKGROUND",    (0, 0), (-1, -1), LIGHT_BG),
-            ("BOX",           (0, 0), (-1, -1), 0.5, BORDER),
-            ("LINEAFTER",     (0, 0), (0, -1),  0.5, BORDER),
-        ]))
+        t.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("ALIGN", (1, 0), (1, -1), "CENTER"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                    ("TOPPADDING", (0, 0), (-1, -1), 10),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                    ("BACKGROUND", (0, 0), (-1, -1), LIGHT_BG),
+                    ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
+                    ("LINEAFTER", (0, 0), (0, -1), 0.5, BORDER),
+                ]
+            )
+        )
         return [t, Spacer(1, 0.15 * inch)]
 
     # ── PDPA warning ───────────────────────────────────────────────────────────
@@ -383,28 +459,51 @@ class PDFService:
         )
 
         products = [
-            ("PDPA Quick Scan",  "S$69",        f"{base}/api/stripe/checkout?product=pdpa_quick_scan&prefill_email={prefill}"),
-            ("PDPA Essential",   "S$299 / mo",  f"{base}/api/stripe/checkout?product=pdpa_basic&prefill_email={prefill}"),
-            ("Standard Suite",   "S$1,299 / mo",f"{base}/api/stripe/checkout?product=compliance_standard&prefill_email={prefill}"),
-            ("Pro Suite",        "S$1,999 / mo",f"{base}/api/stripe/checkout?product=compliance_pro&prefill_email={prefill}"),
+            (
+                "PDPA Quick Scan",
+                "S$69",
+                f"{base}/api/stripe/checkout?product=pdpa_quick_scan&prefill_email={prefill}",
+            ),
+            (
+                "PDPA Essential",
+                "S$299 / mo",
+                f"{base}/api/stripe/checkout?product=pdpa_basic&prefill_email={prefill}",
+            ),
+            (
+                "Standard Suite",
+                "S$1,299 / mo",
+                f"{base}/api/stripe/checkout?product=compliance_standard&prefill_email={prefill}",
+            ),
+            (
+                "Pro Suite",
+                "S$1,999 / mo",
+                f"{base}/api/stripe/checkout?product=compliance_pro&prefill_email={prefill}",
+            ),
         ]
         rows = [
             [
-                Paragraph(f'<a href="{url}"><font color="#10b981"><b>{name}</b></font></a>', s["Body"]),
+                Paragraph(
+                    f'<a href="{url}"><font color="#10b981"><b>{name}</b></font></a>',
+                    s["Body"],
+                ),
                 Paragraph(f"<b>{price}</b>", s["Body"]),
             ]
             for name, price, url in products
         ]
         pt = Table(rows, colWidths=[CONTENT_W * 0.65, CONTENT_W * 0.35])
-        pt.setStyle(TableStyle([
-            ("LEFTPADDING",    (0, 0), (-1, -1), 10),
-            ("RIGHTPADDING",   (0, 0), (-1, -1), 10),
-            ("TOPPADDING",     (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING",  (0, 0), (-1, -1), 6),
-            ("ROWBACKGROUNDS", (0, 0), (-1, -1), [WHITE, LIGHT_BG]),
-            ("BOX",            (0, 0), (-1, -1), 0.5, BORDER),
-            ("LINEBELOW",      (0, 0), (-1, -2), 0.5, BORDER),
-        ]))
+        pt.setStyle(
+            TableStyle(
+                [
+                    ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ("ROWBACKGROUNDS", (0, 0), (-1, -1), [WHITE, LIGHT_BG]),
+                    ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
+                    ("LINEBELOW", (0, 0), (-1, -2), 0.5, BORDER),
+                ]
+            )
+        )
 
         return [
             Paragraph(warning, s["Body"]),
@@ -433,51 +532,76 @@ class PDFService:
                 .upper()
                 .replace("_", " ")
             )
-            frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="main")
-            doc.addPageTemplates([PageTemplate(id="main", frames=[frame], onPage=_draw_page)])
+            frame = Frame(
+                doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="main"
+            )
+            doc.addPageTemplates(
+                [PageTemplate(id="main", frames=[frame], onPage=_draw_page)]
+            )
 
             story = []
 
             # ── Cover ──────────────────────────────────────────────────────
-            company   = report_data.get("company_name") or "Vendor Report"
+            company = report_data.get("company_name") or "Vendor Report"
             framework = (report_data.get("framework") or "").replace("_", " ").title()
 
             story.append(Spacer(1, 0.25 * inch))
             story.append(Paragraph(company, s["CoverTitle"]))
-            story.append(Paragraph(framework or "Compliance Audit Report", s["CoverSub"]))
+            story.append(
+                Paragraph(framework or "Compliance Audit Report", s["CoverSub"])
+            )
             story.append(Spacer(1, 0.1 * inch))
-            story.append(HRFlowable(width="100%", thickness=2, color=EMERALD, spaceAfter=10))
+            story.append(
+                HRFlowable(width="100%", thickness=2, color=EMERALD, spaceAfter=10)
+            )
             story.append(self._cover_strip(report_data))
             story.append(Spacer(1, 0.3 * inch))
 
             # ── Proof metadata ─────────────────────────────────────────────
-            proof_header   = report_data.get("proof_header")
+            proof_header = report_data.get("proof_header")
             schema_version = report_data.get("schema_version")
             if proof_header or schema_version:
                 rows = []
-                if proof_header:   rows.append(("FORMAT", proof_header))
-                if schema_version: rows.append(("SCHEMA VERSION", schema_version))
-                story.append(KeepTogether([
-                    self._section_header("Proof Metadata"),
-                    Spacer(1, 6),
-                    self._meta_table(rows),
-                    Spacer(1, 0.15 * inch),
-                ]))
+                if proof_header:
+                    rows.append(("FORMAT", proof_header))
+                if schema_version:
+                    rows.append(("SCHEMA VERSION", schema_version))
+                story.append(
+                    KeepTogether(
+                        [
+                            self._section_header("Proof Metadata"),
+                            Spacer(1, 6),
+                            self._meta_table(rows),
+                            Spacer(1, 0.15 * inch),
+                        ]
+                    )
+                )
 
             # ── Report details ─────────────────────────────────────────────
-            created_raw = report_data.get("created_at") or datetime.now(timezone.utc).isoformat()
-            story.append(KeepTogether([
-                self._section_header("Report Details"),
-                Spacer(1, 6),
-                self._meta_table([
-                    ("REPORT ID",  report_data.get("report_id") or "—"),
-                    ("FRAMEWORK",  framework or "—"),
-                    ("COMPANY",    company),
-                    ("GENERATED",  created_raw[:19]),
-                    ("STATUS",     (report_data.get("status") or "Completed").title()),
-                ]),
-                Spacer(1, 0.2 * inch),
-            ]))
+            created_raw = (
+                report_data.get("created_at") or datetime.now(timezone.utc).isoformat()
+            )
+            story.append(
+                KeepTogether(
+                    [
+                        self._section_header("Report Details"),
+                        Spacer(1, 6),
+                        self._meta_table(
+                            [
+                                ("REPORT ID", report_data.get("report_id") or "—"),
+                                ("FRAMEWORK", framework or "—"),
+                                ("COMPANY", company),
+                                ("GENERATED", created_raw[:19]),
+                                (
+                                    "STATUS",
+                                    (report_data.get("status") or "Completed").title(),
+                                ),
+                            ]
+                        ),
+                        Spacer(1, 0.2 * inch),
+                    ]
+                )
+            )
 
             # ── Site screenshot ────────────────────────────────────────────
             ss = report_data.get("site_screenshot")
@@ -495,7 +619,9 @@ class PDFService:
                         img_buf = BytesIO(img_data)
                         story.append(self._section_header("Site Screenshot"))
                         story.append(Spacer(1, 6))
-                        story.append(Image(img_buf, width=CONTENT_W, height=CONTENT_W * 0.55))
+                        story.append(
+                            Image(img_buf, width=CONTENT_W, height=CONTENT_W * 0.55)
+                        )
                         story.append(Spacer(1, 0.15 * inch))
                 except Exception as e:
                     logger.warning(f"Screenshot render failed: {e}")
@@ -521,7 +647,15 @@ class PDFService:
             structured = None
             if isinstance(report_data.get("structured_report"), dict):
                 structured = report_data["structured_report"]
-            elif any(k in report_data for k in ("executive_summary", "detailed_findings", "recommendations", "legal_references")):
+            elif any(
+                k in report_data
+                for k in (
+                    "executive_summary",
+                    "detailed_findings",
+                    "recommendations",
+                    "legal_references",
+                )
+            ):
                 structured = report_data
 
             if structured:
@@ -530,7 +664,9 @@ class PDFService:
                 if exec_sum:
                     story.append(self._section_header("Executive Summary"))
                     story.append(Spacer(1, 6))
-                    for para in [p.strip() for p in exec_sum.split("\n\n") if p.strip()]:
+                    for para in [
+                        p.strip() for p in exec_sum.split("\n\n") if p.strip()
+                    ]:
                         story.append(Paragraph(para.replace("\n", " "), s["Body"]))
                         story.append(Spacer(1, 4))
                     story.append(Spacer(1, 0.1 * inch))
@@ -541,20 +677,37 @@ class PDFService:
                     story.append(self._section_header("Detailed Findings"))
                     story.append(Spacer(1, 6))
                     for i, f in enumerate(findings, 1):
-                        f_type   = (f.get("type") or "Finding").replace("_", " ").title()
+                        f_type = (f.get("type") or "Finding").replace("_", " ").title()
                         severity = (f.get("severity") or "MEDIUM").upper()
-                        desc     = f.get("description") or f.get("details") or "No description."
+                        desc = (
+                            f.get("description")
+                            or f.get("details")
+                            or "No description."
+                        )
                         evidence = f.get("evidence") or ""
-                        penalty  = (f.get("penalty") or {}).get("amount") if isinstance(f.get("penalty"), dict) else None
+                        penalty = (
+                            (f.get("penalty") or {}).get("amount")
+                            if isinstance(f.get("penalty"), dict)
+                            else None
+                        )
 
                         block = [
-                            Paragraph(f"{i}. {f_type}  {self._sev_badge(severity)}", s["FindHead"]),
+                            Paragraph(
+                                f"{i}. {f_type}  {self._sev_badge(severity)}",
+                                s["FindHead"],
+                            ),
                             Paragraph(desc.replace("\n", " "), s["Body"]),
                         ]
                         if evidence:
-                            block.append(Paragraph(f"<i>Evidence: {evidence}</i>", s["Body"]))
+                            block.append(
+                                Paragraph(f"<i>Evidence: {evidence}</i>", s["Body"])
+                            )
                         if penalty:
-                            block.append(Paragraph(f"<b>Potential penalty:</b> {penalty}", s["Body"]))
+                            block.append(
+                                Paragraph(
+                                    f"<b>Potential penalty:</b> {penalty}", s["Body"]
+                                )
+                            )
                         block.append(Spacer(1, 6))
                         story.append(KeepTogether(block))
                     story.append(Spacer(1, 0.1 * inch))
@@ -565,9 +718,11 @@ class PDFService:
                     story.append(self._section_header("Recommendations"))
                     story.append(Spacer(1, 6))
                     for i, r in enumerate(recs, 1):
-                        vtype   = (r.get("violation_type") or "").replace("_", " ").title()
+                        vtype = (
+                            (r.get("violation_type") or "").replace("_", " ").title()
+                        )
                         actions = r.get("actions") or []
-                        tl      = r.get("timeline") or ""
+                        tl = r.get("timeline") or ""
                         block = [
                             Paragraph(
                                 f"{i}. {vtype}  {self._sev_badge(r.get('severity') or 'MEDIUM')}",
@@ -589,12 +744,14 @@ class PDFService:
                     story.append(Spacer(1, 6))
                     for ref in refs:
                         title = ref.get("title") if isinstance(ref, dict) else str(ref)
-                        url   = ref.get("url")   if isinstance(ref, dict) else None
+                        url = ref.get("url") if isinstance(ref, dict) else None
                         if url:
-                            story.append(Paragraph(
-                                f'• {title}: <a href="{url}"><font color="#10b981">{url}</font></a>',
-                                s["Body"],
-                            ))
+                            story.append(
+                                Paragraph(
+                                    f'• {title}: <a href="{url}"><font color="#10b981">{url}</font></a>',
+                                    s["Body"],
+                                )
+                            )
                         else:
                             story.append(Paragraph(f"• {title}", s["Body"]))
                     story.append(Spacer(1, 0.1 * inch))
@@ -605,7 +762,9 @@ class PDFService:
                 if narrative:
                     story.append(self._section_header("AI Analysis"))
                     story.append(Spacer(1, 6))
-                    for para in [p.strip() for p in narrative.split("\n\n") if p.strip()]:
+                    for para in [
+                        p.strip() for p in narrative.split("\n\n") if p.strip()
+                    ]:
                         story.append(Paragraph(para.replace("\n", " "), s["Body"]))
                         story.append(Spacer(1, 4))
                     story.append(Spacer(1, 0.1 * inch))
@@ -614,14 +773,16 @@ class PDFService:
             story.append(Spacer(1, 0.1 * inch))
             story.append(self._section_header("Disclaimer"))
             story.append(Spacer(1, 6))
-            story.append(Paragraph(
-                "This report is provided for informational purposes only and does not constitute "
-                "legal advice, certification, or regulatory approval. Booppa does not certify "
-                "vendors, issue regulatory determinations, or publish public vendor scoring. "
-                "Organizations should consult qualified professionals for compliance decisions "
-                "and regulatory engagement.",
-                s["Disclaimer"],
-            ))
+            story.append(
+                Paragraph(
+                    "This report is provided for informational purposes only and does not constitute "
+                    "legal advice, certification, or regulatory approval. Booppa does not certify "
+                    "vendors, issue regulatory determinations, or publish public vendor scoring. "
+                    "Organizations should consult qualified professionals for compliance decisions "
+                    "and regulatory engagement.",
+                    s["Disclaimer"],
+                )
+            )
 
             doc.build(story)
             buffer.seek(0)
@@ -636,22 +797,39 @@ class PDFService:
 
     def _create_proof_metadata(self, report_data: dict) -> list:
         rows = []
-        if report_data.get("proof_header"):   rows.append(("FORMAT", report_data["proof_header"]))
-        if report_data.get("schema_version"): rows.append(("SCHEMA VERSION", report_data["schema_version"]))
-        if report_data.get("verify_url"):     rows.append(("VERIFY URL", report_data["verify_url"]))
+        if report_data.get("proof_header"):
+            rows.append(("FORMAT", report_data["proof_header"]))
+        if report_data.get("schema_version"):
+            rows.append(("SCHEMA VERSION", report_data["schema_version"]))
+        if report_data.get("verify_url"):
+            rows.append(("VERIFY URL", report_data["verify_url"]))
         return [self._meta_table(rows)] if rows else []
 
     def _create_detail_paragraphs(self, report_data: dict) -> list:
-        return [self._meta_table([
-            ("REPORT ID",  report_data.get("report_id") or "N/A"),
-            ("FRAMEWORK",  report_data.get("framework") or "N/A"),
-            ("COMPANY",    report_data.get("company_name") or "N/A"),
-            ("GENERATED",  (report_data.get("created_at") or datetime.now(timezone.utc).isoformat())[:19]),
-            ("STATUS",     report_data.get("status") or "completed"),
-        ])]
+        return [
+            self._meta_table(
+                [
+                    ("REPORT ID", report_data.get("report_id") or "N/A"),
+                    ("FRAMEWORK", report_data.get("framework") or "N/A"),
+                    ("COMPANY", report_data.get("company_name") or "N/A"),
+                    (
+                        "GENERATED",
+                        (
+                            report_data.get("created_at")
+                            or datetime.now(timezone.utc).isoformat()
+                        )[:19],
+                    ),
+                    ("STATUS", report_data.get("status") or "completed"),
+                ]
+            )
+        ]
 
     def _create_mandatory_pdpa_warning(self, report_data: dict) -> list:
-        return [self._section_header("Action Required"), Spacer(1, 6), *self._pdpa_warning_block(report_data)]
+        return [
+            self._section_header("Action Required"),
+            Spacer(1, 6),
+            *self._pdpa_warning_block(report_data),
+        ]
 
     def _create_blockchain_section(self, report_data: dict) -> list:
         return self._blockchain_block(report_data)

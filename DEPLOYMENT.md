@@ -1,4 +1,4 @@
-# BOOPPA v10.0 Enterprise - Deployment Guide
+# BOOPPA v10.0 Enterprise - Deployment Guide (Booppa Smart Care LLC)
 
 ## Quick Deployment
 

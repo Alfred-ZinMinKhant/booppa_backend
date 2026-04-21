@@ -34,7 +34,10 @@ def resolve_tier(assessment_data: Dict[str, Any] | None, framework: str | None) 
     tier = _normalize(data.get("tier") or data.get("plan") or data.get("package"))
     product_type = _normalize(data.get("product_type") or data.get("product"))
 
-    if tier in {"enterprise", "ent", "enterprise_monthly"}:
+    if tier in {
+        "enterprise", "ent", "enterprise_monthly", "enterprise_pro",
+        "standard_compliance", "pro_compliance"
+    }:
         return ENTERPRISE
 
     if product_type in PRO_PRODUCT_KEYS:

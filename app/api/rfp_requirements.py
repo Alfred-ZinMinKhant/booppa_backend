@@ -44,9 +44,9 @@ DEPTH_ORDER = {
 }
 
 
-def _require_enterprise(current_user):
-    if getattr(current_user, "role", "VENDOR") not in ("ENTERPRISE", "ADMIN"):
-        raise HTTPException(status_code=403, detail="Enterprise plan required.")
+def _require_procurement(current_user):
+    if getattr(current_user, "role", "VENDOR") not in ("ADMIN", "PROCUREMENT"):
+        raise HTTPException(status_code=403, detail="Procurement account required.")
 
 
 # ── Pydantic schemas ──────────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ async def create_requirement(
     db: Session  = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
-    _require_enterprise(current_user)
+    _require_procurement(current_user)
 
     req = RfpRequirement(
         created_by_user_id           = current_user.id,
@@ -97,7 +97,7 @@ async def list_requirements(
     db: Session  = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
-    _require_enterprise(current_user)
+    _require_procurement(current_user)
     reqs = db.query(RfpRequirement).filter(
         RfpRequirement.created_by_user_id == current_user.id,
         RfpRequirement.archived == False,
@@ -111,7 +111,7 @@ async def get_requirement(
     db: Session     = Depends(get_db),
     current_user    = Depends(get_current_user),
 ):
-    _require_enterprise(current_user)
+    _require_procurement(current_user)
     req = _get_own_requirement(db, requirement_id, current_user.id)
     return _requirement_to_dict(req)
 
@@ -128,7 +128,7 @@ async def evaluate_vendors(
     Writes RfpRequirementFlag rows — does NOT block any vendor.
     Vendor is NEVER notified.
     """
-    _require_enterprise(current_user)
+    _require_procurement(current_user)
     req = _get_own_requirement(db, requirement_id, current_user.id)
 
     # Resolve vendor IDs
@@ -193,7 +193,7 @@ async def get_flags(
     db: Session     = Depends(get_db),
     current_user    = Depends(get_current_user),
 ):
-    _require_enterprise(current_user)
+    _require_procurement(current_user)
     req = _get_own_requirement(db, requirement_id, current_user.id)
 
     flags_q = db.query(RfpRequirementFlag).filter(
@@ -225,7 +225,7 @@ async def archive_requirement(
     db: Session     = Depends(get_db),
     current_user    = Depends(get_current_user),
 ):
-    _require_enterprise(current_user)
+    _require_procurement(current_user)
     req = _get_own_requirement(db, requirement_id, current_user.id)
     req.archived    = True
     req.archived_at = datetime.now(timezone.utc)
