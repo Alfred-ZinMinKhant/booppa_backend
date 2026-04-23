@@ -22,45 +22,25 @@ BOOPPA_SYSTEM_PROMPT = """You are BOOPPA AI - Singapore's leading compliance aud
 CRITICAL INSTRUCTIONS:
 1. ALWAYS cite specific legislation sections (PDPA Section 13, MAS Notice 626, etc.)
 2. ALWAYS mention exact penalties (S$1,000,000, up to 10% of annual revenue)
-3. ALWAYS provide actionable steps with deadlines
+3. ALWAYS provide actionable tasks with deadlines and acceptance criteria
 4. ALWAYS reference PDPC Advisory Guidelines when relevant
-5. Structure responses with: VIOLATION → PENALTY → ACTION → REFERENCE
+5. Structure responses with: VIOLATION → LEGISLATION → MAX PENALTY → EVIDENCE → DEVELOPER IMPLEMENTATION TASKS (REQUIREMENTS, ACCEPTANCE CRITERIA, RECOMMENDED TOOLS)
 6. Use Singapore-specific terminology: NRIC (not ID), PDPC (not DPA), DNC Registry
 7. Include Chinese/Malay/Tamil translations for key terms when helpful
-8. Emphasize court-admissibility of blockchain evidence
+8. Emphasize court-admissibility of blockchain evidence anchored on Polygon
 9. Format with clear severity levels: CRITICAL, HIGH, MEDIUM, LOW
-10. Provide Polygonscan verification instructions for blockchain evidence
+10. Provide specific developer tasks organized by priority and timeline
 
-SPECIALIZED KNOWLEDGE:
-- PDPA 2012 (Personal Data Protection Act Singapore)
-- PDPC Advisory Guidelines (NRIC 2018, Cookies 2021, Accountability 2021)
-- MAS Technology Risk Management Guidelines
-- MTCS Level 3 requirements (Tier 3)
-- Singapore Cybersecurity Act 2018
-- Do Not Call (DNC) Registry rules
-- Personal Data Protection Commission (PDPC) enforcement history
-- Monetary Authority of Singapore (MAS) regulatory framework
-
-RESPONSE TEMPLATE:
+RESPONSE TEMPLATE FOR DEVELOPER BRIEF:
 [SEVERITY: CRITICAL/HIGH/MEDIUM/LOW]
 [VIOLATION]: Clear description of compliance issue
-[LEGISLATION]: Specific sections violated (PDPA Section X, MAS Notice Y)
-[PENALTY]: Exact financial penalty or regulatory consequence
-[IMMEDIATE ACTION]: Concrete steps required within 24-48 hours
-[COMPLIANCE DEADLINE]: Realistic timeline for full compliance (7-30 days)
-[REFERENCE]: Official PDPC/MAS/MTCS documentation links
-[BLOCKCHAIN EVIDENCE]: How to document compliance on Polygon for court-admissibility
-[VERIFICATION]: Polygonscan URL format for evidence verification
-
-EXAMPLE OUTPUT:
-CRITICAL VIOLATION: Unauthorized NRIC Collection
-LEGISLATION: PDPA Section 18, PDPC Advisory Guidelines 2018
-PENALTY: Up to S$1,000,000
-IMMEDIATE ACTION (24h): Remove NRIC collection form from website
-COMPLIANCE DEADLINE: 7 days
-REFERENCE: https://www.pdpc.gov.sg/guidelines-and-consultation/2018/01/advisory-guidelines-for-nric-numbers
-BLOCKCHAIN EVIDENCE: Anchor removal timestamp on Polygon Mainnet (tx: 0x...)
-VERIFICATION: https://polygonscan.com/tx/0x... (include QR code in report)
+[LEGISLATION]: Specific sections violated
+[MAX PENALTY]: Exact financial penalty
+[EVIDENCE]: Detection evidence from scan
+[DEVELOPER IMPLEMENTATION TASKS]:
+   - [REQUIREMENTS]: Numbered list of technical tasks
+   - [ACCEPTANCE CRITERIA]: Bulleted list of conditions to close the finding
+   - [RECOMMENDED TOOLS]: Tools or references to help implementation
 """
 
 # ============================================
@@ -462,7 +442,10 @@ BLOCKCHAIN EVIDENCE:
             scan_data, violations, risk_level
         )
         executive_summary = deepseek_payload.get("executive_summary") or self._generate_executive_summary(
-            violations, risk_level
+            violations, 
+            risk_level, 
+            company_name=scan_data.get("company_name", "the organization"),
+            scan_date=scan_data.get("scan_date") or datetime.now().strftime("%d %B %Y")
         )
         detailed_findings = []
 
@@ -771,32 +754,31 @@ Note: Consult legal counsel for specific compliance requirements."""
             return None
 
     def _generate_executive_summary(
-        self, violations: List[Dict], risk_level: Dict
+        self, violations: List[Dict], risk_level: Dict, company_name: str = "the organization", scan_date: str = None
     ) -> str:
-        """Generate executive summary of the compliance report"""
+        """Generate executive summary of the compliance report matching the Developer Brief format"""
 
-        critical_count = sum(1 for v in violations if v.get("severity") == "CRITICAL")
-        high_count = sum(1 for v in violations if v.get("severity") == "HIGH")
-        total_count = len(violations)
+        if not scan_date:
+            scan_date = datetime.now().strftime("%d %B %Y")
 
-        summary = f"""BOOPPA COMPLIANCE AUDIT REPORT - EXECUTIVE SUMMARY
+        summary = f"""1. Context & Purpose of This Document
 
-Overall Risk Level: {risk_level['level']} ({risk_level['description']})
+This document summarizes a PDPA Quick Scan compliance audit performed by Booppa on the {company_name} website, translated into English and enriched with developer implementation tasks. It is intended to be forwarded directly to the development team.
 
-This audit identified {total_count} compliance issues requiring attention:
-• CRITICAL violations: {critical_count} (require immediate action within 24-48 hours)
-• HIGH severity violations: {high_count} (require urgent attention within 7 days)
-• MEDIUM/LOW violations: {total_count - critical_count - high_count} (address within 30 days)
+The audit was conducted on {scan_date} and anchored on the Polygon PoS blockchain for evidentiary integrity.
 
-KEY FINDINGS:
+2. Audit Findings Summary
+
+Booppa AI compliance audit identified violations requiring action. The following issues were found:
+
 """
+        for i, violation in enumerate(violations, 1):
+            severity = violation.get("severity", "MEDIUM")
+            v_type = violation.get("type", "Violation").replace("_", " ").title()
+            summary += f"FINDING {i} — {v_type}  [{severity} SEVERITY]\n"
+            summary += f"Violation: {violation.get('details', '')}\n\n"
 
-        # Add key findings for critical violations
-        for violation in violations:
-            if violation.get("severity") in ["CRITICAL", "HIGH"]:
-                summary += f"• {violation.get('type', 'Violation').replace('_', ' ').title()}: {violation.get('details', '')}\n"
-
-        summary += f"""
+        return summary
 
 RECOMMENDED IMMEDIATE ACTIONS:
 1. Address all CRITICAL violations within 24-48 hours
