@@ -44,7 +44,7 @@ def capture_screenshot_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
             page = browser.new_page()
             page.goto(url, timeout=timeout * 1000)
             page.wait_for_timeout(2000)
-            img = page.screenshot(full_page=True)
+            img = page.screenshot(full_page=False)
             browser.close()
             logger.info(f"Screenshot via Playwright for {url}")
             return img
@@ -56,7 +56,7 @@ def capture_screenshot_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
     try:
         with httpx.Client(timeout=timeout) as client:
             for body in (
-                {"url": url, "options": {"fullPage": True}},
+                {"url": url, "options": {"fullPage": False}},
                 {"url": url},
             ):
                 try:
