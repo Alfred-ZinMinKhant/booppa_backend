@@ -710,11 +710,11 @@ class PDFService:
                         story.append(Spacer(1, 8))
                 story.append(Spacer(1, 0.1 * inch))
 
-                # 3. Developer Implementation Tasks (only when there are findings)
+                # 3. Developer Implementation Tasks
+                story.append(_PageBreak())
+                story.append(self._section_header("3. Developer Implementation Tasks"))
+                story.append(Spacer(1, 6))
                 if findings:
-                    story.append(_PageBreak())
-                    story.append(self._section_header("3. Developer Implementation Tasks"))
-                    story.append(Spacer(1, 6))
                     story.append(Paragraph(
                         "The following tasks are organized by priority and timeline. "
                         "Each task includes the acceptance criteria required to close the finding.",
@@ -724,7 +724,12 @@ class PDFService:
                     for i, f in enumerate(findings, 1):
                         story.append(KeepTogether(self._task_block(i, f)))
                         story.append(Spacer(1, 8))
-                    story.append(Spacer(1, 0.1 * inch))
+                else:
+                    story.append(Paragraph(
+                        "No remediation tasks required. No violations were detected during this scan.",
+                        s["Body"]
+                    ))
+                story.append(Spacer(1, 0.1 * inch))
 
                 # 4. Blockchain Evidence Anchoring
                 story.append(_PageBreak())
@@ -778,12 +783,17 @@ class PDFService:
                 ))
                 story.append(Spacer(1, 0.1 * inch))
 
-                # 6. Compliance Timeline Summary (only when there are findings)
+                # 6. Compliance Timeline Summary
+                story.append(self._section_header("6. Compliance Timeline Summary"))
+                story.append(Spacer(1, 6))
                 if findings:
-                    story.append(self._section_header("6. Compliance Timeline Summary"))
-                    story.append(Spacer(1, 6))
                     story.append(self._timeline_summary_table(findings))
-                    story.append(Spacer(1, 0.1 * inch))
+                else:
+                    story.append(Paragraph(
+                        "No compliance actions required at this time. Schedule a follow-up audit in 6 months.",
+                        s["Body"]
+                    ))
+                story.append(Spacer(1, 0.1 * inch))
 
                 # 7. Legal References
                 story.append(self._section_header("7. Legal References"))
