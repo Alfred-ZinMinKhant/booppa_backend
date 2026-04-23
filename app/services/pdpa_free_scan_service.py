@@ -156,15 +156,35 @@ def _check_body(html: str) -> list[dict]:
     html_lower = html.lower()
 
     # Cookie consent banner detection
+    # Covers: known SaaS platforms (CDN URLs + class names), WP plugins,
+    # inline script references, and common plain-text phrases.
     consent_patterns = [
+        # Platform class/id names
         "cookieconsent", "cookie-consent", "cookie-banner", "cookie_banner",
-        "cookie-notice", "gdpr", "onetrust", "termly", "cookiebot",
-        "cc-banner", "cc-window", "consent-manager",
-        "booppa-cookie", "booppa_consent", "pdpa compliant",
-        "accept cookies", "allow cookies", "cookie policy", "privacy settings",
-        "manage cookies", "cookie-settings", "cookies-settings",
-        "usercentrics", "cookieyes", "osano", "iubenda", "consentmanager",
-        "optanon", "evidon", "didomi", "trustarc", "quantcast",
+        "cookie-notice", "cc-banner", "cc-window", "cc-nb",
+        "consent-manager", "consent-banner", "consent-dialog",
+        # SaaS platforms (names appear in CDN script src or inline JS)
+        "onetrust", "cookielaw.org", "cookiebot", "consent.cookiebot",
+        "termly", "cookieyes", "cdn.cookieyes", "osano", "cdn.osano",
+        "iubenda", "cdn.iubenda", "consentmanager", "usercentrics",
+        "app.usercentrics", "didomi", "sdk.privacy-center.org",
+        "trustarc", "consent.truste.com", "quantcast", "quantcast.mgr",
+        "optanon", "evidon", "civic", "cookiecontrol",
+        "booppa-cookie", "booppa_consent",
+        # WordPress / common CMS plugins
+        "cookie-law-info", "wp-cookie", "moove_gdpr", "gdpr-cookie",
+        "cookies-eu-banner", "real-cookie-banner", "borlabs-cookie",
+        "wt-cli", "cookie-script", "wpgdprc",
+        # Common plain-text phrases (appear in banner copy)
+        "we use cookies", "this site uses cookies", "this website uses cookies",
+        "accept cookies", "allow cookies", "accept all cookies",
+        "reject cookies", "decline cookies",
+        "cookie preferences", "cookie preference", "cookie choices",
+        "cookie settings", "cookie-settings", "cookies-settings",
+        "manage cookies", "manage your cookies",
+        # Generic consent/PDPA text
+        "gdpr", "pdpa consent", "pdpa compliant", "privacy settings",
+        "data-cookieconsent", "data-cc=",
     ]
     has_consent = any(p in html_lower for p in consent_patterns)
     if not has_consent:
