@@ -5,7 +5,7 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install system packages needed for some wheels and runtime
+# Install system packages needed for Python wheels, runtime, AND Playwright Chromium
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
@@ -18,12 +18,41 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     fonts-liberation \
+    # Chromium runtime dependencies (required by Playwright)
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libdbus-1-3 \
+    libexpat1 \
+    libxcb1 \
+    libxkbcommon0 \
+    libx11-6 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    libatspi2.0-0 \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install Python dependencies
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r /app/requirements.txt
+
+# Install Playwright Chromium browser binary.
+# PLAYWRIGHT_BROWSERS_PATH puts the binary in /opt/playwright so all users can read it.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+RUN playwright install chromium && \
+    chmod -R 755 /opt/playwright
 
 
 # Copy application source

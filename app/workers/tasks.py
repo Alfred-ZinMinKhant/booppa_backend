@@ -51,40 +51,80 @@ async def _capture_screenshot_with_timeout(url: str, timeout: int = 25) -> str |
         return None
 
 
-async def _fetch_thum_io_base64(url: str, timeout: int = 20) -> tuple[str | None, str | None]:
+async def _fetch_thum_io_base64(url: str, timeout: int = 30) -> tuple[str | None, str | None]:
     """
-    Fetch a screenshot from external services. Tries three providers in order:
-    1. WordPress mshots   — free, no API key, fetches from their servers
-    2. Thum.io            — free tier, may 502 under load
-    3. Screenshot.guru    — free fallback
+    Async screenshot fallback chain (used when Playwright/Browserless are unavailable).
+    Order:
+      1. Microlink  — real screenshots, free ~50/day, no API key
+      2. Thum.io    — free tier
+      3. mshots     — retried 3× with 4 s delay (first request queues the screenshot)
+      4. Screenshot.guru — last resort
     """
     from urllib.parse import quote_plus
+    _MIN = 8_000
 
-    providers = [
-        # WordPress mshots — most reliable free option, no API key
-        (f"https://s.wordpress.com/mshots/v1/{quote_plus(url)}?w=1400", "mshots"),
-        # Thum.io
-        (f"https://image.thum.io/get/width/1400/{url}", "thum.io"),
-        # Screenshot.guru — no key required
-        (f"https://screenshot.guru/api?url={quote_plus(url)}&width=1400", "screenshot.guru"),
-    ]
-
-    last_err = "all_providers_failed"
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        for endpoint_url, name in providers:
-            try:
-                resp = await client.get(endpoint_url)
-                if resp.status_code == 200 and len(resp.content) > 2000:
-                    # Sanity check: must be larger than a trivial placeholder
-                    logger.info(f"Screenshot captured via {name} for {url}")
-                    return base64.b64encode(resp.content).decode(), None
-                last_err = f"{name}_status:{resp.status_code}"
-                logger.warning(f"Screenshot provider {name} failed for {url}: {resp.status_code}")
-            except Exception as e:
-                last_err = f"{name}_error:{str(e)[:100]}"
-                logger.warning(f"Screenshot provider {name} error for {url}: {e}")
 
-    return None, last_err
+        # 1. Microlink — returns JSON with CDN screenshot URL
+        try:
+            api = f"https://api.microlink.io?url={quote_plus(url)}&screenshot=true&meta=false"
+            resp = await client.get(api)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("status") == "success":
+                    img_url = (data.get("data") or {}).get("screenshot", {}).get("url")
+                    if img_url:
+                        img_resp = await client.get(img_url)
+                        if img_resp.status_code == 200 and len(img_resp.content) > _MIN:
+                            logger.info(f"Screenshot via Microlink for {url}")
+                            return base64.b64encode(img_resp.content).decode(), None
+        except Exception as e:
+            logger.warning(f"Microlink failed for {url}: {e}")
+
+        # 2. Thum.io
+        try:
+            resp = await client.get(f"https://image.thum.io/get/width/1400/{url}")
+            if resp.status_code == 200 and len(resp.content) > _MIN:
+                logger.info(f"Screenshot via Thum.io for {url}")
+                return base64.b64encode(resp.content).decode(), None
+            logger.warning(f"Thum.io status {resp.status_code} for {url}")
+        except Exception as e:
+            logger.warning(f"Thum.io error for {url}: {e}")
+
+        # 3. mshots with retry (first request queues; retries get the real image)
+        mshots = f"https://s.wordpress.com/mshots/v1/{quote_plus(url)}?w=1400"
+        for attempt in range(4):
+            try:
+                resp = await client.get(mshots)
+                final = str(resp.url)
+                if "mshots/v1/default" in final or "mshots/v1/0" in final:
+                    if attempt < 3:
+                        logger.info(f"mshots placeholder for {url}, retry {attempt+1}/3 after 4 s")
+                        await asyncio.sleep(4)
+                        continue
+                    logger.warning(f"mshots still placeholder after retries for {url}")
+                    break
+                if resp.status_code == 200 and len(resp.content) > _MIN:
+                    logger.info(f"Screenshot via mshots (attempt {attempt+1}) for {url}")
+                    return base64.b64encode(resp.content).decode(), None
+                break
+            except Exception as e:
+                logger.warning(f"mshots attempt {attempt+1} error for {url}: {e}")
+                break
+
+        # 4. Screenshot.guru
+        try:
+            resp = await client.get(
+                f"https://screenshot.guru/api?url={quote_plus(url)}&width=1400"
+            )
+            if resp.status_code == 200 and len(resp.content) > _MIN:
+                logger.info(f"Screenshot via Screenshot.guru for {url}")
+                return base64.b64encode(resp.content).decode(), None
+            logger.warning(f"Screenshot.guru status {resp.status_code} for {url}")
+        except Exception as e:
+            logger.warning(f"Screenshot.guru error for {url}: {e}")
+
+    return None, "all_providers_failed"
 
 
 async def _detect_cookie_banner(url: str | None) -> dict:
