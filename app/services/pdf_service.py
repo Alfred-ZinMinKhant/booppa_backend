@@ -629,10 +629,15 @@ class PDFService:
                     logger.warning(f"Screenshot render failed: {e}")
 
             # ── Key issues + PDPA action ───────────────────────────────────
-            is_pdpa = (report_data.get("framework") or "").upper() == "PDPA"
+            framework_raw = (report_data.get("framework") or "").upper()
+            is_pdpa = framework_raw in {"PDPA", "PDPA_QUICK_SCAN"}
+            is_notarization = "NOTARIZATION" in framework_raw
             key_issues = report_data.get("key_issues") or []
 
-            if is_pdpa:
+            if is_notarization:
+                story.extend(self._notarization_certificate_story(report_data))
+
+            elif is_pdpa:
                 # Specialized Developer Brief Layout (matches PDPA_Developer_Brief format)
                 structured = report_data.get("structured_report") or {}
                 exec_sum = structured.get("executive_summary") or report_data.get("ai_narrative") or ""
@@ -761,25 +766,27 @@ class PDFService:
                     story.append(Spacer(1, 6))
                     story.extend(self._pdpa_warning_block(report_data))
 
-            # ── Blockchain verification ────────────────────────────────────
-            story.append(self._section_header("Blockchain Verification"))
-            story.append(Spacer(1, 6))
-            story.extend(self._blockchain_block(report_data))
+            # ── Blockchain verification (generic reports only — PDPA & notarization have their own) ──
+            if not is_notarization and not is_pdpa:
+                story.append(self._section_header("Blockchain Verification"))
+                story.append(Spacer(1, 6))
+                story.extend(self._blockchain_block(report_data))
 
-            # ── Structured report sections ─────────────────────────────────
+            # ── Structured report sections (generic reports only) ─────────
             structured = None
-            if isinstance(report_data.get("structured_report"), dict):
-                structured = report_data["structured_report"]
-            elif any(
-                k in report_data
-                for k in (
-                    "executive_summary",
-                    "detailed_findings",
-                    "recommendations",
-                    "legal_references",
-                )
-            ):
-                structured = report_data
+            if not is_notarization and not is_pdpa:
+                if isinstance(report_data.get("structured_report"), dict):
+                    structured = report_data["structured_report"]
+                elif any(
+                    k in report_data
+                    for k in (
+                        "executive_summary",
+                        "detailed_findings",
+                        "recommendations",
+                        "legal_references",
+                    )
+                ):
+                    structured = report_data
 
             if structured and not is_pdpa:
                 # Executive summary
@@ -879,8 +886,8 @@ class PDFService:
                             story.append(Paragraph(f"• {title}", s["Body"]))
                     story.append(Spacer(1, 0.1 * inch))
 
-            else:
-                # AI narrative fallback
+            elif not is_pdpa and not is_notarization:
+                # AI narrative fallback (generic reports only)
                 narrative = report_data.get("ai_narrative") or ""
                 if narrative:
                     story.append(self._section_header("AI Analysis"))
@@ -892,7 +899,7 @@ class PDFService:
                         story.append(Spacer(1, 4))
                     story.append(Spacer(1, 0.1 * inch))
 
-            if not is_pdpa:
+            if not is_pdpa and not is_notarization:
                 # ── Disclaimer ─────────────────────────────────────────────────
                 story.append(Spacer(1, 0.1 * inch))
                 story.append(self._section_header("Disclaimer"))
@@ -928,6 +935,109 @@ class PDFService:
         if report_data.get("verify_url"):
             rows.append(("VERIFY URL", report_data["verify_url"]))
         return [self._meta_table(rows)] if rows else []
+
+    def _notarization_certificate_story(self, d: dict) -> list:
+        """Full notarization certificate layout — self-sufficient legal artifact."""
+        s = self._s
+        items = []
+
+        def mono(text): return Paragraph(str(text), s["Mono"])
+        def body(text): return Paragraph(str(text), s["Body"])
+        def label(text): return Paragraph(str(text), s["Label"])
+
+        # ── 1. Document Descriptor ────────────────────────────────────────────
+        descriptor = d.get("document_descriptor") or ""
+        if descriptor:
+            items.append(self._section_header("Document"))
+            items.append(Spacer(1, 6))
+            items.append(self._meta_table([
+                ("DOCUMENT", descriptor),
+                ("FILE NAME", d.get("original_filename") or "—"),
+                ("FILE SIZE", f"{d.get('file_size'):,} bytes" if d.get("file_size") else "—"),
+                ("MIME TYPE", d.get("mime_type") or "—"),
+                ("SUBMITTED BY", d.get("company_name") or "—"),
+            ]))
+        else:
+            items.append(self._section_header("Document"))
+            items.append(Spacer(1, 6))
+            items.append(self._meta_table([
+                ("FILE NAME", d.get("original_filename") or "—"),
+                ("FILE SIZE", f"{d.get('file_size'):,} bytes" if d.get("file_size") else "—"),
+                ("MIME TYPE", d.get("mime_type") or "—"),
+                ("SUBMITTED BY", d.get("company_name") or "—"),
+            ]))
+        items.append(Spacer(1, 0.15 * inch))
+
+        # ── 2. Cryptographic Proof ─────────────────────────────────────────────
+        items.append(self._section_header("Cryptographic Proof"))
+        items.append(Spacer(1, 6))
+        items.append(self._meta_table([
+            ("ALGORITHM", d.get("hash_algorithm") or "SHA-256"),
+            ("EVIDENCE HASH", d.get("audit_hash") or d.get("file_hash") or "—"),
+        ]))
+        items.append(Spacer(1, 0.15 * inch))
+
+        # ── 3. Blockchain Record ───────────────────────────────────────────────
+        items.append(self._section_header("Blockchain Record"))
+        items.append(Spacer(1, 6))
+        tx = d.get("tx_hash") or "—"
+        poly_url = d.get("polygonscan_url") or (
+            f"https://polygonscan.com/tx/{tx}" if tx != "—" else "—"
+        )
+        items.append(self._meta_table([
+            ("NETWORK", d.get("network") or "Polygon PoS"),
+            ("TRANSACTION HASH", tx),
+            ("EXPLORER URL", poly_url),
+            ("ANCHORED AT", d.get("created_at", "")[:19] or "—"),
+        ]))
+        items.append(Spacer(1, 6))
+
+        # QR code + verify URL side-by-side (re-use _blockchain_block)
+        items.extend(self._blockchain_block(d))
+        items.append(Spacer(1, 0.1 * inch))
+
+        # ── 4. How to Verify ──────────────────────────────────────────────────
+        items.append(self._section_header("How to Verify This Certificate"))
+        items.append(Spacer(1, 6))
+        items.append(body(
+            "Any third party can independently verify this certificate without accessing Booppa. "
+            "Follow the steps below using standard tools."
+        ))
+        items.append(Spacer(1, 8))
+
+        steps = [
+            ("Step 1 — Obtain the original file",
+             "Request the original document from the submitting party."),
+            ("Step 2 — Generate a SHA-256 hash",
+             "macOS / Linux:  shasum -a 256 filename\n"
+             "Windows:        CertUtil -hashfile filename SHA256\n"
+             "Online tool:    sha256file.com (upload the file locally in your browser)"),
+            ("Step 3 — Compare hashes",
+             f"The resulting hash must exactly match the Evidence Hash printed above:\n"
+             f"{d.get('audit_hash') or d.get('file_hash') or '(see Cryptographic Proof section)'}"),
+            ("Step 4 — Confirm the blockchain anchor",
+             f"Search the Transaction Hash on https://polygonscan.com. "
+             f"The block timestamp proves the earliest possible existence date of this document. "
+             f"No login or account required."),
+        ]
+        for title, detail in steps:
+            items.append(Paragraph(f"<b>{title}</b>", s["Body"]))
+            items.append(Paragraph(detail.replace("\n", "<br/>"), s["Body"]))
+            items.append(Spacer(1, 6))
+        items.append(Spacer(1, 0.1 * inch))
+
+        # ── 5. Legal Disclaimer ───────────────────────────────────────────────
+        items.append(self._section_header("Legal Disclaimer"))
+        items.append(Spacer(1, 6))
+        items.append(Paragraph(
+            "This certificate provides cryptographic evidence of document existence at a specific date and time. "
+            "It does NOT constitute legal notarization by a licensed notary public, nor does it validate the "
+            "content or legality of the document. For legal matters, consult qualified legal counsel. "
+            "Booppa is not affiliated with any government authority.",
+            s["Disclaimer"]
+        ))
+
+        return items
 
     def _finding_summary_block(self, index: int, f: dict) -> list:
         """Section 2 card: FINDING N — Title [SEVERITY] with 4-row detail table."""

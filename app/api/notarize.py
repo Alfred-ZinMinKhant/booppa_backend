@@ -43,6 +43,7 @@ async def upload_document(
     email: Optional[str] = Form(None),
     company_name: Optional[str] = Form(None),
     plan: str = Form("single"),
+    document_descriptor: Optional[str] = Form(None),
 ):
     """
     Upload a document for notarization.
@@ -101,10 +102,16 @@ async def upload_document(
     # Create a pending report record
     db = SessionLocal()
     try:
+        # Derive MIME type: prefer explicit content_type, fallback to extension guess
+        mime_type = file.content_type or "application/octet-stream"
+
         assessment_data = {
             "file_hash": file_hash,
+            "hash_algorithm": "SHA-256",
             "original_filename": file.filename,
             "file_size_bytes": len(contents),
+            "mime_type": mime_type,
+            "document_descriptor": (document_descriptor or "").strip()[:120] or None,
             "s3_key": s3_key,
             "plan": plan,
             "product_type": product_type,
@@ -205,6 +212,7 @@ async def enterprise_upload_document(
     file: UploadFile = File(...),
     email: Optional[str] = Form(None),
     company_name: Optional[str] = Form(None),
+    document_descriptor: Optional[str] = Form(None),
 ):
     """
     Enterprise notarization — uses monthly credits instead of Stripe.
@@ -268,11 +276,16 @@ async def enterprise_upload_document(
             logger.error(f"S3 upload failed for enterprise notarization: {e}")
             raise HTTPException(status_code=500, detail="File upload failed. Please try again.")
 
+        mime_type = file.content_type or "application/octet-stream"
+
         # Create report (already paid via credits)
         assessment_data = {
             "file_hash": file_hash,
+            "hash_algorithm": "SHA-256",
             "original_filename": file.filename,
             "file_size_bytes": len(contents),
+            "mime_type": mime_type,
+            "document_descriptor": (document_descriptor or "").strip()[:120] or None,
             "s3_key": s3_key,
             "plan": "enterprise_credit",
             "product_type": "compliance_notarization_1",
@@ -469,9 +482,12 @@ async def get_certificate(report_id: str, session_id: str | None = None, backgro
             "status": report.status,
             "report_id": str(report.id),
             # Document info
+            "document_descriptor": assessment.get("document_descriptor"),
             "file_name": assessment.get("original_filename"),
             "file_hash": assessment.get("file_hash"),
+            "hash_algorithm": assessment.get("hash_algorithm", "SHA-256"),
             "file_size": assessment.get("file_size_bytes"),
+            "mime_type": assessment.get("mime_type"),
             "company_name": report.company_name,
             # Blockchain & evidence
             "audit_hash": report.audit_hash,
