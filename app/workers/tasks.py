@@ -52,14 +52,39 @@ async def _capture_screenshot_with_timeout(url: str, timeout: int = 25) -> str |
 
 
 async def _fetch_thum_io_base64(url: str, timeout: int = 20) -> tuple[str | None, str | None]:
-    try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            resp = await client.get(f"https://image.thum.io/get/width/1400/{url}")
-            if resp.status_code == 200 and resp.content:
-                return base64.b64encode(resp.content).decode(), None
-            return None, f"thum_io_status:{resp.status_code}"
-    except Exception as e:
-        return None, f"thum_io_error:{str(e)[:200]}"
+    """
+    Fetch a screenshot from external services. Tries three providers in order:
+    1. WordPress mshots   — free, no API key, fetches from their servers
+    2. Thum.io            — free tier, may 502 under load
+    3. Screenshot.guru    — free fallback
+    """
+    from urllib.parse import quote_plus
+
+    providers = [
+        # WordPress mshots — most reliable free option, no API key
+        (f"https://s.wordpress.com/mshots/v1/{quote_plus(url)}?w=1400", "mshots"),
+        # Thum.io
+        (f"https://image.thum.io/get/width/1400/{url}", "thum.io"),
+        # Screenshot.guru — no key required
+        (f"https://screenshot.guru/api?url={quote_plus(url)}&width=1400", "screenshot.guru"),
+    ]
+
+    last_err = "all_providers_failed"
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        for endpoint_url, name in providers:
+            try:
+                resp = await client.get(endpoint_url)
+                if resp.status_code == 200 and len(resp.content) > 2000:
+                    # Sanity check: must be larger than a trivial placeholder
+                    logger.info(f"Screenshot captured via {name} for {url}")
+                    return base64.b64encode(resp.content).decode(), None
+                last_err = f"{name}_status:{resp.status_code}"
+                logger.warning(f"Screenshot provider {name} failed for {url}: {resp.status_code}")
+            except Exception as e:
+                last_err = f"{name}_error:{str(e)[:100]}"
+                logger.warning(f"Screenshot provider {name} error for {url}: {e}")
+
+    return None, last_err
 
 
 async def _detect_cookie_banner(url: str | None) -> dict:
@@ -250,18 +275,23 @@ async def _resolve_website_url(raw_url: str | None) -> dict:
     if not url:
         return {}
 
-    # Normalize input and try HTTPS first, then HTTP.
+    # Normalize: strip scheme to get bare host+path
     normalized = url
-    if normalized.lower().startswith("http://"):
-        normalized = normalized[7:]
-    elif normalized.lower().startswith("https://"):
-        normalized = normalized[8:]
+    for prefix in ("https://", "http://"):
+        if normalized.lower().startswith(prefix):
+            normalized = normalized[len(prefix):]
+            break
 
-    candidates = [f"https://{normalized}", f"http://{normalized}"]
+    # Build candidate list — try www. first because bare domains sometimes have
+    # higher latency or stricter CDN rules (e.g. Cloudflare proxies www but not apex).
+    candidates = []
+    if not normalized.startswith("www."):
+        candidates.append(f"https://www.{normalized}")
+    candidates += [f"https://{normalized}", f"http://{normalized}"]
 
     headers = {"User-Agent": "BooppaComplianceBot/1.0"}
 
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
         for candidate in candidates:
             try:
                 resp = await client.get(candidate, headers=headers)

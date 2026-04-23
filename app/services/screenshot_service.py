@@ -76,20 +76,27 @@ def capture_screenshot_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
     except Exception as e:
         logger.warning(f"Browserless screenshot attempt failed for {url}: {e}")
 
-    # Final fallback: public screenshot service (no API key required).
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.get(
-                f"https://image.thum.io/get/width/1400/{url}",
-                follow_redirects=True,
-            )
-            if resp.status_code == 200:
-                return resp.content
-            logger.warning(
-                f"Thum.io screenshot failed for {url}: {resp.status_code} {resp.text}"
-            )
-    except Exception as e:
-        logger.warning(f"Thum.io screenshot attempt failed for {url}: {e}")
+    # Final fallback chain: public screenshot services (no API key required).
+    from urllib.parse import quote_plus
+
+    providers = [
+        # WordPress mshots — free, fetches from their own servers (most reliable)
+        (f"https://s.wordpress.com/mshots/v1/{quote_plus(url)}?w=1400", "mshots"),
+        # Thum.io
+        (f"https://image.thum.io/get/width/1400/{url}", "thum.io"),
+        # Screenshot.guru
+        (f"https://screenshot.guru/api?url={quote_plus(url)}&width=1400", "screenshot.guru"),
+    ]
+    with httpx.Client(timeout=timeout) as client:
+        for endpoint_url, name in providers:
+            try:
+                resp = client.get(endpoint_url, follow_redirects=True)
+                if resp.status_code == 200 and len(resp.content) > 2000:
+                    logger.info(f"Screenshot captured via {name} for {url}")
+                    return resp.content
+                logger.warning(f"{name} screenshot failed for {url}: {resp.status_code}")
+            except Exception as e:
+                logger.warning(f"{name} screenshot attempt failed for {url}: {e}")
 
     return None
 

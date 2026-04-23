@@ -302,6 +302,9 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
         file_hash = assessment.get("file_hash") or report.audit_hash
         original_filename = assessment.get("original_filename", "document")
         file_size = assessment.get("file_size_bytes")
+        hash_algorithm = assessment.get("hash_algorithm", "SHA-256")
+        mime_type = assessment.get("mime_type")
+        document_descriptor = assessment.get("document_descriptor")
         contact_email = customer_email or assessment.get("contact_email") or assessment.get("customer_email")
 
         # Step 1: Anchor file hash on blockchain
@@ -344,6 +347,9 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                 "audit_hash": file_hash,
                 "original_filename": original_filename,
                 "file_size": file_size,
+                "hash_algorithm": hash_algorithm,
+                "mime_type": mime_type,
+                "document_descriptor": document_descriptor,
                 "verify_url": verify_url,
                 "polygonscan_url": polygonscan_url,
                 "proof_header": "BOOPPA-PROOF-SG",
