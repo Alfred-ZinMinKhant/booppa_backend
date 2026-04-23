@@ -633,79 +633,121 @@ class PDFService:
             key_issues = report_data.get("key_issues") or []
 
             if is_pdpa:
-                # Specialized Developer Brief Layout
+                # Specialized Developer Brief Layout (matches PDPA_Developer_Brief format)
                 structured = report_data.get("structured_report") or {}
                 exec_sum = structured.get("executive_summary") or report_data.get("ai_narrative") or ""
-                
+                findings = structured.get("detailed_findings") or []
+
                 # 1. Context & Purpose
-                if exec_sum:
-                    # AI narrative already contains "1. Context & Purpose" and "2. Audit Findings Summary"
-                    for para in [p.strip() for p in exec_sum.split("\n\n") if p.strip()]:
-                        # Check if it looks like a header
-                        if re.match(r"^\d+\.", para):
-                            story.append(self._section_header(para))
-                        else:
-                            story.append(Paragraph(para.replace("\n", " "), s["Body"]))
-                        story.append(Spacer(1, 4))
-                
+                story.append(self._section_header("1. Context & Purpose of This Document"))
+                story.append(Spacer(1, 6))
+                company = report_data.get("company_name") or "the organization"
+                scan_date_str = report_data.get("created_at", "")[:10] or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                story.append(Paragraph(
+                    f"This document summarizes a PDPA Quick Scan compliance audit performed by Booppa on the "
+                    f"{company} website, translated into English and enriched with developer implementation tasks. "
+                    f"It is intended to be forwarded directly to the development team.",
+                    s["Body"]
+                ))
+                story.append(Spacer(1, 4))
+                story.append(Paragraph(
+                    f"The audit was conducted on {scan_date_str} and anchored on the Polygon PoS blockchain for evidentiary integrity.",
+                    s["Body"]
+                ))
+                story.append(Spacer(1, 0.15 * inch))
+
+                # 2. Audit Findings Summary
+                story.append(self._section_header("2. Audit Findings Summary"))
+                story.append(Spacer(1, 6))
+                story.append(Paragraph(
+                    f"Booppa AI compliance audit identified {'CRITICAL' if any(f.get('severity') == 'CRITICAL' for f in findings) else ''} "
+                    f"violations requiring immediate action. {len(findings)} issue{'s' if len(findings) != 1 else ''} found:",
+                    s["Body"]
+                ))
+                story.append(Spacer(1, 8))
+                for i, f in enumerate(findings, 1):
+                    story.append(KeepTogether(self._finding_summary_block(i, f)))
+                    story.append(Spacer(1, 8))
+                story.append(Spacer(1, 0.1 * inch))
+
                 # 3. Developer Implementation Tasks
                 story.append(self._section_header("3. Developer Implementation Tasks"))
                 story.append(Spacer(1, 6))
-                findings = structured.get("detailed_findings") or []
+                story.append(Paragraph(
+                    "The following tasks are organized by priority and timeline. "
+                    "Each task includes the acceptance criteria required to close the finding.",
+                    s["Body"]
+                ))
+                story.append(Spacer(1, 8))
                 for i, f in enumerate(findings, 1):
-                    f_type = (f.get("type") or "Finding").replace("_", " ").title()
-                    severity = (f.get("severity") or "MEDIUM").upper()
-                    desc = f.get("description") or ""
-                    
-                    block = [
-                        Paragraph(f"TASK {i} — Implement {f_type}  {self._sev_badge(severity)}", s["FindHead"]),
-                        Spacer(1, 4)
-                    ]
-                    
-                    # Clean up the AI description to remove standard headers and format as Requirements/Acceptance
-                    clean_desc = desc
-                    if "DEVELOPER IMPLEMENTATION TASKS:" in clean_desc:
-                        clean_desc = clean_desc.split("DEVELOPER IMPLEMENTATION TASKS:")[1].strip()
-                    
-                    for para in [p.strip() for p in clean_desc.split("\n\n") if p.strip()]:
-                        if para.upper().startswith("REQUIREMENTS:"):
-                            story.append(Paragraph("<b>Requirements:</b>", s["Body"]))
-                        elif para.upper().startswith("ACCEPTANCE CRITERIA:"):
-                            story.append(Paragraph("<b>Acceptance Criteria:</b>", s["Body"]))
-                        elif para.upper().startswith("RECOMMENDED TOOLS:"):
-                            story.append(Paragraph("<b>Recommended Tools:</b>", s["Body"]))
-                        else:
-                            story.append(Paragraph(para.replace("\n", " "), s["Body"]))
-                        story.append(Spacer(1, 4))
-                    story.append(KeepTogether(block))
+                    story.append(KeepTogether(self._task_block(i, f)))
+                    story.append(Spacer(1, 8))
+                story.append(Spacer(1, 0.1 * inch))
 
                 # 4. Blockchain Evidence Anchoring
                 story.append(self._section_header("4. Blockchain Evidence Anchoring (Booppa)"))
                 story.append(Spacer(1, 6))
+                story.append(Paragraph(
+                    "The following artifacts must be anchored on the Polygon PoS blockchain to create "
+                    "an immutable, court-admissible compliance trail:",
+                    s["Body"]
+                ))
+                story.append(Spacer(1, 6))
                 story.append(self._blockchain_anchoring_table(findings))
                 story.append(Spacer(1, 6))
                 story.extend(self._blockchain_block(report_data))
-                
+
                 # 5. Important Limitations
                 story.append(self._section_header("5. Important Limitations of This Scan"))
                 story.append(Spacer(1, 6))
                 story.append(Paragraph(
-                    "The development team should be aware that this Quick Scan has limitations and does not cover "
-                    "DPO appointment verification, cross-border data transfer compliance, internal data handling, "
-                    "or data breach notification procedures.", s["Body"]
+                    "The development team should be aware that this Quick Scan has the following limitations "
+                    "— further audit may be needed for:", s["Body"]
                 ))
+                story.append(Spacer(1, 4))
+                limitations = [
+                    "Data Protection Officer (DPO) appointment verification (mandatory for many organisations under PDPA)",
+                    "Cross-border data transfer compliance (PDPA Part X — e.g. transfers to cloud providers outside Singapore)",
+                    "Internal data handling workflows, retention policies, and deletion procedures",
+                    "Third-party vendor / data processor agreements",
+                    "Data breach notification procedures (mandatory 3-day notification to PDPC)",
+                    "Completeness and legal sufficiency of the Privacy Policy beyond DNC references",
+                    "Employee data handling training records",
+                ]
+                for lim in limitations:
+                    story.append(Paragraph(f"• {lim}", s["Bullet"]))
                 story.append(Spacer(1, 8))
-                story.append(Paragraph("<b>Legal disclaimer:</b>", s["Body"]))
+                story.append(Paragraph("<b>Legal disclaimer (from Booppa):</b>", s["Body"]))
                 story.append(Paragraph(
                     "This report is provided for informational purposes only. It does not constitute legal advice, "
-                    "certification, or regulatory approval. Booppa does not certify vendors or issue regulatory determinations.",
+                    "certification, or regulatory approval. Booppa does not certify vendors, issue regulatory determinations, "
+                    "or publish public vendor scoring. Organizations should consult qualified legal professionals for "
+                    "compliance decisions and regulatory engagement.",
                     s["Disclaimer"]
                 ))
+                story.append(Spacer(1, 0.1 * inch))
 
                 # 6. Compliance Timeline Summary
                 story.append(self._section_header("6. Compliance Timeline Summary"))
                 story.append(Spacer(1, 6))
                 story.append(self._timeline_summary_table(findings))
+                story.append(Spacer(1, 0.1 * inch))
+
+                # 7. Legal References
+                story.append(self._section_header("7. Legal References"))
+                story.append(Spacer(1, 6))
+                refs = (structured.get("legal_references") or []) or self._default_legal_references(findings)
+                for ref in refs:
+                    title = ref.get("title") if isinstance(ref, dict) else str(ref)
+                    url = ref.get("url") if isinstance(ref, dict) else None
+                    if url:
+                        story.append(Paragraph(
+                            f'• {title}: <a href="{url}"><font color="#10b981">{url}</font></a>',
+                            s["Body"]
+                        ))
+                    else:
+                        story.append(Paragraph(f"• {title}", s["Body"]))
+                    story.append(Spacer(1, 3))
 
             else:
                 # Standard Layout
@@ -887,24 +929,119 @@ class PDFService:
             rows.append(("VERIFY URL", report_data["verify_url"]))
         return [self._meta_table(rows)] if rows else []
 
+    def _finding_summary_block(self, index: int, f: dict) -> list:
+        """Section 2 card: FINDING N — Title [SEVERITY] with 4-row detail table."""
+        title = f.get("title") or (f.get("type") or "Finding").replace("_", " ").title()
+        severity = (f.get("severity") or "MEDIUM").upper()
+        s = self._s
+
+        header = Paragraph(
+            f"FINDING {index} — {title}  {self._sev_badge(severity)}",
+            s["FindHead"]
+        )
+
+        rows = []
+        for label, value in [
+            ("Violation",    f.get("description") or f.get("details") or ""),
+            ("Legislation",  f.get("legislation_text") or "; ".join(f.get("legislation_references") or [])),
+            ("Max Penalty",  f.get("max_penalty") or (f.get("penalty") or {}).get("amount") or "Up to S$1,000,000"),
+            ("Evidence",     f.get("evidence") or "Automated scan detection"),
+        ]:
+            # strip AI template noise from violation text
+            clean_val = value
+            if label == "Violation" and "\n" in clean_val:
+                # take just the first meaningful sentence
+                first_line = clean_val.split("\n")[0].strip()
+                clean_val = first_line if first_line else clean_val[:200]
+            rows.append([
+                Paragraph(label, s["Label"]),
+                Paragraph(str(clean_val)[:400], s["Body"]),
+            ])
+
+        t = Table(rows, colWidths=[1.2 * inch, CONTENT_W - 1.2 * inch])
+        t.setStyle(TableStyle([
+            ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
+            ("TOPPADDING",    (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("ROWBACKGROUNDS",(0, 0), (-1, -1), [WHITE, LIGHT_BG]),
+            ("BOX",           (0, 0), (-1, -1), 0.5, BORDER),
+        ]))
+        return [header, Spacer(1, 4), t]
+
+    def _task_block(self, index: int, f: dict) -> list:
+        """Section 3 block: TASK N with Deadline, Owner, Requirements, Acceptance Criteria, Tools."""
+        title = f.get("title") or (f.get("type") or "Finding").replace("_", " ").title()
+        severity = (f.get("severity") or "MEDIUM").upper()
+        priority_label = {"CRITICAL": "CRITICAL PRIORITY", "HIGH": "HIGH PRIORITY",
+                          "MEDIUM": "MEDIUM PRIORITY", "LOW": "LOW PRIORITY"}.get(severity, "MEDIUM PRIORITY")
+        s = self._s
+
+        items = [
+            Paragraph(f"TASK {index} — Implement {title}  {self._sev_badge(severity)}  [{priority_label}]", s["FindHead"]),
+            Spacer(1, 6),
+        ]
+
+        deadline = f.get("deadline_short") or f.get("deadline") or "7 days"
+        owner = f.get("owner") or "Development Team"
+        items.append(Paragraph(f"<b>Deadline:</b> {deadline}", s["Body"]))
+        items.append(Paragraph(f"<b>Owner:</b> {owner}", s["Body"]))
+        items.append(Spacer(1, 4))
+
+        requirements = f.get("requirements") or []
+        if requirements:
+            items.append(Paragraph("<b>Requirements:</b>", s["Body"]))
+            for j, req in enumerate(requirements, 1):
+                items.append(Paragraph(f"{j}. {req}", s["Bullet"]))
+            items.append(Spacer(1, 4))
+
+        acceptance = f.get("acceptance_criteria") or []
+        if acceptance:
+            items.append(Paragraph("<b>Acceptance Criteria:</b>", s["Body"]))
+            for ac in acceptance:
+                items.append(Paragraph(f"• {ac}", s["Bullet"]))
+            items.append(Spacer(1, 4))
+
+        tools = f.get("recommended_tools") or []
+        if tools:
+            items.append(Paragraph("<b>Recommended Tools / Libraries:</b>", s["Body"]))
+            for tool in tools:
+                items.append(Paragraph(f"• {tool}", s["Bullet"]))
+
+        return items
+
+    def _default_legal_references(self, findings: list) -> list:
+        """Return default legal references based on finding types."""
+        refs = [
+            {"title": "Personal Data Protection Act 2012 (Singapore)",
+             "url": "https://sso.agc.gov.sg/Act/PDPA2012"},
+            {"title": "PDPC Advisory Guidelines on Cookies (2021)",
+             "url": "https://www.pdpc.gov.sg/-/media/Files/PDPC/PDF-Files/Advisory-Guidelines/AG-on-Cookies-2021.pdf"},
+            {"title": "Guide to Enhanced Notice and Choice (2021)",
+             "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/2021/01/guide-to-enhanced-notice-and-choice"},
+        ]
+        types = {f.get("type") for f in findings}
+        if any("marketing" in (t or "") for t in types):
+            refs.append({"title": "PDPC DNC Registry Guidelines",
+                         "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/guidelines/dnc-provisions"})
+            refs.append({"title": "Spam Control Act",
+                         "url": "https://sso.agc.gov.sg/Act/SCA2007"})
+        return refs
+
     def _timeline_summary_table(self, findings: list) -> Table:
         """Create a Compliance Timeline Summary table as seen in the brief."""
         data = [["DEADLINE", "TASK", "ACTION REQUIRED", "PRIORITY"]]
         for f in findings:
-            desc = f.get("description", "")
-            # Extract deadline and priority if possible, else defaults
-            deadline = "7 days"
-            if "Deadline" in desc:
-                m = re.search(r"Deadline:\s*([^\n]*)", desc)
-                if m: deadline = m.group(1).strip()
-            
+            deadline = f.get("deadline_short") or f.get("deadline") or "7 days"
+            title = f.get("title") or (f.get("type") or "").replace("_", " ").title()
             priority = f.get("severity", "MEDIUM")
-            action = f.get("type", "").replace("_", " ").title()
-            
+            action = f"Deploy compliant {title}"
+
             data.append([
                 Paragraph(deadline, self._s["Body"]),
-                Paragraph(f"Implement {action}", self._s["Body"]),
-                Paragraph(f"Deploy compliant {action}", self._s["Body"]),
+                Paragraph(f"Implement {title}", self._s["Body"]),
+                Paragraph(action, self._s["Body"]),
                 Paragraph(f"{self._sev_badge(priority)}", self._s["Body"])
             ])
             

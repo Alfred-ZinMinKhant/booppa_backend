@@ -70,8 +70,12 @@ async def _detect_cookie_banner(url: str | None) -> dict:
         "cookiebot", "usercentrics", "cookieyes", "onetrust", "osano",
         "iubenda", "cookie-consent", "cookie-banner", "cookie banner",
         "cookie notice", "consentmanager", "data-cookieconsent",
-        "booppa-cookie", "booppa_consent", "pdpa compliant",
+        "booppa-cookie", "booppa_consent",
+        "pdpa compliant", "pdpa-compliant",
+        "optanon", "evidon", "didomi", "trustarc", "quantcast",
         "accept cookies", "allow cookies", "manage cookies",
+        "we use cookies", "this site uses cookies", "cookie preferences",
+        "cookie settings", "reject cookies",
     ]
 
     # Try Playwright for dynamic JS-rendered banners
@@ -213,29 +217,15 @@ async def _scan_site_metadata(url: str | None) -> dict:
 
     # Cookie banner detection from combined HTML
     cookie_indicators = [
-        "cookiebot",
-        "usercentrics",
-        "cookieyes",
-        "onetrust",
-        "osano",
-        "iubenda",
-        "cookie-consent",
-        "cookie-banner",
-        "cookie banner",
-        "cookie notice",
-        "consentmanager",
-        "data-cookieconsent",
-        "booppa-cookie",
-        "booppa_consent",
-        "pdpa compliant",
-        "optanon",
-        "evidon",
-        "didomi",
-        "trustarc",
-        "quantcast",
-        "accept cookies",
-        "allow cookies",
-        "manage cookies",
+        "cookiebot", "usercentrics", "cookieyes", "onetrust", "osano",
+        "iubenda", "cookie-consent", "cookie-banner", "cookie banner",
+        "cookie notice", "consentmanager", "data-cookieconsent",
+        "booppa-cookie", "booppa_consent",
+        "pdpa compliant", "pdpa-compliant",
+        "optanon", "evidon", "didomi", "trustarc", "quantcast",
+        "accept cookies", "allow cookies", "manage cookies",
+        "we use cookies", "this site uses cookies", "cookie preferences",
+        "cookie settings", "reject cookies",
     ]
     detected_cookies = [k for k in cookie_indicators if k in combined_html]
     policy_mentions_banner = "cookie banner" in combined_html or "accept all" in combined_html or "reject" in combined_html
@@ -498,10 +488,8 @@ async def process_report_workflow(report_id: str) -> dict:
                     except Exception as e:
                         logger.error(f"Failed to anchor remediation {rem['type']}: {e}")
 
-            structured_report = await booppa_ai.generate_compliance_report(
-                report.assessment_data,
-                company_name=report.company_name
-            )
+            scan_data = {**report.assessment_data, "company_name": report.company_name}
+            structured_report = await booppa_ai.generate_compliance_report(scan_data)
             
             if structured_report and remediations:
                 structured_report["remediation_history"] = remediations

@@ -246,6 +246,121 @@ def get_risk_level(score: int) -> Dict:
 
 
 # ============================================
+# VIOLATION METADATA — structured fields for PDF & frontend
+# ============================================
+
+VIOLATION_META: Dict = {
+    "cookie_violation": {
+        "title": "Cookie Consent Banner",
+        "owner": "Frontend + Backend Developer",
+        "deadline_short": "48 hours for banner live; 14 days for full system",
+        "requirements": [
+            "Implement a cookie consent banner that appears on first visit before any non-essential cookies are set.",
+            "Use explicit active opt-in — no pre-ticked checkboxes allowed under PDPA.",
+            "Provide granular consent categories: Necessary, Analytics, Marketing, Functional.",
+            "Support multi-language (at minimum: English and local language relevant to your user base).",
+            "Store user consent preferences server-side and respect them on all subsequent visits.",
+            "Provide a clear 'Manage Preferences' or 'Cookie Settings' link accessible from every page (e.g. footer).",
+            "Ensure no third-party trackers, analytics scripts, or marketing pixels load until consent is granted.",
+        ],
+        "acceptance_criteria": [
+            "Banner visible on first visit with Accept All / Reject Optional buttons.",
+            "No analytics or marketing cookies set before user action.",
+            "User preferences persisted and respected on page reload and return visits.",
+            "Consent log stored with timestamp for audit purposes (required for blockchain anchoring).",
+        ],
+        "recommended_tools": [
+            "Cookiebot, OneTrust, or Osano (managed consent platforms)",
+            "If self-built: use a cookie audit tool first (e.g. cookieserve.com) to enumerate all cookies set.",
+            "Blockchain anchoring: Booppa Evidence Anchor smart contract on Polygon Mainnet.",
+        ],
+    },
+    "marketing_violation": {
+        "title": "Privacy Policy DNC Registry Compliance",
+        "owner": "Backend Developer + Legal / Content Team",
+        "deadline_short": "7 days for initial update; 30 days for full system",
+        "requirements": [
+            "Add a dedicated section to the Privacy Policy stating compliance with the Singapore DNC Registry.",
+            "Clearly explain to users how to opt out of marketing communications (email, SMS, phone calls).",
+            "Implement a functional opt-out mechanism (e.g. an unsubscribe link in all marketing emails).",
+            "Ensure all marketing communication workflows check the DNC Registry before sending.",
+            "Add version control to the Privacy Policy page (e.g. 'Last updated: DD/MM/YYYY, Version X.X').",
+        ],
+        "acceptance_criteria": [
+            "Privacy Policy page includes explicit DNC Registry compliance statement.",
+            "Opt-out mechanism is functional and tested end-to-end.",
+            "Marketing system queries DNC Registry before dispatch (or maintains an internal suppression list updated regularly).",
+            "Policy version and update date visible on the page.",
+        ],
+        "recommended_tools": [
+            "PDPC DNC Guidelines: https://www.pdpc.gov.sg/guidelines-and-consultation/guidelines/dnc-provisions",
+            "Anchor the privacy policy update hash on Polygon Mainnet via Booppa.",
+        ],
+    },
+    "security_violation": {
+        "title": "HTTPS & Security Headers",
+        "owner": "DevOps / Backend Developer",
+        "deadline_short": "48 hours for HTTPS; 7 days for full headers",
+        "requirements": [
+            "Deploy an SSL/TLS certificate and enforce HTTPS across all pages immediately.",
+            "Implement Strict-Transport-Security (HSTS) header with max-age of at least 31536000.",
+            "Add Content-Security-Policy (CSP) header restricting script sources.",
+            "Configure X-Frame-Options: DENY or SAMEORIGIN.",
+            "Set X-Content-Type-Options: nosniff.",
+            "Add Referrer-Policy: strict-origin-when-cross-origin.",
+        ],
+        "acceptance_criteria": [
+            "All pages served exclusively over HTTPS.",
+            "Security headers present on all responses (verified via securityheaders.com).",
+            "No mixed-content warnings in browser console.",
+            "HTTP requests redirect to HTTPS automatically.",
+        ],
+        "recommended_tools": [
+            "Let's Encrypt (free SSL certificates)",
+            "securityheaders.com (header verification)",
+            "Mozilla Observatory (security assessment)",
+        ],
+    },
+    "nric_violation": {
+        "title": "NRIC / FIN Collection Removal",
+        "owner": "Frontend + Backend Developer",
+        "deadline_short": "24-48 hours for removal; 7 days for full audit",
+        "requirements": [
+            "Remove NRIC/FIN collection fields from all forms unless required by law.",
+            "Review all data collection points for unnecessary personal data.",
+            "Document the removal with timestamp for audit purposes.",
+            "Implement alternative identification if needed (e.g. last 4 digits + full name).",
+        ],
+        "acceptance_criteria": [
+            "No NRIC/FIN collection fields present unless legally mandated.",
+            "Legal justification documented for any retained NRIC collection.",
+            "Removal timestamped and anchored on blockchain.",
+        ],
+        "recommended_tools": [
+            "PDPC Advisory Guidelines on NRIC Numbers (2018)",
+            "MAS Notice 626 for financial institutions",
+        ],
+    },
+    "organizational_violation": {
+        "title": "Data Protection Officer (DPO) Appointment",
+        "owner": "Legal / Compliance Team",
+        "deadline_short": "14 days for designation; 30 days for public disclosure",
+        "requirements": [
+            "Designate a Data Protection Officer (DPO) for the organisation.",
+            "Publish DPO contact information on the website (privacy policy or footer).",
+            "Register the DPO with PDPC if required by organisation size.",
+        ],
+        "acceptance_criteria": [
+            "DPO contact email visible on website (privacy policy or footer).",
+            "DPO responsibilities documented internally.",
+        ],
+        "recommended_tools": [
+            "PDPC Guide to Building an Effective Data Protection Management Programme",
+        ],
+    },
+}
+
+# ============================================
 # MAIN BOOPPA AI SERVICE CLASS
 # ============================================
 
@@ -635,14 +750,25 @@ BLOCKCHAIN EVIDENCE:
             # Fallback to generic AI generation if no template
             description = await self._generate_generic_violation(violation, scan_data)
 
+        legislation_refs = self._get_violation_legislation(violation_type)
+        meta = VIOLATION_META.get(violation_type, {})
+
         return {
             "type": violation_type,
+            "title": meta.get("title") or violation_type.replace("_", " ").title(),
             "severity": violation.get("severity", "MEDIUM"),
             "description": description,
             "evidence": violation.get("evidence", "Automated scan detection"),
             "penalty": penalty_info,
+            "max_penalty": penalty_info.get("amount", "Up to S$1,000,000"),
             "deadline": deadline,
-            "legislation_references": self._get_violation_legislation(violation_type),
+            "deadline_short": meta.get("deadline_short") or self._get_deadline_short(violation.get("severity", "MEDIUM")),
+            "legislation_references": legislation_refs,
+            "legislation_text": "; ".join(legislation_refs),
+            "owner": meta.get("owner", "Development Team"),
+            "requirements": meta.get("requirements", []),
+            "acceptance_criteria": meta.get("acceptance_criteria", []),
+            "recommended_tools": meta.get("recommended_tools", []),
             "priority": self._get_priority_level(violation.get("severity")),
         }
 
@@ -977,6 +1103,14 @@ Consult legal counsel for interpretation of regulatory requirements."""
             "LOW": "Planning (60 days)",
         }
         return priority_map.get(severity, "Important (30 days)")
+
+    def _get_deadline_short(self, severity: str) -> str:
+        return {
+            "CRITICAL": "24-48 hours",
+            "HIGH": "48 hours",
+            "MEDIUM": "7 days",
+            "LOW": "14 days",
+        }.get(severity, "7 days")
 
     def _get_disclaimer(self) -> str:
         """Get legal disclaimer for report"""
