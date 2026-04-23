@@ -64,6 +64,8 @@ _HERE = os.path.dirname(__file__)
 _LOGO_CANDIDATES = [
     os.path.join(_HERE, "..", "..", "static", "logo.png"),
     "/app/static/logo.png",
+    os.path.join(_HERE, "..", "..", "data", "logo.png"),
+    "/app/data/logo.png",
 ]
 _LOGO_PATH: str | None = None
 for _c in _LOGO_CANDIDATES:
@@ -543,11 +545,26 @@ class PDFService:
 
             story = []
 
+            # Compute framework type early — gates several sections below
+            framework_raw = (report_data.get("framework") or "").upper()
+            is_pdpa = framework_raw in {"PDPA", "PDPA_QUICK_SCAN"}
+            is_notarization = "NOTARIZATION" in framework_raw
+
             # ── Cover ──────────────────────────────────────────────────────
             company = report_data.get("company_name") or "Vendor Report"
             framework = (report_data.get("framework") or "").replace("_", " ").title()
 
             story.append(Spacer(1, 0.25 * inch))
+
+            # Logo on cover page (if available)
+            if _LOGO_PATH and is_pdpa:
+                try:
+                    story.append(Image(_LOGO_PATH, width=1.2 * inch, height=0.4 * inch,
+                                       hAlign="LEFT"))
+                    story.append(Spacer(1, 0.1 * inch))
+                except Exception:
+                    pass
+
             story.append(Paragraph(company, s["CoverTitle"]))
             story.append(
                 Paragraph(framework or "Compliance Audit Report", s["CoverSub"])
@@ -559,10 +576,10 @@ class PDFService:
             story.append(self._cover_strip(report_data))
             story.append(Spacer(1, 0.3 * inch))
 
-            # ── Proof metadata ─────────────────────────────────────────────
+            # ── Proof metadata (generic / notarization only) ───────────────
             proof_header = report_data.get("proof_header")
             schema_version = report_data.get("schema_version")
-            if proof_header or schema_version:
+            if not is_pdpa and (proof_header or schema_version):
                 rows = []
                 if proof_header:
                     rows.append(("FORMAT", proof_header))
@@ -579,31 +596,32 @@ class PDFService:
                     )
                 )
 
-            # ── Report details ─────────────────────────────────────────────
-            created_raw = (
-                report_data.get("created_at") or datetime.now(timezone.utc).isoformat()
-            )
-            story.append(
-                KeepTogether(
-                    [
-                        self._section_header("Report Details"),
-                        Spacer(1, 6),
-                        self._meta_table(
-                            [
-                                ("REPORT ID", report_data.get("report_id") or "—"),
-                                ("FRAMEWORK", framework or "—"),
-                                ("COMPANY", company),
-                                ("GENERATED", created_raw[:19]),
-                                (
-                                    "STATUS",
-                                    (report_data.get("status") or "Completed").title(),
-                                ),
-                            ]
-                        ),
-                        Spacer(1, 0.2 * inch),
-                    ]
+            # ── Report details (generic / notarization only) ───────────────
+            if not is_pdpa:
+                created_raw = (
+                    report_data.get("created_at") or datetime.now(timezone.utc).isoformat()
                 )
-            )
+                story.append(
+                    KeepTogether(
+                        [
+                            self._section_header("Report Details"),
+                            Spacer(1, 6),
+                            self._meta_table(
+                                [
+                                    ("REPORT ID", report_data.get("report_id") or "—"),
+                                    ("FRAMEWORK", framework or "—"),
+                                    ("COMPANY", company),
+                                    ("GENERATED", created_raw[:19]),
+                                    (
+                                        "STATUS",
+                                        (report_data.get("status") or "Completed").title(),
+                                    ),
+                                ]
+                            ),
+                            Spacer(1, 0.2 * inch),
+                        ]
+                    )
+                )
 
             # ── Site screenshot ────────────────────────────────────────────
             ss = report_data.get("site_screenshot")
@@ -619,19 +637,18 @@ class PDFService:
                         img_data = None
                     if img_data:
                         img_buf = BytesIO(img_data)
-                        story.append(self._section_header("Site Screenshot"))
-                        story.append(Spacer(1, 6))
-                        story.append(
-                            Image(img_buf, width=CONTENT_W, height=CONTENT_W * 0.55)
-                        )
+                        if is_pdpa:
+                            # PDPA: inline screenshot without section header, smaller height
+                            story.append(Image(img_buf, width=CONTENT_W, height=CONTENT_W * 0.45))
+                        else:
+                            story.append(self._section_header("Site Screenshot"))
+                            story.append(Spacer(1, 6))
+                            story.append(Image(img_buf, width=CONTENT_W, height=CONTENT_W * 0.55))
                         story.append(Spacer(1, 0.15 * inch))
                 except Exception as e:
                     logger.warning(f"Screenshot render failed: {e}")
 
             # ── Key issues + PDPA action ───────────────────────────────────
-            framework_raw = (report_data.get("framework") or "").upper()
-            is_pdpa = framework_raw in {"PDPA", "PDPA_QUICK_SCAN"}
-            is_notarization = "NOTARIZATION" in framework_raw
             key_issues = report_data.get("key_issues") or []
 
             if is_notarization:
@@ -643,14 +660,16 @@ class PDFService:
                 exec_sum = structured.get("executive_summary") or report_data.get("ai_narrative") or ""
                 findings = structured.get("detailed_findings") or []
 
+                from reportlab.platypus import PageBreak as _PageBreak
+
                 # 1. Context & Purpose
                 story.append(self._section_header("1. Context & Purpose of This Document"))
                 story.append(Spacer(1, 6))
-                company = report_data.get("company_name") or "the organization"
+                company_name = report_data.get("company_name") or "the organization"
                 scan_date_str = report_data.get("created_at", "")[:10] or datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 story.append(Paragraph(
                     f"This document summarizes a PDPA Quick Scan compliance audit performed by Booppa on the "
-                    f"{company} website, translated into English and enriched with developer implementation tasks. "
+                    f"{company_name} website, translated into English and enriched with developer implementation tasks. "
                     f"It is intended to be forwarded directly to the development team.",
                     s["Body"]
                 ))
@@ -664,42 +683,69 @@ class PDFService:
                 # 2. Audit Findings Summary
                 story.append(self._section_header("2. Audit Findings Summary"))
                 story.append(Spacer(1, 6))
-                story.append(Paragraph(
-                    f"Booppa AI compliance audit identified {'CRITICAL' if any(f.get('severity') == 'CRITICAL' for f in findings) else ''} "
-                    f"violations requiring immediate action. {len(findings)} issue{'s' if len(findings) != 1 else ''} found:",
-                    s["Body"]
-                ))
-                story.append(Spacer(1, 8))
-                for i, f in enumerate(findings, 1):
-                    story.append(KeepTogether(self._finding_summary_block(i, f)))
+                if not findings:
+                    story.append(Paragraph(
+                        f"Booppa AI compliance audit identified no violations on the {company_name} website. "
+                        f"The site demonstrates strong PDPA compliance across all scanned dimensions.",
+                        s["Body"]
+                    ))
+                    story.append(Spacer(1, 6))
+                    story.append(Paragraph(
+                        "No immediate remediation is required. We recommend scheduling a follow-up audit in 6 months "
+                        "to confirm continued compliance as your website evolves.",
+                        s["Body"]
+                    ))
+                else:
+                    has_critical = any(f.get("severity") == "CRITICAL" for f in findings)
+                    story.append(Paragraph(
+                        f"Booppa AI compliance audit identified "
+                        f"{'CRITICAL ' if has_critical else ''}"
+                        f"violation{'s' if len(findings) != 1 else ''} requiring immediate action. "
+                        f"{len(findings)} issue{'s' if len(findings) != 1 else ''} found:",
+                        s["Body"]
+                    ))
                     story.append(Spacer(1, 8))
+                    for i, f in enumerate(findings, 1):
+                        story.append(KeepTogether(self._finding_summary_block(i, f)))
+                        story.append(Spacer(1, 8))
                 story.append(Spacer(1, 0.1 * inch))
 
-                # 3. Developer Implementation Tasks
-                story.append(self._section_header("3. Developer Implementation Tasks"))
-                story.append(Spacer(1, 6))
-                story.append(Paragraph(
-                    "The following tasks are organized by priority and timeline. "
-                    "Each task includes the acceptance criteria required to close the finding.",
-                    s["Body"]
-                ))
-                story.append(Spacer(1, 8))
-                for i, f in enumerate(findings, 1):
-                    story.append(KeepTogether(self._task_block(i, f)))
+                # 3. Developer Implementation Tasks (only when there are findings)
+                if findings:
+                    story.append(_PageBreak())
+                    story.append(self._section_header("3. Developer Implementation Tasks"))
+                    story.append(Spacer(1, 6))
+                    story.append(Paragraph(
+                        "The following tasks are organized by priority and timeline. "
+                        "Each task includes the acceptance criteria required to close the finding.",
+                        s["Body"]
+                    ))
                     story.append(Spacer(1, 8))
-                story.append(Spacer(1, 0.1 * inch))
+                    for i, f in enumerate(findings, 1):
+                        story.append(KeepTogether(self._task_block(i, f)))
+                        story.append(Spacer(1, 8))
+                    story.append(Spacer(1, 0.1 * inch))
 
                 # 4. Blockchain Evidence Anchoring
+                story.append(_PageBreak())
                 story.append(self._section_header("4. Blockchain Evidence Anchoring (Booppa)"))
                 story.append(Spacer(1, 6))
-                story.append(Paragraph(
-                    "The following artifacts must be anchored on the Polygon PoS blockchain to create "
-                    "an immutable, court-admissible compliance trail:",
-                    s["Body"]
-                ))
-                story.append(Spacer(1, 6))
-                story.append(self._blockchain_anchoring_table(findings))
-                story.append(Spacer(1, 6))
+                if findings:
+                    story.append(Paragraph(
+                        "The following artifacts must be anchored on the Polygon PoS blockchain to create "
+                        "an immutable, court-admissible compliance trail:",
+                        s["Body"]
+                    ))
+                    story.append(Spacer(1, 6))
+                    story.append(self._blockchain_anchoring_table(findings))
+                    story.append(Spacer(1, 6))
+                else:
+                    story.append(Paragraph(
+                        "As no violations were detected, the primary artifact to anchor is this audit report itself, "
+                        "providing immutable proof of a clean compliance assessment on the audit date.",
+                        s["Body"]
+                    ))
+                    story.append(Spacer(1, 6))
                 story.extend(self._blockchain_block(report_data))
 
                 # 5. Important Limitations
@@ -732,11 +778,12 @@ class PDFService:
                 ))
                 story.append(Spacer(1, 0.1 * inch))
 
-                # 6. Compliance Timeline Summary
-                story.append(self._section_header("6. Compliance Timeline Summary"))
-                story.append(Spacer(1, 6))
-                story.append(self._timeline_summary_table(findings))
-                story.append(Spacer(1, 0.1 * inch))
+                # 6. Compliance Timeline Summary (only when there are findings)
+                if findings:
+                    story.append(self._section_header("6. Compliance Timeline Summary"))
+                    story.append(Spacer(1, 6))
+                    story.append(self._timeline_summary_table(findings))
+                    story.append(Spacer(1, 0.1 * inch))
 
                 # 7. Legal References
                 story.append(self._section_header("7. Legal References"))

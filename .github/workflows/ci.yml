@@ -313,8 +313,9 @@ jobs:
           # Feature flags
           FEATURE_SEO: ${{ secrets.FEATURE_SEO }}
         run: |
-          CPU=${APP_CPU:-256}
-          MEMORY=${APP_MEMORY:-512}
+          # Worker needs more memory than the API — Chromium requires ~512 MB headroom
+          CPU=${WORKER_CPU:-512}
+          MEMORY=${WORKER_MEMORY:-1024}
           DB_POOL_SIZE=${DB_POOL_SIZE:-5}
           DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW:-5}
           DB_POOL_TIMEOUT=${DB_POOL_TIMEOUT:-30}
@@ -380,7 +381,8 @@ jobs:
                   { "name": "DB_POOL_RECYCLE", "value": "${DB_POOL_RECYCLE}" },
                   { "name": "FEATURE_SEO", "value": "${FEATURE_SEO}" },
                   { "name": "SECRET_KEY", "value": "${SECRET_KEY}" },
-                  { "name": "ENVIRONMENT", "value": "production" }
+                  { "name": "ENVIRONMENT", "value": "production" },
+                  { "name": "PLAYWRIGHT_BROWSERS_PATH", "value": "/opt/playwright" }
                 ],
                 "secrets": [
                   { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" }
