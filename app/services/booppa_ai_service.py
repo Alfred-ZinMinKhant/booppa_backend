@@ -778,8 +778,7 @@ Booppa AI compliance audit identified violations requiring action. The following
             summary += f"FINDING {i} — {v_type}  [{severity} SEVERITY]\n"
             summary += f"Violation: {violation.get('details', '')}\n\n"
 
-        return summary
-
+        summary += """
 RECOMMENDED IMMEDIATE ACTIONS:
 1. Address all CRITICAL violations within 24-48 hours
 2. Develop compliance action plan with clear deadlines
