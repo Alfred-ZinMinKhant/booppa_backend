@@ -67,46 +67,70 @@ async def _detect_cookie_banner(url: str | None) -> dict:
         return {}
 
     indicators = [
-        "cookiebot",
-        "usercentrics",
-        "cookieyes",
-        "onetrust",
-        "osano",
-        "iubenda",
-        "cookie-consent",
-        "cookie-banner",
-        "cookie banner",
-        "cookie notice",
-        "consentmanager",
-        "data-cookieconsent",
-        "booppa-cookie",
-        "booppa_consent",
-        "pdpa compliant",
-        "optanon",
-        "evidon",
-        "didomi",
-        "trustarc",
-        "quantcast",
-        "accept cookies",
-        "allow cookies",
-        "manage cookies",
+        "cookiebot", "usercentrics", "cookieyes", "onetrust", "osano",
+        "iubenda", "cookie-consent", "cookie-banner", "cookie banner",
+        "cookie notice", "consentmanager", "data-cookieconsent",
+        "booppa-cookie", "booppa_consent", "pdpa compliant",
+        "accept cookies", "allow cookies", "manage cookies",
     ]
 
+    # Try Playwright for dynamic JS-rendered banners
     try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "BooppaComplianceBot/1.0"})
-            if resp.status_code >= 400:
-                return {"cookie_scan_error": f"status:{resp.status_code}"}
-            html = resp.text.lower()
+        from playwright.async_api import async_playwright
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            page = await browser.new_page()
+            await page.goto(url, timeout=20000, wait_until="networkidle")
+            # Wait a bit for popups
+            await asyncio.sleep(2)
+            
+            # Get full rendered HTML
+            html = (await page.content()).lower()
+            
+            # Also check for common IDs/classes directly
+            banner_visible = await page.evaluate("""() => {
+                const selectors = [
+                    '#booppa-cookie-banner', '.cookie-banner', '#cookie-banner',
+                    '.cookie-consent', '#cookie-consent', '.cc-banner'
+                ];
+                return selectors.some(s => {
+                    const el = document.querySelector(s);
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    return style.display !== 'none' && style.visibility !== 'hidden';
+                });
+            }""")
+            
+            await browser.close()
+            
             found = [k for k in indicators if k in html]
-            if found:
+            if found or banner_visible:
                 return {
                     "consent_mechanism": {
                         "has_cookie_banner": True,
                         "has_active_consent": True,
                         "detected_providers": found,
+                        "rendered_detection": True,
                     }
                 }
+    except Exception as e:
+        logger.warning(f"Playwright cookie detection failed, falling back to HTTP: {e}")
+
+    # Fallback to static HTTP scan
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": "BooppaComplianceBot/1.0"})
+            if resp.status_code < 400:
+                html = resp.text.lower()
+                found = [k for k in indicators if k in html]
+                if found:
+                    return {
+                        "consent_mechanism": {
+                            "has_cookie_banner": True,
+                            "has_active_consent": True,
+                            "detected_providers": found,
+                        }
+                    }
             return {"consent_mechanism": {"has_cookie_banner": False}}
     except Exception as e:
         return {"cookie_scan_error": f"error:{str(e)[:200]}"}
