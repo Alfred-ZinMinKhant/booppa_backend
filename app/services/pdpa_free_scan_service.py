@@ -160,6 +160,11 @@ def _check_body(html: str) -> list[dict]:
         "cookieconsent", "cookie-consent", "cookie-banner", "cookie_banner",
         "cookie-notice", "gdpr", "onetrust", "termly", "cookiebot",
         "cc-banner", "cc-window", "consent-manager",
+        "booppa-cookie", "booppa_consent", "pdpa compliant",
+        "accept cookies", "allow cookies", "cookie policy", "privacy settings",
+        "manage cookies", "cookie-settings", "cookies-settings",
+        "usercentrics", "cookieyes", "osano", "iubenda", "consentmanager",
+        "optanon", "evidon", "didomi", "trustarc", "quantcast",
     ]
     has_consent = any(p in html_lower for p in consent_patterns)
     if not has_consent:

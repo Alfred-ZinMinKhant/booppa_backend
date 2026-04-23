@@ -18,6 +18,7 @@ import os
 from datetime import datetime, timezone
 from io import BytesIO
 
+import re
 import qrcode
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -628,16 +629,95 @@ class PDFService:
                     logger.warning(f"Screenshot render failed: {e}")
 
             # ── Key issues + PDPA action ───────────────────────────────────
+            is_pdpa = (report_data.get("framework") or "").upper() == "PDPA"
             key_issues = report_data.get("key_issues") or []
-            if key_issues:
-                story.append(self._section_header("Key Issues Found"))
+
+            if is_pdpa:
+                # Specialized Developer Brief Layout
+                structured = report_data.get("structured_report") or {}
+                exec_sum = structured.get("executive_summary") or report_data.get("ai_narrative") or ""
+                
+                # 1. Context & Purpose
+                if exec_sum:
+                    # AI narrative already contains "1. Context & Purpose" and "2. Audit Findings Summary"
+                    for para in [p.strip() for p in exec_sum.split("\n\n") if p.strip()]:
+                        # Check if it looks like a header
+                        if re.match(r"^\d+\.", para):
+                            story.append(self._section_header(para))
+                        else:
+                            story.append(Paragraph(para.replace("\n", " "), s["Body"]))
+                        story.append(Spacer(1, 4))
+                
+                # 3. Developer Implementation Tasks
+                story.append(self._section_header("3. Developer Implementation Tasks"))
                 story.append(Spacer(1, 6))
-                for issue in key_issues:
-                    story.append(Paragraph(f"• {issue}", s["Bullet"]))
-                story.append(Spacer(1, 0.12 * inch))
-                story.append(self._section_header("Action Required"))
+                findings = structured.get("detailed_findings") or []
+                for i, f in enumerate(findings, 1):
+                    f_type = (f.get("type") or "Finding").replace("_", " ").title()
+                    severity = (f.get("severity") or "MEDIUM").upper()
+                    desc = f.get("description") or ""
+                    
+                    block = [
+                        Paragraph(f"TASK {i} — Implement {f_type}  {self._sev_badge(severity)}", s["FindHead"]),
+                        Spacer(1, 4)
+                    ]
+                    
+                    # Clean up the AI description to remove standard headers and format as Requirements/Acceptance
+                    clean_desc = desc
+                    if "DEVELOPER IMPLEMENTATION TASKS:" in clean_desc:
+                        clean_desc = clean_desc.split("DEVELOPER IMPLEMENTATION TASKS:")[1].strip()
+                    
+                    for para in [p.strip() for p in clean_desc.split("\n\n") if p.strip()]:
+                        if para.upper().startswith("REQUIREMENTS:"):
+                            story.append(Paragraph("<b>Requirements:</b>", s["Body"]))
+                        elif para.upper().startswith("ACCEPTANCE CRITERIA:"):
+                            story.append(Paragraph("<b>Acceptance Criteria:</b>", s["Body"]))
+                        elif para.upper().startswith("RECOMMENDED TOOLS:"):
+                            story.append(Paragraph("<b>Recommended Tools:</b>", s["Body"]))
+                        else:
+                            story.append(Paragraph(para.replace("\n", " "), s["Body"]))
+                        story.append(Spacer(1, 4))
+                    story.append(KeepTogether(block))
+
+                # 4. Blockchain Evidence Anchoring
+                story.append(self._section_header("4. Blockchain Evidence Anchoring (Booppa)"))
                 story.append(Spacer(1, 6))
-                story.extend(self._pdpa_warning_block(report_data))
+                story.append(self._blockchain_anchoring_table(findings))
+                story.append(Spacer(1, 6))
+                story.extend(self._blockchain_block(report_data))
+                
+                # 5. Important Limitations
+                story.append(self._section_header("5. Important Limitations of This Scan"))
+                story.append(Spacer(1, 6))
+                story.append(Paragraph(
+                    "The development team should be aware that this Quick Scan has limitations and does not cover "
+                    "DPO appointment verification, cross-border data transfer compliance, internal data handling, "
+                    "or data breach notification procedures.", s["Body"]
+                ))
+                story.append(Spacer(1, 8))
+                story.append(Paragraph("<b>Legal disclaimer:</b>", s["Body"]))
+                story.append(Paragraph(
+                    "This report is provided for informational purposes only. It does not constitute legal advice, "
+                    "certification, or regulatory approval. Booppa does not certify vendors or issue regulatory determinations.",
+                    s["Disclaimer"]
+                ))
+
+                # 6. Compliance Timeline Summary
+                story.append(self._section_header("6. Compliance Timeline Summary"))
+                story.append(Spacer(1, 6))
+                story.append(self._timeline_summary_table(findings))
+
+            else:
+                # Standard Layout
+                if key_issues:
+                    story.append(self._section_header("Key Issues Found"))
+                    story.append(Spacer(1, 6))
+                    for issue in key_issues:
+                        story.append(Paragraph(f"• {issue}", s["Bullet"]))
+                    story.append(Spacer(1, 0.12 * inch))
+                    story.append(self._section_header("Action Required"))
+                    story.append(Spacer(1, 6))
+                    story.extend(self._pdpa_warning_block(report_data))
 
             # ── Blockchain verification ────────────────────────────────────
             story.append(self._section_header("Blockchain Verification"))
@@ -659,7 +739,7 @@ class PDFService:
             ):
                 structured = report_data
 
-            if structured:
+            if structured and not is_pdpa:
                 # Executive summary
                 exec_sum = structured.get("executive_summary") or ""
                 if exec_sum:
@@ -770,20 +850,21 @@ class PDFService:
                         story.append(Spacer(1, 4))
                     story.append(Spacer(1, 0.1 * inch))
 
-            # ── Disclaimer ─────────────────────────────────────────────────
-            story.append(Spacer(1, 0.1 * inch))
-            story.append(self._section_header("Disclaimer"))
-            story.append(Spacer(1, 6))
-            story.append(
-                Paragraph(
-                    "This report is provided for informational purposes only and does not constitute "
-                    "legal advice, certification, or regulatory approval. Booppa does not certify "
-                    "vendors, issue regulatory determinations, or publish public vendor scoring. "
-                    "Organizations should consult qualified professionals for compliance decisions "
-                    "and regulatory engagement.",
-                    s["Disclaimer"],
+            if not is_pdpa:
+                # ── Disclaimer ─────────────────────────────────────────────────
+                story.append(Spacer(1, 0.1 * inch))
+                story.append(self._section_header("Disclaimer"))
+                story.append(Spacer(1, 6))
+                story.append(
+                    Paragraph(
+                        "This report is provided for informational purposes only and does not constitute "
+                        "legal advice, certification, or regulatory approval. Booppa does not certify "
+                        "vendors, issue regulatory determinations, or publish public vendor scoring. "
+                        "Organizations should consult qualified professionals for compliance decisions "
+                        "and regulatory engagement.",
+                        s["Disclaimer"],
+                    )
                 )
-            )
 
             doc.build(story)
             buffer.seek(0)
@@ -805,6 +886,75 @@ class PDFService:
         if report_data.get("verify_url"):
             rows.append(("VERIFY URL", report_data["verify_url"]))
         return [self._meta_table(rows)] if rows else []
+
+    def _timeline_summary_table(self, findings: list) -> Table:
+        """Create a Compliance Timeline Summary table as seen in the brief."""
+        data = [["DEADLINE", "TASK", "ACTION REQUIRED", "PRIORITY"]]
+        for f in findings:
+            desc = f.get("description", "")
+            # Extract deadline and priority if possible, else defaults
+            deadline = "7 days"
+            if "Deadline" in desc:
+                m = re.search(r"Deadline:\s*([^\n]*)", desc)
+                if m: deadline = m.group(1).strip()
+            
+            priority = f.get("severity", "MEDIUM")
+            action = f.get("type", "").replace("_", " ").title()
+            
+            data.append([
+                Paragraph(deadline, self._s["Body"]),
+                Paragraph(f"Implement {action}", self._s["Body"]),
+                Paragraph(f"Deploy compliant {action}", self._s["Body"]),
+                Paragraph(f"{self._sev_badge(priority)}", self._s["Body"])
+            ])
+            
+        t = Table(data, colWidths=[CONTENT_W * 0.15, CONTENT_W * 0.25, CONTENT_W * 0.40, CONTENT_W * 0.20])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+            ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, LIGHT_BG]),
+        ]))
+        return t
+
+    def _blockchain_anchoring_table(self, findings: list) -> Table:
+        """Create a table for Blockchain Evidence Anchoring artifacts."""
+        data = [["ARTIFACT TO ANCHOR", "WHEN", "RESPONSIBLE"]]
+        
+        # Standard artifacts
+        data.append([
+            Paragraph("Consent banner deployment timestamp", self._s["Body"]),
+            Paragraph("Within 48h of implementation", self._s["Body"]),
+            Paragraph("Developer / DevOps", self._s["Body"])
+        ])
+        data.append([
+            Paragraph("Privacy Policy update hash", self._s["Body"]),
+            Paragraph("Within 7 days of implementation", self._s["Body"]),
+            Paragraph("Developer / Legal", self._s["Body"])
+        ])
+        
+        t = Table(data, colWidths=[CONTENT_W * 0.45, CONTENT_W * 0.30, CONTENT_W * 0.25])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+            ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, LIGHT_BG]),
+        ]))
+        return t
 
     def _create_detail_paragraphs(self, report_data: dict) -> list:
         return [
