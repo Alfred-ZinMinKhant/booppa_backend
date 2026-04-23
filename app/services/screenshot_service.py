@@ -21,6 +21,8 @@ def capture_screenshot_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
             browser = p.chromium.launch()
             page = browser.new_page()
             page.goto(url, timeout=timeout * 1000)
+            # Wait for banner to render (some banners take a second to pop up)
+            page.wait_for_timeout(2000) 
             img = page.screenshot(full_page=True)
             browser.close()
             return img
