@@ -11,10 +11,12 @@ from .booking import router as booking_router
 from .tickets import router as tickets_router
 from .verify import router as verify_router
 from .bridge import router as bridge_router
+
 # V8 new routes
 from .vendor_status import router as vendor_status_router
 from .procurement import router as procurement_router
 from .rfp_requirements import router as rfp_requirements_router
+
 # V10 new routes
 from .tender_check import router as tender_check_router
 from .marketplace import router as marketplace_router
@@ -28,6 +30,7 @@ from .referrals import router as referrals_router
 from .widget import router as widget_router
 from .sse import router as sse_router
 from .notarize import router as notarize_router
+
 # v17 Hardened — Legal consent endpoint
 from .legal_consent import router as legal_consent_router
 
@@ -52,7 +55,9 @@ router.include_router(vendor_status_router, prefix="/vendor", tags=["vendor-stat
 # V8 — Enterprise Procurement Dashboard
 router.include_router(procurement_router, prefix="/procurement", tags=["procurement"])
 # V8 — RFP Requirements
-router.include_router(rfp_requirements_router, prefix="/rfp-requirements", tags=["rfp-requirements"])
+router.include_router(
+    rfp_requirements_router, prefix="/rfp-requirements", tags=["rfp-requirements"]
+)
 # V10 — Marketplace & Vendor Directory
 router.include_router(marketplace_router, prefix="/marketplace", tags=["marketplace"])
 # V10 — Feature Flags
@@ -78,19 +83,31 @@ router.include_router(notarize_router, prefix="/notarize", tags=["notarization"]
 # v17 Hardened — Legal consent
 router.include_router(legal_consent_router, prefix="", tags=["legal-consent"])
 # V10 — Tender Win Probability
-router.include_router(tender_check_router, prefix="/tender-check", tags=["tender-check"])
+router.include_router(
+    tender_check_router, prefix="/tender-check", tags=["tender-check"]
+)
 # PDPA Free Scan
 from .pdpa_free_scan import router as pdpa_free_scan_router
+
 router.include_router(pdpa_free_scan_router, prefix="/pdpa", tags=["pdpa-free-scan"])
 # GeBIZ — Live Tender Feed
 from .gebiz import router as gebiz_router
+
 router.include_router(gebiz_router, prefix="/gebiz", tags=["gebiz"])
 # Dashboard — real vendor data
 from .dashboard import router as dashboard_router
+
 router.include_router(dashboard_router, prefix="/dashboard", tags=["dashboard"])
 # Dashboard Alerts — consolidated vendor state for alert engine
 from .dashboard_alerts import router as dashboard_alerts_router
-router.include_router(dashboard_alerts_router, prefix="/vendor", tags=["vendor-dashboard-alerts"])
+
+router.include_router(
+    dashboard_alerts_router, prefix="/vendor", tags=["vendor-dashboard-alerts"]
+)
 # Resources/Guides CMS
 from .resources import router as resources_router
+
 router.include_router(resources_router, prefix="/resources", tags=["resources"])
+from .mock_report import router as mock_report_router
+
+router.include_router(mock_report_router, prefix="/mock", tags=["mock"])
