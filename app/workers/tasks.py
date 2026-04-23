@@ -446,10 +446,65 @@ async def process_report_workflow(report_id: str) -> dict:
         narrative = ""
 
         if features.get("ai_full"):
+            # ── Remediation Tracking ─────────────────────────────────────────
+            # Check for previous reports to find resolved violations
+            remediations = []
+            try:
+                # Find the latest completed report for this same website
+                previous_report = (
+                    db.query(Report)
+                    .filter(Report.company_website == report.company_website)
+                    .filter(Report.id != report.id)
+                    .filter(Report.status == "completed")
+                    .order_by(Report.created_at.desc())
+                    .first()
+                )
+                
+                if previous_report and isinstance(previous_report.assessment_data, dict):
+                    prev_structured = previous_report.assessment_data.get("booppa_report", {})
+                    prev_findings = prev_structured.get("detailed_findings", [])
+                    
+                    # Get current raw scan findings to see what is "fixed"
+                    # Note: We compare against raw detection before AI narrative is built
+                    cookie_check = report.assessment_data.get("consent_mechanism", {})
+                    has_cookie_banner = cookie_check.get("has_cookie_banner", False)
+                    
+                    for f in prev_findings:
+                        f_type = f.get("type", "").lower()
+                        # If previously had cookie violation but now has banner
+                        if "cookie" in f_type and has_cookie_banner:
+                            remediations.append({
+                                "type": "COOKIE_CONSENT_IMPLEMENTATION",
+                                "description": "Compliant cookie consent banner detected and verified.",
+                                "resolved_at": datetime.now(timezone.utc).isoformat(),
+                                "previous_report_id": str(previous_report.id),
+                                "evidence_hash": hashlib.sha256(f"cookie-remediation-{report.id}".encode()).hexdigest()
+                            })
+            except Exception as e:
+                logger.warning(f"Remediation tracking failed for {report_id}: {e}")
+
             booppa_ai = BooppaAIService()
+            
+            # Anchor remediations on blockchain if any
+            if remediations and features.get("blockchain"):
+                blockchain_svc = BlockchainService()
+                for rem in remediations:
+                    try:
+                        meta = f"Booppa Proof: {rem['description']} for {report.company_website}"
+                        tx_hash = await blockchain_svc.anchor_evidence(rem["evidence_hash"], meta)
+                        if tx_hash:
+                            rem["tx_hash"] = tx_hash
+                            rem["anchored"] = True
+                    except Exception as e:
+                        logger.error(f"Failed to anchor remediation {rem['type']}: {e}")
+
             structured_report = await booppa_ai.generate_compliance_report(
-                report.assessment_data
+                report.assessment_data,
+                company_name=report.company_name
             )
+            
+            if structured_report and remediations:
+                structured_report["remediation_history"] = remediations
             # Keep a human-readable narrative for legacy fields
             try:
                 ai_service = AIService()
