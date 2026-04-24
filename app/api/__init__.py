@@ -115,3 +115,13 @@ router.include_router(mock_report_router, prefix="/mock", tags=["mock"])
 from .government import router as government_router
 
 router.include_router(government_router, prefix="/government", tags=["government-portal"])
+
+# V11 — Compliance Locker
+from .compliance_locker import router as compliance_locker_router
+
+router.include_router(compliance_locker_router, prefix="/compliance", tags=["compliance-locker"])
+
+# V11 — Supply Chain / Managed Vendors
+from .managed_vendors import router as managed_vendors_router
+
+router.include_router(managed_vendors_router, prefix="/supply-chain", tags=["supply-chain"])

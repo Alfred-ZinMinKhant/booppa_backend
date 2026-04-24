@@ -44,6 +44,7 @@ async def upload_document(
     company_name: Optional[str] = Form(None),
     plan: str = Form("single"),
     document_descriptor: Optional[str] = Form(None),
+    regulation_tag: Optional[str] = Form(None),
 ):
     """
     Upload a document for notarization.
@@ -105,6 +106,12 @@ async def upload_document(
         # Derive MIME type: prefer explicit content_type, fallback to extension guess
         mime_type = file.content_type or "application/octet-stream"
 
+        # Validate regulation_tag against known keys
+        _valid_regulation_tags = {"PDPA", "ACRA", "GEBIZ", "MAS"}
+        safe_regulation_tag = (regulation_tag or "").strip().upper() or None
+        if safe_regulation_tag and safe_regulation_tag not in _valid_regulation_tags:
+            safe_regulation_tag = None
+
         assessment_data = {
             "file_hash": file_hash,
             "hash_algorithm": "SHA-256",
@@ -116,6 +123,7 @@ async def upload_document(
             "plan": plan,
             "product_type": product_type,
             "notarization_type": "document",
+            "regulation_tag": safe_regulation_tag,
         }
         if email:
             assessment_data["contact_email"] = email
