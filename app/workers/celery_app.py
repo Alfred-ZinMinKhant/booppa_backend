@@ -86,5 +86,20 @@ celery_app.conf.update(
             "task": "recompute_all_vendor_percentiles",
             "schedule": crontab(day_of_week="sunday", hour=23, minute=0),
         },
+        # Scrape contact emails from MarketplaceVendor websites nightly at 03:00 UTC (11:00 SGT).
+        # Only targets vendors that have a domain/website but no contact_email yet.
+        # Staggered 5s per vendor internally — safe for rate limits.
+        "scrape-marketplace-vendor-contacts-nightly": {
+            "task": "scrape_vendor_contacts_batch",
+            "schedule": crontab(hour=3, minute=0),
+            "kwargs": {"model": "marketplace", "limit": 100},
+        },
+        # Scrape discovered vendors (GeBIZ/ACRA) nightly at 03:30 UTC.
+        # Offset by 30 minutes to avoid overlap with marketplace scrape.
+        "scrape-discovered-vendor-contacts-nightly": {
+            "task": "scrape_vendor_contacts_batch",
+            "schedule": crontab(hour=3, minute=30),
+            "kwargs": {"model": "discovered", "limit": 100},
+        },
     },
 )

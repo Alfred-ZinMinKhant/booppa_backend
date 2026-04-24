@@ -106,70 +106,77 @@ async def procurement_vendors(
     db: Session  = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
-    """Ranked vendor list with score breakdown, risk, and stability."""
+    """Ranked vendor list with score breakdown, risk, and stability.
+    Includes ALL registered VENDOR-role users — even those without a score yet.
+    """
     _require_procurement(current_user)
 
-    # Base score query
-    query = db.query(VendorScore)
+    # Base: all active VENDOR-role users, outer-joined to VendorScore so
+    # vendors who haven't been scored yet still appear (score = 0).
+    base = (
+        db.query(User, VendorScore)
+        .outerjoin(VendorScore, VendorScore.vendor_id == User.id)
+        .filter(User.role == "VENDOR", User.is_active == True)
+    )
+
     if min_score is not None:
-        query = query.filter(VendorScore.total_score >= min_score)
+        base = base.filter(
+            func.coalesce(VendorScore.total_score, 0) >= min_score
+        )
     if verified:
-        query = query.join(
-            VerifyRecord, VerifyRecord.vendor_id == VendorScore.vendor_id
-        ).filter(VerifyRecord.lifecycle_status.in_(["ACTIVE"]))
+        verified_ids = db.query(VerifyRecord.vendor_id).filter(
+            VerifyRecord.lifecycle_status.in_(["ACTIVE"])
+        ).subquery()
+        base = base.filter(User.id.in_(verified_ids))
     if sector:
-        sector_ids = db.query(VendorSector.vendor_id).filter(
-            VendorSector.sector == sector
-        ).all()
-        sector_ids = [s[0] for s in sector_ids]
+        sector_ids = [
+            s[0] for s in db.query(VendorSector.vendor_id)
+            .filter(VendorSector.sector == sector).all()
+        ]
         if not sector_ids:
             return {"vendors": [], "page": page, "limit": limit, "totalCount": 0, "orderBy": order_by}
-        query = query.filter(VendorScore.vendor_id.in_(sector_ids))
+        base = base.filter(User.id.in_(sector_ids))
 
-    total_count  = query.count()
-    score_rows   = query.order_by(VendorScore.total_score.desc()).offset((page - 1) * limit).limit(limit).all()
+    total_count = base.count()
+    rows = (
+        base
+        .order_by(func.coalesce(VendorScore.total_score, 0).desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+        .all()
+    )
 
-    vendor_ids = [str(s.vendor_id) for s in score_rows]
+    vendor_ids = [str(user.id) for user, _ in rows]
     elevation_map = fetch_elevation_metadata_batch(db, vendor_ids)
 
-    # Pull status snapshots
     status_rows = db.query(VendorStatusSnapshot).filter(
         VendorStatusSnapshot.vendor_id.in_(vendor_ids)
     ).all()
     status_map = {str(s.vendor_id): s for s in status_rows}
 
-    # Pull score history for trajectory/volatility
     snapshots_map: dict = {}
-    for s in score_rows:
+    for user, _ in rows:
         snaps = db.query(ScoreSnapshot).filter(
-            ScoreSnapshot.vendor_id == s.vendor_id
+            ScoreSnapshot.vendor_id == user.id
         ).order_by(ScoreSnapshot.snapshot_at.desc()).limit(10).all()
-        snapshots_map[str(s.vendor_id)] = snaps
+        snapshots_map[str(user.id)] = snaps
 
-    # Pull user info (company, slug)
-    user_map: dict = {}
-    for s in score_rows:
-        u = db.query(User).filter(User.id == s.vendor_id).first()
-        if u:
-            user_map[str(s.vendor_id)] = u
-
-    # Pull marketplace vendor data (website, contact_email) for enrichment
     mv_map: dict = {}
-    for s in score_rows:
+    for user, _ in rows:
         mv = db.query(MarketplaceVendor).filter(
-            MarketplaceVendor.claimed_by_user_id == s.vendor_id
+            MarketplaceVendor.claimed_by_user_id == user.id
         ).first()
         if mv:
-            mv_map[str(s.vendor_id)] = mv
+            mv_map[str(user.id)] = mv
 
-    # Enrich each vendor
     enriched = []
-    for s in score_rows:
-        vid        = str(s.vendor_id)
-        user       = user_map.get(vid)
+    for user, score_row in rows:
+        vid        = str(user.id)
+        s          = score_row  # may be None for unscored vendors
         snaps      = snapshots_map.get(vid, [])
         scores5    = [sn.final_score for sn in snaps[:5]]
-        mean5      = sum(scores5) / len(scores5) if scores5 else s.total_score
+        base_score = s.total_score if s else 0
+        mean5      = sum(scores5) / len(scores5) if scores5 else base_score
         volatility = round(math.sqrt(sum((sc - mean5)**2 for sc in scores5) / max(len(scores5), 1))) if len(scores5) >= 2 else 0
         stability  = max(0.0, min(1.0, 1 - volatility / 200))
 
@@ -182,24 +189,23 @@ async def procurement_vendors(
         nel        = elevation_map.get(vid, {})
         status_row = status_map.get(vid)
 
-        pct  = snaps[0].sector_percentile if snaps else 50.0
-        verify = db.query(VerifyRecord).filter(VerifyRecord.vendor_id == s.vendor_id).first()
-
-        mv = mv_map.get(vid)
+        pct    = snaps[0].sector_percentile if snaps else 50.0
+        verify = db.query(VerifyRecord).filter(VerifyRecord.vendor_id == user.id).first()
+        mv     = mv_map.get(vid)
 
         enriched.append({
-            "slug":               user.email.split("@")[0] if user else vid[:8],
-            "company":            user.company if user else None,
-            "website":            (mv.website if mv else None) or (user.website if user else None),
-            "contactEmail":       (mv.contact_email if mv else None) or (user.email if user else None),
+            "slug":               user.email.split("@")[0],
+            "company":            user.company or None,
+            "website":            (mv.website if mv else None) or getattr(user, "website", None),
+            "contactEmail":       (mv.contact_email if mv else None) or user.email,
             "domain":             mv.domain if mv else None,
-            "currentScore":       s.total_score,
+            "currentScore":       base_score,
             "breakdown": {
-                "compliance":    s.compliance_score,
-                "visibility":    s.visibility_score,
-                "engagement":    s.engagement_score,
-                "recency":       s.recency_score,
-                "procurement":   s.procurement_interest_score,
+                "compliance":    s.compliance_score if s else 0,
+                "visibility":    s.visibility_score if s else 0,
+                "engagement":    s.engagement_score if s else 0,
+                "recency":       s.recency_score if s else 0,
+                "procurement":   s.procurement_interest_score if s else 0,
             },
             "verified":           verify is not None and verify.lifecycle_status.value == "ACTIVE",
             "complianceScore":    verify.compliance_score if verify else 0,
