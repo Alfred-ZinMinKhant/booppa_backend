@@ -2198,3 +2198,36 @@ def weekly_intelligence_brief():
         db.close()
 
     logger.info(f"[WeeklyBrief] Sent={sent} Failed={failed}")
+
+
+@celery_app.task(name="recompute_all_vendor_percentiles")
+def recompute_all_vendor_percentiles():
+    """
+    Recompute VendorStatusSnapshot (including sector percentile) for every VENDOR user.
+    Runs Sunday at 23:00 UTC via Celery Beat — before the Monday score digest — so
+    percentiles shown to government procurement officers are fresh.
+    """
+    from app.core.models import User
+    from app.services.scoring import VendorScoreEngine
+
+    db = SessionLocal()
+    ok = 0
+    failed = 0
+    try:
+        vendor_ids = [
+            str(r[0])
+            for r in db.query(User.id).filter(User.role == "VENDOR").all()
+        ]
+        for vendor_id in vendor_ids:
+            try:
+                VendorScoreEngine.update_vendor_score(db, vendor_id)
+                ok += 1
+            except Exception as exc:
+                logger.warning("[RecomputePercentiles] Failed vendor=%s: %s", vendor_id, exc)
+                failed += 1
+    except Exception as exc:
+        logger.error("[RecomputePercentiles] Task aborted: %s", exc)
+    finally:
+        db.close()
+
+    logger.info("[RecomputePercentiles] ok=%d failed=%d", ok, failed)
