@@ -111,3 +111,7 @@ router.include_router(resources_router, prefix="/resources", tags=["resources"])
 from .mock_report import router as mock_report_router
 
 router.include_router(mock_report_router, prefix="/mock", tags=["mock"])
+
+from .government import router as government_router
+
+router.include_router(government_router, prefix="/government", tags=["government-portal"])
