@@ -105,6 +105,7 @@ class MeOut(BaseModel):
     full_name: str | None = None
     company: str | None
     website: str | None = None
+    company_description: str | None = None
     role: str
     plan: str = "free"
     is_admin: bool = False
@@ -118,6 +119,7 @@ class ProfileUpdate(BaseModel):
     company: Optional[str] = None
     website: Optional[str] = None
     industry: Optional[str] = None
+    company_description: Optional[str] = None
 
 
 # ── Form-based login (OAuth2 compatible) ─────────────────────────────────────
@@ -283,6 +285,7 @@ async def me(
         full_name=getattr(user, "full_name", None),
         company=getattr(user, "company", None),
         website=getattr(user, "website", None),
+        company_description=getattr(user, "company_description", None),
         role=getattr(user, "role", "VENDOR"),
         plan=getattr(user, "plan", "free") or "free",
         is_admin=is_admin,
@@ -316,7 +319,9 @@ async def update_me(
         user.website = body.website
     if body.industry is not None:
         user.industry = body.industry
-    
+    if body.company_description is not None:
+        user.company_description = body.company_description
+
     if body.email is not None and body.email != user.email:
         # Check if email is already taken
         existing = db.query(User).filter(User.email == body.email).first()

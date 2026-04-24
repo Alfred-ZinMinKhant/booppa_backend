@@ -30,6 +30,7 @@ class User(Base):
     stripe_subscription_id = Column(String(255), nullable=True)
     website = Column(String(500), nullable=True)
     industry = Column(String(100), nullable=True)
+    company_description = Column(Text, nullable=True)
 
 
 class Report(Base):

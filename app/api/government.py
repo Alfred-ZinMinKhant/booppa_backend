@@ -58,7 +58,7 @@ def _vendor_row(
     depth       = snapshot.verification_depth if snapshot else "UNVERIFIED"
     risk        = snapshot.risk_signal        if snapshot else "CLEAN"
     readiness   = snapshot.procurement_readiness if snapshot else "NEEDS_ATTENTION"
-    percentile  = round(snapshot.risk_adjusted_pct) if snapshot else 50
+    percentile  = round(snapshot.risk_adjusted_pct) if (snapshot and snapshot.risk_adjusted_pct) else None
 
     # Normalise readiness enum → frontend keys
     readiness_map = {
@@ -263,16 +263,30 @@ def list_tenders(
     limit: int = Query(8, ge=1, le=50),
     db: Session = Depends(get_db),
 ):
-    """Return open GeBIZ tenders sorted by closing date (soonest first)."""
+    """Return open GeBIZ tenders sorted by closing date (soonest first).
+    Uses the same on-demand sync as the GeBIZ ticker so data is always fresh.
+    """
+    from datetime import timezone as _tz
+    from app.services.gebiz_service import ensure_tenders_loaded
+
+    try:
+        ensure_tenders_loaded(db)
+    except Exception as exc:
+        logger.warning(f"[Government/Tenders] On-demand sync failed: {exc}")
+
+    now = datetime.now(_tz.utc)
     tenders = (
         db.query(GebizTender)
         .filter(GebizTender.status == "Open")
+        .filter(
+            (GebizTender.closing_date == None) | (GebizTender.closing_date >= now)  # noqa: E711
+        )
         .order_by(GebizTender.closing_date.asc().nullslast())
         .limit(limit)
         .all()
     )
 
-    # Fallback mock data when DB is empty (dev / staging)
+    # Fallback mock data only when DB is truly empty after sync attempt
     if not tenders:
         return {"tenders": _mock_tenders(), "source": "mock"}
 
@@ -314,6 +328,60 @@ def _mock_tenders() -> list:
         {"agency": "CPF Board",                    "ref": "CPFB/IT/2026/009","title": "Cloud Infrastructure Migration — Phase 3",     "value": "S$6.1M",  "closing": "8 Jul 2026",  "url": None},
         {"agency": "National Environment Agency",  "ref": "NEA/DT/2026/033", "title": "IoT Sensor Data Management Platform",         "value": "S$890K",  "closing": "14 Jul 2026", "url": None},
     ]
+
+
+# ── GET /stats ───────────────────────────────────────────────────────────────
+
+@router.get("/stats")
+def get_stats(db: Session = Depends(get_db)):
+    """Real counts for the landing page stats panel."""
+    from datetime import timezone as _tz
+    from app.core.models_v6 import VerifyRecord
+
+    total_vendors = (
+        db.query(User)
+        .filter(User.is_active == True, User.role == "VENDOR")
+        .count()
+    )
+
+    # Verified = DEEP or CERTIFIED verification depth
+    verified_vendors = (
+        db.query(VendorStatusSnapshot)
+        .filter(VendorStatusSnapshot.verification_depth.in_(["DEEP", "CERTIFIED"]))
+        .count()
+    )
+
+    # Fall back to VerifyRecord count if no snapshots yet
+    if verified_vendors == 0:
+        try:
+            from app.core.models_v6 import LifecycleStatus
+            verified_vendors = (
+                db.query(VerifyRecord)
+                .filter(VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE)
+                .count()
+            )
+        except Exception:
+            pass
+
+    now = datetime.now(_tz.utc)
+    open_tenders = (
+        db.query(GebizTender)
+        .filter(GebizTender.status == "Open")
+        .filter(
+            (GebizTender.closing_date == None) | (GebizTender.closing_date >= now)  # noqa: E711
+        )
+        .count()
+    )
+
+    # Discovered vendors from ACRA/GeBIZ data
+    discovered = db.query(DiscoveredVendor).count()
+
+    return {
+        "total_vendors":    total_vendors,
+        "verified_vendors": verified_vendors,
+        "open_tenders":     open_tenders,
+        "discovered":       discovered,
+    }
 
 
 # ── POST /verify ──────────────────────────────────────────────────────────────
@@ -427,13 +495,38 @@ class ShortlistReportRequest(BaseModel):
 
 
 @router.post("/shortlist-report", response_class=PlainTextResponse)
-def generate_shortlist_report(body: ShortlistReportRequest):
+def generate_shortlist_report(body: ShortlistReportRequest, db: Session = Depends(get_db)):
     """
     Generate a plain-text AGO-auditable evaluation shortlist.
-    The report includes trust signals, blockchain anchor references,
-    and a SHA-256 document hash placeholder.
+    Looks up real blockchain TX hashes from CertificateLog per vendor.
     """
     import hashlib, json
+
+    # Pre-fetch TX hashes for all vendor UENs
+    tx_map: dict[str, str] = {}
+    try:
+        from app.core.models_v10 import CertificateLog
+        uens = [v.get("uen") for v in body.vendors if v.get("uen")]
+        if uens:
+            users = db.query(User).filter(User.uen.in_(uens)).all()  # type: ignore[union-attr]
+            uid_to_uen = {str(u.id): u.uen for u in users}
+            logs = (
+                db.query(CertificateLog)
+                .filter(CertificateLog.vendor_id.in_([u.id for u in users]))
+                .order_by(CertificateLog.created_at.desc())
+                .all()
+            )
+            seen: set[str] = set()
+            for log in logs:
+                uid = str(log.vendor_id)
+                if uid not in seen and uid in uid_to_uen:
+                    uen = uid_to_uen[uid]
+                    tx = getattr(log, "tx_hash", None)
+                    if tx:
+                        tx_map[uen] = tx
+                    seen.add(uid)
+    except Exception as e:
+        logger.warning(f"CertificateLog lookup for shortlist failed: {e}")
 
     now_date = datetime.now(timezone.utc).strftime("%-d %B %Y")
     now_time = datetime.now(timezone.utc).strftime("%H:%M UTC")
@@ -458,9 +551,10 @@ def generate_shortlist_report(body: ShortlistReportRequest):
         depth = v.get("depth", "UNVERIFIED")
         risk  = v.get("risk", "CLEAN")
         ready = v.get("readiness", "NEEDS_ATTENTION")
-        pct   = v.get("percentile", "—")
+        pct   = v.get("percentile")
         vrf   = v.get("verified", False)
-        anchor = f"BOOPPA-2026-{uen}-V2" if vrf else "Not anchored"
+        tx    = tx_map.get(uen)
+        anchor = tx if tx else ("Not anchored" if not vrf else "Anchored — TX hash unavailable")
 
         lines += [
             f"{i}. {v.get('name', 'Unknown')}",
@@ -469,7 +563,7 @@ def generate_shortlist_report(body: ShortlistReportRequest):
             f"   Verification Depth:       {depth}",
             f"   Risk Signal:              {risk}",
             f"   Procurement Readiness:    {ready}",
-            f"   Sector Percentile:        {pct}th",
+            f"   Sector Percentile:        {f'{pct}th' if pct is not None else '—'}",
             f"   Booppa Verified:          {'Yes' if vrf else 'No'}",
             f"   Blockchain Anchor:        {anchor}",
             "",
