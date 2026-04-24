@@ -38,7 +38,10 @@ from reportlab.platypus import (
 )
 
 from app.core.config import settings
-from app.core.company import COMPANY_LEGAL_FOOTER
+from app.core.company import (
+    COMPANY_LEGAL_FOOTER, COMPANY_NAME, COMPANY_UEN,
+    COMPANY_FRAMEWORK_VERSION, COMPANY_DPO_EMAIL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -144,9 +147,20 @@ def _draw_page(canvas, doc):
     canvas.line(MARGIN, FOOTER_H, PAGE_W - MARGIN, FOOTER_H)
 
     canvas.setFillColor(SLATE)
-    canvas.setFont("Helvetica", 6.5)
-    canvas.drawString(MARGIN, FOOTER_H - 9, COMPANY_LEGAL_FOOTER)
-    canvas.drawRightString(PAGE_W - MARGIN, FOOTER_H - 9, f"Page {doc.page}")
+    pdpa_footer_lines = getattr(doc, "_pdpa_footer_lines", None)
+    if pdpa_footer_lines:
+        # PDPA: two-line italic disclaimer at 7pt
+        canvas.setFont("Helvetica-Oblique", 7)
+        y = FOOTER_H - 9
+        for line in pdpa_footer_lines:
+            canvas.drawString(MARGIN, y, line)
+            y -= 9
+        canvas.setFont("Helvetica", 7)
+        canvas.drawRightString(PAGE_W - MARGIN, FOOTER_H - 9, f"Page {doc.page}")
+    else:
+        canvas.setFont("Helvetica", 6.5)
+        canvas.drawString(MARGIN, FOOTER_H - 9, COMPANY_LEGAL_FOOTER)
+        canvas.drawRightString(PAGE_W - MARGIN, FOOTER_H - 9, f"Page {doc.page}")
 
     canvas.restoreState()
 
@@ -405,6 +419,9 @@ class PDFService:
             Paragraph("EVIDENCE HASH", s["Label"]),
             Paragraph(audit_hash, s["Mono"]),
             Spacer(1, 5),
+            Paragraph("HASH ALGORITHM", s["Label"]),
+            Paragraph("SHA-256", s["Body"]),
+            Spacer(1, 5),
             Paragraph("VERIFICATION URL", s["Label"]),
             Paragraph(
                 f'<a href="{qr_target}"><font color="#10b981">{url_display}</font></a>',
@@ -516,6 +533,366 @@ class PDFService:
             Spacer(1, 0.1 * inch),
         ]
 
+    # ── PDPA: Scope of Assessment ──────────────────────────────────────────────
+
+    def _scope_of_assessment_table(self) -> Table:
+        """Table listing each scanned element and whether it is In Scope or Out of Scope."""
+        GREEN = colors.HexColor("#d1fae5")
+        RED_BG = colors.HexColor("#fee2e2")
+        RED_FG = colors.HexColor("#dc2626")
+        GRFG   = colors.HexColor("#065f46")
+
+        header = [
+            Paragraph("ELEMENT ASSESSED", self._s["Label"]),
+            Paragraph("DESCRIPTION", self._s["Label"]),
+            Paragraph("SCOPE STATUS", self._s["Label"]),
+        ]
+        in_scope = [
+            ("Cookie Consent Mechanism",
+             "Analysis of consent banner implementation and pre-consent cookie behaviour"),
+            ("Privacy Policy (PDPA §11/13)",
+             "Detection of privacy policy link and content indicators on homepage"),
+            ("Security HTTP Headers",
+             "HTTP response header analysis for PDPA §24 Protection Obligation"),
+            ("Cookie Attributes",
+             "Secure, HttpOnly and SameSite flag inspection on set-cookie responses"),
+            ("DNC Registry Reference",
+             "Detection of marketing opt-out mechanism and DNC references"),
+            ("Data Subject Rights Mechanism",
+             "Presence of access, correction and withdrawal request pathways"),
+            ("NRIC / FIN Collection Signals",
+             "Keyword detection of regulated identity document collection"),
+        ]
+        out_scope = [
+            ("Backend Systems & Internal Data Flows",
+             "Server-side processing, databases, internal APIs"),
+            ("Employee Data Handling",
+             "HR data, payroll, staff records"),
+            ("Third-Party Processor Agreements",
+             "DPA agreements and sub-processor contracts"),
+            ("Data Breach Notification Procedures",
+             "Internal incident response and PDPC notification workflows"),
+        ]
+
+        rows: list = [header]
+        in_style_rows: list[int] = []
+        out_style_rows: list[int] = []
+
+        for element, desc in in_scope:
+            r = len(rows)
+            rows.append([
+                Paragraph(element, self._s["Body"]),
+                Paragraph(desc, self._s["Body"]),
+                Paragraph('<font color="#065f46"><b>✓ In Scope</b></font>', self._s["Body"]),
+            ])
+            in_style_rows.append(r)
+
+        for element, desc in out_scope:
+            r = len(rows)
+            rows.append([
+                Paragraph(element, self._s["Body"]),
+                Paragraph(desc, self._s["Body"]),
+                Paragraph('<font color="#dc2626"><b>✗ Out of Scope</b></font>', self._s["Body"]),
+            ])
+            out_style_rows.append(r)
+
+        col_w = [CONTENT_W * 0.28, CONTENT_W * 0.52, CONTENT_W * 0.20]
+        t = Table(rows, colWidths=col_w)
+        style_cmds = [
+            ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+            ("TEXTCOLOR",  (0, 0), (-1, 0), WHITE),
+            ("FONTNAME",   (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE",   (0, 0), (-1, -1), 8),
+            ("GRID",       (0, 0), (-1, -1), 0.5, BORDER),
+            ("VALIGN",     (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
+            ("TOPPADDING",    (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]
+        for r in in_style_rows:
+            style_cmds.append(("BACKGROUND", (2, r), (2, r), GREEN))
+        for r in out_style_rows:
+            style_cmds.append(("BACKGROUND", (2, r), (2, r), RED_BG))
+        t.setStyle(TableStyle(style_cmds))
+        return t
+
+    # ── PDPA: Compliance Score by Dimension ────────────────────────────────────
+
+    def _compliance_score_table(self, findings: list) -> Table:
+        """Four-dimension scored compliance table with overall score row."""
+        s = self._s
+
+        def _has(keywords: list[str]) -> dict | None:
+            for f in findings:
+                text = " ".join([
+                    (f.get("check_id") or ""),
+                    (f.get("type") or ""),
+                    (f.get("title") or ""),
+                ]).lower()
+                if any(k in text for k in keywords):
+                    return f
+            return None
+
+        def _row(finding, base_score=96, compliant_note="", issue_note=""):
+            if finding is None:
+                return base_score, "Compliant", compliant_note
+            sev = (finding.get("severity") or "MEDIUM").upper()
+            score = {"CRITICAL": 0, "HIGH": 20, "MEDIUM": 60, "LOW": 80}.get(sev, 60)
+            status = "Non-Compliant" if score < 50 else "Partial"
+            return score, status, issue_note
+
+        dimensions = [
+            (
+                "Cookie Consent Mechanism",
+                *_row(
+                    _has(["consent", "cookie_consent", "no_consent_banner", "tracking_cookie"]),
+                    base_score=96,
+                    compliant_note="Granular consent mechanism detected; pre-consent cookies blocked.",
+                    issue_note="Cookie consent mechanism absent or non-compliant — consent required before tracking.",
+                ),
+            ),
+            (
+                "Privacy Policy (PDPA §13)",
+                *_row(
+                    _has(["privacy_policy", "no_privacy_policy", "privacy policy"]),
+                    base_score=98,
+                    compliant_note="Privacy policy linked from homepage in compliance with PDPA §11.",
+                    issue_note="Privacy policy not accessible from homepage — required under PDPA §11 Openness Obligation.",
+                ),
+            ),
+            (
+                "DNC Registry Reference",
+                *_row(
+                    _has(["dnc", "marketing", "do_not_call", "spam"]),
+                    base_score=92,
+                    compliant_note="DNC opt-out mechanism referenced; marketing consent pathway present.",
+                    issue_note="DNC Registry opt-out mechanism not detected — required for marketing communications.",
+                ),
+            ),
+            (
+                "Data Subject Rights Mechanism",
+                *_row(
+                    _has(["data_subject", "rights", "access_request", "correction"]),
+                    base_score=90,
+                    compliant_note="Access and correction request pathway detected on website.",
+                    issue_note="No data subject rights mechanism found — required under PDPA §21–22.",
+                ),
+            ),
+        ]
+
+        scores = [d[1] for d in dimensions]
+        statuses = [d[2] for d in dimensions]
+        overall = round(sum(scores) / len(scores))
+        if all(s == "Compliant" for s in statuses):
+            overall_status = "Compliant"
+            overall_color = "#065f46"
+            overall_bg = colors.HexColor("#d1fae5")
+        elif any(s == "Non-Compliant" for s in statuses):
+            overall_status = "Non-Compliant"
+            overall_color = "#dc2626"
+            overall_bg = colors.HexColor("#fee2e2")
+        else:
+            overall_status = "Partial"
+            overall_color = "#92400e"
+            overall_bg = colors.HexColor("#fef3c7")
+
+        header = [
+            Paragraph("DIMENSION", s["Label"]),
+            Paragraph("SCORE", s["Label"]),
+            Paragraph("STATUS", s["Label"]),
+            Paragraph("NOTE", s["Label"]),
+        ]
+        rows: list = [header]
+        for dim_name, dim_score, dim_status, dim_note in dimensions:
+            if dim_status == "Compliant":
+                status_html = f'<font color="#065f46"><b>{dim_status}</b></font>'
+            elif dim_status == "Non-Compliant":
+                status_html = f'<font color="#dc2626"><b>{dim_status}</b></font>'
+            else:
+                status_html = f'<font color="#92400e"><b>{dim_status}</b></font>'
+            rows.append([
+                Paragraph(dim_name, s["Body"]),
+                Paragraph(f"<b>{dim_score}/100</b>", s["Body"]),
+                Paragraph(status_html, s["Body"]),
+                Paragraph(dim_note, s["Body"]),
+            ])
+
+        # Overall score row
+        rows.append([
+            Paragraph("<b>Overall Score</b>", s["Body"]),
+            Paragraph(f'<font color="{overall_color}"><b>{overall}/100</b></font>', s["Body"]),
+            Paragraph(f'<font color="{overall_color}"><b>{overall_status}</b></font>', s["Body"]),
+            Paragraph("Aggregate across all assessed PDPA compliance dimensions.", s["Body"]),
+        ])
+
+        col_w = [CONTENT_W * 0.26, CONTENT_W * 0.12, CONTENT_W * 0.18, CONTENT_W * 0.44]
+        t = Table(rows, colWidths=col_w)
+        style_cmds = [
+            ("BACKGROUND",    (0, 0), (-1, 0), NAVY),
+            ("TEXTCOLOR",     (0, 0), (-1, 0), WHITE),
+            ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE",      (0, 0), (-1, -1), 8),
+            ("GRID",          (0, 0), (-1, -1), 0.5, BORDER),
+            ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
+            ("TOPPADDING",    (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -2), [WHITE, LIGHT_BG]),
+            ("BACKGROUND",    (0, -1), (-1, -1), overall_bg),
+            ("FONTNAME",      (0, -1), (-1, -1), "Helvetica-Bold"),
+        ]
+        t.setStyle(TableStyle(style_cmds))
+        return t
+
+    # ── PDPA: Assessment Conducted By ─────────────────────────────────────────
+
+    def _assessment_conducted_by_section(self, report_data: dict) -> list:
+        """Table identifying the assessing entity — required for legal standing."""
+        s = self._s
+        created_raw = report_data.get("created_at") or datetime.now(timezone.utc).isoformat()
+        try:
+            dt = datetime.fromisoformat(created_raw[:19]).replace(tzinfo=timezone.utc)
+            date_display = dt.strftime("%d %B %Y  %H:%M UTC")
+        except Exception:
+            date_display = created_raw[:19] + " UTC"
+
+        rows = [
+            ("ASSESSING ENTITY",    COMPANY_NAME),
+            ("UEN (SINGAPORE)",     COMPANY_UEN),
+            ("FRAMEWORK VERSION",   COMPANY_FRAMEWORK_VERSION),
+            ("ASSESSMENT DATE/TIME", date_display),
+            ("ASSESSED ENTITY",     report_data.get("company_name") or "—"),
+            ("ASSESSED URL",        report_data.get("vendor_url") or report_data.get("website_url") or "—"),
+            ("DPO CONTACT",         COMPANY_DPO_EMAIL),
+        ]
+        label_w = 1.7 * inch
+        data = [
+            [Paragraph(lbl, s["Label"]), Paragraph(str(val), s["Value"])]
+            for lbl, val in rows
+        ]
+        t = Table(data, colWidths=[label_w, CONTENT_W - label_w])
+        t.setStyle(TableStyle([
+            ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
+            ("TOPPADDING",    (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("ROWBACKGROUNDS", (0, 0), (-1, -1), [WHITE, LIGHT_BG]),
+            ("BOX",           (0, 0), (-1, -1), 0.5, BORDER),
+            ("LINEAFTER",     (0, 0), (0, -1), 0.5, BORDER),
+        ]))
+        return [t, Spacer(1, 0.15 * inch)]
+
+    # ── PDPA: How to Verify ───────────────────────────────────────────────────
+
+    def _how_to_verify_block(self, report_data: dict) -> list:
+        """4-step independent verification instructions (mandatory per legal brief)."""
+        s = self._s
+        audit_hash = report_data.get("audit_hash") or "—"
+        tx_hash = report_data.get("tx_hash") or "—"
+        steps = [
+            (
+                "Step 1 — Obtain the PDF from the assessed organisation.",
+                "Request a copy of this certificate directly from the assessed entity.",
+            ),
+            (
+                "Step 2 — Generate a SHA-256 hash of the PDF.",
+                "macOS / Linux:  <b>shasum -a 256 filename.pdf</b><br/>"
+                "Windows:        <b>CertUtil -hashfile filename.pdf SHA256</b>",
+            ),
+            (
+                "Step 3 — Compare against the Evidence Hash on the certificate.",
+                f"The output must exactly match: <font face='Courier'>{audit_hash}</font>",
+            ),
+            (
+                "Step 4 — Confirm the Transaction Hash on polygonscan.com.",
+                f"Search <font face='Courier'>{tx_hash}</font> on "
+                f'<a href="https://polygonscan.com"><font color="#10b981">polygonscan.com</font></a>. '
+                "The block timestamp proves the earliest possible existence date of this document. "
+                "No login or account required.",
+            ),
+        ]
+        items: list = []
+        for title, detail in steps:
+            items.append(Paragraph(f"<b>{title}</b>", s["Body"]))
+            items.append(Paragraph(detail, s["Body"]))
+            items.append(Spacer(1, 5))
+        return items
+
+    # ── PDPA: Compliance Strengths (no-violation case) ────────────────────────
+
+    def _compliance_strengths_block(self, report_data: dict) -> list:
+        """Positive evidence statement when no violations are detected."""
+        s = self._s
+        company = report_data.get("company_name") or "the assessed entity"
+        structured = report_data.get("structured_report") or {}
+        exec_sum = structured.get("executive_summary") or ""
+
+        strengths = [
+            (
+                "Cookie Consent Implementation",
+                f"{company} has implemented a compliant cookie consent mechanism. "
+                "Non-essential cookies (analytics, advertising) are deferred until affirmative user consent "
+                "is obtained, consistent with PDPA §13 Consent Obligation.",
+            ),
+            (
+                "Privacy Policy Accessibility",
+                "A privacy or data protection policy is linked from the homepage. "
+                "This satisfies PDPA §11 Openness Obligation, ensuring users can access "
+                "data handling information prior to providing personal data.",
+            ),
+            (
+                "Transport Security",
+                "The website enforces HTTPS across all pages, encrypting personal data "
+                "in transit between users and the server, consistent with PDPA §24 "
+                "Protection Obligation.",
+            ),
+            (
+                "DNC Registry Alignment",
+                "Marketing communications appear to reference or respect Do-Not-Call (DNC) "
+                "Registry requirements under the PDPA Do Not Call Provisions.",
+            ),
+            (
+                "Data Subject Rights Pathway",
+                "An access and/or correction request pathway is present on the website, "
+                "enabling individuals to exercise their rights under PDPA §21–22.",
+            ),
+        ]
+
+        items: list = [
+            Paragraph(
+                f"The automated assessment of {company} found no PDPA violations across all "
+                f"scanned dimensions. The following compliance strengths were identified:",
+                s["Body"],
+            ),
+            Spacer(1, 8),
+        ]
+
+        for title, detail in strengths:
+            items.append(Paragraph(
+                f'<font color="#10b981"><b>✓ {title}</b></font>',
+                s["Body"],
+            ))
+            items.append(Paragraph(detail, s["Body"]))
+            items.append(Spacer(1, 5))
+
+        if exec_sum:
+            items.append(Spacer(1, 4))
+            items.append(Paragraph("<b>AI Assessment Summary:</b>", s["Body"]))
+            for para in [p.strip() for p in exec_sum.split("\n\n") if p.strip()][:2]:
+                items.append(Paragraph(para.replace("\n", " "), s["Body"]))
+                items.append(Spacer(1, 4))
+
+        items.append(Spacer(1, 8))
+        items.append(Paragraph(
+            "No immediate remediation is required. We recommend scheduling a follow-up audit "
+            "in 6 months to confirm continued compliance as your website evolves.",
+            s["Body"],
+        ))
+        return items
+
     # ── Main entry point ───────────────────────────────────────────────────────
 
     def generate_pdf(self, report_data: dict) -> bytes:
@@ -549,6 +926,18 @@ class PDFService:
             framework_raw = (report_data.get("framework") or "").upper()
             is_pdpa = framework_raw in {"PDPA", "PDPA_QUICK_SCAN"}
             is_notarization = "NOTARIZATION" in framework_raw
+
+            # Change 6(b/d): set PDPA footer disclaimer on doc object for _draw_page
+            if is_pdpa:
+                _disc = (
+                    f"Automated compliance assessment by {COMPANY_NAME} · "
+                    f"{COMPANY_FRAMEWORK_VERSION} · Results reflect publicly accessible website elements at assessment date."
+                )
+                _disc2 = (
+                    "May be used as supporting evidence in procurement and regulatory contexts. "
+                    f"Does not substitute for legal counsel. {COMPANY_NAME}, Singapore UEN: {COMPANY_UEN}."
+                )
+                doc._pdpa_footer_lines = [_disc, _disc2]
 
             # ── Cover ──────────────────────────────────────────────────────
             company = report_data.get("company_name") or "Vendor Report"
@@ -655,46 +1044,52 @@ class PDFService:
                 story.extend(self._notarization_certificate_story(report_data))
 
             elif is_pdpa:
-                # Specialized Developer Brief Layout (matches PDPA_Developer_Brief format)
+                # PDPA Quick Scan — Developer Brief Layout
+                # Implements all 7 mandatory changes from compliance brief.
                 structured = report_data.get("structured_report") or {}
-                exec_sum = structured.get("executive_summary") or report_data.get("ai_narrative") or ""
                 findings = structured.get("detailed_findings") or []
 
                 from reportlab.platypus import PageBreak as _PageBreak
 
-                # 1. Context & Purpose
-                story.append(self._section_header("1. Context & Purpose of This Document"))
-                story.append(Spacer(1, 6))
-                company_name = report_data.get("company_name") or "the organization"
+                company_name = report_data.get("company_name") or "the organisation"
                 scan_date_str = report_data.get("created_at", "")[:10] or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+                # ── Section 1: Scope of Assessment (Change 1) ─────────────────
+                story.append(self._section_header("1. Scope of Assessment"))
+                story.append(Spacer(1, 6))
                 story.append(Paragraph(
-                    f"This document summarizes a PDPA Quick Scan compliance audit performed by Booppa on the "
+                    "This compliance pack is based on information provided by the company's authorised "
+                    "representative and automated website assessment conducted by Booppa on the date indicated. "
+                    "The table below lists each element assessed and its scope status.",
+                    s["Body"],
+                ))
+                story.append(Spacer(1, 8))
+                story.append(self._scope_of_assessment_table())
+                story.append(Spacer(1, 0.15 * inch))
+
+                # ── Section 2: Context & Purpose ──────────────────────────────
+                story.append(self._section_header("2. Context & Purpose of This Document"))
+                story.append(Spacer(1, 6))
+                story.append(Paragraph(
+                    f"This document summarises a PDPA Quick Scan compliance audit performed by Booppa on the "
                     f"{company_name} website, translated into English and enriched with developer implementation tasks. "
                     f"It is intended to be forwarded directly to the development team.",
-                    s["Body"]
+                    s["Body"],
                 ))
                 story.append(Spacer(1, 4))
                 story.append(Paragraph(
-                    f"The audit was conducted on {scan_date_str} and anchored on the Polygon PoS blockchain for evidentiary integrity.",
-                    s["Body"]
+                    f"The audit was conducted on {scan_date_str} and anchored on the Polygon PoS blockchain "
+                    f"for evidentiary integrity.",
+                    s["Body"],
                 ))
                 story.append(Spacer(1, 0.15 * inch))
 
-                # 2. Audit Findings Summary
-                story.append(self._section_header("2. Audit Findings Summary"))
+                # ── Section 3: Audit Findings Summary ─────────────────────────
+                story.append(self._section_header("3. Audit Findings Summary"))
                 story.append(Spacer(1, 6))
                 if not findings:
-                    story.append(Paragraph(
-                        f"Booppa AI compliance audit identified no violations on the {company_name} website. "
-                        f"The site demonstrates strong PDPA compliance across all scanned dimensions.",
-                        s["Body"]
-                    ))
-                    story.append(Spacer(1, 6))
-                    story.append(Paragraph(
-                        "No immediate remediation is required. We recommend scheduling a follow-up audit in 6 months "
-                        "to confirm continued compliance as your website evolves.",
-                        s["Body"]
-                    ))
+                    # Change 7: Compliance Strengths when no violations
+                    story.extend(self._compliance_strengths_block(report_data))
                 else:
                     has_critical = any(f.get("severity") == "CRITICAL" for f in findings)
                     story.append(Paragraph(
@@ -702,7 +1097,7 @@ class PDFService:
                         f"{'CRITICAL ' if has_critical else ''}"
                         f"violation{'s' if len(findings) != 1 else ''} requiring immediate action. "
                         f"{len(findings)} issue{'s' if len(findings) != 1 else ''} found:",
-                        s["Body"]
+                        s["Body"],
                     ))
                     story.append(Spacer(1, 8))
                     for i, f in enumerate(findings, 1):
@@ -710,15 +1105,28 @@ class PDFService:
                         story.append(Spacer(1, 8))
                 story.append(Spacer(1, 0.1 * inch))
 
-                # 3. Developer Implementation Tasks
+                # ── Section 4: Compliance Score by Dimension (Change 2) ───────
+                story.append(self._section_header("4. Compliance Score by Dimension"))
+                story.append(Spacer(1, 6))
+                story.append(Paragraph(
+                    "Each PDPA compliance dimension has been independently scored. A numeric score is "
+                    "shown even where the result is fully compliant — a documented score is more evidentially "
+                    "credible than an undeclared pass.",
+                    s["Body"],
+                ))
+                story.append(Spacer(1, 8))
+                story.append(self._compliance_score_table(findings))
+                story.append(Spacer(1, 0.1 * inch))
+
+                # ── Section 5: Developer Implementation Tasks ──────────────────
                 story.append(_PageBreak())
-                story.append(self._section_header("3. Developer Implementation Tasks"))
+                story.append(self._section_header("5. Developer Implementation Tasks"))
                 story.append(Spacer(1, 6))
                 if findings:
                     story.append(Paragraph(
-                        "The following tasks are organized by priority and timeline. "
+                        "The following tasks are organised by priority and timeline. "
                         "Each task includes the acceptance criteria required to close the finding.",
-                        s["Body"]
+                        s["Body"],
                     ))
                     story.append(Spacer(1, 8))
                     for i, f in enumerate(findings, 1):
@@ -727,41 +1135,55 @@ class PDFService:
                 else:
                     story.append(Paragraph(
                         "No remediation tasks required. No violations were detected during this scan.",
-                        s["Body"]
+                        s["Body"],
                     ))
                 story.append(Spacer(1, 0.1 * inch))
 
-                # 4. Blockchain Evidence Anchoring
-                story.append(_PageBreak())
-                story.append(self._section_header("4. Blockchain Evidence Anchoring (Booppa)"))
+                # ── Section 6: Assessment Conducted By (Change 5) ─────────────
+                story.append(self._section_header("6. Assessment Conducted By"))
+                story.append(Spacer(1, 6))
+                story.extend(self._assessment_conducted_by_section(report_data))
+
+                # ── Section 7: Blockchain Evidence Anchoring (Changes 3 & 4) ──
+                story.append(self._section_header("7. Blockchain Evidence Anchoring"))
                 story.append(Spacer(1, 6))
                 if findings:
                     story.append(Paragraph(
                         "The following artifacts must be anchored on the Polygon PoS blockchain to create "
                         "an immutable, court-admissible compliance trail:",
-                        s["Body"]
+                        s["Body"],
                     ))
                     story.append(Spacer(1, 6))
                     story.append(self._blockchain_anchoring_table(findings))
                     story.append(Spacer(1, 6))
                 else:
                     story.append(Paragraph(
-                        "As no violations were detected, the primary artifact to anchor is this audit report itself, "
-                        "providing immutable proof of a clean compliance assessment on the audit date.",
-                        s["Body"]
+                        "As no violations were detected, the primary artifact to anchor is this audit report "
+                        "itself, providing immutable proof of a clean compliance assessment on the audit date.",
+                        s["Body"],
                     ))
                     story.append(Spacer(1, 6))
+                # Blockchain detail table (includes HASH ALGORITHM — Change 3)
                 story.extend(self._blockchain_block(report_data))
+                # How to Verify — 4 steps (Change 4)
+                story.append(Paragraph(
+                    "<b>How to Verify This Certificate Independently</b>",
+                    s["Body"],
+                ))
+                story.append(Spacer(1, 6))
+                story.extend(self._how_to_verify_block(report_data))
+                story.append(Spacer(1, 0.1 * inch))
 
-                # 5. Important Limitations
-                story.append(self._section_header("5. Important Limitations of This Scan"))
+                # ── Section 8: Important Limitations ──────────────────────────
+                # Change 6(a): disclaimer removed from here — moved to footer
+                story.append(self._section_header("8. Important Limitations of This Scan"))
                 story.append(Spacer(1, 6))
                 story.append(Paragraph(
-                    "The development team should be aware that this Quick Scan has the following limitations "
-                    "— further audit may be needed for:", s["Body"]
+                    "This Quick Scan has the following limitations — further audit may be needed for:",
+                    s["Body"],
                 ))
                 story.append(Spacer(1, 4))
-                limitations = [
+                for lim in [
                     "Data Protection Officer (DPO) appointment verification (mandatory for many organisations under PDPA)",
                     "Cross-border data transfer compliance (PDPA Part X — e.g. transfers to cloud providers outside Singapore)",
                     "Internal data handling workflows, retention policies, and deletion procedures",
@@ -769,34 +1191,24 @@ class PDFService:
                     "Data breach notification procedures (mandatory 3-day notification to PDPC)",
                     "Completeness and legal sufficiency of the Privacy Policy beyond DNC references",
                     "Employee data handling training records",
-                ]
-                for lim in limitations:
+                ]:
                     story.append(Paragraph(f"• {lim}", s["Bullet"]))
-                story.append(Spacer(1, 8))
-                story.append(Paragraph("<b>Legal disclaimer (from Booppa):</b>", s["Body"]))
-                story.append(Paragraph(
-                    "This report is provided for informational purposes only. It does not constitute legal advice, "
-                    "certification, or regulatory approval. Booppa does not certify vendors, issue regulatory determinations, "
-                    "or publish public vendor scoring. Organizations should consult qualified legal professionals for "
-                    "compliance decisions and regulatory engagement.",
-                    s["Disclaimer"]
-                ))
                 story.append(Spacer(1, 0.1 * inch))
 
-                # 6. Compliance Timeline Summary
-                story.append(self._section_header("6. Compliance Timeline Summary"))
+                # ── Section 9: Compliance Timeline Summary ─────────────────────
+                story.append(self._section_header("9. Compliance Timeline Summary"))
                 story.append(Spacer(1, 6))
                 if findings:
                     story.append(self._timeline_summary_table(findings))
                 else:
                     story.append(Paragraph(
                         "No compliance actions required at this time. Schedule a follow-up audit in 6 months.",
-                        s["Body"]
+                        s["Body"],
                     ))
                 story.append(Spacer(1, 0.1 * inch))
 
-                # 7. Legal References
-                story.append(self._section_header("7. Legal References"))
+                # ── Section 10: Legal References ───────────────────────────────
+                story.append(self._section_header("10. Legal References"))
                 story.append(Spacer(1, 6))
                 refs = (structured.get("legal_references") or []) or self._default_legal_references(findings)
                 for ref in refs:
@@ -805,7 +1217,7 @@ class PDFService:
                     if url:
                         story.append(Paragraph(
                             f'• {title}: <a href="{url}"><font color="#10b981">{url}</font></a>',
-                            s["Body"]
+                            s["Body"],
                         ))
                     else:
                         story.append(Paragraph(f"• {title}", s["Body"]))
