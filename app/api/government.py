@@ -35,6 +35,10 @@ from app.core.models_v6 import VendorScore, VendorSector
 from app.core.models_v8 import VendorStatusSnapshot
 from app.core.models_v10 import DiscoveredVendor, MarketplaceVendor
 from app.core.models_gebiz import GebizTender
+from app.core.auth import (
+    authenticate_user, register_user,
+    create_access_token, create_refresh_token,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -84,6 +88,94 @@ def _vendor_row(
         "verified":       depth in ("DEEP", "CERTIFIED"),
         "website":        getattr(user, "website", None) or "",
     }
+
+
+# ── POST /register ───────────────────────────────────────────────────────────
+
+class GovRegisterRequest(BaseModel):
+    email:      str
+    password:   str
+    full_name:  Optional[str] = None
+    agency:     Optional[str] = None   # stored as `company`
+
+
+class GovAuthOut(BaseModel):
+    access_token:  str
+    refresh_token: str
+    token_type:    str = "bearer"
+    role:          str = "GOVERNMENT"
+    email:         str
+    full_name:     Optional[str] = None
+    agency:        Optional[str] = None
+
+
+@router.post("/register", response_model=GovAuthOut, status_code=201)
+async def gov_register(body: GovRegisterRequest, db: Session = Depends(get_db)):
+    """
+    Register a government procurement officer account.
+
+    NOTE: .gov.sg domain check is disabled for testing.
+    To enable, uncomment the domain validation block below.
+    """
+    # -- Uncomment to enforce .gov.sg domain in production --
+    # domain = body.email.rsplit("@", 1)[-1].lower()
+    # if not domain.endswith(".gov.sg"):
+    #     raise HTTPException(
+    #         status_code=422,
+    #         detail="Access is restricted to Singapore government email addresses (.gov.sg).",
+    #     )
+
+    try:
+        user = register_user(
+            db,
+            email=body.email,
+            password=body.password,
+            company=body.agency or "",
+            role="GOVERNMENT",
+        )
+        if body.full_name:
+            user.full_name = body.full_name
+            db.commit()
+            db.refresh(user)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    access_token  = create_access_token(data={"sub": user.email})
+    refresh_token = create_refresh_token(data={"sub": user.email})
+    return GovAuthOut(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        email=user.email,
+        full_name=user.full_name,
+        agency=user.company or None,
+    )
+
+
+# ── POST /login ───────────────────────────────────────────────────────────────
+
+class GovLoginRequest(BaseModel):
+    email:    str
+    password: str
+
+
+@router.post("/login", response_model=GovAuthOut)
+async def gov_login(body: GovLoginRequest, db: Session = Depends(get_db)):
+    """Authenticate a government portal user."""
+    user = authenticate_user(db, body.email, body.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+    if getattr(user, "role", "") != "GOVERNMENT":
+        raise HTTPException(status_code=403, detail="This login is for government accounts only.")
+
+    access_token  = create_access_token(data={"sub": user.email})
+    refresh_token = create_refresh_token(data={"sub": user.email})
+    return GovAuthOut(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        email=user.email,
+        full_name=getattr(user, "full_name", None),
+        agency=getattr(user, "company", None) or None,
+    )
 
 
 # ── GET /vendors ──────────────────────────────────────────────────────────────
