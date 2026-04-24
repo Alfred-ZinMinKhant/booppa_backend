@@ -18,6 +18,7 @@ from collections import Counter
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.db import SessionLocal
+from app.core.models import User  # noqa: F401 — must be imported before models that FK-reference users
 from app.core.models_v10 import MarketplaceVendor, DiscoveredVendor
 
 SECTOR_KEYWORDS: list[tuple[str, list[str]]] = [
