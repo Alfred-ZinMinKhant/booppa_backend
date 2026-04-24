@@ -424,8 +424,15 @@ class PDFService:
             Spacer(1, 5),
             Paragraph("VERIFICATION URL", s["Label"]),
             Paragraph(
-                f'<a href="{qr_target}"><font color="#10b981">{url_display}</font></a>',
-                s["Body"],
+                '<a href="{href}"><font color="#10b981">{disp}</font></a>'.format(
+                    href=qr_target,
+                    disp=(
+                        url_display[:46] + "<br/>" + url_display[46:]
+                        if len(url_display) > 50
+                        else url_display
+                    ),
+                ),
+                s["Mono"],
             ),
             Spacer(1, 5),
             Paragraph("ANCHORED ON", s["Label"]),
