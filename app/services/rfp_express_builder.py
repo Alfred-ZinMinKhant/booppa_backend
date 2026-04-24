@@ -534,7 +534,12 @@ class RFPExpressBuilder:
                         "disclose proactively in security_measures answer"
                     )
                 else:
-                    external_facts.append("- VirusTotal domain check: no malicious flags detected")
+                    external_facts.append(
+                        "- External domain reputation: no public security incidents or malicious flags detected. "
+                        "For breach_history answer, state: 'No data breaches have occurred to the knowledge of management. "
+                        "No external security incidents have been publicly reported against the company\\'s domains.' "
+                        "Do NOT mention VirusTotal or any scanning tool names in the answer."
+                    )
 
             if external_facts:
                 external_section = "Verified external data:\n" + "\n".join(external_facts)
@@ -579,7 +584,7 @@ class RFPExpressBuilder:
             "data_policy":          f"{p}{name} maintains a PDPA-compliant Personal Data Protection Policy, accessible at {url}. All personal data is collected with consent and retained only for its stated purpose.",
             "dpo_appointed":        f"{p}{name} has appointed a Data Protection Officer (DPO) responsible for overseeing data protection compliance and serving as the point of contact for data-related inquiries.",
             "security_measures":    f"{p}{name} implements encryption at rest and in transit, role-based access controls, multi-factor authentication for privileged accounts, and conducts quarterly security reviews.",
-            "breach_history":       f"{p}{name} has not experienced any notifiable data breaches in the past 24 months. An incident response plan is in place and tested annually.",
+            "breach_history":       f"{p}No data breaches have occurred to the knowledge of management of {name}. No external security incidents have been publicly reported against the company's domains.",
             "third_party":          f"{p}{name} conducts due diligence assessments on all third-party vendors and requires Data Processing Agreements (DPAs) before any personal data is shared with sub-processors.",
             "iso_certifications":   f"{p}{name} is currently pursuing ISO 27001 certification and maintains internal controls aligned with the standard. SOC 2 readiness assessment is planned for the next financial year.",
             "business_continuity":  f"{p}{name} maintains a Business Continuity Plan (BCP) and Disaster Recovery (DR) plan, reviewed annually. Critical systems have RTO of 4 hours and RPO of 24 hours.",
@@ -722,7 +727,7 @@ class RFPExpressBuilder:
                 f"Vendor URL: {vendor_url}",
                 f"Report ID: {self.report_id}",
                 f"Sector: {ctx.get('sector') or 'General'}",
-                f"UEN: {ctx.get('uen') or 'Not provided'}",
+                f"UEN (Singapore Business Registration No.): {ctx.get('uen') or '_______________________________'}",
                 acra_line,
                 gebiz_line,
                 dpo_line,
@@ -742,6 +747,9 @@ class RFPExpressBuilder:
                     f"This certificate confirms that {company_name} has completed the "
                     f"BOOPPA {'RFP Kit Complete' if is_complete else 'RFP Kit Express'} process, "
                     f"generating blockchain-anchored evidence for procurement submission.\n\n"
+                    f"Scope of Assessment: This compliance pack is based on information provided by the "
+                    f"company's authorised representative and automated website assessment conducted by "
+                    f"Booppa on the date indicated.\n\n"
                     f"{vendor_details}"
                 ),
                 "key_issues":   [],
@@ -832,8 +840,8 @@ class RFPExpressBuilder:
             intake = intake or {}
             doc.add_paragraph(f"Prepared for: {company_name}")
             doc.add_paragraph(f"Website: {vendor_url}")
-            if ctx.get("uen"):
-                doc.add_paragraph(f"UEN: {ctx['uen']}")
+            uen_val = ctx.get("uen") or "_______________________________"
+            doc.add_paragraph(f"UEN (Singapore Business Registration No.): {uen_val}")
             if ctx.get("acra_name"):
                 doc.add_paragraph(f"ACRA Registered Name: {ctx['acra_name']}")
             if intake.get("dpo_name") or intake.get("dpo_email"):
@@ -857,6 +865,13 @@ class RFPExpressBuilder:
             doc.add_paragraph(f"Report ID: {self.report_id}")
             if tx_hash:
                 doc.add_paragraph(f"Blockchain TX: {tx_hash} (Polygon Amoy Testnet)")
+            doc.add_paragraph("")
+            scope_para = doc.add_paragraph(
+                "Scope of Assessment: This compliance pack is based on information provided by the "
+                "company's authorised representative and automated website assessment conducted by "
+                "Booppa on the date indicated."
+            )
+            scope_para.runs[0].italic = True
             doc.add_paragraph("")
 
             doc.add_heading("Compliance Q&A", level=1)
