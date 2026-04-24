@@ -199,3 +199,6 @@ from .models_v6 import *
 # Import V8 extensions (VendorStatusSnapshot, ScoreSnapshot, NotarizationMetadata,
 # RfpRequirement, RfpRequirementFlag)
 from .models_v8 import *
+
+# Import V11 extensions (ComplianceRequirement, ManagedVendor)
+from .models_v11 import *
