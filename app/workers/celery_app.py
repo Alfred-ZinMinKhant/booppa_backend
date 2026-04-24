@@ -80,5 +80,11 @@ celery_app.conf.update(
             "task": "weekly_intelligence_brief",
             "schedule": crontab(day_of_week="monday", hour=0, minute=0),
         },
+        # Recompute sector percentiles for all vendors every Sunday at 23:00 UTC.
+        # Runs just before the Monday score digest so government portal shows fresh ranks.
+        "recompute-all-vendor-percentiles": {
+            "task": "recompute_all_vendor_percentiles",
+            "schedule": crontab(day_of_week="sunday", hour=23, minute=0),
+        },
     },
 )
