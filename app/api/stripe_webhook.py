@@ -32,9 +32,12 @@ NOTARIZATION_PRODUCT_TYPES = {
 VENDOR_PROOF_PRODUCT_TYPES = {"vendor_proof"}
 PDPA_PRODUCT_TYPES = {"pdpa_quick_scan", "pdpa_basic", "pdpa_pro", "pdpa_snapshot"}
 SUBSCRIPTION_PRODUCT_TYPES = {
-    "vendor_active_monthly", "vendor_active_annual",
-    "pdpa_monitor_monthly", "pdpa_monitor_annual",
-    "enterprise_monthly", "enterprise_pro_monthly",
+    "vendor_active_monthly",
+    "vendor_active_annual",
+    "pdpa_monitor_monthly",
+    "pdpa_monitor_annual",
+    "enterprise_monthly",
+    "enterprise_pro_monthly",
 }
 
 # Bundle → component mapping.
@@ -56,7 +59,7 @@ BUNDLE_COMPONENTS = {
     "enterprise_bid_kit": {
         "vendor_proof": True,
         "pdpa": True,
-        "notarization_count": 7,   # 2 from Trust Pack + 5 additional
+        "notarization_count": 7,  # 2 from Trust Pack + 5 additional
         "rfp": "rfp_complete",
     },
 }
@@ -87,31 +90,41 @@ async def _activate_subscription(
         # Map product_type → platform plan
         plan_map = {
             "vendor_active_monthly": "vendor_active",
-            "vendor_active_annual":  "vendor_active",
-            "pdpa_monitor_monthly":  "pdpa_monitor",
-            "pdpa_monitor_annual":   "pdpa_monitor",
-            "enterprise_monthly":    "enterprise",
-            "enterprise_pro_monthly":"enterprise_pro",
-            "compliance_standard":   "standard_compliance",
-            "compliance_pro":        "pro_compliance",
+            "vendor_active_annual": "vendor_active",
+            "pdpa_monitor_monthly": "pdpa_monitor",
+            "pdpa_monitor_annual": "pdpa_monitor",
+            "enterprise_monthly": "enterprise",
+            "enterprise_pro_monthly": "enterprise_pro",
+            "compliance_standard": "standard_compliance",
+            "compliance_pro": "pro_compliance",
         }
         new_plan = plan_map.get(product_type, "pro")
 
         user.plan = new_plan
+        # Persist subscription metadata for dashboard and idempotent checks
+        user.subscription_tier = new_plan
+        try:
+            from datetime import datetime, timezone as _tz
+
+            user.subscription_started_at = datetime.now(_tz.utc)
+        except Exception:
+            pass
         if stripe_subscription_id:
             user.stripe_subscription_id = stripe_subscription_id
         if stripe_customer_id:
             user.stripe_customer_id = stripe_customer_id
         db.commit()
-        logger.info(f"[Subscription] Activated plan={new_plan} for user={customer_email}")
+        logger.info(
+            f"[Subscription] Activated plan={new_plan} for user={customer_email}"
+        )
 
         # Send confirmation email
         if customer_email:
             plan_labels = {
                 "vendor_active": "Vendor Active",
-                "pdpa_monitor":  "PDPA Monitor",
-                "enterprise":    "Enterprise",
-                "enterprise_pro":"Enterprise Pro",
+                "pdpa_monitor": "PDPA Monitor",
+                "enterprise": "Enterprise",
+                "enterprise_pro": "Enterprise Pro",
             }
             label = plan_labels.get(new_plan, new_plan)
             try:
@@ -179,21 +192,34 @@ async def _fulfill_bundle(
         from app.core.models import Report
         import uuid as _uuid
 
-        base_report = db.query(Report).filter(Report.id == report_id).first() if report_id else None
+        base_report = (
+            db.query(Report).filter(Report.id == report_id).first()
+            if report_id
+            else None
+        )
         owner_id = base_report.owner_id if base_report else None
 
         # Resolve owner from customer_email when no base report exists (all bundle purchases)
         if not owner_id and customer_email:
             from app.core.models import User
+
             user = db.query(User).filter(User.email == customer_email).first()
             if user:
                 owner_id = user.id
-                logger.info(f"[Bundle:{product_type}] Resolved owner_id={owner_id} from email={customer_email}")
+                logger.info(
+                    f"[Bundle:{product_type}] Resolved owner_id={owner_id} from email={customer_email}"
+                )
             else:
-                logger.warning(f"[Bundle:{product_type}] No user found for email={customer_email} — stubs will have no owner")
+                logger.warning(
+                    f"[Bundle:{product_type}] No user found for email={customer_email} — stubs will have no owner"
+                )
 
-        company_name = (base_report.company_name if base_report else None) or metadata.get("company_name", "")
-        website = (base_report.company_website if base_report else None) or metadata.get("vendor_url", "")
+        company_name = (
+            base_report.company_name if base_report else None
+        ) or metadata.get("company_name", "")
+        website = (
+            base_report.company_website if base_report else None
+        ) or metadata.get("vendor_url", "")
 
         # Helper to create a stub report for a component
         def _make_stub(framework: str) -> str:
@@ -220,7 +246,11 @@ async def _fulfill_bundle(
 
         # 1. Vendor Proof
         if components.get("vendor_proof"):
-            vp_id = str(base_report.id) if base_report and base_report.framework in ("vendor_proof",) else _make_stub("vendor_proof")
+            vp_id = (
+                str(base_report.id)
+                if base_report and base_report.framework in ("vendor_proof",)
+                else _make_stub("vendor_proof")
+            )
             tasks_to_queue.append(("vendor_proof", vp_id))
 
         # 2. PDPA Snapshot
@@ -242,21 +272,25 @@ async def _fulfill_bundle(
         for task_type, payload in tasks_to_queue:
             if task_type == "vendor_proof":
                 fulfill_vendor_proof_task.delay(payload, customer_email)
-                logger.info(f"[Bundle:{product_type}] Queued vendor_proof for report {payload}")
+                logger.info(
+                    f"[Bundle:{product_type}] Queued vendor_proof for report {payload}"
+                )
             elif task_type == "pdpa":
                 fulfill_pdpa_task.delay(payload, customer_email)
                 logger.info(f"[Bundle:{product_type}] Queued pdpa for report {payload}")
             elif task_type == "notarization":
                 for i, nid in enumerate(payload):
                     fulfill_notarization_task.delay(nid, customer_email)
-                    logger.info(f"[Bundle:{product_type}] Queued notarization #{i+1} for report {nid}")
+                    logger.info(
+                        f"[Bundle:{product_type}] Queued notarization #{i+1} for report {nid}"
+                    )
 
         # 4. RFP component (no stub needed — self-contained task)
         rfp_type = components.get("rfp")
         if rfp_type:
-            vendor_url  = metadata.get("vendor_url", website)
-            vendor_id   = str(owner_id) if owner_id else (customer_email or "anonymous")
-            rfp_desc    = metadata.get("rfp_description")
+            vendor_url = metadata.get("vendor_url", website)
+            vendor_id = str(owner_id) if owner_id else (customer_email or "anonymous")
+            rfp_desc = metadata.get("rfp_description")
             if vendor_url and company_name:
                 fulfill_rfp_task.delay(
                     product_type=rfp_type,
@@ -267,15 +301,20 @@ async def _fulfill_bundle(
                     rfp_description=rfp_desc,
                     session_id=session_id,
                 )
-                logger.info(f"[Bundle:{product_type}] Queued {rfp_type} for vendor {vendor_id}")
+                logger.info(
+                    f"[Bundle:{product_type}] Queued {rfp_type} for vendor {vendor_id}"
+                )
                 # Strategy 6 fires for rfp_accelerator (contains rfp_express)
                 if rfp_type == "rfp_express":
                     sector = metadata.get("sector")
                     rfp_title = rfp_desc or "New procurement opportunity"
                     from app.workers.tasks import fire_strategy_6_task
+
                     fire_strategy_6_task.delay(sector, rfp_title)
             else:
-                logger.warning(f"[Bundle:{product_type}] RFP skipped — missing vendor_url or company_name")
+                logger.warning(
+                    f"[Bundle:{product_type}] RFP skipped — missing vendor_url or company_name"
+                )
 
     except Exception as e:
         logger.error(f"[Bundle] Fulfillment error for {product_type}: {e}")
@@ -298,14 +337,20 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
             logger.error(f"[Notarize] Report {report_id} not found")
             return
 
-        assessment = report.assessment_data if isinstance(report.assessment_data, dict) else {}
+        assessment = (
+            report.assessment_data if isinstance(report.assessment_data, dict) else {}
+        )
         file_hash = assessment.get("file_hash") or report.audit_hash
         original_filename = assessment.get("original_filename", "document")
         file_size = assessment.get("file_size_bytes")
         hash_algorithm = assessment.get("hash_algorithm", "SHA-256")
         mime_type = assessment.get("mime_type")
         document_descriptor = assessment.get("document_descriptor")
-        contact_email = customer_email or assessment.get("contact_email") or assessment.get("customer_email")
+        contact_email = (
+            customer_email
+            or assessment.get("contact_email")
+            or assessment.get("customer_email")
+        )
 
         # Step 1: Anchor file hash on blockchain
         tx_hash = None
@@ -319,7 +364,9 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                 report.tx_hash = tx_hash
             report.audit_hash = file_hash  # keep as original file hash for verification
             assessment["blockchain_anchored"] = True
-            assessment["blockchain_anchored_at"] = datetime.now(timezone.utc).isoformat()
+            assessment["blockchain_anchored_at"] = datetime.now(
+                timezone.utc
+            ).isoformat()
             report.assessment_data = assessment
             flag_modified(report, "assessment_data")
             db.commit()
@@ -330,7 +377,9 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
         # Step 2: Build verify URL
         verify_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/verify/{file_hash}"
         polygonscan_url = (
-            f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{tx_hash}" if tx_hash else None
+            f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{tx_hash}"
+            if tx_hash
+            else None
         )
 
         # Step 3: Generate notarization certificate PDF
@@ -341,7 +390,11 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                 "report_id": report_id,
                 "framework": "compliance_notarization",
                 "company_name": report.company_name,
-                "created_at": report.created_at.isoformat() if report.created_at else datetime.now(timezone.utc).isoformat(),
+                "created_at": (
+                    report.created_at.isoformat()
+                    if report.created_at
+                    else datetime.now(timezone.utc).isoformat()
+                ),
                 "status": "completed",
                 "tx_hash": tx_hash,
                 "audit_hash": file_hash,
@@ -400,7 +453,7 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                 download_section = (
                     f'<p><a href="{pdf_url}" style="background-color:#10b981;color:#fff;'
                     f'padding:10px 24px;text-decoration:none;border-radius:6px;font-weight:bold;">'
-                    f'Download Notarization Certificate (PDF)</a></p>'
+                    f"Download Notarization Certificate (PDF)</a></p>"
                     if pdf_url
                     else "<p>Your certificate will be available on the BOOPPA website once processing is complete.</p>"
                 )
@@ -427,7 +480,9 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                 )
                 # Mark email as sent to prevent duplicates on retry
                 assessment["notarization_email_sent"] = True
-                assessment["notarization_email_sent_at"] = datetime.now(timezone.utc).isoformat()
+                assessment["notarization_email_sent_at"] = datetime.now(
+                    timezone.utc
+                ).isoformat()
                 report.assessment_data = assessment
                 flag_modified(report, "assessment_data")
                 db.commit()
@@ -457,14 +512,20 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
             # create_or_update_elevation counts Proof records linked to the vendor's
             # VerifyRecord. The notarization flow doesn't create Proof rows, so we
             # create one now to represent this completed notarization.
-            verify = db.query(VerifyRecord).filter(
-                VerifyRecord.vendor_id == vendor_id
-            ).first()
+            verify = (
+                db.query(VerifyRecord)
+                .filter(VerifyRecord.vendor_id == vendor_id)
+                .first()
+            )
             if verify and file_hash:
-                existing_proof = db.query(Proof).filter(
-                    Proof.verify_id == verify.id,
-                    Proof.hash_value == file_hash,
-                ).first()
+                existing_proof = (
+                    db.query(Proof)
+                    .filter(
+                        Proof.verify_id == verify.id,
+                        Proof.hash_value == file_hash,
+                    )
+                    .first()
+                )
                 if not existing_proof:
                     proof = Proof(
                         verify_id=verify.id,
@@ -479,7 +540,9 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                     )
                     db.add(proof)
                     db.commit()
-                    logger.info(f"[Notarize] Created Proof record for vendor {vendor_id}")
+                    logger.info(
+                        f"[Notarize] Created Proof record for vendor {vendor_id}"
+                    )
 
             create_or_update_elevation(db, vendor_id)
             logger.info(f"[Notarize] Elevation metadata updated for vendor {vendor_id}")
@@ -487,12 +550,16 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
             # Sync VerifyRecord.verification_level to match the new depth so the
             # compliance score weight (1.0×BASIC → 1.1×STANDARD) updates correctly.
             try:
-                from app.core.models_v6 import VerifyRecord as _VR, VerificationLevel as _VL
+                from app.core.models_v6 import (
+                    VerifyRecord as _VR,
+                    VerificationLevel as _VL,
+                )
                 from app.services.vendor_status import compute_verification_depth
+
                 _new_depth = compute_verification_depth(db, vendor_id)
                 _depth_to_level = {
-                    "STANDARD":  _VL.STANDARD,
-                    "DEEP":      _VL.PREMIUM,
+                    "STANDARD": _VL.STANDARD,
+                    "DEEP": _VL.PREMIUM,
                     "CERTIFIED": _VL.GOVERNMENT,
                     "ENTERPRISE": _VL.GOVERNMENT,
                 }
@@ -502,26 +569,38 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                     if _vr and _vr.verification_level != _new_level:
                         _vr.verification_level = _new_level
                         db.commit()
-                        logger.info(f"[Notarize] VerifyRecord.verification_level → {_new_level.value} for {vendor_id}")
+                        logger.info(
+                            f"[Notarize] VerifyRecord.verification_level → {_new_level.value} for {vendor_id}"
+                        )
             except Exception as lvl_err:
-                logger.warning(f"[Notarize] verification_level sync failed for {vendor_id}: {lvl_err}")
+                logger.warning(
+                    f"[Notarize] verification_level sync failed for {vendor_id}: {lvl_err}"
+                )
 
             # Recalculate compliance score so the dashboard reflects the new document.
             try:
                 from app.services.scoring import VendorScoreEngine
+
                 VendorScoreEngine.update_vendor_score(db, vendor_id)
                 logger.info(f"[Notarize] Vendor score recalculated for {vendor_id}")
             except Exception as score_err:
-                logger.warning(f"[Notarize] Score update failed for {vendor_id}: {score_err}")
+                logger.warning(
+                    f"[Notarize] Score update failed for {vendor_id}: {score_err}"
+                )
 
             # Refresh the procurement snapshot so tender win probability
             # reflects the newly created Proof and elevation data.
             try:
                 from app.services.vendor_status import upsert_status_snapshot
+
                 upsert_status_snapshot(db, vendor_id)
-                logger.info(f"[Notarize] Status snapshot refreshed for vendor {vendor_id}")
+                logger.info(
+                    f"[Notarize] Status snapshot refreshed for vendor {vendor_id}"
+                )
             except Exception as snap_err:
-                logger.warning(f"[Notarize] Snapshot refresh failed for {vendor_id}: {snap_err}")
+                logger.warning(
+                    f"[Notarize] Snapshot refresh failed for {vendor_id}: {snap_err}"
+                )
         except Exception as e:
             logger.warning(f"[Notarize] Elevation update failed for {report_id}: {e}")
 
@@ -546,10 +625,13 @@ async def _fulfill_rfp_package(
     db = SessionLocal()
     try:
         from app.services.rfp_express_builder import RFPExpressBuilder
+
         rfp_details = {"description": rfp_description} if rfp_description else None
         if intake_data:
             rfp_details = {**(rfp_details or {}), "intake": intake_data}
-        builder = RFPExpressBuilder(vendor_id=vendor_id, vendor_email=vendor_email, session_id=session_id)
+        builder = RFPExpressBuilder(
+            vendor_id=vendor_id, vendor_email=vendor_email, session_id=session_id
+        )
         result = await builder.generate_express_package(
             vendor_url=vendor_url,
             company_name=company_name,
@@ -565,6 +647,7 @@ async def _fulfill_rfp_package(
         # Store result keyed by session_id so the result page can retrieve it
         if session_id and download_url:
             from app.core.cache import cache as cache_mod
+
             cache_mod.set(
                 cache_mod.cache_key(f"rfp_result:{session_id}"),
                 {
@@ -601,7 +684,13 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
     """
     db = SessionLocal()
     try:
-        from app.core.models_v6 import VerifyRecord, LifecycleStatus, VerificationLevel, VendorScore, VendorSector
+        from app.core.models_v6 import (
+            VerifyRecord,
+            LifecycleStatus,
+            VerificationLevel,
+            VendorScore,
+            VendorSector,
+        )
         from app.core.models_v8 import VendorStatusSnapshot
 
         report = db.query(Report).filter(Report.id == report_id).first()
@@ -610,12 +699,15 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             return
 
         vendor_id = report.owner_id
-        contact_email = customer_email or (report.assessment_data or {}).get("contact_email")
+        contact_email = customer_email or (report.assessment_data or {}).get(
+            "contact_email"
+        )
 
         # If the report was created via the public endpoint, owner_id is a random UUID.
         # Resolve the real user by email so VerifyRecord is linked to an actual account.
         if contact_email:
             from app.core.models import User
+
             real_user = db.query(User).filter(User.email == contact_email).first()
             if real_user:
                 if str(vendor_id) != str(real_user.id):
@@ -628,19 +720,23 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                     db.flush()
 
         if not vendor_id:
-            logger.error(f"[VendorProof] No owner_id on report {report_id} and no user resolved from email")
+            logger.error(
+                f"[VendorProof] No owner_id on report {report_id} and no user resolved from email"
+            )
             return
-        company_name  = report.company_name or "Vendor"
-        verify_url    = f"https://www.booppa.io/verify/{report_id}"
+        company_name = report.company_name or "Vendor"
+        verify_url = f"https://www.booppa.io/verify/{report_id}"
 
         # Step 1: Create or upsert VerifyRecord
-        verify = db.query(VerifyRecord).filter(VerifyRecord.vendor_id == vendor_id).first()
+        verify = (
+            db.query(VerifyRecord).filter(VerifyRecord.vendor_id == vendor_id).first()
+        )
         if verify:
-            verify.lifecycle_status  = LifecycleStatus.ACTIVE
-            verify.compliance_score  = max(verify.compliance_score or 0, 30)
+            verify.lifecycle_status = LifecycleStatus.ACTIVE
+            verify.compliance_score = max(verify.compliance_score or 0, 30)
             verify.verification_level = VerificationLevel.BASIC
             verify.last_refreshed_at = datetime.now(timezone.utc)
-            verify.company_name      = company_name
+            verify.company_name = company_name
         else:
             verify = VerifyRecord(
                 vendor_id=vendor_id,
@@ -660,16 +756,24 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             or (report.assessment_data or {}).get("business_sector")
         )
         if sector:
-            existing_sector = db.query(VendorSector).filter(
-                VendorSector.vendor_id == vendor_id,
-                VendorSector.sector == sector,
-            ).first()
+            existing_sector = (
+                db.query(VendorSector)
+                .filter(
+                    VendorSector.vendor_id == vendor_id,
+                    VendorSector.sector == sector,
+                )
+                .first()
+            )
             if not existing_sector:
                 db.add(VendorSector(vendor_id=vendor_id, sector=sector))
                 db.flush()
 
         # Step 2: Create or upsert VendorStatusSnapshot
-        snapshot = db.query(VendorStatusSnapshot).filter(VendorStatusSnapshot.vendor_id == vendor_id).first()
+        snapshot = (
+            db.query(VendorStatusSnapshot)
+            .filter(VendorStatusSnapshot.vendor_id == vendor_id)
+            .first()
+        )
         if snapshot:
             if snapshot.verification_depth in ("UNVERIFIED", None):
                 snapshot.verification_depth = "BASIC"
@@ -692,7 +796,9 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             db.add(snapshot)
 
         # Step 3: Create or upsert VendorScore baseline
-        score_row = db.query(VendorScore).filter(VendorScore.vendor_id == vendor_id).first()
+        score_row = (
+            db.query(VendorScore).filter(VendorScore.vendor_id == vendor_id).first()
+        )
         if score_row:
             if (score_row.compliance_score or 0) < 30:
                 score_row.compliance_score = 30
@@ -717,11 +823,14 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         report.completed_at = datetime.now(timezone.utc)
         db.commit()
 
-        logger.info(f"[VendorProof] VerifyRecord + snapshot created for vendor {vendor_id}")
+        logger.info(
+            f"[VendorProof] VerifyRecord + snapshot created for vendor {vendor_id}"
+        )
 
         # Step 4: Seed ScoreSnapshot so monitoring shows ACTIVE immediately
         try:
             from app.services.scoring import VendorScoreEngine
+
             VendorScoreEngine.update_vendor_score(db, str(vendor_id))
         except Exception as e:
             logger.warning(f"[VendorProof] Score update failed for {vendor_id}: {e}")
@@ -731,7 +840,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             badge_html = (
                 f'<a href="{verify_url}" target="_blank" rel="noopener noreferrer" '
                 f'style="display:inline-flex;align-items:center;gap:8px;background:#0f172a;'
-                f'color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none;'
+                f"color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none;"
                 f'font-family:Arial,sans-serif;font-size:13px;font-weight:600;">'
                 f'<span style="color:#10b981;">✓</span> {company_name} — Verified on BOOPPA</a>'
             )
@@ -804,23 +913,34 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None) -> None:
             logger.error(f"[PDPA] Report {report_id} not found")
             return
 
-        assessment = report.assessment_data if isinstance(report.assessment_data, dict) else {}
-        contact_email = customer_email or assessment.get("contact_email") or assessment.get("customer_email")
-        company_name  = report.company_name or "Customer"
-        website_url   = report.company_website or assessment.get("website", "")
+        assessment = (
+            report.assessment_data if isinstance(report.assessment_data, dict) else {}
+        )
+        contact_email = (
+            customer_email
+            or assessment.get("contact_email")
+            or assessment.get("customer_email")
+        )
+        company_name = report.company_name or "Customer"
+        website_url = report.company_website or assessment.get("website", "")
 
         # ── Step 1: Ensure scan is complete ────────────────────────────────
         # If the report already has a risk_score from a prior scan, use it.
         # Otherwise trigger the generic processing task synchronously.
         risk_score = assessment.get("risk_score") or (
-            assessment.get("risk_assessment", {}).get("score") if isinstance(assessment.get("risk_assessment"), dict) else None
+            assessment.get("risk_assessment", {}).get("score")
+            if isinstance(assessment.get("risk_assessment"), dict)
+            else None
         )
         if risk_score is None:
             # Scan not yet run — queue generic processing; it will generate PDF too
             try:
                 from app.workers.tasks import process_report_task
+
                 process_report_task.delay(str(report.id))
-                logger.info(f"[PDPA] Queued generic scan for {report_id} (risk_score missing)")
+                logger.info(
+                    f"[PDPA] Queued generic scan for {report_id} (risk_score missing)"
+                )
             except Exception as e:
                 logger.error(f"[PDPA] Could not queue scan for {report_id}: {e}")
             # Compliance score and CertificateLog will be written when scan completes
@@ -831,33 +951,44 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None) -> None:
         try:
             pdf_service = PDFService()
             pdf_data = {
-                "report_id":     report_id,
-                "framework":     report.framework or "pdpa_quick_scan",
-                "company_name":  company_name,
-                "company_url":   website_url,
-                "created_at":    report.created_at.isoformat() if report.created_at else datetime.now(timezone.utc).isoformat(),
-                "status":        "completed",
-                "risk_score":    risk_score,
-                "risk_level":    assessment.get("risk_level") or assessment.get("risk_assessment", {}).get("level", "MEDIUM"),
-                "findings":      assessment.get("findings") or assessment.get("detailed_findings", []),
-                "summary":       assessment.get("executive_summary", ""),
+                "report_id": report_id,
+                "framework": report.framework or "pdpa_quick_scan",
+                "company_name": company_name,
+                "company_url": website_url,
+                "created_at": (
+                    report.created_at.isoformat()
+                    if report.created_at
+                    else datetime.now(timezone.utc).isoformat()
+                ),
+                "status": "completed",
+                "risk_score": risk_score,
+                "risk_level": assessment.get("risk_level")
+                or assessment.get("risk_assessment", {}).get("level", "MEDIUM"),
+                "findings": assessment.get("findings")
+                or assessment.get("detailed_findings", []),
+                "summary": assessment.get("executive_summary", ""),
                 # Pass structured report sections so PDF renders full findings + recommendations
-                "executive_summary":  assessment.get("executive_summary", ""),
-                "detailed_findings":  assessment.get("detailed_findings") or assessment.get("findings", []),
-                "recommendations":    assessment.get("recommendations", []),
-                "legal_references":   assessment.get("legal_references", []),
-                "risk_assessment":    assessment.get("risk_assessment", {}),
+                "executive_summary": assessment.get("executive_summary", ""),
+                "detailed_findings": assessment.get("detailed_findings")
+                or assessment.get("findings", []),
+                "recommendations": assessment.get("recommendations", []),
+                "legal_references": assessment.get("legal_references", []),
+                "risk_assessment": assessment.get("risk_assessment", {}),
                 # Screenshot — prefer stored base64, fallback to live capture
-                "site_screenshot":    assessment.get("site_screenshot") or assessment.get("screenshot"),
-                "payment_confirmed":  True,
-                "tier":          assessment.get("tier", "pro"),
+                "site_screenshot": assessment.get("site_screenshot")
+                or assessment.get("screenshot"),
+                "payment_confirmed": True,
+                "tier": assessment.get("tier", "pro"),
                 "contact_email": contact_email,
-                "base_url":      "https://www.booppa.io",
+                "base_url": "https://www.booppa.io",
             }
             # Capture screenshot live if not already stored
             if not pdf_data["site_screenshot"] and website_url:
                 try:
-                    from app.services.screenshot_service import capture_screenshot_base64
+                    from app.services.screenshot_service import (
+                        capture_screenshot_base64,
+                    )
+
                     ss = capture_screenshot_base64(website_url)
                     if ss:
                         pdf_data["site_screenshot"] = ss
@@ -865,7 +996,9 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None) -> None:
                         flag_modified(report, "assessment_data")
                         db.commit()
                 except Exception as ss_err:
-                    logger.warning(f"[PDPA] Screenshot capture failed for {report_id}: {ss_err}")
+                    logger.warning(
+                        f"[PDPA] Screenshot capture failed for {report_id}: {ss_err}"
+                    )
 
             pdf_bytes = pdf_service.generate_pdf(pdf_data)
         except Exception as e:
@@ -889,6 +1022,7 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None) -> None:
         assessment["on_page_only"] = False
         report.assessment_data = assessment
         from sqlalchemy.orm.attributes import flag_modified as _flag
+
         _flag(report, "assessment_data")
         db.commit()
 
@@ -896,6 +1030,7 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None) -> None:
         vendor_id = str(report.owner_id)
         try:
             from app.services.scoring import VendorScoreEngine
+
             VendorScoreEngine.update_vendor_score(db, vendor_id)
             logger.info(f"[PDPA] Vendor score updated for vendor {vendor_id}")
         except Exception as e:
@@ -904,6 +1039,7 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None) -> None:
         # ── Step 5: Write CertificateLog ────────────────────────────────────
         try:
             from app.core.models_v10 import CertificateLog
+
             cert = CertificateLog(
                 vendor_id=report.owner_id,
                 certificate_type="PDPA",
@@ -922,7 +1058,7 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None) -> None:
                 download_section = (
                     f'<p style="margin-top:24px;">'
                     f'<a href="{pdf_url}" style="background-color:#10b981;color:#fff;'
-                    f'padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;'
+                    f"padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;"
                     f'display:inline-block;">Download PDPA Snapshot Report (PDF)</a></p>'
                     if pdf_url
                     else "<p>Your report will be available on the BOOPPA dashboard shortly.</p>"
@@ -967,7 +1103,9 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None) -> None:
             except Exception as e:
                 logger.error(f"[PDPA] Email failed for {contact_email}: {e}")
 
-        logger.info(f"[PDPA] Fulfilled {report_id} for vendor {vendor_id} pdf={pdf_url}")
+        logger.info(
+            f"[PDPA] Fulfilled {report_id} for vendor {vendor_id} pdf={pdf_url}"
+        )
     except Exception as e:
         logger.error(f"[PDPA] Fulfillment error for {report_id}: {e}")
         db.rollback()
@@ -988,7 +1126,12 @@ async def _fire_strategy_6(sector: str | None, buyer_rfp_title: str) -> None:
 
     db = SessionLocal()
     try:
-        from app.core.models_v6 import VerifyRecord, LifecycleStatus, VendorSector, VendorScore
+        from app.core.models_v6 import (
+            VerifyRecord,
+            LifecycleStatus,
+            VendorSector,
+            VendorScore,
+        )
         from app.core.models import User
 
         # Get top 5 active verified vendors in sector, ordered by compliance score desc
@@ -1052,7 +1195,9 @@ async def _fire_strategy_6(sector: str | None, buyer_rfp_title: str) -> None:
                     subject="You Were Shortlisted — New Procurement Opportunity",
                     body_html=body_html,
                 )
-                logger.info(f"[Strategy6] Notified vendor {user.email} for sector {sector}")
+                logger.info(
+                    f"[Strategy6] Notified vendor {user.email} for sector {sector}"
+                )
             except Exception as e:
                 logger.warning(f"[Strategy6] Email failed for {user.email}: {e}")
 
@@ -1089,11 +1234,14 @@ async def stripe_webhook(request: Request):
         try:
             from app.core.models import ProcessedWebhookEvent
             from sqlalchemy.dialects.postgresql import insert as pg_insert
+
             _idem_db = SessionLocal()
             try:
-                stmt = pg_insert(ProcessedWebhookEvent).values(
-                    event_id=event_id, event_type=event["type"]
-                ).on_conflict_do_nothing(index_elements=["event_id"])
+                stmt = (
+                    pg_insert(ProcessedWebhookEvent)
+                    .values(event_id=event_id, event_type=event["type"])
+                    .on_conflict_do_nothing(index_elements=["event_id"])
+                )
                 result = _idem_db.execute(stmt)
                 _idem_db.commit()
                 if result.rowcount == 0:
@@ -1127,6 +1275,7 @@ async def stripe_webhook(request: Request):
         # Record PAYMENT funnel event (non-blocking)
         try:
             from app.services.funnel_analytics import record_funnel_event
+
             _fdb = SessionLocal()
             record_funnel_event(
                 _fdb,
@@ -1153,12 +1302,15 @@ async def stripe_webhook(request: Request):
                     stripe_subscription_id=stripe_sub_id,
                     stripe_customer_id=stripe_cust_id,
                 )
-                logger.info(f"Activated subscription for {product_type} email={customer_email}")
+                logger.info(
+                    f"Activated subscription for {product_type} email={customer_email}"
+                )
                 return {"received": True}
 
             # Bundles are self-contained — fan out to component fulfillment tasks
             if product_type in BUNDLE_COMPONENTS:
                 from app.workers.tasks import fulfill_bundle_task
+
                 fulfill_bundle_task.delay(
                     product_type=product_type,
                     report_id=None,
@@ -1166,23 +1318,31 @@ async def stripe_webhook(request: Request):
                     metadata=metadata,
                     session_id=session.get("id"),
                 )
-                logger.info(f"Queued bundle fulfillment for {product_type} email={customer_email}")
+                logger.info(
+                    f"Queued bundle fulfillment for {product_type} email={customer_email}"
+                )
                 return {"received": True}
 
             # RFP products are self-contained — no pre-existing Report record required
             if product_type in RFP_PRODUCT_TYPES:
-                vendor_url   = metadata.get("vendor_url", "")
+                vendor_url = metadata.get("vendor_url", "")
                 company_name = metadata.get("company_name", "")
                 if vendor_url and company_name:
-                    vendor_id = metadata.get("vendor_id") or customer_email or "anonymous"
+                    vendor_id = (
+                        metadata.get("vendor_id") or customer_email or "anonymous"
+                    )
                     session_id = session.get("id")
                     intake_dict = None
                     if metadata.get("has_intake") == "1" and session_id:
                         from app.core.cache import cache as cache_mod
-                        cached_intake = cache_mod.get(cache_mod.cache_key(f"rfp_intake:{session_id}"))
+
+                        cached_intake = cache_mod.get(
+                            cache_mod.cache_key(f"rfp_intake:{session_id}")
+                        )
                         if isinstance(cached_intake, dict):
                             intake_dict = cached_intake
                     from app.workers.tasks import fulfill_rfp_task
+
                     fulfill_rfp_task.delay(
                         product_type=product_type,
                         vendor_id=vendor_id,
@@ -1247,27 +1407,34 @@ async def stripe_webhook(request: Request):
             # Vendor Proof — create VerifyRecord + VendorStatusSnapshot + send badge email
             if product_type in VENDOR_PROOF_PRODUCT_TYPES:
                 from app.workers.tasks import fulfill_vendor_proof_task
+
                 fulfill_vendor_proof_task.delay(str(report.id), customer_email)
                 logger.info(f"Queued vendor_proof fulfillment for report {report_id}")
 
             # PDPA Snapshot — scan, PDF, score update, CertificateLog, email
             elif product_type in PDPA_PRODUCT_TYPES:
                 from app.workers.tasks import fulfill_pdpa_task
+
                 fulfill_pdpa_task.delay(str(report.id), customer_email)
                 logger.info(f"Queued pdpa fulfillment for report {report_id}")
 
             # Notarization — lightweight anchor + certificate (no AI, no website scan)
             elif product_type in NOTARIZATION_PRODUCT_TYPES:
                 from app.workers.tasks import fulfill_notarization_task
+
                 fulfill_notarization_task.delay(str(report.id), customer_email)
                 logger.info(f"Queued notarization fulfillment for report {report_id}")
 
             # RFP Express / Complete — generate PDF + email immediately
             elif product_type in RFP_PRODUCT_TYPES:
-                vendor_id   = metadata.get("vendor_id") or str(report.owner_id)
-                vendor_url  = metadata.get("vendor_url") or metadata.get("website_url", "")
-                company_name = metadata.get("company_name") or metadata.get("company", "")
-                rfp_desc    = metadata.get("rfp_description")
+                vendor_id = metadata.get("vendor_id") or str(report.owner_id)
+                vendor_url = metadata.get("vendor_url") or metadata.get(
+                    "website_url", ""
+                )
+                company_name = metadata.get("company_name") or metadata.get(
+                    "company", ""
+                )
+                rfp_desc = metadata.get("rfp_description")
                 if not vendor_url or not company_name:
                     logger.error(
                         f"RFP fulfillment missing vendor_url or company_name for report {report_id}; "
@@ -1275,11 +1442,15 @@ async def stripe_webhook(request: Request):
                     )
                 else:
                     from app.workers.tasks import fulfill_rfp_task
+
                     session_id = session.get("id")
                     intake_dict = None
                     if metadata.get("has_intake") == "1" and session_id:
                         from app.core.cache import cache as cache_mod
-                        cached_intake = cache_mod.get(cache_mod.cache_key(f"rfp_intake:{session_id}"))
+
+                        cached_intake = cache_mod.get(
+                            cache_mod.cache_key(f"rfp_intake:{session_id}")
+                        )
                         if isinstance(cached_intake, dict):
                             intake_dict = cached_intake
                     fulfill_rfp_task.delay(
@@ -1298,19 +1469,31 @@ async def stripe_webhook(request: Request):
 
                     # Strategy 6: notify top-5 verified sector peers (rfp_express only)
                     if product_type == "rfp_express":
-                        sector = metadata.get("sector") or (intake_dict or {}).get("sector")
-                        rfp_title = rfp_desc or metadata.get("rfp_description") or "New procurement opportunity"
+                        sector = metadata.get("sector") or (intake_dict or {}).get(
+                            "sector"
+                        )
+                        rfp_title = (
+                            rfp_desc
+                            or metadata.get("rfp_description")
+                            or "New procurement opportunity"
+                        )
                         from app.workers.tasks import fire_strategy_6_task
+
                         fire_strategy_6_task.delay(sector, rfp_title)
 
             else:
                 # Standard report: trigger async processing via Celery
                 try:
                     from app.workers.tasks import process_report_task
+
                     process_report_task.delay(str(report.id))
-                    logger.info(f"Queued background processing for paid report {report_id}")
+                    logger.info(
+                        f"Queued background processing for paid report {report_id}"
+                    )
                 except Exception as e:
-                    logger.error(f"Failed to queue background task for {report_id}: {e}")
+                    logger.error(
+                        f"Failed to queue background task for {report_id}: {e}"
+                    )
 
         finally:
             db.close()
@@ -1334,11 +1517,11 @@ async def stripe_webhook(request: Request):
                     product = metadata.get("product_type") or ""
                     _checkout_plan_map = {
                         "vendor_active_monthly": "vendor_active",
-                        "vendor_active_annual":  "vendor_active",
-                        "pdpa_monitor_monthly":  "pdpa_monitor",
-                        "pdpa_monitor_annual":   "pdpa_monitor",
-                        "enterprise_monthly":    "enterprise",
-                        "enterprise_pro_monthly":"enterprise_pro",
+                        "vendor_active_annual": "vendor_active",
+                        "pdpa_monitor_monthly": "pdpa_monitor",
+                        "pdpa_monitor_annual": "pdpa_monitor",
+                        "enterprise_monthly": "enterprise",
+                        "enterprise_pro_monthly": "enterprise_pro",
                     }
                     current_plan = getattr(user, "plan", "free") or "free"
                     new_plan = current_plan  # default: keep existing plan
@@ -1346,8 +1529,18 @@ async def stripe_webhook(request: Request):
                     if current_plan not in ("enterprise", "enterprise_pro"):
                         new_plan = _checkout_plan_map.get(product)
                         if not new_plan:
-                            new_plan = "enterprise" if "enterprise" in product else "pro"
+                            new_plan = (
+                                "enterprise" if "enterprise" in product else "pro"
+                            )
                         user.plan = new_plan
+                        # persist subscription metadata for dashboard
+                        user.subscription_tier = new_plan
+                        try:
+                            from datetime import datetime, timezone as _tz
+
+                            user.subscription_started_at = datetime.now(_tz.utc)
+                        except Exception:
+                            pass
                     # Close the referral reward loop: find a SIGNED_UP referral for this
                     # user and mark reward_claimed so the referrer gets credit.
                     referral = (
@@ -1367,23 +1560,35 @@ async def stripe_webhook(request: Request):
                         _db.commit()
                         # Email the referrer their reward notification
                         try:
-                            referrer = _db.query(User).filter(
-                                User.id == referral.referrer_id
-                            ).first()
+                            referrer = (
+                                _db.query(User)
+                                .filter(User.id == referral.referrer_id)
+                                .first()
+                            )
                             if referrer and referrer.email:
-                                from app.workers.tasks import send_referral_reward_email_task
+                                from app.workers.tasks import (
+                                    send_referral_reward_email_task,
+                                )
+
                                 send_referral_reward_email_task.delay(referrer.email)
                         except Exception as ref_email_exc:
-                            logger.warning(f"[Referral] Referrer email failed: {ref_email_exc}")
+                            logger.warning(
+                                f"[Referral] Referrer email failed: {ref_email_exc}"
+                            )
                     else:
                         _db.commit()
                     logger.info(
                         f"[Webhook] Upgraded user {customer_email} to plan={new_plan}"
-                        + (f"; referral {referral.referral_code} rewarded" if referral else "")
+                        + (
+                            f"; referral {referral.referral_code} rewarded"
+                            if referral
+                            else ""
+                        )
                     )
                     # Queue post-payment D+1 drip (24h delay per brief)
                     try:
                         from app.workers.tasks import post_payment_drip
+
                         post_payment_drip.apply_async(
                             kwargs={
                                 "vendor_email": customer_email,
@@ -1394,24 +1599,35 @@ async def stripe_webhook(request: Request):
                             countdown=86400,  # 24 hours
                         )
                     except Exception as drip_exc:
-                        logger.warning(f"[Webhook] post_payment_drip queue failed: {drip_exc}")
+                        logger.warning(
+                            f"[Webhook] post_payment_drip queue failed: {drip_exc}"
+                        )
             except Exception as exc:
-                logger.error(f"[Webhook] Plan upgrade failed for {customer_email}: {exc}")
+                logger.error(
+                    f"[Webhook] Plan upgrade failed for {customer_email}: {exc}"
+                )
             finally:
                 _db.close()
 
     # ── Subscription lifecycle events ────────────────────────────────────────
-    if event["type"] in ("customer.subscription.created", "customer.subscription.updated"):
+    if event["type"] in (
+        "customer.subscription.created",
+        "customer.subscription.updated",
+    ):
         raw = json.loads(payload)
         sub = raw.get("data", {}).get("object", {})
-        stripe_sub_id  = sub.get("id")
+        stripe_sub_id = sub.get("id")
         stripe_cust_id = sub.get("customer")
-        sub_status     = sub.get("status")
+        sub_status = sub.get("status")
         cust_email = None
         try:
             stripe.api_key = settings.STRIPE_SECRET_KEY
             cust = stripe.Customer.retrieve(stripe_cust_id) if stripe_cust_id else None
-            cust_email = (cust or {}).get("email") if isinstance(cust, dict) else getattr(cust, "email", None)
+            cust_email = (
+                (cust or {}).get("email")
+                if isinstance(cust, dict)
+                else getattr(cust, "email", None)
+            )
         except Exception:
             pass
 
@@ -1419,28 +1635,38 @@ async def stripe_webhook(request: Request):
             items = sub.get("items", {}).get("data", [])
             product_type_sub = None
             import os as _os
+
             for item in items:
-                price_id = (item.get("price") or {}).get("id") or (item.get("plan") or {}).get("id")
+                price_id = (item.get("price") or {}).get("id") or (
+                    item.get("plan") or {}
+                ).get("id")
                 if price_id:
-                    for key in ("vendor_active_monthly", "vendor_active_annual",
-                                "pdpa_monitor_monthly", "pdpa_monitor_annual",
-                                "enterprise_monthly", "enterprise_pro_monthly"):
-                        env_price = (
-                            _os.environ.get(f"STRIPE_{key.upper()}")
-                            or _os.environ.get(f"NEXT_PUBLIC_STRIPE_{key.upper()}")
-                        )
+                    for key in (
+                        "vendor_active_monthly",
+                        "vendor_active_annual",
+                        "pdpa_monitor_monthly",
+                        "pdpa_monitor_annual",
+                        "enterprise_monthly",
+                        "enterprise_pro_monthly",
+                    ):
+                        env_price = _os.environ.get(
+                            f"STRIPE_{key.upper()}"
+                        ) or _os.environ.get(f"NEXT_PUBLIC_STRIPE_{key.upper()}")
                         if env_price and env_price == price_id:
                             product_type_sub = key
                             break
             if product_type_sub and cust_email:
                 from app.workers.tasks import activate_subscription_task
+
                 activate_subscription_task.delay(
                     product_type=product_type_sub,
                     customer_email=cust_email,
                     stripe_subscription_id=stripe_sub_id,
                     stripe_customer_id=stripe_cust_id,
                 )
-                logger.info(f"[Webhook] Subscription {event['type']} → plan={product_type_sub} email={cust_email}")
+                logger.info(
+                    f"[Webhook] Subscription {event['type']} → plan={product_type_sub} email={cust_email}"
+                )
 
         elif sub_status == "canceled":
             _db3 = SessionLocal()
@@ -1452,7 +1678,9 @@ async def stripe_webhook(request: Request):
                         if hasattr(user, "stripe_subscription_id"):
                             user.stripe_subscription_id = None
                         _db3.commit()
-                        logger.info(f"[Webhook] Subscription canceled — downgraded {cust_email} to free")
+                        logger.info(
+                            f"[Webhook] Subscription canceled — downgraded {cust_email} to free"
+                        )
             except Exception as exc:
                 logger.error(f"[Webhook] Cancellation handling failed: {exc}")
             finally:
@@ -1471,12 +1699,22 @@ async def stripe_webhook(request: Request):
                     user_plan = getattr(user, "plan", "") if user else ""
                     if user and user_plan == "vendor_active":
                         from app.workers.tasks import vendor_active_health_check_task
-                        vendor_active_health_check_task.delay(str(user.id), cust_email_inv)
-                        logger.info(f"[Webhook] Queued monthly health check for {cust_email_inv}")
+
+                        vendor_active_health_check_task.delay(
+                            str(user.id), cust_email_inv
+                        )
+                        logger.info(
+                            f"[Webhook] Queued monthly health check for {cust_email_inv}"
+                        )
                     elif user and user_plan == "pdpa_monitor":
                         from app.workers.tasks import pdpa_monitor_monthly_alert_task
-                        pdpa_monitor_monthly_alert_task.delay(str(user.id), cust_email_inv)
-                        logger.info(f"[Webhook] Queued PDPA monthly alert for {cust_email_inv}")
+
+                        pdpa_monitor_monthly_alert_task.delay(
+                            str(user.id), cust_email_inv
+                        )
+                        logger.info(
+                            f"[Webhook] Queued PDPA monthly alert for {cust_email_inv}"
+                        )
                 except Exception as exc:
                     logger.error(f"[Webhook] Invoice renewal hook failed: {exc}")
                 finally:
@@ -1485,6 +1723,7 @@ async def stripe_webhook(request: Request):
     # Record ACTIVE funnel event after all fulfillment (non-blocking)
     try:
         from app.services.funnel_analytics import record_funnel_event
+
         _adb = SessionLocal()
         record_funnel_event(
             _adb,

@@ -16,14 +16,15 @@ router = APIRouter()
 _limiter = Limiter(key_func=get_remote_address)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token", auto_error=False)
 
+
 # Price map: resolved at request time so env vars set after import are picked up.
 def _get_price(product_type: str) -> str | None:
     """Look up the Stripe Price ID for a product at call time (not import time)."""
     env_key = product_type.upper()
-    return (
-        os.environ.get(f"STRIPE_{env_key}")
-        or os.environ.get(f"NEXT_PUBLIC_STRIPE_{env_key}")
+    return os.environ.get(f"STRIPE_{env_key}") or os.environ.get(
+        f"NEXT_PUBLIC_STRIPE_{env_key}"
     )
+
 
 MODE_MAP = {
     # One-time products
@@ -74,7 +75,6 @@ def get_base_url():
     )
 
 
-
 @router.post("/checkout")
 @_limiter.limit("20/minute")
 async def checkout_post(request: Request):
@@ -102,6 +102,7 @@ async def checkout_post(request: Request):
     if product_type in PROCUREMENT_PRODUCTS and prefill_email:
         from app.core.db import SessionLocal
         from app.core.models import User
+
         _db = SessionLocal()
         try:
             user = _db.query(User).filter(User.email == prefill_email).first()
@@ -116,26 +117,50 @@ async def checkout_post(request: Request):
     # Block re-purchase of an already-active subscription
     SUBSCRIPTION_PLAN_MAP = {
         "vendor_active_monthly": "vendor_active",
-        "vendor_active_annual":  "vendor_active",
-        "pdpa_monitor_monthly":  "pdpa_monitor",
-        "pdpa_monitor_annual":   "pdpa_monitor",
-        "enterprise_monthly":    "enterprise",
-        "enterprise_pro_monthly":"enterprise_pro",
+        "vendor_active_annual": "vendor_active",
+        "pdpa_monitor_monthly": "pdpa_monitor",
+        "pdpa_monitor_annual": "pdpa_monitor",
+        "enterprise_monthly": "enterprise",
+        "enterprise_pro_monthly": "enterprise_pro",
     }
     if product_type in SUBSCRIPTION_PLAN_MAP and prefill_email:
         from app.core.db import SessionLocal
         from app.core.models import User
+
         _db = SessionLocal()
         try:
             user = _db.query(User).filter(User.email == prefill_email).first()
             if user:
                 active_plan = getattr(user, "plan", None)
                 expected_plan = SUBSCRIPTION_PLAN_MAP[product_type]
+                # Basic local check
                 if active_plan == expected_plan:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"You already have an active {expected_plan.replace('_', ' ').title()} subscription. Manage it from your dashboard.",
-                    )
+                    # double-check with Stripe if we have a customer id to avoid stale local state
+                    try:
+                        stripe_client = get_stripe_client()
+                        cust_id = getattr(user, "stripe_customer_id", None)
+                        if cust_id:
+                            subs = stripe_client.Subscription.list(
+                                customer=cust_id, limit=10
+                            )
+                            has_active = any(
+                                s.get("status") in ("active", "trialing")
+                                for s in getattr(subs, "data", subs.get("data", []))
+                            )
+                            if has_active:
+                                raise HTTPException(
+                                    status_code=409,
+                                    detail=f"You already have an active {expected_plan.replace('_', ' ').title()} subscription. Manage it from your dashboard.",
+                                )
+                            # If Stripe shows no active subscriptions, allow checkout to continue and let webhook reconcile
+                    except HTTPException:
+                        raise
+                    except Exception:
+                        # If Stripe check fails, fall back to local block to be conservative
+                        raise HTTPException(
+                            status_code=409,
+                            detail=f"You already have an active {expected_plan.replace('_', ' ').title()} subscription. Manage it from your dashboard.",
+                        )
         finally:
             _db.close()
 
@@ -144,14 +169,20 @@ async def checkout_post(request: Request):
         from app.core.db import SessionLocal
         from app.core.models import User
         from app.core.models_v6 import VerifyRecord, LifecycleStatus
+
         _db = SessionLocal()
         try:
             user = _db.query(User).filter(User.email == prefill_email).first()
             if user:
-                already_verified = _db.query(VerifyRecord).filter(
-                    VerifyRecord.vendor_id == user.id,
-                    VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE,
-                ).first() is not None
+                already_verified = (
+                    _db.query(VerifyRecord)
+                    .filter(
+                        VerifyRecord.vendor_id == user.id,
+                        VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE,
+                    )
+                    .first()
+                    is not None
+                )
                 if already_verified:
                     raise HTTPException(
                         status_code=409,
@@ -194,7 +225,9 @@ async def checkout_post(request: Request):
         if product_type and "compliance_notarization" in product_type and report_id:
             success_url = f"{base_url}/notarization/result?session_id={{CHECKOUT_SESSION_ID}}&report_id={report_id}"
         elif product_type and "rfp_" in product_type:
-            success_url = f"{base_url}/rfp-acceleration/result?session_id={{CHECKOUT_SESSION_ID}}"
+            success_url = (
+                f"{base_url}/rfp-acceleration/result?session_id={{CHECKOUT_SESSION_ID}}"
+            )
         # simple cancel URL mapping
         _pt = product_type or ""
         if _pt in ("vendor_trust_pack", "rfp_accelerator", "enterprise_bid_kit"):
@@ -265,6 +298,7 @@ async def checkout_post(request: Request):
         try:
             from app.core.db import SessionLocal as _SL
             from app.services.funnel_analytics import record_funnel_event
+
             _fdb = _SL()
             record_funnel_event(
                 _fdb,
@@ -280,10 +314,11 @@ async def checkout_post(request: Request):
 
         if intake_data and hasattr(session, "id"):
             from app.core.cache import cache as cache_mod
+
             cache_mod.set(
                 cache_mod.cache_key(f"rfp_intake:{session.id}"),
                 intake_data,
-                ttl=86400  # 24 hours
+                ttl=86400,  # 24 hours
             )
 
         return JSONResponse({"url": session.url})
@@ -428,7 +463,8 @@ async def checkout_verify(session_id: str | None = None):
                     (metadata or {}).get("report_id")
                     if isinstance(metadata, dict)
                     else None
-                ) or (
+                )
+                or (
                     session.get("client_reference_id")
                     if hasattr(session, "get")
                     else getattr(session, "client_reference_id", None)
@@ -453,9 +489,14 @@ async def rfp_result(session_id: str | None = None):
         raise HTTPException(status_code=400, detail="Missing session_id")
 
     from app.core.cache import cache as cache_mod
+
     data = cache_mod.get(cache_mod.cache_key(f"rfp_result:{session_id}"))
     if not data:
-        return JSONResponse(status_code=202, content={"detail": "Not ready"}, headers={"Cache-Control": "no-store, max-age=0"})
+        return JSONResponse(
+            status_code=202,
+            content={"detail": "Not ready"},
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
 
     return JSONResponse(data, headers={"Cache-Control": "no-store, max-age=0"})
 
@@ -473,6 +514,7 @@ async def create_portal_session(
         raise HTTPException(status_code=401, detail="Invalid token")
 
     from app.core.models import User
+
     user = db.query(User).filter(User.email == payload.get("sub")).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -494,4 +536,3 @@ async def create_portal_session(
     except Exception as e:
         logger.exception("Failed to create billing portal session")
         raise HTTPException(status_code=500, detail=str(e))
-
