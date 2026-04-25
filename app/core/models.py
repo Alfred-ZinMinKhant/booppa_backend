@@ -1,5 +1,15 @@
 import uuid
-from sqlalchemy import Column, String, DateTime, Text, JSON, Boolean, Date, ForeignKey, Integer
+from sqlalchemy import (
+    Column,
+    String,
+    DateTime,
+    Text,
+    JSON,
+    Boolean,
+    Date,
+    ForeignKey,
+    Integer,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 from app.core.db import Base
@@ -68,7 +78,9 @@ class AuditChainEvent(Base):
     __tablename__ = "audit_chain_events"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    report_id = Column(UUID(as_uuid=True), ForeignKey("reports.id"), nullable=False, index=True)
+    report_id = Column(
+        UUID(as_uuid=True), ForeignKey("reports.id"), nullable=False, index=True
+    )
     action = Column(String(100), nullable=False, index=True)
     actor = Column(String(255), nullable=False)
     hash_prev = Column(String(64), nullable=False)
@@ -169,6 +181,7 @@ class SupportTicketReply(Base):
     is_internal = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
+
 class ResourceItem(Base):
     __tablename__ = "resource_items"
 
@@ -185,12 +198,30 @@ class ResourceItem(Base):
 
 class ProcessedWebhookEvent(Base):
     """Idempotency guard: records every Stripe event ID we have processed."""
+
     __tablename__ = "processed_webhook_events"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     event_id = Column(String(255), unique=True, nullable=False, index=True)
     event_type = Column(String(100), nullable=True)
     processed_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    stripe_subscription_id = Column(
+        String(255), unique=True, nullable=False, index=True
+    )
+    stripe_customer_id = Column(String(255), nullable=True, index=True)
+    product_type = Column(String(100), nullable=True)
+    status = Column(String(50), nullable=True, index=True)
+    current_period_end = Column(DateTime, nullable=True)
+    metadata = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 # Import V6 extensions so Alembic picks them up correctly
