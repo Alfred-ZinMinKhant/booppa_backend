@@ -29,17 +29,18 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(), nullable=True),
         sa.Column("updated_at", sa.DateTime(), nullable=True),
     )
-    op.create_index(
-        "ix_subscriptions_stripe_subscription_id",
-        "subscriptions",
-        ["stripe_subscription_id"],
-        unique=True,
+    op.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_subscriptions_stripe_subscription_id ON subscriptions (stripe_subscription_id)"
     )
-    op.create_index(
-        "ix_subscriptions_stripe_customer_id", "subscriptions", ["stripe_customer_id"]
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_subscriptions_stripe_customer_id ON subscriptions (stripe_customer_id)"
     )
-    op.create_index("ix_subscriptions_user_id", "subscriptions", ["user_id"])
-    op.create_index("ix_subscriptions_status", "subscriptions", ["status"])
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_subscriptions_user_id ON subscriptions (user_id)"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_subscriptions_status ON subscriptions (status)"
+    )
 
 
 def downgrade() -> None:
@@ -47,4 +48,9 @@ def downgrade() -> None:
     op.drop_index("ix_subscriptions_user_id", table_name="subscriptions")
     op.drop_index("ix_subscriptions_stripe_customer_id", table_name="subscriptions")
     op.drop_index("ix_subscriptions_stripe_subscription_id", table_name="subscriptions")
+    # DROP INDEX IF EXISTS is supported via op.execute
+    op.execute("DROP INDEX IF EXISTS ix_subscriptions_status")
+    op.execute("DROP INDEX IF EXISTS ix_subscriptions_user_id")
+    op.execute("DROP INDEX IF EXISTS ix_subscriptions_stripe_customer_id")
+    op.execute("DROP INDEX IF EXISTS ix_subscriptions_stripe_subscription_id")
     op.drop_table("subscriptions")
