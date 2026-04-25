@@ -258,8 +258,6 @@ async def dashboard_alerts(
                 period = s.get("current_period_end") or s.get("current_period_start")
                 if period:
                     try:
-                        from datetime import datetime, timezone
-
                         item["current_period_end"] = datetime.fromtimestamp(
                             int(period), timezone.utc
                         ).isoformat()
