@@ -8,7 +8,6 @@ from app.core.auth import verify_access_token
 from app.core.config import settings
 from fastapi.security import OAuth2PasswordBearer
 import os
-import hashlib
 import stripe
 import logging
 
@@ -75,16 +74,6 @@ def get_base_url():
     )
 
 
-def _checkout_idempotency_key(product_type: str, price_id: str, client_ip: str, report_id=None, email=None, **extra) -> str:
-    # Include all variable fields so retries with different form data don't collide.
-    raw = f"{product_type}:{price_id}:{client_ip}:{report_id or ''}:{email or ''}"
-    # Add any extra fields (vendor_url, company_name, etc.) to avoid idempotency conflicts
-    for k in sorted(extra):
-        v = extra[k]
-        if v:
-            raw += f":{k}={v}"
-    return "checkout-" + hashlib.sha256(raw.encode()).hexdigest()[:40]
-
 
 @router.post("/checkout")
 @_limiter.limit("20/minute")
@@ -121,6 +110,32 @@ async def checkout_post(request: Request):
                     status_code=403,
                     detail="This plan is for procurement teams. Switch to a procurement account or visit /solutions/vendors for vendor tools.",
                 )
+        finally:
+            _db.close()
+
+    # Block re-purchase of an already-active subscription
+    SUBSCRIPTION_PLAN_MAP = {
+        "vendor_active_monthly": "vendor_active",
+        "vendor_active_annual":  "vendor_active",
+        "pdpa_monitor_monthly":  "pdpa_monitor",
+        "pdpa_monitor_annual":   "pdpa_monitor",
+        "enterprise_monthly":    "enterprise",
+        "enterprise_pro_monthly":"enterprise_pro",
+    }
+    if product_type in SUBSCRIPTION_PLAN_MAP and prefill_email:
+        from app.core.db import SessionLocal
+        from app.core.models import User
+        _db = SessionLocal()
+        try:
+            user = _db.query(User).filter(User.email == prefill_email).first()
+            if user:
+                active_plan = getattr(user, "plan", None)
+                expected_plan = SUBSCRIPTION_PLAN_MAP[product_type]
+                if active_plan == expected_plan:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"You already have an active {expected_plan.replace('_', ' ').title()} subscription. Manage it from your dashboard.",
+                    )
         finally:
             _db.close()
 
@@ -226,10 +241,6 @@ async def checkout_post(request: Request):
         if intake_data:
             metadata["has_intake"] = "1"
 
-        _idem_key = _checkout_idempotency_key(
-            product_type or "", price_id, client_ip, report_id, prefill_email,
-            vendor_url=vendor_url, company_name=company_name, rfp_description=rfp_description,
-        )
         # Use automatic_payment_methods so Stripe shows whatever is enabled in
         # the dashboard (card, PayNow, etc.) without hardcoding method names.
         # Subscriptions don't support automatic_payment_methods, so fall back to card only.
@@ -242,7 +253,6 @@ async def checkout_post(request: Request):
             client_reference_id=str(report_id) if report_id else None,
             customer_email=prefill_email if prefill_email else None,
             allow_promotion_codes=True,
-            idempotency_key=_idem_key,
         )
         if mode != "payment":
             _session_kwargs["payment_method_types"] = ["card"]
@@ -329,7 +339,6 @@ async def checkout_get(
         cancel_url = f"{base_url}/{cancel_path}"
 
         _mode = MODE_MAP.get(product_type, "payment") if product_type else "payment"
-        _idem_key = _checkout_idempotency_key(product_type or "", price_id, client_ip, email=prefill_email)
         _session_kwargs2: dict = dict(
             mode=_mode,
             line_items=[{"price": price_id, "quantity": 1}],
@@ -337,7 +346,6 @@ async def checkout_get(
             cancel_url=cancel_url,
             metadata={"product_type": product_type or "", "client_ip": client_ip},
             allow_promotion_codes=True,
-            idempotency_key=_idem_key,
         )
         if _mode != "payment":
             _session_kwargs2["payment_method_types"] = ["card"]
