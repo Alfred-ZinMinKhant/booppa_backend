@@ -1121,6 +1121,7 @@ async def stripe_webhook(request: Request):
         customer_email = (
             (session.get("customer_details") or {}).get("email")
             or session.get("customer_email")
+            or metadata.get("customer_email")
         )
 
         # Record PAYMENT funnel event (non-blocking)
@@ -1140,18 +1141,19 @@ async def stripe_webhook(request: Request):
             pass
 
         if not report_id:
-            # Subscriptions have no report — activate directly
+            # Subscriptions have no report — activate directly (synchronous)
             if product_type in SUBSCRIPTION_PRODUCT_TYPES:
                 stripe_sub_id = session.get("subscription")
                 stripe_cust_id = session.get("customer")
-                from app.workers.tasks import activate_subscription_task
-                activate_subscription_task.delay(
+                # Activate synchronously so plan is set and email sent
+                # immediately — does not depend on Celery workers being up.
+                await _activate_subscription(
                     product_type=product_type,
                     customer_email=customer_email,
                     stripe_subscription_id=stripe_sub_id,
                     stripe_customer_id=stripe_cust_id,
                 )
-                logger.info(f"Queued subscription activation for {product_type} email={customer_email}")
+                logger.info(f"Activated subscription for {product_type} email={customer_email}")
                 return {"received": True}
 
             # Bundles are self-contained — fan out to component fulfillment tasks
@@ -1317,9 +1319,11 @@ async def stripe_webhook(request: Request):
     if event["type"] == "checkout.session.completed":
         raw = json.loads(payload) if isinstance(payload, (str, bytes)) else {}
         session = raw.get("data", {}).get("object", {}) if raw else {}
+        _meta2 = session.get("metadata") or {}
         customer_email = (
             (session.get("customer_details") or {}).get("email")
             or session.get("customer_email")
+            or _meta2.get("customer_email")
         )
         if customer_email:
             _db = SessionLocal()
