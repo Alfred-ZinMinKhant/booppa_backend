@@ -100,10 +100,12 @@ from .dashboard import router as dashboard_router
 router.include_router(dashboard_router, prefix="/dashboard", tags=["dashboard"])
 # Dashboard Alerts — consolidated vendor state for alert engine
 from .dashboard_alerts import router as dashboard_alerts_router
+from .subscription_families import router as subscription_families_router
 
 router.include_router(
     dashboard_alerts_router, prefix="/vendor", tags=["vendor-dashboard-alerts"]
 )
+router.include_router(subscription_families_router, prefix="/v1", tags=["billing"])
 # Resources/Guides CMS
 from .resources import router as resources_router
 
@@ -114,14 +116,20 @@ router.include_router(mock_report_router, prefix="/mock", tags=["mock"])
 
 from .government import router as government_router
 
-router.include_router(government_router, prefix="/government", tags=["government-portal"])
+router.include_router(
+    government_router, prefix="/government", tags=["government-portal"]
+)
 
 # V11 — Compliance Locker
 from .compliance_locker import router as compliance_locker_router
 
-router.include_router(compliance_locker_router, prefix="/compliance", tags=["compliance-locker"])
+router.include_router(
+    compliance_locker_router, prefix="/compliance", tags=["compliance-locker"]
+)
 
 # V11 — Supply Chain / Managed Vendors
 from .managed_vendors import router as managed_vendors_router
 
-router.include_router(managed_vendors_router, prefix="/supply-chain", tags=["supply-chain"])
+router.include_router(
+    managed_vendors_router, prefix="/supply-chain", tags=["supply-chain"]
+)
