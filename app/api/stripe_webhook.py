@@ -1325,11 +1325,25 @@ async def stripe_webhook(request: Request):
             _db = SessionLocal()
             try:
                 user = _db.query(User).filter(User.email == customer_email).first()
-                if user and getattr(user, "plan", "free") != "enterprise":
+                if user:
                     metadata = session.get("metadata") or {}
                     product = metadata.get("product_type") or ""
-                    new_plan = "enterprise" if "enterprise" in product else "pro"
-                    user.plan = new_plan
+                    _checkout_plan_map = {
+                        "vendor_active_monthly": "vendor_active",
+                        "vendor_active_annual":  "vendor_active",
+                        "pdpa_monitor_monthly":  "pdpa_monitor",
+                        "pdpa_monitor_annual":   "pdpa_monitor",
+                        "enterprise_monthly":    "enterprise",
+                        "enterprise_pro_monthly":"enterprise_pro",
+                    }
+                    current_plan = getattr(user, "plan", "free") or "free"
+                    new_plan = current_plan  # default: keep existing plan
+                    # Never downgrade from enterprise/enterprise_pro
+                    if current_plan not in ("enterprise", "enterprise_pro"):
+                        new_plan = _checkout_plan_map.get(product)
+                        if not new_plan:
+                            new_plan = "enterprise" if "enterprise" in product else "pro"
+                        user.plan = new_plan
                     # Close the referral reward loop: find a SIGNED_UP referral for this
                     # user and mark reward_claimed so the referrer gets credit.
                     referral = (
