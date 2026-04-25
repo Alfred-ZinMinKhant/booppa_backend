@@ -279,6 +279,51 @@ async def dashboard_alerts(
         # Non-fatal: if Stripe is unavailable, return whatever local subscription_tier exists
         pass
 
+    # Ensure we include any local `Subscription` rows (DB canonical) and expose price_id
+    try:
+        from app.core.models import Subscription as LocalSubscription
+
+        cust_id = getattr(current_user, "stripe_customer_id", None)
+        local_query = db.query(LocalSubscription).filter(
+            (LocalSubscription.user_id == vendor_id)
+            | (LocalSubscription.stripe_customer_id == cust_id)
+        )
+        for row in local_query.all():
+            # avoid duplicating entries already added from Stripe
+            if any(
+                x.get("id") == row.stripe_subscription_id
+                for x in subscriptions
+                if x.get("id")
+            ):
+                continue
+            meta = row.metadata_json or {}
+            price_id = None
+            # metadata may store price_id or price or items
+            if isinstance(meta, dict):
+                price_id = (
+                    meta.get("price_id") or meta.get("price") or meta.get("priceId")
+                )
+                # sometimes metadata may embed a plan/product field
+                if not price_id:
+                    price_id = meta.get("plan") or meta.get("product")
+
+            subscriptions.append(
+                {
+                    "id": row.stripe_subscription_id,
+                    "status": row.status,
+                    "current_period_end": (
+                        row.current_period_end.isoformat()
+                        if row.current_period_end
+                        else None
+                    ),
+                    "price_id": price_id,
+                    "plan": row.product_type,
+                }
+            )
+    except Exception:
+        # best-effort only
+        pass
+
     return {
         "name": name,
         "uen": uen,
