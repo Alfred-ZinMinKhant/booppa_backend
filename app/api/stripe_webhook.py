@@ -1697,7 +1697,7 @@ async def stripe_webhook(request: Request):
                             row.status = sub_status
                             row.stripe_customer_id = stripe_cust_id
                             row.current_period_end = period_end
-                            row.metadata = sub.get("metadata") or {}
+                            row.metadata_json = sub.get("metadata") or {}
                         else:
                             uid = None
                             if cust_email:

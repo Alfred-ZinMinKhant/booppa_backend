@@ -219,7 +219,8 @@ class Subscription(Base):
     product_type = Column(String(100), nullable=True)
     status = Column(String(50), nullable=True, index=True)
     current_period_end = Column(DateTime, nullable=True)
-    metadata = Column(JSON, nullable=True)
+    # `metadata` is a reserved attribute on Declarative base; expose as `metadata_json`
+    metadata_json = Column("metadata", JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
