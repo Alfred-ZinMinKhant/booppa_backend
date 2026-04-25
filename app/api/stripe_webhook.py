@@ -1668,6 +1668,62 @@ async def stripe_webhook(request: Request):
                     f"[Webhook] Subscription {event['type']} → plan={product_type_sub} email={cust_email}"
                 )
 
+                # Upsert local Subscription record
+                try:
+                    from app.core.db import SessionLocal as _SL
+                    from app.core.models import Subscription as _Sub, User as _User
+                    from datetime import datetime, timezone as _tz
+
+                    _sdb = _SL()
+                    try:
+                        row = (
+                            _sdb.query(_Sub)
+                            .filter(_Sub.stripe_subscription_id == stripe_sub_id)
+                            .first()
+                        )
+                        period_end_ts = sub.get("current_period_end") or sub.get(
+                            "current_period_start"
+                        )
+                        period_end = None
+                        if period_end_ts:
+                            try:
+                                period_end = datetime.fromtimestamp(
+                                    int(period_end_ts), _tz.utc
+                                )
+                            except Exception:
+                                period_end = None
+
+                        if row:
+                            row.status = sub_status
+                            row.stripe_customer_id = stripe_cust_id
+                            row.current_period_end = period_end
+                            row.metadata = sub.get("metadata") or {}
+                        else:
+                            uid = None
+                            if cust_email:
+                                u = (
+                                    _sdb.query(_User)
+                                    .filter(_User.email == cust_email)
+                                    .first()
+                                )
+                                if u:
+                                    uid = u.id
+                            new = _Sub(
+                                user_id=uid,
+                                stripe_subscription_id=stripe_sub_id,
+                                stripe_customer_id=stripe_cust_id,
+                                product_type=product_type_sub,
+                                status=sub_status,
+                                current_period_end=period_end,
+                                metadata=sub.get("metadata") or {},
+                            )
+                            _sdb.add(new)
+                        _sdb.commit()
+                    finally:
+                        _sdb.close()
+                except Exception as _e:
+                    logger.warning(f"[Webhook] Subscription upsert failed: {_e}")
+
         elif sub_status == "canceled":
             _db3 = SessionLocal()
             try:
@@ -1685,6 +1741,26 @@ async def stripe_webhook(request: Request):
                 logger.error(f"[Webhook] Cancellation handling failed: {exc}")
             finally:
                 _db3.close()
+
+            # mark subscription row as canceled if exists
+            try:
+                from app.core.db import SessionLocal as _SL2
+                from app.core.models import Subscription as _Sub2
+
+                _d2 = _SL2()
+                try:
+                    r = (
+                        _d2.query(_Sub2)
+                        .filter(_Sub2.stripe_subscription_id == stripe_sub_id)
+                        .first()
+                    )
+                    if r:
+                        r.status = "canceled"
+                        _d2.commit()
+                finally:
+                    _d2.close()
+            except Exception:
+                pass
 
     # ── Invoice renewal — trigger monthly health checks ───────────────────────
     if event["type"] == "invoice.payment_succeeded":
