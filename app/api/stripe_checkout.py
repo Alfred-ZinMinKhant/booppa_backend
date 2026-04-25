@@ -161,6 +161,35 @@ async def checkout_post(request: Request):
                             status_code=409,
                             detail=f"You already have an active {expected_plan.replace('_', ' ').title()} subscription. Manage it from your dashboard.",
                         )
+                # Also check local `subscriptions` table for any active subscriptions matching this plan
+                try:
+                    from app.core.models import Subscription as LocalSub
+
+                    plan_keys = [
+                        k
+                        for k, v in SUBSCRIPTION_PLAN_MAP.items()
+                        if v == expected_plan
+                    ]
+                    if plan_keys:
+                        local_active = (
+                            _db.query(LocalSub)
+                            .filter(
+                                LocalSub.user_id == user.id,
+                                LocalSub.product_type.in_(plan_keys),
+                                LocalSub.status.in_("active", "trialing"),
+                            )
+                            .first()
+                        )
+                        if local_active:
+                            raise HTTPException(
+                                status_code=409,
+                                detail=f"You already have an active {expected_plan.replace('_', ' ').title()} subscription. Manage it from your dashboard.",
+                            )
+                except HTTPException:
+                    raise
+                except Exception:
+                    # Non-fatal: if local DB check fails, continue to allow checkout (Stripe check above is preferred)
+                    pass
         finally:
             _db.close()
 
