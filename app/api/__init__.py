@@ -1,4 +1,5 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
 from .reports import router as reports_router
 from .qr_scan import router as qr_scan_router
 from .auth import router as auth_router
@@ -133,3 +134,38 @@ from .managed_vendors import router as managed_vendors_router
 router.include_router(
     managed_vendors_router, prefix="/supply-chain", tags=["supply-chain"]
 )
+
+
+# ── Lightweight public platform stats (no auth) ─────────────────────────────
+@router.get("/platform-stats", tags=["public"])
+def platform_stats(db: Session = Depends(__import__("app.core.db", fromlist=["get_db"]).get_db)):
+    """Public stats for marketing pages: vendor count, verified count, open tenders."""
+    from sqlalchemy import func
+    from app.core.models import User
+    from app.core.models_v6 import VerifyRecord, LifecycleStatus
+    from app.core.models_gebiz import GebizTender
+    from datetime import datetime, timezone
+
+    vendors_indexed = db.query(func.count(User.id)).scalar() or 0
+    verified_entities = (
+        db.query(func.count(VerifyRecord.id))
+        .filter(VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE)
+        .scalar()
+        or 0
+    )
+    now = datetime.now(timezone.utc)
+    open_tenders = (
+        db.query(func.count(GebizTender.id))
+        .filter(
+            GebizTender.status == "Open",
+            (GebizTender.closing_date == None) | (GebizTender.closing_date >= now),
+        )
+        .scalar()
+        or 0
+    )
+
+    return {
+        "vendorsIndexed": vendors_indexed,
+        "verifiedEntities": verified_entities,
+        "openTenders": open_tenders,
+    }
