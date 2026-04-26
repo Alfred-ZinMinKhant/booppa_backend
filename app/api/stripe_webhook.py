@@ -101,7 +101,6 @@ async def _activate_subscription(
         new_plan = plan_map.get(product_type, "pro")
 
         user.plan = new_plan
-        # Persist subscription metadata for dashboard and idempotent checks
         user.subscription_tier = new_plan
         try:
             from datetime import datetime, timezone as _tz
@@ -114,6 +113,31 @@ async def _activate_subscription(
         if stripe_customer_id:
             user.stripe_customer_id = stripe_customer_id
         db.commit()
+
+        # Upsert the Subscription table row so it's the source of truth for
+        # multi-subscription support (a user can have vendor_active + pdpa_monitor).
+        if stripe_subscription_id:
+            try:
+                from app.core.models import Subscription as SubModel
+                existing = db.query(SubModel).filter(
+                    SubModel.stripe_subscription_id == stripe_subscription_id
+                ).first()
+                if existing:
+                    existing.status = "active"
+                    existing.product_type = product_type
+                    existing.stripe_customer_id = stripe_customer_id
+                else:
+                    db.add(SubModel(
+                        user_id=user.id,
+                        stripe_subscription_id=stripe_subscription_id,
+                        stripe_customer_id=stripe_customer_id,
+                        product_type=product_type,
+                        status="active",
+                    ))
+                db.commit()
+            except Exception as sub_err:
+                logger.warning(f"[Subscription] Subscription table upsert failed: {sub_err}")
+
         logger.info(
             f"[Subscription] Activated plan={new_plan} for user={customer_email}"
         )
@@ -127,6 +151,46 @@ async def _activate_subscription(
                 "enterprise_pro": "Enterprise Pro",
             }
             label = plan_labels.get(new_plan, new_plan)
+
+            # If PDPA Monitor, try to include latest PDPA report PDF link
+            pdf_section = ""
+            if new_plan == "pdpa_monitor":
+                try:
+                    from app.core.models import Report
+                    pdpa_report = (
+                        db.query(Report)
+                        .filter(
+                            Report.owner_id == user.id,
+                            Report.framework.in_(
+                                ["pdpa_quick_scan", "pdpa_basic", "pdpa_pro", "pdpa_snapshot"]
+                            ),
+                            Report.status == "completed",
+                        )
+                        .order_by(Report.completed_at.desc())
+                        .first()
+                    )
+                    if pdpa_report and pdpa_report.s3_url:
+                        pdf_section = f"""
+                        <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:16px;margin:16px 0;">
+                          <p style="margin:0 0 8px;font-weight:bold;color:#0369a1;">Your latest PDPA report is ready</p>
+                          <a href="{pdpa_report.s3_url}"
+                             style="background:#0ea5e9;color:#fff;padding:10px 20px;text-decoration:none;
+                                    border-radius:6px;font-weight:bold;display:inline-block;">
+                            Download PDF Report &darr;
+                          </a>
+                        </div>
+                        """
+                    elif pdpa_report:
+                        pdf_section = f"""
+                        <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:16px;margin:16px 0;">
+                          <p style="margin:0;color:#0369a1;">Your latest PDPA report is available in your
+                            <a href="https://www.booppa.io/compliance/locker" style="color:#0ea5e9;font-weight:bold;">Compliance Locker</a>.
+                          </p>
+                        </div>
+                        """
+                except Exception as pdf_err:
+                    logger.warning(f"[Subscription] Could not fetch PDPA report for email: {pdf_err}")
+
             try:
                 email_svc = EmailService()
                 body_html = f"""
@@ -136,6 +200,7 @@ async def _activate_subscription(
                   </div>
                   <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
                     <p>Your <strong>{label}</strong> subscription is now active.</p>
+                    {pdf_section}
                     <p>
                       <a href="https://www.booppa.io/vendor/dashboard"
                          style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;
@@ -1515,25 +1580,37 @@ async def stripe_webhook(request: Request):
                 if user:
                     metadata = session.get("metadata") or {}
                     product = metadata.get("product_type") or ""
-                    _checkout_plan_map = {
-                        "vendor_active_monthly": "vendor_active",
-                        "vendor_active_annual": "vendor_active",
-                        "pdpa_monitor_monthly": "pdpa_monitor",
-                        "pdpa_monitor_annual": "pdpa_monitor",
-                        "enterprise_monthly": "enterprise",
-                        "enterprise_pro_monthly": "enterprise_pro",
-                    }
-                    current_plan = getattr(user, "plan", "free") or "free"
-                    new_plan = current_plan  # default: keep existing plan
-                    # Never downgrade from enterprise/enterprise_pro
-                    if current_plan not in ("enterprise", "enterprise_pro"):
+                    # Subscriptions are already handled by the first
+                    # checkout.session.completed block via _activate_subscription.
+                    if product in SUBSCRIPTION_PRODUCT_TYPES:
+                        # Already activated by the first checkout.session.completed block;
+                        # only handle referral reward here.
+                        referral = (
+                            _db.query(Referral)
+                            .filter(
+                                Referral.referred_id == user.id,
+                                Referral.status == "SIGNED_UP",
+                                Referral.reward_claimed == False,
+                            )
+                            .first()
+                        )
+                        if referral:
+                            referral.status = "REWARDED"
+                            referral.reward_claimed = True
+                            referral.reward_claimed_at = datetime.now(timezone.utc)
+                            referral.reward_type = "30_DAYS_FREE"
+                        _db.commit()
+                    else:
+                        _checkout_plan_map = {
+                            "enterprise_monthly": "enterprise",
+                            "enterprise_pro_monthly": "enterprise_pro",
+                        }
                         new_plan = _checkout_plan_map.get(product)
                         if not new_plan:
                             new_plan = (
                                 "enterprise" if "enterprise" in product else "pro"
                             )
                         user.plan = new_plan
-                        # persist subscription metadata for dashboard
                         user.subscription_tier = new_plan
                         try:
                             from datetime import datetime, timezone as _tz
@@ -1541,67 +1618,64 @@ async def stripe_webhook(request: Request):
                             user.subscription_started_at = datetime.now(_tz.utc)
                         except Exception:
                             pass
-                    # Close the referral reward loop: find a SIGNED_UP referral for this
-                    # user and mark reward_claimed so the referrer gets credit.
-                    referral = (
-                        _db.query(Referral)
-                        .filter(
-                            Referral.referred_id == user.id,
-                            Referral.status == "SIGNED_UP",
-                            Referral.reward_claimed == False,
-                        )
-                        .first()
-                    )
-                    if referral:
-                        referral.status = "REWARDED"
-                        referral.reward_claimed = True
-                        referral.reward_claimed_at = datetime.now(timezone.utc)
-                        referral.reward_type = "30_DAYS_FREE"
-                        _db.commit()
-                        # Email the referrer their reward notification
-                        try:
-                            referrer = (
-                                _db.query(User)
-                                .filter(User.id == referral.referrer_id)
-                                .first()
+                        # Close the referral reward loop
+                        referral = (
+                            _db.query(Referral)
+                            .filter(
+                                Referral.referred_id == user.id,
+                                Referral.status == "SIGNED_UP",
+                                Referral.reward_claimed == False,
                             )
-                            if referrer and referrer.email:
-                                from app.workers.tasks import (
-                                    send_referral_reward_email_task,
+                            .first()
+                        )
+                        if referral:
+                            referral.status = "REWARDED"
+                            referral.reward_claimed = True
+                            referral.reward_claimed_at = datetime.now(timezone.utc)
+                            referral.reward_type = "30_DAYS_FREE"
+                            _db.commit()
+                            try:
+                                referrer = (
+                                    _db.query(User)
+                                    .filter(User.id == referral.referrer_id)
+                                    .first()
                                 )
-
-                                send_referral_reward_email_task.delay(referrer.email)
-                        except Exception as ref_email_exc:
-                            logger.warning(
-                                f"[Referral] Referrer email failed: {ref_email_exc}"
+                                if referrer and referrer.email:
+                                    from app.workers.tasks import (
+                                        send_referral_reward_email_task,
+                                    )
+                                    send_referral_reward_email_task.delay(referrer.email)
+                            except Exception as ref_email_exc:
+                                logger.warning(
+                                    f"[Referral] Referrer email failed: {ref_email_exc}"
+                                )
+                        else:
+                            _db.commit()
+                        logger.info(
+                            f"[Webhook] Upgraded user {customer_email} to plan={new_plan}"
+                            + (
+                                f"; referral {referral.referral_code} rewarded"
+                                if referral
+                                else ""
                             )
-                    else:
-                        _db.commit()
-                    logger.info(
-                        f"[Webhook] Upgraded user {customer_email} to plan={new_plan}"
-                        + (
-                            f"; referral {referral.referral_code} rewarded"
-                            if referral
-                            else ""
                         )
-                    )
-                    # Queue post-payment D+1 drip (24h delay per brief)
-                    try:
-                        from app.workers.tasks import post_payment_drip
+                        # Queue post-payment D+1 drip (24h delay per brief)
+                        try:
+                            from app.workers.tasks import post_payment_drip
 
-                        post_payment_drip.apply_async(
-                            kwargs={
-                                "vendor_email": customer_email,
-                                "product_type": product,
-                                "company_name": metadata.get("company_name", ""),
-                                "report_id": str(report_id) if report_id else "",
-                            },
-                            countdown=86400,  # 24 hours
-                        )
-                    except Exception as drip_exc:
-                        logger.warning(
-                            f"[Webhook] post_payment_drip queue failed: {drip_exc}"
-                        )
+                            post_payment_drip.apply_async(
+                                kwargs={
+                                    "vendor_email": customer_email,
+                                    "product_type": product,
+                                    "company_name": metadata.get("company_name", ""),
+                                    "report_id": str(report_id) if report_id else "",
+                                },
+                                countdown=86400,  # 24 hours
+                            )
+                        except Exception as drip_exc:
+                            logger.warning(
+                                f"[Webhook] post_payment_drip queue failed: {drip_exc}"
+                            )
             except Exception as exc:
                 logger.error(
                     f"[Webhook] Plan upgrade failed for {customer_email}: {exc}"
@@ -1730,12 +1804,43 @@ async def stripe_webhook(request: Request):
                 if cust_email:
                     user = _db3.query(User).filter(User.email == cust_email).first()
                     if user:
-                        user.plan = "free"
+                        # Mark the specific Subscription row as canceled
+                        from app.core.models import Subscription as SubModel
+                        if stripe_sub_id:
+                            sub_row = _db3.query(SubModel).filter(
+                                SubModel.stripe_subscription_id == stripe_sub_id
+                            ).first()
+                            if sub_row:
+                                sub_row.status = "canceled"
+
+                        # Derive user.plan from remaining active subscriptions
+                        _plan_map = {
+                            "vendor_active_monthly": "vendor_active",
+                            "vendor_active_annual":  "vendor_active",
+                            "pdpa_monitor_monthly":  "pdpa_monitor",
+                            "pdpa_monitor_annual":   "pdpa_monitor",
+                            "enterprise_monthly":    "enterprise",
+                            "enterprise_pro_monthly":"enterprise_pro",
+                        }
+                        remaining = (
+                            _db3.query(SubModel)
+                            .filter(
+                                SubModel.user_id == user.id,
+                                SubModel.status.in_(("active", "trialing")),
+                            )
+                            .all()
+                        )
+                        if remaining:
+                            # Set plan to the last remaining active subscription
+                            user.plan = _plan_map.get(remaining[-1].product_type, "pro")
+                        else:
+                            user.plan = "free"
+                        user.subscription_tier = user.plan
                         if hasattr(user, "stripe_subscription_id"):
                             user.stripe_subscription_id = None
                         _db3.commit()
                         logger.info(
-                            f"[Webhook] Subscription canceled — downgraded {cust_email} to free"
+                            f"[Webhook] Subscription canceled for {cust_email}, plan now={user.plan}"
                         )
             except Exception as exc:
                 logger.error(f"[Webhook] Cancellation handling failed: {exc}")
@@ -1773,7 +1878,7 @@ async def stripe_webhook(request: Request):
                 try:
                     user = _db4.query(User).filter(User.email == cust_email_inv).first()
                     user_plan = getattr(user, "plan", "") if user else ""
-                    if user and user_plan == "vendor_active":
+                    if user and "vendor_active" in user_plan:
                         from app.workers.tasks import vendor_active_health_check_task
 
                         vendor_active_health_check_task.delay(
@@ -1782,7 +1887,7 @@ async def stripe_webhook(request: Request):
                         logger.info(
                             f"[Webhook] Queued monthly health check for {cust_email_inv}"
                         )
-                    elif user and user_plan == "pdpa_monitor":
+                    if user and "pdpa_monitor" in user_plan:
                         from app.workers.tasks import pdpa_monitor_monthly_alert_task
 
                         pdpa_monitor_monthly_alert_task.delay(

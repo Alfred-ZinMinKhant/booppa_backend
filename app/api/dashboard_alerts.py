@@ -83,6 +83,8 @@ async def dashboard_alerts(
         if pdpa_report and pdpa_report.completed_at
         else None
     )
+    pdpa_report_url = pdpa_report.s3_url if pdpa_report else None
+    pdpa_report_id = str(pdpa_report.id) if pdpa_report else None
 
     # ── 5. Notarization count ────────────────────────────────────────────────
     from app.core.models_v6 import VerifyRecord, Proof, ProofView
@@ -324,13 +326,32 @@ async def dashboard_alerts(
         # best-effort only
         pass
 
+    # Derive a flat list of active plan names from the Subscription table
+    _sub_plan_map = {
+        "vendor_active_monthly": "vendor_active",
+        "vendor_active_annual":  "vendor_active",
+        "pdpa_monitor_monthly":  "pdpa_monitor",
+        "pdpa_monitor_annual":   "pdpa_monitor",
+        "enterprise_monthly":    "enterprise",
+        "enterprise_pro_monthly":"enterprise_pro",
+    }
+    active_subscriptions: list[str] = []
+    for s in subscriptions:
+        if s.get("status") in ("active", "trialing"):
+            mapped = _sub_plan_map.get(s.get("plan") or "", s.get("plan") or "")
+            if mapped and mapped not in active_subscriptions:
+                active_subscriptions.append(mapped)
+
     return {
         "name": name,
         "uen": uen,
         "plan": plan,
+        "activeSubscriptions": active_subscriptions,
         "trustScore": trust_score,
         "verificationDepth": verification_depth,
         "pdpaLastScan": pdpa_last_scan,
+        "pdpaReportUrl": pdpa_report_url,
+        "pdpaReportId": pdpa_report_id,
         "notarizationCount": notarization_count,
         "rfpCount": rfp_count,
         "lastTenderCheck": None,
