@@ -131,10 +131,23 @@ async def checkout_post(request: Request):
         try:
             user = _db.query(User).filter(User.email == prefill_email).first()
             if user:
-                active_plan = getattr(user, "plan", None)
                 expected_plan = SUBSCRIPTION_PLAN_MAP[product_type]
-                # Basic local check
-                if active_plan == expected_plan:
+                # Check Subscription table for active sub of the same type
+                from app.core.models import Subscription as SubModel
+                plan_keys = [
+                    k for k, v in SUBSCRIPTION_PLAN_MAP.items()
+                    if v == expected_plan
+                ]
+                active_sub = (
+                    _db.query(SubModel)
+                    .filter(
+                        SubModel.user_id == user.id,
+                        SubModel.product_type.in_(plan_keys),
+                        SubModel.status.in_(("active", "trialing")),
+                    )
+                    .first()
+                )
+                if active_sub:
                     # double-check with Stripe if we have a customer id to avoid stale local state
                     try:
                         stripe_client = get_stripe_client()
@@ -161,35 +174,6 @@ async def checkout_post(request: Request):
                             status_code=409,
                             detail=f"You already have an active {expected_plan.replace('_', ' ').title()} subscription. Manage it from your dashboard.",
                         )
-                # Also check local `subscriptions` table for any active subscriptions matching this plan
-                try:
-                    from app.core.models import Subscription as LocalSub
-
-                    plan_keys = [
-                        k
-                        for k, v in SUBSCRIPTION_PLAN_MAP.items()
-                        if v == expected_plan
-                    ]
-                    if plan_keys:
-                        local_active = (
-                            _db.query(LocalSub)
-                            .filter(
-                                LocalSub.user_id == user.id,
-                                LocalSub.product_type.in_(plan_keys),
-                                LocalSub.status.in_("active", "trialing"),
-                            )
-                            .first()
-                        )
-                        if local_active:
-                            raise HTTPException(
-                                status_code=409,
-                                detail=f"You already have an active {expected_plan.replace('_', ' ').title()} subscription. Manage it from your dashboard.",
-                            )
-                except HTTPException:
-                    raise
-                except Exception:
-                    # Non-fatal: if local DB check fails, continue to allow checkout (Stripe check above is preferred)
-                    pass
         finally:
             _db.close()
 

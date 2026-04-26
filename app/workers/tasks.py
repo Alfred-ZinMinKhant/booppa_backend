@@ -1491,8 +1491,14 @@ def run_vendor_active_monthly_checks():
     """
     db = SessionLocal()
     try:
-        from app.core.models import User
-        subscribers = db.query(User).filter(User.plan == "vendor_active").all()
+        from app.core.models import User, Subscription as SubModel
+        # Query Subscription table (source of truth) for active vendor_active subs
+        active_subs = db.query(SubModel).filter(
+            SubModel.product_type.in_(["vendor_active_monthly", "vendor_active_annual", "vendor_active"]),
+            SubModel.status.in_(("active", "trialing")),
+        ).all()
+        user_ids = {s.user_id for s in active_subs if s.user_id}
+        subscribers = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
         for user in subscribers:
             if user.email:
                 vendor_active_health_check_task.delay(str(user.id), user.email)
@@ -1509,8 +1515,14 @@ def run_pdpa_monitor_quarterly_rescans():
     """
     db = SessionLocal()
     try:
-        from app.core.models import User
-        subscribers = db.query(User).filter(User.plan == "pdpa_monitor").all()
+        from app.core.models import User, Subscription as SubModel
+        # Query Subscription table (source of truth) for active pdpa_monitor subs
+        active_subs = db.query(SubModel).filter(
+            SubModel.product_type.in_(["pdpa_monitor_monthly", "pdpa_monitor_annual", "pdpa_monitor"]),
+            SubModel.status.in_(("active", "trialing")),
+        ).all()
+        user_ids = {s.user_id for s in active_subs if s.user_id}
+        subscribers = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
         for user in subscribers:
             website = getattr(user, "website", "") or ""
             if user.email and website:
