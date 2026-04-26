@@ -177,6 +177,30 @@ async def checkout_post(request: Request):
         finally:
             _db.close()
 
+    # For PDPA Monitor: ensure we have a website URL for the initial scan.
+    # Pull from user profile; if missing, require it in the request body and save it.
+    if product_type in ("pdpa_monitor_monthly", "pdpa_monitor_annual") and prefill_email:
+        from app.core.db import SessionLocal
+        from app.core.models import User
+
+        _db = SessionLocal()
+        try:
+            user = _db.query(User).filter(User.email == prefill_email).first()
+            website = (getattr(user, "website", "") or "").strip() if user else ""
+            if not website:
+                website = (data.get("website") or data.get("vendor_url") or "").strip()
+                # Save to profile so the webhook can read it for the initial scan
+                if website and user:
+                    user.website = website
+                    _db.commit()
+            if not website:
+                raise HTTPException(
+                    status_code=422,
+                    detail="A website URL is required for PDPA Monitor so we can run your first scan. Please add your website to your profile or provide it during checkout.",
+                )
+        finally:
+            _db.close()
+
     # Block vendor_proof purchase if user is already verified
     if product_type == "vendor_proof" and prefill_email:
         from app.core.db import SessionLocal

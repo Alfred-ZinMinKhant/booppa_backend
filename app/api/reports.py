@@ -525,6 +525,45 @@ async def get_report(
     }
 
 
+@router.get("/{report_id}/download")
+async def download_report_pdf(
+    report_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_optional_user),
+):
+    """Generate a fresh presigned S3 URL for the report PDF and redirect.
+
+    Use this endpoint in emails and dashboards instead of storing presigned URLs
+    directly — presigned URLs expire (typically 7 days) but this endpoint always
+    returns a fresh one.
+    """
+    from fastapi.responses import RedirectResponse
+    from app.services.storage import S3Service
+
+    query = db.query(Report).filter(Report.id == report_id)
+    if current_user:
+        query = query.filter(Report.owner_id == current_user.id)
+    report = query.first()
+
+    if not report:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Report not found"
+        )
+
+    file_key = report.file_key or f"reports/{report.id}.pdf"
+    try:
+        s3 = S3Service()
+        url = s3.s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": s3.bucket, "Key": file_key},
+            ExpiresIn=3600,  # 1 hour
+        )
+        return RedirectResponse(url=url, status_code=302)
+    except Exception as e:
+        logger.error(f"Failed to generate download URL for {report_id}: {e}")
+        raise HTTPException(status_code=500, detail="Could not generate download link")
+
+
 @router.get("/{report_id}/qr")
 async def get_report_qr(
     report_id: UUID,
