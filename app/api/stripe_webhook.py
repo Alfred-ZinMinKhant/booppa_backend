@@ -152,7 +152,7 @@ async def _activate_subscription(
             }
             label = plan_labels.get(new_plan, new_plan)
 
-            # If PDPA Monitor, try to include latest PDPA report PDF link
+            # If PDPA Monitor, include either existing report link or "scan running" notice
             pdf_section = ""
             if new_plan == "pdpa_monitor":
                 try:
@@ -169,22 +169,29 @@ async def _activate_subscription(
                         .order_by(Report.completed_at.desc())
                         .first()
                     )
-                    if pdpa_report and pdpa_report.s3_url:
+                    if pdpa_report:
+                        # Use stable download endpoint — not the presigned S3 URL which expires
+                        download_url = f"https://api.booppa.io/api/v1/reports/{pdpa_report.id}/download"
                         pdf_section = f"""
                         <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:16px;margin:16px 0;">
                           <p style="margin:0 0 8px;font-weight:bold;color:#0369a1;">Your latest PDPA report is ready</p>
-                          <a href="{pdpa_report.s3_url}"
+                          <a href="{download_url}"
                              style="background:#0ea5e9;color:#fff;padding:10px 20px;text-decoration:none;
                                     border-radius:6px;font-weight:bold;display:inline-block;">
                             Download PDF Report &darr;
                           </a>
                         </div>
                         """
-                    elif pdpa_report:
-                        pdf_section = f"""
+                    else:
+                        # No existing report — first scan has been queued
+                        pdf_section = """
                         <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:16px;margin:16px 0;">
-                          <p style="margin:0;color:#0369a1;">Your latest PDPA report is available in your
-                            <a href="https://www.booppa.io/compliance/locker" style="color:#0ea5e9;font-weight:bold;">Compliance Locker</a>.
+                          <p style="margin:0 0 8px;font-weight:bold;color:#0369a1;">Your first PDPA scan is running</p>
+                          <p style="margin:0;color:#475569;font-size:14px;">
+                            We're scanning your website now. You'll receive your PDF report by email
+                            once it's ready (usually within a few minutes). You can also check your
+                            <a href="https://www.booppa.io/vendor/dashboard" style="color:#0ea5e9;font-weight:bold;">dashboard</a>
+                            for updates.
                           </p>
                         </div>
                         """
@@ -219,6 +226,27 @@ async def _activate_subscription(
                 )
             except Exception as e:
                 logger.error(f"[Subscription] Email failed for {customer_email}: {e}")
+
+        # ── Trigger first PDPA scan for new PDPA Monitor subscribers ────────
+        if new_plan == "pdpa_monitor":
+            website = (getattr(user, "website", "") or "").strip()
+            if website and customer_email:
+                try:
+                    from app.workers.tasks import pdpa_monitor_quarterly_rescan_task
+                    pdpa_monitor_quarterly_rescan_task.delay(
+                        str(user.id), customer_email, website
+                    )
+                    logger.info(
+                        f"[Subscription] Queued initial PDPA scan for {customer_email} ({website})"
+                    )
+                except Exception as scan_err:
+                    logger.warning(
+                        f"[Subscription] Could not queue initial PDPA scan: {scan_err}"
+                    )
+            else:
+                logger.info(
+                    f"[Subscription] Skipping initial PDPA scan — no website on profile for {customer_email}"
+                )
 
     except Exception as e:
         logger.error(f"[Subscription] Activation error for {product_type}: {e}")
