@@ -16,6 +16,40 @@ from app.services.marketplace import (
 router = APIRouter()
 
 
+@router.get("/stats")
+def marketplace_stats(db: Session = Depends(get_db)):
+    """Public platform stats for government landing page."""
+    from sqlalchemy import func
+    from app.core.models_v10 import MarketplaceVendor
+    from app.core.models_v6 import VerifyRecord, LifecycleStatus
+    from app.core.models_gebiz import GebizTender
+    from datetime import datetime, timezone
+
+    total_vendors = db.query(func.count(MarketplaceVendor.id)).scalar() or 0
+    verified_vendors = (
+        db.query(func.count(VerifyRecord.id))
+        .filter(VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE)
+        .scalar()
+        or 0
+    )
+    now = datetime.now(timezone.utc)
+    active_tenders = (
+        db.query(func.count(GebizTender.id))
+        .filter(
+            GebizTender.status == "Open",
+            (GebizTender.closing_date == None) | (GebizTender.closing_date >= now),
+        )
+        .scalar()
+        or 0
+    )
+
+    return {
+        "total_vendors": total_vendors,
+        "verified_vendors": verified_vendors,
+        "active_tenders": active_tenders,
+    }
+
+
 class ImportResponse(BaseModel):
     batch_id: Optional[str] = None
     total_rows: int
