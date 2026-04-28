@@ -661,6 +661,8 @@ BLOCKCHAIN EVIDENCE:
             )
             return violations
 
+        site_url = scan_data.get("url") or scan_data.get("resolved_url") or "website"
+
         # NRIC Collection Check
         if scan_data.get("collects_nric") and not scan_data.get(
             "has_legal_justification"
@@ -715,7 +717,6 @@ BLOCKCHAIN EVIDENCE:
 
         # Cookie Consent Check
         cookie_check = scan_data.get("consent_mechanism", {})
-        site_url = scan_data.get("url") or scan_data.get("resolved_url") or "website"
         if not cookie_check.get("has_cookie_banner", False):
             violations.append(
                 {
