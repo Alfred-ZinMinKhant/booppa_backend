@@ -13,7 +13,48 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-TIMEOUT = 10  # seconds
+import time
+
+TIMEOUT = 15  # seconds per request
+LOADING_RETRY_DELAY = 30  # seconds to wait before retrying after loading screen
+MAX_LOADING_RETRIES = 2   # retry up to 2 times (30s + 30s = ~1 min total wait)
+
+# Patterns that indicate a loading/splash screen rather than real content
+LOADING_SCREEN_PATTERNS = [
+    "please wait", "loading...", "just a moment", "checking your browser",
+    "one moment please", "verifying you are human", "please enable javascript",
+    "enable javascript to view", "redirecting", "cloudflare",
+    "attention required", "ray id", "ddos protection",
+    "access denied", "bot detection",
+]
+
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+}
+
+
+def _is_loading_screen(html: str) -> bool:
+    """Detect if the returned HTML is a loading/splash screen rather than real content."""
+    if not html or len(html.strip()) < 500:
+        return True
+    html_lower = html.lower()
+    # If more than half the page is a single script block with no real content
+    body_match = re.search(r"<body[^>]*>(.*)</body>", html_lower, re.DOTALL)
+    body_text = body_match.group(1) if body_match else html_lower
+    # Strip tags to get visible text
+    visible_text = re.sub(r"<[^>]+>", "", body_text).strip()
+    if len(visible_text) < 200:
+        # Very little visible content — likely a loading/interstitial page
+        match_count = sum(1 for p in LOADING_SCREEN_PATTERNS if p in html_lower)
+        if match_count >= 1:
+            return True
+    return False
 
 
 def _severity_weight(severity: str) -> int:
@@ -283,14 +324,70 @@ def run_free_scan(website_url: str) -> dict[str, Any]:
     if https_finding:
         findings.append(https_finding)
 
-    # Fetch the page
+    # Fetch the page — try browser-like headers first, fall back to bot UA.
+    # If a loading/splash screen is detected, wait and retry (some sites show
+    # animated intros with logos for 10-30s before rendering real content).
     html = ""
     response_headers: dict = {}
     try:
         with httpx.Client(timeout=TIMEOUT, follow_redirects=True, verify=False) as client:
-            resp = client.get(website_url, headers={"User-Agent": "BooppaPDPAScanner/1.0"})
+            # First attempt with browser-like headers (avoids 403 from WAFs)
+            resp = client.get(website_url, headers=_BROWSER_HEADERS)
+
+            # If 403, retry with different accept header / no bot UA
+            if resp.status_code == 403:
+                logger.info(f"Got 403 for {website_url}, retrying with alternate headers")
+                alt_headers = {**_BROWSER_HEADERS, "Accept": "*/*"}
+                resp = client.get(website_url, headers=alt_headers)
+
+            if resp.status_code == 403:
+                findings.append({
+                    "check_id": "forbidden",
+                    "title": "Website returned 403 Forbidden",
+                    "severity": "MEDIUM",
+                    "category": "Availability",
+                    "description": (
+                        "The website blocked our scanner with a 403 Forbidden response. "
+                        "This may be due to a Web Application Firewall (WAF), Cloudflare protection, "
+                        "or geo-blocking. The scan results below are based on limited information."
+                    ),
+                    "legislation": "N/A",
+                    "action": "If you own this website, whitelist the scanner or provide direct access.",
+                })
+
             response_headers = {k.lower(): v for k, v in resp.headers.items()}
             html = resp.text
+
+            # Detect loading/splash screens and retry after delay
+            if _is_loading_screen(html) and resp.status_code < 400:
+                for attempt in range(1, MAX_LOADING_RETRIES + 1):
+                    logger.info(
+                        f"Loading screen detected for {website_url}, "
+                        f"waiting {LOADING_RETRY_DELAY}s before retry {attempt}/{MAX_LOADING_RETRIES}"
+                    )
+                    time.sleep(LOADING_RETRY_DELAY)
+                    resp = client.get(website_url, headers=_BROWSER_HEADERS)
+                    response_headers = {k.lower(): v for k, v in resp.headers.items()}
+                    html = resp.text
+                    if not _is_loading_screen(html):
+                        logger.info(f"Real content received on retry {attempt} for {website_url}")
+                        break
+                else:
+                    # Still a loading screen after all retries
+                    logger.info(f"Still loading screen after {MAX_LOADING_RETRIES} retries for {website_url}")
+                    findings.append({
+                        "check_id": "loading_screen",
+                        "title": "Loading or splash screen detected",
+                        "severity": "LOW",
+                        "category": "Scan Limitation",
+                        "description": (
+                            "The website shows a loading screen, animated intro, or JavaScript-only "
+                            "splash page that did not resolve after waiting ~1 minute. Some compliance "
+                            "checks may be incomplete. A full scan with browser rendering is recommended."
+                        ),
+                        "legislation": "N/A",
+                        "action": "Consider upgrading to a full PDPA Quick Scan which uses browser-based rendering.",
+                    })
     except httpx.TimeoutException:
         findings.append({
             "check_id": "timeout",
