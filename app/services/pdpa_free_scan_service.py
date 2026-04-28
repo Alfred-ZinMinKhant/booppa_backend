@@ -76,18 +76,18 @@ def _severity_weight(severity: str) -> int:
     return {"CRITICAL": 30, "HIGH": 15, "MEDIUM": 5, "LOW": 2}.get(severity, 0)
 
 
-def _check_https(url: str) -> dict | None:
-    parsed = urlparse(url)
-    if parsed.scheme != "https":
+def _check_https(initial_url: str, final_url: str) -> dict | None:
+    final_parsed = urlparse(final_url)
+    if final_parsed.scheme != "https":
         return {
             "check_id": "https",
             "title": "Website does not use HTTPS",
             "severity": "CRITICAL",
             "category": "Transport Security",
             "description": (
-                "Your website is served over unencrypted HTTP. All personal data "
-                "transmitted between users and your site can be intercepted. "
-                "This violates PDPA Section 24 (Protection Obligation)."
+                "Your website is served over unencrypted HTTP or fails to redirect to a secure "
+                "HTTPS connection. All personal data transmitted between users and your site "
+                "can be intercepted. This violates PDPA Section 24 (Protection Obligation)."
             ),
             "legislation": "PDPA Section 24 — Protection Obligation",
             "action": "Obtain an SSL/TLS certificate and enforce HTTPS across all pages.",
@@ -105,8 +105,9 @@ def _check_headers(headers: dict) -> list[dict]:
             "severity": "HIGH",
             "category": "Transport Security",
             "description": (
-                "HTTP Strict-Transport-Security header is missing. Browsers may "
-                "allow insecure HTTP connections, exposing personal data in transit."
+                "The Strict-Transport-Security (HSTS) header is missing. While your site uses HTTPS, "
+                "this header is required to tell browsers to ALWAYS use secure connections, "
+                "preventing potential downgrades to unencrypted links."
             ),
             "legislation": "PDPA Section 24 — Protection Obligation",
             "action": "Add Strict-Transport-Security header with a minimum max-age of 31536000.",
@@ -165,6 +166,21 @@ def _check_headers(headers: dict) -> list[dict]:
             "action": "Add Referrer-Policy: strict-origin-when-cross-origin or no-referrer.",
         })
 
+    if "permissions-policy" not in headers:
+        findings.append({
+            "check_id": "permissions_policy",
+            "title": "Missing Permissions-Policy header",
+            "severity": "MEDIUM",
+            "category": "Security Headers",
+            "description": (
+                "The Permissions-Policy header (formerly Feature-Policy) allows you to "
+                "control which browser features (camera, microphone, geolocation) can be "
+                "used. Missing this header increases the risk of unauthorized feature access."
+            ),
+            "legislation": "PDPA Section 24 — Protection Obligation",
+            "action": "Add Permissions-Policy header to restrict unused browser features.",
+        })
+
     return findings
 
 
@@ -199,7 +215,7 @@ def _check_cookies(headers: dict) -> list[dict]:
             "title": "Cookies missing Secure flag",
             "severity": "MEDIUM",
             "category": "Cookie Security",
-            "description": "Some cookies are not marked as Secure, allowing transmission over HTTP.",
+            "description": "Some cookies are missing the Secure flag, meaning they could potentially be sent over unencrypted connections if a secure session is not strictly enforced.",
             "legislation": "PDPA Section 24 — Protection Obligation",
             "action": "Set the Secure flag on all cookies containing personal or session data.",
         })
@@ -340,17 +356,13 @@ def run_free_scan(website_url: str) -> dict[str, Any]:
         website_url = f"https://{website_url}"
 
     findings: list[dict] = []
-
-    # Check HTTPS
-    https_finding = _check_https(website_url)
-    if https_finding:
-        findings.append(https_finding)
+    html = ""
+    response_headers: dict = {}
+    final_url = website_url  # Default to initial
 
     # Fetch the page — try browser-like headers first, fall back to bot UA.
     # If a loading/splash screen is detected, wait and retry (some sites show
     # animated intros with logos for 10-30s before rendering real content).
-    html = ""
-    response_headers: dict = {}
     try:
         with httpx.Client(timeout=TIMEOUT, follow_redirects=True, verify=False) as client:
             # First attempt with browser-like headers (avoids 403 from WAFs)
@@ -377,6 +389,7 @@ def run_free_scan(website_url: str) -> dict[str, Any]:
                     "action": "If you own this website, whitelist the scanner or provide direct access.",
                 })
 
+            final_url = str(resp.url)
             response_headers = {k.lower(): v for k, v in resp.headers.items()}
             html = resp.text
 
@@ -389,6 +402,7 @@ def run_free_scan(website_url: str) -> dict[str, Any]:
                     )
                     time.sleep(LOADING_RETRY_DELAY)
                     resp = client.get(website_url, headers=_BROWSER_HEADERS)
+                    final_url = str(resp.url)
                     response_headers = {k.lower(): v for k, v in resp.headers.items()}
                     html = resp.text
                     if not _is_loading_screen(html):
@@ -438,6 +452,10 @@ def run_free_scan(website_url: str) -> dict[str, Any]:
         return _build_response(website_url, findings, score)
 
     # Run checks
+    https_finding = _check_https(website_url, final_url)
+    if https_finding:
+        findings.append(https_finding)
+
     findings.extend(_check_headers(response_headers))
     findings.extend(_check_cookies(response_headers))
     findings.extend(_check_body(html))
