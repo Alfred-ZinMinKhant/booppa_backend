@@ -626,9 +626,20 @@ class PDFService:
 
     # ── PDPA: Compliance Score by Dimension ────────────────────────────────────
 
-    def _compliance_score_table(self, findings: list) -> Table:
-        """Four-dimension scored compliance table with overall score row."""
+    def _compliance_score_table(self, findings: list, scan_data: dict | None = None) -> Table:
+        """Seven-dimension scored compliance table with overall score row.
+
+        Scores are computed from actual scan data when available so that
+        different sites produce meaningfully different numbers.  The scoring
+        methodology is:
+          • Base score per dimension (92-100) when no issue is detected.
+          • Deductions applied per specific sub-check that failed.
+          • Severity of the matching finding provides a floor.
+        This means two sites with the same violation *type* but different
+        underlying data will receive different scores.
+        """
         s = self._s
+        sd = scan_data or {}  # raw assessment / scan data dict
 
         def _has(keywords: list[str]) -> dict | None:
             for f in findings:
@@ -641,78 +652,129 @@ class PDFService:
                     return f
             return None
 
-        def _row(finding, base_score=96, compliant_note="", issue_note=""):
-            if finding is None:
-                return base_score, "Compliant", compliant_note
-            sev = (finding.get("severity") or "MEDIUM").upper()
-            score = {"CRITICAL": 0, "HIGH": 20, "MEDIUM": 60, "LOW": 80}.get(sev, 60)
-            status = "Non-Compliant" if score < 50 else "Partial"
-            return score, status, issue_note
+        # ── Cookie Consent ────────────────────────────────────────────────
+        cookie_finding = _has(["consent", "cookie_consent", "no_consent_banner", "tracking_cookie"])
+        consent_mech = sd.get("consent_mechanism") or {}
+        detected_providers = consent_mech.get("detected_providers") or []
+        if cookie_finding is None:
+            cookie_score = 96
+            cookie_status = "Compliant"
+            provider_list = ", ".join(detected_providers[:3]) if detected_providers else "compliant mechanism"
+            cookie_note = f"Consent mechanism detected ({provider_list}); pre-consent cookies blocked."
+        else:
+            # Start at 40 (HIGH floor), add points for partial compliance
+            cookie_score = 15
+            if consent_mech.get("has_cookie_banner"):
+                cookie_score += 25  # banner exists but flawed
+            if consent_mech.get("policy_mentions_banner"):
+                cookie_score += 10  # at least mentioned in policy
+            cookie_status = "Non-Compliant" if cookie_score < 50 else "Partial"
+            cookie_note = "Cookie consent mechanism absent or non-compliant — consent required before tracking."
+
+        # ── Privacy Policy + DPO ──────────────────────────────────────────
+        pp_finding = _has(["privacy_policy", "no_privacy_policy", "privacy policy", "dpo", "no_dpo_contact"])
+        pp_data = sd.get("privacy_policy") or {}
+        dpo_data = sd.get("dpo_compliance") or {}
+        if pp_finding is None:
+            pp_score = 97
+            pp_status = "Compliant"
+            pp_link = pp_data.get("link") or ""
+            dpo_email = dpo_data.get("dpo_email") or ""
+            pp_note = "Privacy policy linked"
+            if pp_link:
+                pp_note += f" at {pp_link}"
+            if dpo_email:
+                pp_note += f"; DPO contact: {dpo_email}"
+            pp_note += "."
+        else:
+            pp_score = 30
+            if pp_data.get("found"):
+                pp_score += 25  # policy exists but DPO missing
+                pp_note = "Privacy policy found but DPO contact not publicly disclosed on website."
+            elif dpo_data.get("has_dpo"):
+                pp_score += 15  # DPO found but no policy link
+                pp_note = "DPO reference found but no privacy policy link on homepage."
+            else:
+                pp_note = "Neither privacy policy link nor DPO contact found on publicly accessible pages."
+            pp_status = "Non-Compliant" if pp_score < 50 else "Partial"
+
+        # ── Security Headers ──────────────────────────────────────────────
+        sec_finding = _has(["hsts", "csp", "x_frame", "x_content_type", "referrer", "security_headers", "https"])
+        sec_headers = sd.get("security_headers") or {}
+        if sec_finding is None:
+            sec_score = 94
+            sec_status = "Compliant"
+            sec_note = "Security headers (HSTS, CSP, X-Frame-Options, etc.) correctly configured."
+        else:
+            # Score based on how many of the 6 headers are present
+            present = sum(1 for v in sec_headers.values() if v)
+            total = max(len(sec_headers), 1)
+            sec_score = int(15 + (present / total) * 75)  # range 15-90
+            missing = [k.upper().replace("_", "-") for k, v in sec_headers.items() if not v]
+            sec_note = f"Missing: {', '.join(missing[:4])}." if missing else "Headers partially configured."
+            sec_status = "Non-Compliant" if sec_score < 50 else "Partial"
+
+        # ── Cookie Attributes ─────────────────────────────────────────────
+        attr_finding = _has(["cookie_secure", "secure flag", "httponly", "samesite"])
+        if attr_finding is None:
+            attr_score = 96
+            attr_status = "Compliant"
+            attr_note = "Cookies correctly use Secure and HttpOnly flags."
+        else:
+            sev = (attr_finding.get("severity") or "MEDIUM").upper()
+            attr_score = {"CRITICAL": 10, "HIGH": 25, "MEDIUM": 55, "LOW": 75}.get(sev, 55)
+            attr_note = (attr_finding.get("description") or attr_finding.get("title") or
+                         "Cookie security attributes incomplete.")[:200]
+            attr_status = "Non-Compliant" if attr_score < 50 else "Partial"
+
+        # ── DNC Registry ──────────────────────────────────────────────────
+        dnc_finding = _has(["dnc", "marketing", "do_not_call", "spam"])
+        dnc_data = sd.get("dnc_mention") or {}
+        if dnc_finding is None:
+            dnc_score = 92
+            dnc_status = "Compliant"
+            dnc_note = "DNC opt-out mechanism referenced; marketing consent pathway present."
+        else:
+            dnc_score = 45
+            if dnc_data.get("mentions_dnc"):
+                dnc_score += 20  # mentioned but implementation issue
+                dnc_note = "DNC referenced in content but opt-out mechanism not clearly implemented."
+            else:
+                dnc_note = "No DNC Registry reference or marketing opt-out mechanism detected."
+            dnc_status = "Non-Compliant" if dnc_score < 50 else "Partial"
+
+        # ── Data Subject Rights ───────────────────────────────────────────
+        rights_finding = _has(["data_subject", "rights", "access_request", "correction", "withdrawal"])
+        if rights_finding is None:
+            rights_score = 91
+            rights_status = "Compliant"
+            rights_note = "Access, correction and withdrawal request pathways detected."
+        else:
+            sev = (rights_finding.get("severity") or "MEDIUM").upper()
+            rights_score = {"CRITICAL": 10, "HIGH": 25, "MEDIUM": 55, "LOW": 75}.get(sev, 55)
+            rights_note = "Data subject rights mechanism not detected — required under PDPA §21–22."
+            rights_status = "Non-Compliant" if rights_score < 50 else "Partial"
+
+        # ── NRIC / FIN ────────────────────────────────────────────────────
+        nric_finding = _has(["nric", "fin", "nric_collection", "identity document"])
+        if nric_finding is None:
+            nric_score = 100
+            nric_status = "Compliant"
+            nric_note = "No NRIC/FIN collection points detected on publicly accessible pages."
+        else:
+            nric_evidence = sd.get("nric_evidence") or "NRIC/FIN keywords detected"
+            nric_score = 5
+            nric_note = f"Possible NRIC/FIN collection detected: {nric_evidence}."
+            nric_status = "Non-Compliant"
 
         dimensions = [
-            (
-                "Cookie Consent Mechanism",
-                *_row(
-                    _has(["consent", "cookie_consent", "no_consent_banner", "tracking_cookie"]),
-                    base_score=96,
-                    compliant_note="Granular consent mechanism detected; pre-consent cookies blocked.",
-                    issue_note="Cookie consent mechanism absent or non-compliant — consent required before tracking.",
-                ),
-            ),
-            (
-                "Privacy Policy (PDPA §11/13)",
-                *_row(
-                    _has(["privacy_policy", "no_privacy_policy", "privacy policy", "dpo", "no_dpo_contact"]),
-                    base_score=98,
-                    compliant_note="Privacy policy linked and DPO contact identified in compliance with PDPA §11.",
-                    issue_note="Privacy policy or DPO contact not accessible — required under PDPA §11 Openness Obligation.",
-                ),
-            ),
-            (
-                "Security HTTP Headers",
-                *_row(
-                    _has(["hsts", "csp", "x_frame", "x_content_type", "referrer", "security_headers", "https"]),
-                    base_score=94,
-                    compliant_note="Security headers (HSTS, CSP, etc.) correctly configured for PDPA §24.",
-                    issue_note="Missing security headers — increases risk of data exfiltration under PDPA §24.",
-                ),
-            ),
-            (
-                "Cookie Attributes",
-                *_row(
-                    _has(["cookie_secure", "secure flag", "httponly", "samesite"]),
-                    base_score=96,
-                    compliant_note="Cookies correctly use Secure and HttpOnly flags for data protection.",
-                    issue_note="Cookies missing security flags — vulnerable to interception or cross-site scripting.",
-                ),
-            ),
-            (
-                "DNC Registry Reference",
-                *_row(
-                    _has(["dnc", "marketing", "do_not_call", "spam"]),
-                    base_score=92,
-                    compliant_note="DNC opt-out mechanism referenced; marketing consent pathway present.",
-                    issue_note="DNC Registry opt-out mechanism not detected — required for marketing communications.",
-                ),
-            ),
-            (
-                "Data Subject Rights Mechanism",
-                *_row(
-                    _has(["data_subject", "rights", "access_request", "correction", "withdrawal"]),
-                    base_score=90,
-                    compliant_note="Access, correction and withdrawal request pathways detected.",
-                    issue_note="No data subject rights mechanism found — required under PDPA §21–22.",
-                ),
-            ),
-            (
-                "NRIC / FIN Collection Signals",
-                *_row(
-                    _has(["nric", "fin", "nric_collection", "identity document"]),
-                    base_score=100,
-                    compliant_note="No NRIC/FIN collection points detected on publicly accessible pages.",
-                    issue_note="Possible NRIC/FIN collection detected — restricted under PDPC advisory guidelines.",
-                ),
-            ),
+            ("Cookie Consent Mechanism", cookie_score, cookie_status, cookie_note),
+            ("Privacy Policy (PDPA §11/13)", pp_score, pp_status, pp_note),
+            ("Security HTTP Headers", sec_score, sec_status, sec_note),
+            ("Cookie Attributes", attr_score, attr_status, attr_note),
+            ("DNC Registry Reference", dnc_score, dnc_status, dnc_note),
+            ("Data Subject Rights Mechanism", rights_score, rights_status, rights_note),
+            ("NRIC / FIN Collection Signals", nric_score, nric_status, nric_note),
         ]
 
         scores = [d[1] for d in dimensions]
@@ -798,7 +860,7 @@ class PDFService:
             ("FRAMEWORK VERSION",   COMPANY_FRAMEWORK_VERSION),
             ("ASSESSMENT DATE/TIME", date_display),
             ("ASSESSED ENTITY",     report_data.get("company_name") or "—"),
-            ("ASSESSED URL",        report_data.get("vendor_url") or report_data.get("website_url") or "—"),
+            ("ASSESSED URL",        report_data.get("vendor_url") or report_data.get("website_url") or report_data.get("url") or "—"),
             ("DPO CONTACT",         COMPANY_DPO_EMAIL),
         ]
         label_w = 1.7 * inch
@@ -1079,7 +1141,6 @@ class PDFService:
 
             elif is_pdpa:
                 # PDPA Quick Scan — Developer Brief Layout
-                # Implements all 7 mandatory changes from compliance brief.
                 structured = report_data.get("structured_report") or {}
                 findings = structured.get("detailed_findings") or []
 
@@ -1087,6 +1148,58 @@ class PDFService:
 
                 company_name = report_data.get("company_name") or "the organisation"
                 scan_date_str = report_data.get("created_at", "")[:10] or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                assessed_url = report_data.get("website_url") or report_data.get("url") or "—"
+
+                # ── SITE INACCESSIBLE — short-circuit report ──────────────────
+                if report_data.get("site_inaccessible"):
+                    _reason = report_data.get("site_inaccessible_reason") or "Site could not be accessed."
+                    _http = report_data.get("http_status") or "N/A"
+
+                    story.append(self._section_header("SCAN COULD NOT BE COMPLETED"))
+                    story.append(Spacer(1, 8))
+                    story.append(Paragraph(
+                        f'<font color="#dc2626"><b>SITE INACCESSIBLE — RESCAN REQUIRED</b></font>',
+                        s["CoverSub"],
+                    ))
+                    story.append(Spacer(1, 10))
+                    story.append(self._meta_table([
+                        ("ASSESSED URL", assessed_url),
+                        ("HTTP STATUS", str(_http)),
+                        ("SCAN DATE", scan_date_str),
+                    ]))
+                    story.append(Spacer(1, 12))
+                    story.append(Paragraph(
+                        f"<b>Reason:</b> {_reason}",
+                        s["Body"],
+                    ))
+                    story.append(Spacer(1, 10))
+                    story.append(Paragraph(
+                        "No compliance findings have been generated because the scanner could "
+                        "not access the target website's content. Producing findings without "
+                        "real data would be misleading and legally contestable.",
+                        s["Body"],
+                    ))
+                    story.append(Spacer(1, 12))
+                    story.append(self._section_header("Recommended Actions"))
+                    story.append(Spacer(1, 6))
+                    for step in [
+                        "Verify the website URL is correct and the site is currently online.",
+                        "If the site uses a Web Application Firewall (Cloudflare, Akamai, AWS WAF, etc.), "
+                        "whitelist the Booppa scanner IP address or arrange access from a whitelisted network.",
+                        "If the site is geo-restricted, arrange a scan from within the allowed region (Singapore).",
+                        "Once access is confirmed, request a rescan from the Booppa dashboard.",
+                    ]:
+                        story.append(Paragraph(f"• {step}", s["Bullet"]))
+                    story.append(Spacer(1, 12))
+                    story.append(self._section_header("Assessment Conducted By"))
+                    story.append(Spacer(1, 6))
+                    story.extend(self._assessment_conducted_by_section(report_data))
+
+                    # Skip all normal PDPA sections — jump to end
+                    doc.build(story)
+                    buffer.seek(0)
+                    logger.info("PDF generated (site inaccessible report)")
+                    return buffer.getvalue()
 
                 # ── Section 1: Scope of Assessment (Change 1) ─────────────────
                 story.append(self._section_header("1. Scope of Assessment"))
@@ -1143,13 +1256,18 @@ class PDFService:
                 story.append(self._section_header("4. Compliance Score by Dimension"))
                 story.append(Spacer(1, 6))
                 story.append(Paragraph(
-                    "Each PDPA compliance dimension has been independently scored. A numeric score is "
-                    "shown even where the result is fully compliant — a documented score is more evidentially "
-                    "credible than an undeclared pass.",
+                    "Each PDPA compliance dimension has been independently scored based on "
+                    "the actual scan data collected for this specific website. Scores are "
+                    "calculated from the number and severity of sub-checks within each "
+                    "dimension. A numeric score is shown even where the result is fully "
+                    "compliant — a documented score is more evidentially credible than "
+                    "an undeclared pass.",
                     s["Body"],
                 ))
                 story.append(Spacer(1, 8))
-                story.append(self._compliance_score_table(findings))
+                # Pass raw scan data so scores are computed from actual evidence
+                _scan_data = report_data.get("scan_data") or report_data
+                story.append(self._compliance_score_table(findings, scan_data=_scan_data))
                 story.append(Spacer(1, 0.1 * inch))
 
                 # ── Section 5: Developer Implementation Tasks ──────────────────
@@ -1626,20 +1744,51 @@ class PDFService:
 
     def _default_legal_references(self, findings: list) -> list:
         """Return default legal references based on finding types."""
+        # Core references — always included for any PDPA report
         refs = [
             {"title": "Personal Data Protection Act 2012 (Singapore)",
              "url": "https://sso.agc.gov.sg/Act/PDPA2012"},
+            {"title": "PDPA Section 11 — Openness Obligation",
+             "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr11-"},
+            {"title": "PDPA Section 13 — Consent Obligation",
+             "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr13-"},
+            {"title": "PDPA Section 24 — Protection Obligation",
+             "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr24-"},
             {"title": "PDPC Advisory Guidelines on Cookies (2021)",
              "url": "https://www.pdpc.gov.sg/-/media/Files/PDPC/PDF-Files/Advisory-Guidelines/AG-on-Cookies-2021.pdf"},
             {"title": "Guide to Enhanced Notice and Choice (2021)",
              "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/2021/01/guide-to-enhanced-notice-and-choice"},
+            {"title": "PDPC Advisory Guidelines on Key Concepts in the PDPA",
+             "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/2020/03/advisory-guidelines-on-key-concepts-in-the-pdpa"},
         ]
-        types = {f.get("type") for f in findings}
-        if any("marketing" in (t or "") for t in types):
+
+        # Contextual references — added when relevant findings are present
+        types_and_ids = set()
+        for f in findings:
+            types_and_ids.add(f.get("type") or "")
+            types_and_ids.add(f.get("check_id") or "")
+            types_and_ids.add((f.get("title") or "").lower())
+
+        combined = " ".join(types_and_ids)
+
+        if "marketing" in combined or "dnc" in combined or "do_not_call" in combined:
             refs.append({"title": "PDPC DNC Registry Guidelines",
                          "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/guidelines/dnc-provisions"})
-            refs.append({"title": "Spam Control Act",
+            refs.append({"title": "Spam Control Act (Cap. 311A)",
                          "url": "https://sso.agc.gov.sg/Act/SCA2007"})
+
+        if "nric" in combined or "fin" in combined or "identity" in combined:
+            refs.append({"title": "PDPC Advisory Guidelines on NRIC Numbers (2018)",
+                         "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/2018/01/advisory-guidelines-for-nric-numbers"})
+
+        if "dpo" in combined or "data protection officer" in combined or "organizational" in combined:
+            refs.append({"title": "PDPA Section 11(3) — DPO Designation & Public Disclosure",
+                         "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr11-"})
+
+        if "breach" in combined or "notification" in combined:
+            refs.append({"title": "PDPA Part VIA — Data Breach Notification",
+                         "url": "https://sso.agc.gov.sg/Act/PDPA2012#PVIApr26A-"})
+
         return refs
 
     def _timeline_summary_table(self, findings: list) -> Table:

@@ -272,16 +272,23 @@ def _check_body(html: str) -> list[dict]:
     if not has_dpo:
         findings.append({
             "check_id": "no_dpo_contact",
-            "title": "No Data Protection Officer contact found",
+            "title": "DPO contact not publicly disclosed on website",
             "severity": "MEDIUM",
             "category": "DPO Compliance",
             "description": (
-                "No Data Protection Officer contact information was found on the website. "
-                "Organisations processing personal data should designate a DPO and make "
-                "their contact details accessible."
+                "No Data Protection Officer (DPO) contact information was found on the "
+                "publicly accessible pages of this website. Note: this does not necessarily "
+                "mean a DPO has not been appointed — the organisation may have a DPO who is "
+                "not disclosed online. However, PDPA Section 11(3) requires organisations to "
+                "make the business contact information of their DPO publicly available so that "
+                "individuals can contact them regarding data protection matters."
             ),
-            "legislation": "PDPA Section 11(3) — DPO Designation",
-            "action": "Publish your DPO's contact email on the website (e.g., in the privacy policy or footer).",
+            "legislation": "PDPA Section 11(3) — Openness Obligation (DPO Disclosure)",
+            "action": (
+                "Publish your DPO's business contact information (e.g., email address) on "
+                "the website, typically in the privacy policy or site footer. If a DPO has "
+                "not yet been appointed, designate one under PDPA Section 11(3)."
+            ),
         })
 
     # NRIC collection detection

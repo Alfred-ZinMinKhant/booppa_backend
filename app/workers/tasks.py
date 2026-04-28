@@ -192,17 +192,21 @@ async def _detect_cookie_banner(url: str | None) -> dict:
             resp = await client.get(url, headers=_BROWSER_UA_HEADERS)
             if resp.status_code == 403:
                 resp = await client.get(url, headers={"User-Agent": "BooppaComplianceBot/1.0"})
-            if resp.status_code < 400:
-                html = resp.text.lower()
-                found = [k for k in indicators if k in html]
-                if found:
-                    return {
-                        "consent_mechanism": {
-                            "has_cookie_banner": True,
-                            "has_active_consent": True,
-                            "detected_providers": found,
-                        }
+            if resp.status_code >= 400:
+                # Site not accessible — do NOT report "no banner found"
+                return {"cookie_scan_error": f"http_{resp.status_code}"}
+            html = resp.text.lower()
+            if _is_loading_page(html):
+                return {"cookie_scan_error": "loading_screen"}
+            found = [k for k in indicators if k in html]
+            if found:
+                return {
+                    "consent_mechanism": {
+                        "has_cookie_banner": True,
+                        "has_active_consent": True,
+                        "detected_providers": found,
                     }
+                }
             return {"consent_mechanism": {"has_cookie_banner": False}}
     except Exception as e:
         return {"cookie_scan_error": f"error:{str(e)[:200]}"}
@@ -245,43 +249,45 @@ async def _scan_site_metadata(url: str | None) -> dict:
     headers_result = {}
     page_result = {}
     html = ""
+    site_accessible = False
+    http_status = 0
 
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             # Use browser-like headers to avoid 403 from WAFs
             resp = await client.get(url, headers=_BROWSER_UA_HEADERS)
+            http_status = resp.status_code
 
             # Retry on 403 with bot UA (some sites prefer identified bots)
             if resp.status_code == 403:
                 logger.info(f"Got 403 for {url}, retrying with bot UA")
                 resp = await client.get(url, headers={"User-Agent": "BooppaComplianceBot/1.0"})
-
-            if resp.status_code == 403:
-                page_result["http_403"] = True
-                page_result["scan_limitation"] = (
-                    "Website returned 403 Forbidden — WAF or geo-blocking may be active. "
-                    "Results based on limited information."
-                )
+                http_status = resp.status_code
 
             # Detect loading/splash screens and retry after delay
-            # Many sites show animated intros / logos for 10-30s
             if resp.status_code < 400 and _is_loading_page(resp.text or ""):
-                for attempt in range(1, 3):  # retry up to 2 times (~60s total)
+                for attempt in range(1, 3):
                     logger.info(
                         f"Loading screen detected for {url}, "
                         f"waiting 30s before retry {attempt}/2"
                     )
                     await asyncio.sleep(30)
                     resp = await client.get(url, headers=_BROWSER_UA_HEADERS)
+                    http_status = resp.status_code
                     if not _is_loading_page(resp.text or ""):
                         logger.info(f"Real content received on retry {attempt} for {url}")
                         break
                 else:
                     page_result["loading_screen_detected"] = True
-                    page_result["scan_limitation"] = (
-                        "Loading screen or splash page detected — did not resolve after ~1 minute wait. "
-                        "Some checks may be incomplete."
-                    )
+
+            # Determine if we actually got real, scannable content
+            if resp.status_code >= 400:
+                site_accessible = False
+            elif _is_loading_page(resp.text or ""):
+                site_accessible = False
+            else:
+                site_accessible = True
+
             headers_result = {
                 "hsts": bool(resp.headers.get("strict-transport-security")),
                 "csp": bool(resp.headers.get("content-security-policy")),
@@ -293,7 +299,42 @@ async def _scan_site_metadata(url: str | None) -> dict:
             html = resp.text or ""
     except Exception as e:
         page_result["scan_error"] = f"metadata_error:{str(e)[:200]}"
+        site_accessible = False
 
+    # Record accessibility status — downstream consumers MUST check this
+    page_result["site_accessible"] = site_accessible
+    page_result["http_status"] = http_status
+
+    if not site_accessible:
+        # DO NOT run body checks against inaccessible / empty content.
+        # Downstream will see site_accessible=False and produce an
+        # "Inaccessible" report instead of false findings.
+        if http_status == 403:
+            page_result["site_inaccessible_reason"] = (
+                "Website returned HTTP 403 Forbidden. Probable causes: "
+                "Web Application Firewall (WAF) blocking the scanner IP, "
+                "Cloudflare or similar CDN protection, or geo-blocking. "
+                "The client should whitelist the Booppa scanner IP or "
+                "arrange a scan from a whitelisted network."
+            )
+        elif http_status >= 400:
+            page_result["site_inaccessible_reason"] = (
+                f"Website returned HTTP {http_status}. "
+                "The site may be down, misconfigured, or blocking automated access."
+            )
+        elif page_result.get("loading_screen_detected"):
+            page_result["site_inaccessible_reason"] = (
+                "Website displayed a loading screen or bot-challenge page that did not "
+                "resolve after ~1 minute. The actual site content could not be analysed."
+            )
+        else:
+            page_result["site_inaccessible_reason"] = (
+                "Could not retrieve analysable content from the website."
+            )
+        logger.warning(f"Site inaccessible for {url}: {page_result['site_inaccessible_reason']}")
+        return {"security_headers": headers_result, **page_result}
+
+    # ── Site is accessible — run body checks ──────────────────────────────────
     html_lower = html.lower()
     combined_html = html_lower
 
@@ -317,7 +358,7 @@ async def _scan_site_metadata(url: str | None) -> dict:
             )
             async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
                 resp = await client.get(
-                    privacy_url, headers={"User-Agent": "BooppaComplianceBot/1.0"}
+                    privacy_url, headers=_BROWSER_UA_HEADERS
                 )
                 if resp.status_code < 400:
                     combined_html += "\n" + (resp.text or "").lower()
@@ -570,6 +611,101 @@ async def process_report_workflow(report_id: str) -> dict:
                 db.commit()
         except Exception as e:
             logger.warning(f"Metadata scan failed for {report_id}: {e}")
+
+        # ── Gate: abort findings if site was inaccessible ─────────────────
+        # If the scan could not reach the site (403, loading screen, network
+        # error), we MUST NOT generate compliance findings — they would be
+        # based on empty HTML and therefore false.
+        _site_accessible = True
+        if isinstance(report.assessment_data, dict):
+            _site_accessible = report.assessment_data.get("site_accessible", True)
+
+        if not _site_accessible:
+            _reason = ""
+            if isinstance(report.assessment_data, dict):
+                _reason = report.assessment_data.get("site_inaccessible_reason", "")
+                _http_status = report.assessment_data.get("http_status", 0)
+            else:
+                _http_status = 0
+            logger.warning(
+                f"Site inaccessible for {report_id} (HTTP {_http_status}). "
+                f"Generating inaccessible report instead of findings."
+            )
+            _set_assessment_values(report, {
+                "site_inaccessible": True,
+                "site_inaccessible_at": datetime.now(timezone.utc).isoformat(),
+            })
+            report.status = "site_inaccessible"
+            report.ai_narrative = (
+                f"SCAN COULD NOT BE COMPLETED — SITE INACCESSIBLE\n\n"
+                f"{_reason}\n\n"
+                f"HTTP Status Code: {_http_status}\n\n"
+                f"No compliance findings have been generated because the scanner "
+                f"could not access the target website's content. Producing findings "
+                f"without real data would be misleading.\n\n"
+                f"RECOMMENDED ACTIONS:\n"
+                f"1. Verify the website URL is correct and the site is online.\n"
+                f"2. If the site uses a WAF (Cloudflare, Akamai, etc.), whitelist "
+                f"the Booppa scanner IP or arrange a scan from a whitelisted network.\n"
+                f"3. If the site is geo-restricted, arrange a scan from within the "
+                f"allowed region (Singapore).\n"
+                f"4. Once access is confirmed, request a rescan."
+            )
+            report.completed_at = datetime.now(timezone.utc)
+            db.commit()
+
+            # Still generate a PDF if paid, but it will be an "inaccessible" report
+            if features.get("pdf") and bool(policy.get("paid")):
+                try:
+                    _url = ""
+                    if isinstance(report.assessment_data, dict):
+                        _url = (report.assessment_data.get("resolved_url")
+                                or report.assessment_data.get("url")
+                                or report.company_website or "")
+                    pdf_service = PDFService()
+                    pdf_data = {
+                        "report_id": str(report.id),
+                        "framework": report.framework,
+                        "company_name": report.company_name,
+                        "created_at": report.created_at.isoformat(),
+                        "status": "site_inaccessible",
+                        "website_url": _url,
+                        "ai_narrative": report.ai_narrative,
+                        "structured_report": {
+                            "executive_summary": report.ai_narrative,
+                            "detailed_findings": [],
+                            "recommendations": [],
+                            "legal_references": [],
+                        },
+                        "site_inaccessible": True,
+                        "site_inaccessible_reason": _reason,
+                        "http_status": _http_status,
+                        "payment_confirmed": bool(policy.get("paid")),
+                        "tx_hash": None,
+                        "audit_hash": None,
+                        "contact_email": (
+                            report.assessment_data.get("contact_email")
+                            if isinstance(report.assessment_data, dict)
+                            else None
+                        ),
+                        "base_url": "https://www.booppa.io",
+                    }
+                    pdf_bytes = pdf_service.generate_pdf(pdf_data)
+                    s3 = S3Service()
+                    file_key = f"reports/{report.id}.pdf"
+                    s3_url = await s3.upload_file(pdf_bytes, file_key, "application/pdf")
+                    report.s3_url = s3_url
+                    report.file_key = file_key
+                    db.commit()
+                except Exception as e:
+                    logger.error(f"Inaccessible-report PDF failed for {report_id}: {e}")
+
+            return {
+                "status": "site_inaccessible",
+                "report_id": report_id,
+                "reason": _reason,
+                "http_status": _http_status,
+            }
 
         # Step 1: Generate structured AI report (full for paid tiers, light for free)
         logger.info(f"Step 1: Generating AI report for {report_id}")
@@ -1030,7 +1166,23 @@ async def process_report_workflow(report_id: str) -> dict:
                 and report.assessment_data.get("base_url")
                 else "https://www.booppa.io"
             ),
+            "website_url": (
+                (report.assessment_data.get("resolved_url")
+                 or report.assessment_data.get("url"))
+                if isinstance(report.assessment_data, dict)
+                else None
+            ) or report.company_website,
         }
+
+        # Pass raw scan evidence so PDF scores are computed from actual data
+        if isinstance(report.assessment_data, dict):
+            for _scan_key in (
+                "security_headers", "consent_mechanism", "privacy_policy",
+                "dpo_compliance", "dnc_mention", "nric_evidence",
+                "http_status", "site_accessible",
+            ):
+                if _scan_key in report.assessment_data:
+                    pdf_data[_scan_key] = report.assessment_data[_scan_key]
 
         # Ensure a site screenshot is present for every PDF. Prefer existing data, otherwise capture.
         if not pdf_data.get("site_screenshot"):
