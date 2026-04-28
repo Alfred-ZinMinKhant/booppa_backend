@@ -321,6 +321,29 @@ VIOLATION_META: Dict = {
             "Mozilla Observatory (security assessment)",
         ],
     },
+    "security_headers_violation": {
+        "title": "Security HTTP Headers",
+        "owner": "DevOps / Backend Developer",
+        "deadline_short": "7 days",
+        "requirements": [
+            "Add Strict-Transport-Security (HSTS) header with max-age of at least 31536000.",
+            "Implement Content-Security-Policy (CSP) header restricting script sources.",
+            "Configure X-Frame-Options: DENY or SAMEORIGIN.",
+            "Set X-Content-Type-Options: nosniff.",
+            "Add Referrer-Policy: strict-origin-when-cross-origin.",
+            "Add Permissions-Policy header to restrict browser feature access.",
+        ],
+        "acceptance_criteria": [
+            "All 6 security headers present on every HTTP response.",
+            "Verified via securityheaders.com — grade A or above.",
+            "No mixed-content warnings in browser console.",
+        ],
+        "recommended_tools": [
+            "securityheaders.com (header verification)",
+            "Mozilla Observatory (security assessment)",
+            "helmet.js (Node/Express), django-csp (Django), or equivalent middleware",
+        ],
+    },
     "nric_violation": {
         "title": "NRIC / FIN Collection Removal",
         "owner": "Frontend + Backend Developer",
@@ -342,12 +365,13 @@ VIOLATION_META: Dict = {
         ],
     },
     "organizational_violation": {
-        "title": "Data Protection Officer (DPO) Appointment",
+        "title": "DPO Contact Not Publicly Disclosed",
         "owner": "Legal / Compliance Team",
         "deadline_short": "14 days for designation; 30 days for public disclosure",
         "requirements": [
-            "Designate a Data Protection Officer (DPO) for the organisation.",
-            "Publish DPO contact information on the website (privacy policy or footer).",
+            "If a DPO is already appointed, publish their business contact information on the website.",
+            "If no DPO is designated, appoint one under PDPA Section 11(3).",
+            "Publish DPO contact information in the privacy policy and/or website footer.",
             "Register the DPO with PDPC if required by organisation size.",
         ],
         "acceptance_criteria": [
@@ -628,6 +652,15 @@ BLOCKCHAIN EVIDENCE:
         """Detect compliance violations from scan data"""
         violations = []
 
+        # If the site was inaccessible, do NOT generate any findings.
+        # Findings based on empty/missing data are false negatives.
+        if not scan_data.get("site_accessible", True):
+            logger.warning(
+                f"Site inaccessible for {scan_data.get('url', '?')} — "
+                f"skipping violation detection to avoid false findings"
+            )
+            return violations
+
         # NRIC Collection Check
         if scan_data.get("collects_nric") and not scan_data.get(
             "has_legal_justification"
@@ -650,45 +683,93 @@ BLOCKCHAIN EVIDENCE:
                 {
                     "type": "security_violation",
                     "severity": "CRITICAL",
-                    "details": "Website does not use HTTPS encryption - data transmission is insecure",
-                    "location": scan_data.get("url", "website"),
-                    "evidence": f"HTTP protocol detected at {scan_data.get('url')}",
+                    "details": f"Website at {site_url} does not use HTTPS encryption — data transmission is insecure",
+                    "location": site_url,
+                    "evidence": f"HTTP protocol detected at {site_url}",
                 }
             )
 
+        # Security Headers Check — generate finding with specific missing headers
+        sec_headers = scan_data.get("security_headers") or {}
+        if sec_headers:
+            missing_headers = [k for k, v in sec_headers.items() if not v]
+            if missing_headers:
+                missing_display = ", ".join(
+                    h.upper().replace("_", "-") for h in missing_headers
+                )
+                present_count = sum(1 for v in sec_headers.values() if v)
+                total_count = len(sec_headers)
+                violations.append(
+                    {
+                        "type": "security_headers_violation",
+                        "severity": "HIGH" if len(missing_headers) >= 3 else "MEDIUM",
+                        "details": (
+                            f"{len(missing_headers)} of {total_count} security headers missing "
+                            f"on {site_url}: {missing_display}. "
+                            f"{present_count} headers are correctly configured."
+                        ),
+                        "location": site_url,
+                        "evidence": f"Missing: {missing_display}",
+                    }
+                )
+
         # Cookie Consent Check
         cookie_check = scan_data.get("consent_mechanism", {})
+        site_url = scan_data.get("url") or scan_data.get("resolved_url") or "website"
         if not cookie_check.get("has_cookie_banner", False):
             violations.append(
                 {
                     "type": "cookie_violation",
                     "severity": "HIGH",
-                    "details": "Missing cookie consent banner - implied consent not compliant with PDPA",
-                    "location": scan_data.get("url", "website"),
-                    "evidence": "No cookie consent mechanism detected",
+                    "details": (
+                        f"No cookie consent mechanism detected on {site_url}. "
+                        f"The homepage was scanned for known consent platforms "
+                        f"(OneTrust, Cookiebot, CookieYes, Osano, etc.) and common "
+                        f"banner patterns — none were found."
+                    ),
+                    "location": site_url,
+                    "evidence": (
+                        f"Scanned homepage at {site_url} — no consent banner, "
+                        f"no cookie management platform scripts detected"
+                    ),
                 }
             )
         elif not cookie_check.get("has_active_consent", False):
+            detected = cookie_check.get("detected_providers") or []
+            provider_str = ", ".join(detected[:3]) if detected else "unknown platform"
             violations.append(
                 {
                     "type": "cookie_violation",
                     "severity": "HIGH",
-                    "details": "Cookie banner present but lacks active consent mechanism",
-                    "location": scan_data.get("url", "website"),
-                    "evidence": "Passive or implied consent detected",
+                    "details": (
+                        f"Cookie banner detected ({provider_str}) but lacks active "
+                        f"consent mechanism — cookies may be set before user consent."
+                    ),
+                    "location": site_url,
+                    "evidence": f"Detected: {provider_str}; active consent not confirmed",
                 }
             )
 
         # DPO Check
         dpo_check = scan_data.get("dpo_compliance", {})
+        pp_check = scan_data.get("privacy_policy", {})
+        pp_link = pp_check.get("link") or ""
+        pages_checked = f"{site_url}, privacy policy" + (f" ({pp_link})" if pp_link else "") + ", footer"
         if not dpo_check.get("has_dpo", False):
             violations.append(
                 {
                     "type": "organizational_violation",
                     "severity": "MEDIUM",
-                    "details": "No Data Protection Officer (DPO) information identified",
-                    "location": "Organization",
-                    "evidence": "Missing DPO contact in privacy policy or website",
+                    "details": (
+                        f"DPO contact information not publicly disclosed on website. "
+                        f"Pages checked: {pages_checked}. "
+                        f"Note: this does not confirm that a DPO has not been appointed — "
+                        f"only that their contact details are not visible on publicly "
+                        f"accessible pages. PDPA Section 11(3) requires public disclosure "
+                        f"of DPO business contact information."
+                    ),
+                    "location": f"Website — {pages_checked}",
+                    "evidence": f"DPO contact not found on {pages_checked}",
                 }
             )
 
@@ -698,9 +779,16 @@ BLOCKCHAIN EVIDENCE:
                 {
                     "type": "marketing_violation",
                     "severity": "MEDIUM",
-                    "details": "No mention of DNC Registry compliance for marketing communications",
-                    "location": "Privacy Policy / Marketing terms",
-                    "evidence": "DNC Registry not referenced",
+                    "details": (
+                        f"No mention of DNC Registry compliance found on {site_url} "
+                        f"or its privacy policy. If the organisation sends marketing "
+                        f"communications, DNC opt-out is required."
+                    ),
+                    "location": f"{site_url} and linked privacy policy",
+                    "evidence": (
+                        f"Keyword search for 'DNC', 'Do Not Call', 'marketing opt-out' "
+                        f"returned no matches on {pages_checked}"
+                    ),
                 }
             )
 
@@ -1018,33 +1106,67 @@ Consult legal counsel for interpretation of regulatory requirements."""
 
     def _get_relevant_references(self, violations: List[Dict]) -> List[Dict]:
         """Get relevant legal references based on violations"""
-        references = []
-        violation_types = set(v.get("type") for v in violations)
-
-        # Always include PDPA reference
-        references.append(
+        references = [
             {
-                "title": "Personal Data Protection Act 2012",
+                "title": "Personal Data Protection Act 2012 (Singapore)",
                 "url": "https://sso.agc.gov.sg/Act/PDPA2012",
                 "relevance": "Core legislation for all data protection in Singapore",
-            }
-        )
+            },
+            {
+                "title": "PDPA Section 11 — Openness Obligation",
+                "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr11-",
+                "relevance": "Requires public disclosure of data protection policies and DPO contact",
+            },
+            {
+                "title": "PDPA Section 13 — Consent Obligation",
+                "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr13-",
+                "relevance": "Requires consent before collecting, using, or disclosing personal data",
+            },
+            {
+                "title": "PDPA Section 24 — Protection Obligation",
+                "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr24-",
+                "relevance": "Requires reasonable security arrangements to protect personal data",
+            },
+            {
+                "title": "PDPC Advisory Guidelines on Key Concepts in the PDPA",
+                "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/2020/03/advisory-guidelines-on-key-concepts-in-the-pdpa",
+                "relevance": "Interpretive guidance on core PDPA obligations",
+            },
+        ]
 
-        # Add specific references based on violations
+        violation_types = set(v.get("type", "") for v in violations)
+
         if any("nric" in vt for vt in violation_types):
             references.append(SINGAPORE_LEGISLATION["PDPC_ADVISORIES"]["nric_2018"])
 
-        if any("cookie" in vt for vt in violation_types):
+        if any("cookie" in vt or "consent" in vt for vt in violation_types):
             references.append(SINGAPORE_LEGISLATION["PDPC_ADVISORIES"]["cookies_2021"])
 
+        if any("marketing" in vt for vt in violation_types):
+            references.append({
+                "title": "PDPC DNC Registry Guidelines",
+                "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/guidelines/dnc-provisions",
+                "relevance": "Do Not Call provisions for marketing communications",
+            })
+            references.append({
+                "title": "Spam Control Act (Cap. 311A)",
+                "url": "https://sso.agc.gov.sg/Act/SCA2007",
+                "relevance": "Regulates unsolicited commercial messages",
+            })
+
+        if any("organizational" in vt for vt in violation_types):
+            references.append({
+                "title": "PDPA Section 11(3) — DPO Designation & Public Disclosure",
+                "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr11-",
+                "relevance": "Requires designation and public disclosure of DPO contact",
+            })
+
         if any("security" in vt for vt in violation_types):
-            references.append(
-                {
-                    "title": "Cybersecurity Act 2018",
-                    "url": "https://sso.agc.gov.sg/Act/CA2018",
-                    "relevance": "Framework for cybersecurity in Singapore",
-                }
-            )
+            references.append({
+                "title": "Cybersecurity Act 2018",
+                "url": "https://sso.agc.gov.sg/Act/CA2018",
+                "relevance": "Framework for cybersecurity in Singapore",
+            })
 
         return references
 
