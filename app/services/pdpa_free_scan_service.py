@@ -19,13 +19,18 @@ TIMEOUT = 15  # seconds per request
 LOADING_RETRY_DELAY = 30  # seconds to wait before retrying after loading screen
 MAX_LOADING_RETRIES = 2   # retry up to 2 times (30s + 30s = ~1 min total wait)
 
-# Patterns that indicate a loading/splash screen rather than real content
+# Patterns that indicate a bot-challenge / interstitial page
 LOADING_SCREEN_PATTERNS = [
     "please wait", "loading...", "just a moment", "checking your browser",
     "one moment please", "verifying you are human", "please enable javascript",
-    "enable javascript to view", "redirecting", "cloudflare",
     "attention required", "ray id", "ddos protection",
-    "access denied", "bot detection",
+]
+
+# SPA framework markers — if present, the page is real even with little visible text
+_SPA_SIGNALS = [
+    "__next", "__nuxt", "react-root", "app-root", "ng-app",
+    "<script src=", "<link rel=\"stylesheet\"", "<meta name=",
+    "<!doctype html>",
 ]
 
 _BROWSER_HEADERS = {
@@ -40,19 +45,29 @@ _BROWSER_HEADERS = {
 
 
 def _is_loading_screen(html: str) -> bool:
-    """Detect if the returned HTML is a loading/splash screen rather than real content."""
-    if not html or len(html.strip()) < 500:
-        return True
+    """Detect bot-challenge / interstitial pages.
+
+    Must NOT flag legitimate SPA shells (React, Next.js, Nuxt) that have
+    minimal visible text but are real pages.
+    """
+    if not html or len(html.strip()) < 100:
+        return True  # truly empty
     html_lower = html.lower()
-    # If more than half the page is a single script block with no real content
+
+    # SPA framework pages are real even with sparse visible text
+    if any(sig in html_lower for sig in _SPA_SIGNALS):
+        return False
+
+    # Cloudflare challenge page
+    if "cloudflare" in html_lower and ("ray id" in html_lower or "challenge" in html_lower):
+        return True
+
+    # Other cases: require both sparse text AND loading keywords
     body_match = re.search(r"<body[^>]*>(.*)</body>", html_lower, re.DOTALL)
     body_text = body_match.group(1) if body_match else html_lower
-    # Strip tags to get visible text
     visible_text = re.sub(r"<[^>]+>", "", body_text).strip()
-    if len(visible_text) < 200:
-        # Very little visible content — likely a loading/interstitial page
-        match_count = sum(1 for p in LOADING_SCREEN_PATTERNS if p in html_lower)
-        if match_count >= 1:
+    if len(visible_text) < 150:
+        if any(p in html_lower for p in LOADING_SCREEN_PATTERNS):
             return True
     return False
 
