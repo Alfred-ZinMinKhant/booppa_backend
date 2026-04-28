@@ -224,19 +224,45 @@ _BROWSER_UA_HEADERS = {
 _LOADING_SCREEN_PATTERNS = [
     "please wait", "loading...", "just a moment", "checking your browser",
     "one moment please", "verifying you are human", "please enable javascript",
-    "cloudflare", "attention required", "ray id", "ddos protection",
+    "attention required", "ray id", "ddos protection",
+]
+
+# These indicate the page is a real SPA / framework page, not a loading screen
+_SPA_FRAMEWORK_SIGNALS = [
+    "__next", "__nuxt", "react-root", "app-root", "ng-app",
+    "<script src=", "<link rel=\"stylesheet\"", "<meta name=",
+    "<!doctype html>",
 ]
 
 
 def _is_loading_page(html: str) -> bool:
-    """Detect loading/interstitial pages with very little real content."""
-    if not html or len(html.strip()) < 500:
-        return True
+    """Detect bot-challenge / interstitial pages.
+
+    Must NOT flag legitimate SPA shells (React, Next.js, Nuxt, etc.) that have
+    minimal visible text but are real pages with JS-rendered content.
+    Only flag pages that BOTH have very little content AND contain explicit
+    loading/challenge keywords like 'checking your browser' or 'ray id'.
+    """
+    if not html or len(html.strip()) < 100:
+        return True  # truly empty response
     html_lower = html.lower()
+
+    # If the page contains SPA framework markers, it's a real page even if
+    # visible text is sparse — JS will render the content.
+    if any(sig in html_lower for sig in _SPA_FRAMEWORK_SIGNALS):
+        return False
+
+    # Check for explicit Cloudflare / bot-challenge pages
+    # These have distinctive patterns AND very little real content
+    is_cloudflare = "cloudflare" in html_lower and ("ray id" in html_lower or "challenge" in html_lower)
+    if is_cloudflare:
+        return True
+
+    # For other cases, require both: sparse visible text AND loading keywords
     body_match = re.search(r"<body[^>]*>(.*)</body>", html_lower, re.DOTALL)
     body_text = body_match.group(1) if body_match else html_lower
     visible_text = re.sub(r"<[^>]+>", "", body_text).strip()
-    if len(visible_text) < 200:
+    if len(visible_text) < 150:
         if any(p in html_lower for p in _LOADING_SCREEN_PATTERNS):
             return True
     return False
@@ -691,11 +717,10 @@ async def process_report_workflow(report_id: str) -> dict:
                         "base_url": "https://www.booppa.io",
                     }
                     pdf_bytes = pdf_service.generate_pdf(pdf_data)
-                    s3 = S3Service()
-                    file_key = f"reports/{report.id}.pdf"
-                    s3_url = await s3.upload_file(pdf_bytes, file_key, "application/pdf")
+                    storage = S3Service()
+                    s3_url = await storage.upload_pdf(pdf_bytes, str(report.id))
                     report.s3_url = s3_url
-                    report.file_key = file_key
+                    report.file_key = f"reports/{report.id}.pdf"
                     db.commit()
                 except Exception as e:
                     logger.error(f"Inaccessible-report PDF failed for {report_id}: {e}")

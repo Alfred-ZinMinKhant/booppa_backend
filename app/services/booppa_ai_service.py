@@ -680,7 +680,10 @@ BLOCKCHAIN EVIDENCE:
             )
 
         # HTTPS Security Check
-        if not scan_data.get("uses_https", False):
+        # Default to True — only flag if we explicitly confirmed HTTP (not HTTPS).
+        # If uses_https was never set (e.g. resolution failed), don't generate a
+        # false CRITICAL finding.
+        if scan_data.get("uses_https") is False:
             violations.append(
                 {
                     "type": "security_violation",
