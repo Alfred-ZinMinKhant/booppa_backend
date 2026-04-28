@@ -660,12 +660,30 @@ class PDFService:
                 ),
             ),
             (
-                "Privacy Policy (PDPA §13)",
+                "Privacy Policy (PDPA §11/13)",
                 *_row(
-                    _has(["privacy_policy", "no_privacy_policy", "privacy policy"]),
+                    _has(["privacy_policy", "no_privacy_policy", "privacy policy", "dpo", "no_dpo_contact"]),
                     base_score=98,
-                    compliant_note="Privacy policy linked from homepage in compliance with PDPA §11.",
-                    issue_note="Privacy policy not accessible from homepage — required under PDPA §11 Openness Obligation.",
+                    compliant_note="Privacy policy linked and DPO contact identified in compliance with PDPA §11.",
+                    issue_note="Privacy policy or DPO contact not accessible — required under PDPA §11 Openness Obligation.",
+                ),
+            ),
+            (
+                "Security HTTP Headers",
+                *_row(
+                    _has(["hsts", "csp", "x_frame", "x_content_type", "referrer", "security_headers", "https"]),
+                    base_score=94,
+                    compliant_note="Security headers (HSTS, CSP, etc.) correctly configured for PDPA §24.",
+                    issue_note="Missing security headers — increases risk of data exfiltration under PDPA §24.",
+                ),
+            ),
+            (
+                "Cookie Attributes",
+                *_row(
+                    _has(["cookie_secure", "secure flag", "httponly", "samesite"]),
+                    base_score=96,
+                    compliant_note="Cookies correctly use Secure and HttpOnly flags for data protection.",
+                    issue_note="Cookies missing security flags — vulnerable to interception or cross-site scripting.",
                 ),
             ),
             (
@@ -680,10 +698,19 @@ class PDFService:
             (
                 "Data Subject Rights Mechanism",
                 *_row(
-                    _has(["data_subject", "rights", "access_request", "correction"]),
+                    _has(["data_subject", "rights", "access_request", "correction", "withdrawal"]),
                     base_score=90,
-                    compliant_note="Access and correction request pathway detected on website.",
+                    compliant_note="Access, correction and withdrawal request pathways detected.",
                     issue_note="No data subject rights mechanism found — required under PDPA §21–22.",
+                ),
+            ),
+            (
+                "NRIC / FIN Collection Signals",
+                *_row(
+                    _has(["nric", "fin", "nric_collection", "identity document"]),
+                    base_score=100,
+                    compliant_note="No NRIC/FIN collection points detected on publicly accessible pages.",
+                    issue_note="Possible NRIC/FIN collection detected — restricted under PDPC advisory guidelines.",
                 ),
             ),
         ]
