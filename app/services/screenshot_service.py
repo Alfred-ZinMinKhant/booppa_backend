@@ -43,8 +43,8 @@ def capture_screenshot_bytes(url: str, timeout: int = 60) -> Optional[bytes]:
             browser = p.chromium.launch()
             page = browser.new_page()
             page.goto(url, timeout=timeout * 1000, wait_until="networkidle")
-            # Wait 30s for splash screens / animated intros to finish
-            page.wait_for_timeout(30000)
+            # Wait 60s for splash screens / animated intros to finish
+            page.wait_for_timeout(60000)
             img = page.screenshot(full_page=False)
             browser.close()
             logger.info(f"Screenshot via Playwright for {url}")

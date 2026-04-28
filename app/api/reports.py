@@ -123,8 +123,17 @@ async def create_report(
         assessment = request.assessment_data or {}
         if request.website:
             assessment["url"] = request.website
+            # Only pre-set uses_https when the scheme is explicit.
+            # Bare domains like "example.com" should NOT default to False —
+            # the network resolution step (_resolve_website_url) will determine
+            # the real value by actually connecting over HTTPS first.
             if "uses_https" not in assessment and isinstance(request.website, str):
-                assessment["uses_https"] = request.website.lower().startswith("https://")
+                lower = request.website.lower()
+                if lower.startswith("https://"):
+                    assessment["uses_https"] = True
+                elif lower.startswith("http://"):
+                    assessment["uses_https"] = False
+                # else: no scheme → leave unset, let network check decide
         if getattr(request, "contact_email", None):
             assessment["contact_email"] = request.contact_email
 
@@ -174,8 +183,17 @@ async def create_report_public(request: ReportRequest):
         assessment = request.assessment_data or {}
         if request.website:
             assessment["url"] = request.website
+            # Only pre-set uses_https when the scheme is explicit.
+            # Bare domains like "example.com" should NOT default to False —
+            # the network resolution step (_resolve_website_url) will determine
+            # the real value by actually connecting over HTTPS first.
             if "uses_https" not in assessment and isinstance(request.website, str):
-                assessment["uses_https"] = request.website.lower().startswith("https://")
+                lower = request.website.lower()
+                if lower.startswith("https://"):
+                    assessment["uses_https"] = True
+                elif lower.startswith("http://"):
+                    assessment["uses_https"] = False
+                # else: no scheme → leave unset, let network check decide
         if getattr(request, "contact_email", None):
             assessment["contact_email"] = request.contact_email
 
