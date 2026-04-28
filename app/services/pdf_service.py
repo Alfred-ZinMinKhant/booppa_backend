@@ -603,7 +603,7 @@ class PDFService:
             ])
             out_style_rows.append(r)
 
-        col_w = [CONTENT_W * 0.28, CONTENT_W * 0.52, CONTENT_W * 0.20]
+        col_w = [CONTENT_W * 0.26, CONTENT_W * 0.52, CONTENT_W * 0.22]
         t = Table(rows, colWidths=col_w)
         style_cmds = [
             ("BACKGROUND", (0, 0), (-1, 0), NAVY),

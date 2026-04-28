@@ -149,13 +149,14 @@ async def _detect_cookie_banner(url: str | None) -> dict:
         async with async_playwright() as p:
             browser = await p.chromium.launch()
             page = await browser.new_page()
-            await page.goto(url, timeout=20000, wait_until="networkidle")
-            # Wait a bit for popups
-            await asyncio.sleep(2)
-            
+            await page.goto(url, timeout=45000, wait_until="networkidle")
+            # Wait for splash screens / animated intros to finish (30s)
+            # Many sites show loading animations with logos for 10-30s
+            await asyncio.sleep(30)
+
             # Get full rendered HTML
             html = (await page.content()).lower()
-            
+
             # Also check for common IDs/classes directly
             banner_visible = await page.evaluate("""() => {
                 const selectors = [
@@ -185,10 +186,12 @@ async def _detect_cookie_banner(url: str | None) -> dict:
     except Exception as e:
         logger.warning(f"Playwright cookie detection failed, falling back to HTTP: {e}")
 
-    # Fallback to static HTTP scan
+    # Fallback to static HTTP scan (browser-like headers to avoid 403)
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "BooppaComplianceBot/1.0"})
+            resp = await client.get(url, headers=_BROWSER_UA_HEADERS)
+            if resp.status_code == 403:
+                resp = await client.get(url, headers={"User-Agent": "BooppaComplianceBot/1.0"})
             if resp.status_code < 400:
                 html = resp.text.lower()
                 found = [k for k in indicators if k in html]
@@ -205,6 +208,36 @@ async def _detect_cookie_banner(url: str | None) -> dict:
         return {"cookie_scan_error": f"error:{str(e)[:200]}"}
 
 
+_BROWSER_UA_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+_LOADING_SCREEN_PATTERNS = [
+    "please wait", "loading...", "just a moment", "checking your browser",
+    "one moment please", "verifying you are human", "please enable javascript",
+    "cloudflare", "attention required", "ray id", "ddos protection",
+]
+
+
+def _is_loading_page(html: str) -> bool:
+    """Detect loading/interstitial pages with very little real content."""
+    if not html or len(html.strip()) < 500:
+        return True
+    html_lower = html.lower()
+    body_match = re.search(r"<body[^>]*>(.*)</body>", html_lower, re.DOTALL)
+    body_text = body_match.group(1) if body_match else html_lower
+    visible_text = re.sub(r"<[^>]+>", "", body_text).strip()
+    if len(visible_text) < 200:
+        if any(p in html_lower for p in _LOADING_SCREEN_PATTERNS):
+            return True
+    return False
+
+
 async def _scan_site_metadata(url: str | None) -> dict:
     if not url:
         return {}
@@ -215,7 +248,40 @@ async def _scan_site_metadata(url: str | None) -> dict:
 
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "BooppaComplianceBot/1.0"})
+            # Use browser-like headers to avoid 403 from WAFs
+            resp = await client.get(url, headers=_BROWSER_UA_HEADERS)
+
+            # Retry on 403 with bot UA (some sites prefer identified bots)
+            if resp.status_code == 403:
+                logger.info(f"Got 403 for {url}, retrying with bot UA")
+                resp = await client.get(url, headers={"User-Agent": "BooppaComplianceBot/1.0"})
+
+            if resp.status_code == 403:
+                page_result["http_403"] = True
+                page_result["scan_limitation"] = (
+                    "Website returned 403 Forbidden — WAF or geo-blocking may be active. "
+                    "Results based on limited information."
+                )
+
+            # Detect loading/splash screens and retry after delay
+            # Many sites show animated intros / logos for 10-30s
+            if resp.status_code < 400 and _is_loading_page(resp.text or ""):
+                for attempt in range(1, 3):  # retry up to 2 times (~60s total)
+                    logger.info(
+                        f"Loading screen detected for {url}, "
+                        f"waiting 30s before retry {attempt}/2"
+                    )
+                    await asyncio.sleep(30)
+                    resp = await client.get(url, headers=_BROWSER_UA_HEADERS)
+                    if not _is_loading_page(resp.text or ""):
+                        logger.info(f"Real content received on retry {attempt} for {url}")
+                        break
+                else:
+                    page_result["loading_screen_detected"] = True
+                    page_result["scan_limitation"] = (
+                        "Loading screen or splash page detected — did not resolve after ~1 minute wait. "
+                        "Some checks may be incomplete."
+                    )
             headers_result = {
                 "hsts": bool(resp.headers.get("strict-transport-security")),
                 "csp": bool(resp.headers.get("content-security-policy")),
@@ -329,12 +395,17 @@ async def _resolve_website_url(raw_url: str | None) -> dict:
         candidates.append(f"https://www.{normalized}")
     candidates += [f"https://{normalized}", f"http://{normalized}"]
 
-    headers = {"User-Agent": "BooppaComplianceBot/1.0"}
-
     async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
         for candidate in candidates:
             try:
-                resp = await client.get(candidate, headers=headers)
+                # Use browser-like headers to avoid 403 from WAFs/CDNs
+                resp = await client.get(candidate, headers=_BROWSER_UA_HEADERS)
+                # If 403, retry with bot UA (some sites prefer identified bots)
+                if resp.status_code == 403:
+                    resp = await client.get(
+                        candidate,
+                        headers={"User-Agent": "BooppaComplianceBot/1.0"},
+                    )
                 final_url = str(resp.url)
                 return {
                     "resolved_url": final_url,

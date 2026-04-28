@@ -33,7 +33,7 @@ def _is_placeholder(resp: httpx.Response) -> bool:
     return "mshots/v1/default" in final or "mshots/v1/0" in final
 
 
-def capture_screenshot_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
+def capture_screenshot_bytes(url: str, timeout: int = 60) -> Optional[bytes]:
     """Return PNG/JPEG bytes for a screenshot of `url`, or None if all providers fail."""
 
     # ── 1. Playwright ──────────────────────────────────────────────────────────
@@ -42,8 +42,9 @@ def capture_screenshot_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
         with sync_playwright() as p:
             browser = p.chromium.launch()
             page = browser.new_page()
-            page.goto(url, timeout=timeout * 1000)
-            page.wait_for_timeout(2000)
+            page.goto(url, timeout=timeout * 1000, wait_until="networkidle")
+            # Wait 30s for splash screens / animated intros to finish
+            page.wait_for_timeout(30000)
             img = page.screenshot(full_page=False)
             browser.close()
             logger.info(f"Screenshot via Playwright for {url}")
