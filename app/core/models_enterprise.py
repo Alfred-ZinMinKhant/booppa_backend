@@ -175,5 +175,5 @@ class SlaLog(Base):
     target_minutes = Column(Integer)
     actual_minutes = Column(Integer)
     met = Column(Boolean)
-    metadata = Column(JSONB, default=dict)
+    event_metadata = Column("metadata", JSONB, default=dict)
     recorded_at = Column(DateTime, default=datetime.utcnow)
