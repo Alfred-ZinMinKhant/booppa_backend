@@ -482,8 +482,8 @@ async def get_certificate(report_id: str, session_id: str | None = None, backgro
                 "schema_version": "1.0",
                 "anchored": anchored,
                 "anchored_at": anchored_at,
-                "network": "Polygon Amoy Testnet",
-                "testnet_notice": "Anchored on Polygon Amoy testnet. Not yet on mainnet.",
+                "network": settings.POLYGON_NETWORK_NAME,
+                "testnet_notice": settings.POLYGON_TESTNET_NOTICE,
             }
 
         return {

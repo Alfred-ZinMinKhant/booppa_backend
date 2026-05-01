@@ -335,7 +335,7 @@ async def upload_evidence(
     if existing:
         raise HTTPException(status_code=409, detail="This document has already been notarized.")
         
-    # 3. Anchor to blockchain (Polygon Amoy testnet)
+    # 3. Anchor to blockchain (Polygon Amoy Testnet)
     tx_hash = None
     anchor_status = "pending_anchor"
     try:
@@ -365,8 +365,8 @@ async def upload_evidence(
             "status": anchor_status,
             "tx_hash": tx_hash,
             "verify_url": verify_url,
-            "network": "Polygon Amoy Testnet",
-            "testnet_notice": "Anchored on Polygon Amoy testnet. Not yet on mainnet.",
+            "network": settings.POLYGON_NETWORK_NAME,
+            "testnet_notice": settings.POLYGON_TESTNET_NOTICE,
         }
     )
     db.add(proof)
@@ -384,8 +384,8 @@ async def upload_evidence(
         "created_at": proof.created_at.isoformat(),
         "tx_hash": proof.metadata_json.get("tx_hash"),
         "verify_url": proof.metadata_json.get("verify_url"),
-        "network": "Polygon Amoy Testnet",
-        "testnet_notice": "Anchored on Polygon Amoy testnet. Not yet on mainnet.",
+        "network": settings.POLYGON_NETWORK_NAME,
+        "testnet_notice": settings.POLYGON_TESTNET_NOTICE,
         "anchor_status": anchor_status,
     }
 

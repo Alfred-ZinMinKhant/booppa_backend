@@ -36,8 +36,10 @@ class Settings(BaseSettings):
     RESEND_API_KEY: Optional[str] = None
 
     # Blockchain
-    POLYGON_RPC_URL: str = "https://polygon-rpc.com"
+    POLYGON_RPC_URL: str = "https://rpc-amoy.polygon.technology"
     POLYGON_EXPLORER_URL: str = "https://amoy.polygonscan.com"
+    POLYGON_NETWORK_NAME: str = "Polygon Amoy Testnet"
+    POLYGON_TESTNET_NOTICE: str = "Anchored on Polygon Amoy Testnet."
     ANCHOR_CONTRACT_ADDRESS: str = "0x0000000000000000000000000000000000000000"
     PRIVATE_KEY_ENCRYPTED: Optional[str] = None
     BLOCKCHAIN_PRIVATE_KEY: Optional[str] = None

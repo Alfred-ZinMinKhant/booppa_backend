@@ -500,8 +500,8 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                 "polygonscan_url": polygonscan_url,
                 "proof_header": "BOOPPA-PROOF-SG",
                 "schema_version": "1.0",
-                "network": "Polygon Amoy Testnet",
-                "testnet_notice": "Anchored on Polygon Amoy testnet. Not yet on mainnet.",
+                "network": settings.POLYGON_NETWORK_NAME,
+                "testnet_notice": settings.POLYGON_TESTNET_NOTICE,
                 "payment_confirmed": True,
                 "tier": "pro",
                 "contact_email": contact_email,
@@ -561,7 +561,7 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                   {download_section}
                   <p style="color:#64748b;font-size:12px;">
                     Certificate ID: {report_id}<br>
-                    Network: Polygon Amoy Testnet
+                    Network: {settings.POLYGON_NETWORK_NAME}
                   </p>
                   <p>Thank you for using BOOPPA.</p>
                 </body></html>
