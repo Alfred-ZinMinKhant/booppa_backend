@@ -42,6 +42,7 @@ MODE_MAP = {
     "vendor_trust_pack": "payment",
     "rfp_accelerator": "payment",
     "enterprise_bid_kit": "payment",
+    "compliance_evidence_pack": "payment",
     # Subscriptions
     "vendor_active_monthly": "subscription",
     "vendor_active_annual": "subscription",

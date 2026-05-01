@@ -62,6 +62,13 @@ BUNDLE_COMPONENTS = {
         "notarization_count": 7,  # 2 from Trust Pack + 5 additional
         "rfp": "rfp_complete",
     },
+    "compliance_evidence_pack": {
+        "vendor_proof": True,
+        "pdpa": True,
+        "notarization_count": 3,
+        "rfp": None,
+        "cover_sheet": True,   # triggers cover sheet generation with 300s delay
+    },
 }
 
 
@@ -276,6 +283,7 @@ async def _fulfill_bundle(
         fulfill_pdpa_task,
         fulfill_notarization_task,
         fulfill_rfp_task,
+        fulfill_cover_sheet_task,
     )
 
     db = SessionLocal()
@@ -378,7 +386,20 @@ async def _fulfill_bundle(
                         f"[Bundle:{product_type}] Queued notarization #{i+1} for report {nid}"
                     )
 
-        # 4. RFP component (no stub needed — self-contained task)
+        # 4. Cover Sheet (compliance_evidence_pack only — delayed 300s to let components finish)
+        if components.get("cover_sheet"):
+            fulfill_cover_sheet_task.apply_async(
+                kwargs={
+                    "bundle_type": product_type,
+                    "customer_email": customer_email,
+                    "company_name": company_name,
+                    "metadata": metadata,
+                },
+                countdown=300,
+            )
+            logger.info(f"[Bundle:{product_type}] Queued cover_sheet with 300s delay")
+
+        # 5. RFP component (no stub needed — self-contained task)
         rfp_type = components.get("rfp")
         if rfp_type:
             vendor_url = metadata.get("vendor_url", website)

@@ -46,7 +46,7 @@ booppa_v10_enterprise/
 
 - Two-Phase Blockchain Anchoring
 - AWS S3 Storage (MTCS Tier 3 compliant)
-- Polygon PoS Integration
+- Polygon Amoy Testnet Integration
 - AI-Powered Audit Narratives
 - PDPA-Compliant Email
 - Enterprise Observability

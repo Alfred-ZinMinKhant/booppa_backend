@@ -137,6 +137,12 @@ router.include_router(
     managed_vendors_router, prefix="/supply-chain", tags=["supply-chain"]
 )
 
+# V12 — Enterprise Package (Orgs, TRM, Webhooks, SSO, White-label)
+from .enterprise_api import router as enterprise_router, sso_router
+
+router.include_router(enterprise_router, prefix="/enterprise", tags=["enterprise"])
+router.include_router(sso_router, prefix="/enterprise", tags=["enterprise-sso"])
+
 
 # ── Lightweight public platform stats (no auth) ─────────────────────────────
 @router.get("/platform-stats", tags=["public"])

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Response
 from fastapi.responses import StreamingResponse
 from io import BytesIO
 from app.services.pdf_service import PDFService
+from app.core.config import settings
 
 router = APIRouter()
 
@@ -22,7 +23,7 @@ async def mock_report():
         ],
         "tx_hash": "0x8f3a12b4c9abcdef1234567890abcdef91c2",
         "audit_hash": "0xdeadbeefcafebabe",
-        "verify_url": "https://polygonscan.com/tx/0x8f3a12b4c9abcdef1234567890abcdef91c2",
+        "verify_url": f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/0x8f3a12b4c9abcdef1234567890abcdef91c2",
         "schema_version": "1.0",
         "executive_summary": "This is a mock executive summary demonstrating the PDF layout. No real data is included.",
         "detailed_findings": [

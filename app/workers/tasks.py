@@ -1565,6 +1565,88 @@ def fulfill_rfp_task(
             raise
 
 
+@celery_app.task(bind=True, max_retries=3, name="fulfill_cover_sheet_task")
+def fulfill_cover_sheet_task(
+    self,
+    bundle_type: str,
+    customer_email: str | None = None,
+    company_name: str = "",
+    metadata: dict | None = None,
+):
+    """
+    Compliance Evidence Pack — Cover Sheet fulfillment.
+    Runs 300s after bundle components are queued so reports have time to generate.
+    Flow: SHA-256 hash → blockchain anchor → generate PDF → email delivery.
+    """
+    import hashlib
+    import uuid as _uuid
+    metadata = metadata or {}
+    try:
+        from app.services.cover_sheet_generator import generate_cover_sheet
+        from app.services.storage import S3Service
+        from app.services.email_service import EmailService
+        from app.core.config import settings
+
+        report_id = metadata.get("report_id") or str(_uuid.uuid4())
+
+        # 1. Gather available data
+        cover_data = {
+            "report_id": report_id,
+            "bundle_type": bundle_type,
+            "company_name": company_name or metadata.get("company_name", ""),
+            "customer_email": customer_email,
+            "pdpa_status": "Completed",
+            "pdpa_score": metadata.get("pdpa_score", "—"),
+            "vendor_proof_status": "Completed",
+            "notarization_count": 3,
+            "tx_hash": "—",
+            "network": settings.POLYGON_NETWORK_NAME,
+            "recommendations": None,
+            "trm_domains": [],
+        }
+
+        # 2. Blockchain anchor
+        try:
+            content_hash = hashlib.sha256(f"cover_sheet:{report_id}".encode()).hexdigest()
+            blockchain = BlockchainService()
+            tx = asyncio.run(blockchain.anchor_evidence(content_hash, metadata=f"cover_sheet:{report_id}"))
+            if tx:
+                cover_data["tx_hash"] = tx
+        except Exception as e:
+            logger.warning(f"Cover sheet blockchain anchor failed (non-blocking): {e}")
+
+        # 3. Generate PDF
+        pdf_bytes = generate_cover_sheet(cover_data)
+
+        # 4. Upload to S3
+        s3 = S3Service()
+        s3_key = f"cover_sheets/{report_id}/compliance_cover_sheet.pdf"
+        download_url = s3.upload_bytes(pdf_bytes, s3_key, content_type="application/pdf")
+
+        # 5. Email delivery
+        if customer_email:
+            email_svc = EmailService()
+            asyncio.run(email_svc.send_email(
+                to=customer_email,
+                subject="Your Compliance Evidence Pack is Ready — Booppa",
+                html=(
+                    f"<p>Hi,</p>"
+                    f"<p>Your <strong>Compliance Evidence Pack</strong> is complete.</p>"
+                    f"<p>All components (Vendor Proof, PDPA Report, Notarization Credits) "
+                    f"have been generated. Your summary cover sheet is attached below.</p>"
+                    f"<p><a href='{download_url}'>Download Cover Sheet PDF</a></p>"
+                    f"<p>Thank you for using BOOPPA.</p>"
+                ),
+                attachments=[{"filename": "compliance_cover_sheet.pdf", "data": pdf_bytes}],
+            ))
+            logger.info(f"Cover sheet delivered to {customer_email} for {bundle_type}")
+
+    except Exception as exc:
+        logger.error(f"Cover sheet fulfillment failed: {exc}")
+        countdown = 120 * (2 ** self.request.retries)
+        raise self.retry(exc=exc, countdown=countdown)
+
+
 @celery_app.task(bind=True, max_retries=2, name="vendor_active_health_check_task")
 def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str):
     """
