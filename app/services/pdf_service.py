@@ -113,8 +113,10 @@ def _draw_page(canvas, doc):
         except Exception:
             pass  # silently skip watermark if logo unavailable
 
-    # ── Header band ──────────────────────────────────────────────────────────
-    canvas.setFillColor(NAVY)
+    # ── Header band (white-label override) ──────────────────────────────────
+    _branding = getattr(doc, "_branding", None)
+    header_color = colors.HexColor(_branding["secondary_color"]) if _branding and _branding.get("secondary_color") else NAVY
+    canvas.setFillColor(header_color)
     canvas.rect(0, PAGE_H - HEADER_H, PAGE_W, HEADER_H, fill=1, stroke=0)
 
     logo_h = 0.35 * inch
@@ -135,9 +137,10 @@ def _draw_page(canvas, doc):
     else:
         _draw_logo_text(canvas, logo_y)
 
-    # Report-type label — right side of header
+    # Report-type label — right side of header (white-label override)
     label = getattr(doc, "_report_type_label", "AUDIT REPORT")
-    canvas.setFillColor(EMERALD)
+    accent_color = colors.HexColor(_branding["primary_color"]) if _branding and _branding.get("primary_color") else EMERALD
+    canvas.setFillColor(accent_color)
     canvas.setFont("Helvetica-Bold", 7.5)
     canvas.drawRightString(PAGE_W - MARGIN, PAGE_H - HEADER_H + 0.24 * inch, label)
 
@@ -159,7 +162,8 @@ def _draw_page(canvas, doc):
         canvas.drawRightString(PAGE_W - MARGIN, FOOTER_H - 9, f"Page {doc.page}")
     else:
         canvas.setFont("Helvetica", 6.5)
-        canvas.drawString(MARGIN, FOOTER_H - 9, COMPANY_LEGAL_FOOTER)
+        footer_str = (_branding.get("footer_text") or COMPANY_LEGAL_FOOTER) if _branding else COMPANY_LEGAL_FOOTER
+        canvas.drawString(MARGIN, FOOTER_H - 9, footer_str)
         canvas.drawRightString(PAGE_W - MARGIN, FOOTER_H - 9, f"Page {doc.page}")
 
     canvas.restoreState()
@@ -394,7 +398,7 @@ class PDFService:
             try:
                 qr_target = f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{tx_hash}"
             except Exception:
-                qr_target = f"https://polygonscan.com/tx/{tx_hash}"
+                qr_target = f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{tx_hash}"
             url_display = qr_target
 
         # QR code
@@ -436,7 +440,7 @@ class PDFService:
             ),
             Spacer(1, 5),
             Paragraph("ANCHORED ON", s["Label"]),
-            Paragraph("Polygon PoS  ·  Immutable blockchain record", s["Body"]),
+            Paragraph(f"{settings.POLYGON_NETWORK_NAME}  ·  Immutable blockchain record", s["Body"]),
         ]
 
         qr_items = [
@@ -903,9 +907,9 @@ class PDFService:
                 f"The output must exactly match: <font face='Courier'>{audit_hash}</font>",
             ),
             (
-                "Step 4 — Confirm the Transaction Hash on polygonscan.com.",
+                f"Step 4 — Confirm the Transaction Hash on {settings.POLYGON_EXPLORER_URL}.",
                 f"Search <font face='Courier'>{tx_hash}</font> on "
-                f'<a href="https://polygonscan.com"><font color="#10b981">polygonscan.com</font></a>. '
+                f'<a href="{settings.POLYGON_EXPLORER_URL}"><font color="#10b981">{settings.POLYGON_EXPLORER_URL}</font></a>. '
                 "The block timestamp proves the earliest possible existence date of this document. "
                 "No login or account required.",
             ),
@@ -1225,7 +1229,7 @@ class PDFService:
                 ))
                 story.append(Spacer(1, 4))
                 story.append(Paragraph(
-                    f"The audit was conducted on {scan_date_str} and anchored on the Polygon PoS blockchain "
+                    f"The audit was conducted on {scan_date_str} and anchored on the {settings.POLYGON_NETWORK_NAME} blockchain "
                     f"for evidentiary integrity.",
                     s["Body"],
                 ))
@@ -1301,7 +1305,7 @@ class PDFService:
                 story.append(Spacer(1, 6))
                 if findings:
                     story.append(Paragraph(
-                        "The following artifacts must be anchored on the Polygon PoS blockchain to create "
+                        f"The following artifacts must be anchored on the {settings.POLYGON_NETWORK_NAME} blockchain to create "
                         "an immutable, court-admissible compliance trail:",
                         s["Body"],
                     ))
@@ -1603,10 +1607,10 @@ class PDFService:
         items.append(Spacer(1, 6))
         tx = d.get("tx_hash") or "—"
         poly_url = d.get("polygonscan_url") or (
-            f"https://polygonscan.com/tx/{tx}" if tx != "—" else "—"
+            f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{tx}" if tx != "—" else "—"
         )
         items.append(self._meta_table([
-            ("NETWORK", d.get("network") or "Polygon PoS"),
+            ("NETWORK", d.get("network") or settings.POLYGON_NETWORK_NAME),
             ("TRANSACTION HASH", tx),
             ("EXPLORER URL", poly_url),
             ("ANCHORED AT", d.get("created_at", "")[:19] or "—"),
@@ -1637,7 +1641,7 @@ class PDFService:
              f"The resulting hash must exactly match the Evidence Hash printed above:\n"
              f"{d.get('audit_hash') or d.get('file_hash') or '(see Cryptographic Proof section)'}"),
             ("Step 4 — Confirm the blockchain anchor",
-             f"Search the Transaction Hash on https://polygonscan.com. "
+             f"Search the Transaction Hash on {settings.POLYGON_EXPLORER_URL}. "
              f"The block timestamp proves the earliest possible existence date of this document. "
              f"No login or account required."),
         ]

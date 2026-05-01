@@ -25,6 +25,7 @@ def test_imports():
 
 def test_qr_urls():
     """Test QR code URL generation"""
+    from app.core.config import settings
     print("\nTesting QR code URLs...")
 
     test_hashes = [
@@ -32,8 +33,9 @@ def test_qr_urls():
         "0x1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b"
     ]
 
+    explorer = settings.POLYGON_EXPLORER_URL.rstrip("/")
     for tx_hash in test_hashes:
-        url = f"https://polygonscan.com/tx/{tx_hash}"
+        url = f"{explorer}/tx/{tx_hash}"
         if ' ' in url:
             print(f"URL contains spaces: {url}")
             return False

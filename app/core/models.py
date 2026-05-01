@@ -234,3 +234,6 @@ from .models_v8 import *
 
 # Import V11 extensions (ComplianceRequirement, ManagedVendor)
 from .models_v11 import *
+
+# Import V12 Enterprise extensions
+from .models_enterprise import *
