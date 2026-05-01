@@ -150,6 +150,7 @@ jobs:
           STRIPE_VENDOR_TRUST_PACK: ${{ secrets.STRIPE_VENDOR_TRUST_PACK }}
           STRIPE_RFP_ACCELERATOR: ${{ secrets.STRIPE_RFP_ACCELERATOR }}
           STRIPE_ENTERPRISE_BID_KIT: ${{ secrets.STRIPE_ENTERPRISE_BID_KIT }}
+          STRIPE_COMPLIANCE_EVIDENCE_PACK: ${{ secrets.STRIPE_COMPLIANCE_EVIDENCE_PACK }}
           STRIPE_VENDOR_ACTIVE_MONTHLY: ${{ secrets.STRIPE_VENDOR_ACTIVE_MONTHLY }}
           STRIPE_VENDOR_ACTIVE_ANNUAL: ${{ secrets.STRIPE_VENDOR_ACTIVE_ANNUAL }}
           STRIPE_PDPA_MONITOR_MONTHLY: ${{ secrets.STRIPE_PDPA_MONITOR_MONTHLY }}
@@ -217,6 +218,7 @@ jobs:
                   { "name": "STRIPE_VENDOR_TRUST_PACK", "value": "${STRIPE_VENDOR_TRUST_PACK}" },
                   { "name": "STRIPE_RFP_ACCELERATOR", "value": "${STRIPE_RFP_ACCELERATOR}" },
                   { "name": "STRIPE_ENTERPRISE_BID_KIT", "value": "${STRIPE_ENTERPRISE_BID_KIT}" },
+                  { "name": "STRIPE_COMPLIANCE_EVIDENCE_PACK", "value": "${STRIPE_COMPLIANCE_EVIDENCE_PACK}" },
                   { "name": "STRIPE_VENDOR_ACTIVE_MONTHLY", "value": "${STRIPE_VENDOR_ACTIVE_MONTHLY}" },
                   { "name": "STRIPE_VENDOR_ACTIVE_ANNUAL", "value": "${STRIPE_VENDOR_ACTIVE_ANNUAL}" },
                   { "name": "STRIPE_PDPA_MONITOR_MONTHLY", "value": "${STRIPE_PDPA_MONITOR_MONTHLY}" },
@@ -288,6 +290,7 @@ jobs:
           STRIPE_VENDOR_TRUST_PACK: ${{ secrets.STRIPE_VENDOR_TRUST_PACK }}
           STRIPE_RFP_ACCELERATOR: ${{ secrets.STRIPE_RFP_ACCELERATOR }}
           STRIPE_ENTERPRISE_BID_KIT: ${{ secrets.STRIPE_ENTERPRISE_BID_KIT }}
+          STRIPE_COMPLIANCE_EVIDENCE_PACK: ${{ secrets.STRIPE_COMPLIANCE_EVIDENCE_PACK }}
           STRIPE_VENDOR_ACTIVE_MONTHLY: ${{ secrets.STRIPE_VENDOR_ACTIVE_MONTHLY }}
           STRIPE_VENDOR_ACTIVE_ANNUAL: ${{ secrets.STRIPE_VENDOR_ACTIVE_ANNUAL }}
           STRIPE_PDPA_MONITOR_MONTHLY: ${{ secrets.STRIPE_PDPA_MONITOR_MONTHLY }}
@@ -357,6 +360,7 @@ jobs:
                   { "name": "STRIPE_VENDOR_TRUST_PACK", "value": "${STRIPE_VENDOR_TRUST_PACK}" },
                   { "name": "STRIPE_RFP_ACCELERATOR", "value": "${STRIPE_RFP_ACCELERATOR}" },
                   { "name": "STRIPE_ENTERPRISE_BID_KIT", "value": "${STRIPE_ENTERPRISE_BID_KIT}" },
+                  { "name": "STRIPE_COMPLIANCE_EVIDENCE_PACK", "value": "${STRIPE_COMPLIANCE_EVIDENCE_PACK}" },
                   { "name": "STRIPE_VENDOR_ACTIVE_MONTHLY", "value": "${STRIPE_VENDOR_ACTIVE_MONTHLY}" },
                   { "name": "STRIPE_VENDOR_ACTIVE_ANNUAL", "value": "${STRIPE_VENDOR_ACTIVE_ANNUAL}" },
                   { "name": "STRIPE_PDPA_MONITOR_MONTHLY", "value": "${STRIPE_PDPA_MONITOR_MONTHLY}" },
