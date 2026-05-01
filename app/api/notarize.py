@@ -103,6 +103,19 @@ async def upload_document(
     # Create a pending report record
     db = SessionLocal()
     try:
+        # Check for bundle-granted notarization credits on this email.
+        # If the user has credits, skip Stripe and queue fulfillment immediately.
+        bundle_credit_user = None
+        if email:
+            bundle_credit_user = db.query(User).filter(User.email == email).first()
+            if bundle_credit_user and (getattr(bundle_credit_user, "notarization_credits", 0) or 0) > 0:
+                logger.info(
+                    f"[Notarize] User {email} has {bundle_credit_user.notarization_credits} bundle credits — "
+                    f"redeeming one for upload"
+                )
+            else:
+                bundle_credit_user = None
+
         # Derive MIME type: prefer explicit content_type, fallback to extension guess
         mime_type = file.content_type or "application/octet-stream"
 
@@ -128,9 +141,14 @@ async def upload_document(
         if email:
             assessment_data["contact_email"] = email
 
+        # If redeeming a bundle credit, mark as paid so fulfillment runs without Stripe
+        if bundle_credit_user is not None:
+            assessment_data["payment_confirmed"] = True
+            assessment_data["bundle_credit_redeemed"] = True
+
         report = Report(
             id=report_id,
-            owner_id=str(uuid.uuid4()),
+            owner_id=bundle_credit_user.id if bundle_credit_user else str(uuid.uuid4()),
             framework="compliance_notarization",
             company_name=company_name or "Notarization",
             assessment_data=assessment_data,
@@ -138,15 +156,36 @@ async def upload_document(
         )
         report.audit_hash = file_hash
         db.add(report)
-        db.commit()
 
-        return {
+        # Decrement credit + queue fulfillment if redeeming
+        credits_remaining = None
+        if bundle_credit_user is not None:
+            bundle_credit_user.notarization_credits = max(
+                0, (bundle_credit_user.notarization_credits or 0) - 1
+            )
+            credits_remaining = bundle_credit_user.notarization_credits
+            db.commit()
+            from app.workers.tasks import fulfill_notarization_task
+            fulfill_notarization_task.delay(report_id, email)
+            logger.info(
+                f"[Notarize] Redeemed bundle credit for {email}, queued fulfillment for {report_id}, "
+                f"remaining credits={credits_remaining}"
+            )
+        else:
+            db.commit()
+
+        response = {
             "report_id": report_id,
             "file_hash": file_hash,
             "file_name": file.filename,
             "file_size": len(contents),
             "product_type": product_type,
         }
+        if bundle_credit_user is not None:
+            response["bundle_credit_redeemed"] = True
+            response["credits_remaining"] = credits_remaining
+            response["skip_checkout"] = True
+        return response
     except Exception as e:
         db.rollback()
         logger.error(f"Failed to create notarization report: {e}")
@@ -341,6 +380,20 @@ async def enterprise_upload_document(
         db.rollback()
         logger.error(f"Enterprise notarization failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to process upload.")
+    finally:
+        db.close()
+
+
+@router.get("/credits")
+async def get_bundle_credits(email: str):
+    """Check bundle-granted notarization credit balance for an email."""
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            return {"balance": 0, "has_credits": False}
+        balance = getattr(user, "notarization_credits", 0) or 0
+        return {"balance": balance, "has_credits": balance > 0}
     finally:
         db.close()
 

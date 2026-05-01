@@ -281,7 +281,6 @@ async def _fulfill_bundle(
     from app.workers.tasks import (
         fulfill_vendor_proof_task,
         fulfill_pdpa_task,
-        fulfill_notarization_task,
         fulfill_rfp_task,
         fulfill_cover_sheet_task,
     )
@@ -359,14 +358,25 @@ async def _fulfill_bundle(
             pdpa_id = _make_stub("pdpa_quick_scan")
             tasks_to_queue.append(("pdpa", pdpa_id))
 
-        # 3. Notarization credits (one stub per credit)
+        # 3. Notarization credits — grant balance to user, no auto-fulfillment.
+        # User redeems credits later by uploading documents at /notarize.
         notarization_count = components.get("notarization_count", 0)
-        notarization_ids = []
-        for _ in range(notarization_count):
-            notarization_ids.append(_make_stub("compliance_notarization_1"))
-        tasks_to_queue.append(("notarization", notarization_ids))
+        if notarization_count > 0 and customer_email:
+            user = db.query(User).filter(User.email == customer_email).first()
+            if user:
+                current_balance = getattr(user, "notarization_credits", 0) or 0
+                user.notarization_credits = current_balance + notarization_count
+                logger.info(
+                    f"[Bundle:{product_type}] Granted {notarization_count} notarization credits "
+                    f"to {customer_email} (balance: {current_balance} → {user.notarization_credits})"
+                )
+            else:
+                logger.warning(
+                    f"[Bundle:{product_type}] Cannot grant {notarization_count} credits — "
+                    f"no user row for email={customer_email}"
+                )
 
-        # Commit all stubs atomically before queuing any tasks
+        # Commit stubs + credit grant atomically before queuing tasks
         db.commit()
 
         # Now queue tasks — stubs are safely persisted
@@ -379,12 +389,39 @@ async def _fulfill_bundle(
             elif task_type == "pdpa":
                 fulfill_pdpa_task.delay(payload, customer_email)
                 logger.info(f"[Bundle:{product_type}] Queued pdpa for report {payload}")
-            elif task_type == "notarization":
-                for i, nid in enumerate(payload):
-                    fulfill_notarization_task.delay(nid, customer_email)
-                    logger.info(
-                        f"[Bundle:{product_type}] Queued notarization #{i+1} for report {nid}"
-                    )
+
+        # Send credits-granted notification email
+        if notarization_count > 0 and customer_email:
+            try:
+                EmailService().send_email(
+                    to_email=customer_email,
+                    subject=f"Your {notarization_count} included notarizations are ready to redeem",
+                    html_body=f"""
+                    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;">
+                      <h2 style="color:#0f172a;">Notarization credits issued</h2>
+                      <p style="color:#334155;">
+                        Your <strong>{product_type.replace('_', ' ').title()}</strong> bundle includes
+                        <strong>{notarization_count} notarization{"s" if notarization_count != 1 else ""}</strong>.
+                        Each lets you anchor any compliance document (PDF, DOCX, image, etc.) on the blockchain
+                        with SHA-256 proof.
+                      </p>
+                      <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:16px;margin:20px 0;">
+                        <p style="margin:0 0 12px;font-weight:bold;color:#0369a1;">How to redeem</p>
+                        <p style="margin:0;color:#334155;font-size:14px;">
+                          Visit <a href="https://www.booppa.io/notarize" style="color:#0ea5e9;font-weight:bold;">booppa.io/notarize</a>,
+                          upload your document, and enter this email ({customer_email}).
+                          Your credit will be applied automatically — no payment required.
+                        </p>
+                      </div>
+                      <p style="color:#64748b;font-size:13px;">
+                        Credits don't expire. You can use them one at a time or all at once.
+                      </p>
+                    </div>
+                    """,
+                )
+                logger.info(f"[Bundle:{product_type}] Sent credits-granted email to {customer_email}")
+            except Exception as email_err:
+                logger.warning(f"[Bundle:{product_type}] Credits email failed: {email_err}")
 
         # 4. Cover Sheet (compliance_evidence_pack only — delayed 300s to let components finish)
         if components.get("cover_sheet"):

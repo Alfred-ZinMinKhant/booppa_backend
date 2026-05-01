@@ -152,7 +152,7 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     components = [
         ("Vendor Proof Certificate", data.get("vendor_proof_status", "Queued")),
         ("PDPA Quick Scan Report", data.get("pdpa_status", "Queued")),
-        (f"Notarization Credits ({data.get('notarization_count', 0)}×)", "Issued"),
+        (f"Notarization Credits ({data.get('notarization_count', 0)}×)", "Available — redeem at booppa.io/notarize"),
         ("Compliance Summary Cover Sheet", "This document"),
     ]
     story.append(_kv_table(components))
