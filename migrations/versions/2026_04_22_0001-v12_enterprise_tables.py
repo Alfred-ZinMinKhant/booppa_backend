@@ -55,7 +55,7 @@ def upgrade() -> None:
         sa.Column("organisation_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("organisations.id"), nullable=False),
         sa.Column("url", sa.Text(), nullable=False),
         sa.Column("secret", sa.String(128), nullable=False),
-        sa.Column("events", postgresql.JSONB(), server_default="'[]'"),
+        sa.Column("events", postgresql.JSONB(), server_default=sa.text("'[]'::jsonb")),
         sa.Column("is_active", sa.Boolean(), server_default="true"),
         sa.Column("created_at", sa.DateTime(), server_default=sa.text("now()")),
     )
@@ -148,7 +148,7 @@ def upgrade() -> None:
         sa.Column("target_minutes", sa.Integer()),
         sa.Column("actual_minutes", sa.Integer()),
         sa.Column("met", sa.Boolean()),
-        sa.Column("metadata", postgresql.JSONB(), server_default="'{}'"),
+        sa.Column("metadata", postgresql.JSONB(), server_default=sa.text("'{}'::jsonb")),
         sa.Column("recorded_at", sa.DateTime(), server_default=sa.text("now()")),
     )
     op.create_index("idx_sla_logs_org", "sla_logs", ["organisation_id"])
