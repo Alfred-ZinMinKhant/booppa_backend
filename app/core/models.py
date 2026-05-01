@@ -42,6 +42,12 @@ class User(Base):
     industry = Column(String(100), nullable=True)
     company_description = Column(Text, nullable=True)
 
+    # Notarization credits granted by bundle purchases (compliance_evidence_pack,
+    # vendor_trust_pack, rfp_accelerator, enterprise_bid_kit). Decremented when the
+    # user uploads a document at /notarize. Distinct from monthly enterprise credits
+    # (NotarizationCredit table) which are subscription-based.
+    notarization_credits = Column(Integer, default=0, nullable=False, server_default="0")
+
 
 class Report(Base):
     __tablename__ = "reports"

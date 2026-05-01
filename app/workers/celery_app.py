@@ -31,6 +31,8 @@ celery_app.conf.update(
         "fulfill_pdpa_task": {"queue": "reports"},
         "fulfill_vendor_proof_task": {"queue": "reports"},
         "fulfill_rfp_task": {"queue": "reports"},
+        "fulfill_bundle_task": {"queue": "default"},
+        "fulfill_cover_sheet_task": {"queue": "default"},
         "vendor_active_health_check_task": {"queue": "default"},
         "pdpa_monitor_quarterly_rescan_task": {"queue": "reports"},
         "app.workers.tasks.*": {"queue": "default"},
