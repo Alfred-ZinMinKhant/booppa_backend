@@ -226,8 +226,8 @@ class RFPExpressBuilder:
             "qa_answers_count": len(qa_display),
             "tx_hash":        tx_hash,
             "polygonscan_url": f"{explorer_base}/tx/{tx_hash}" if tx_hash else None,
-            "network":        "Polygon Amoy Testnet",
-            "testnet_notice": "Anchored on Polygon Amoy testnet. Not yet on mainnet.",
+            "network":        settings.POLYGON_NETWORK_NAME,
+            "testnet_notice": settings.POLYGON_TESTNET_NOTICE,
             "upsell_available": not is_complete,
             "upsell_product": None if is_complete else "rfp_kit_complete",
             "upsell_price":   None if is_complete else "SGD 599",
@@ -605,6 +605,7 @@ class RFPExpressBuilder:
         try:
             import hashlib
             from app.services.blockchain import BlockchainService
+            from app.core.config import settings
             # report_id is a UUID string; derive a 64-char SHA-256 hex so it is
             # valid input for the EvidenceAnchorV3 bytes32 contract parameter.
             evidence_hash = hashlib.sha256(self.report_id.encode()).hexdigest()
@@ -613,7 +614,7 @@ class RFPExpressBuilder:
                 evidence_hash,
                 metadata=f"rfp_express:vendor:{self.vendor_id}",
             )
-            logger.info(f"RFP Express anchored on Polygon Amoy testnet: {tx}")
+            logger.info(f"RFP Express anchored on {settings.POLYGON_NETWORK_NAME}: {tx}")
             return tx
         except Exception as e:
             logger.warning(f"Blockchain anchor failed for RFP Express (non-blocking): {e}")
@@ -649,8 +650,8 @@ class RFPExpressBuilder:
             explorer_base = settings.POLYGON_EXPLORER_URL.rstrip("/")
             blockchain_info = (
                 f"Blockchain TX: {tx_hash}\n"
-                f"Network: Polygon Amoy Testnet\n"
-                f"Note: Anchored on Polygon Amoy testnet. Not yet on mainnet.\n"
+                f"Network: {settings.POLYGON_NETWORK_NAME}\n"
+                f"Note: {settings.POLYGON_TESTNET_NOTICE}\n"
                 f"Verify: {explorer_base}/tx/{tx_hash}"
             ) if tx_hash else "Blockchain anchor pending."
 
@@ -830,6 +831,7 @@ class RFPExpressBuilder:
             from docx import Document
             from docx.shared import Pt, RGBColor
             from io import BytesIO
+            from app.core.config import settings
 
             doc = Document()
 
@@ -864,7 +866,7 @@ class RFPExpressBuilder:
             doc.add_paragraph(f"Generated: {datetime.now(timezone.utc).strftime('%d %b %Y %H:%M UTC')}")
             doc.add_paragraph(f"Report ID: {self.report_id}")
             if tx_hash:
-                doc.add_paragraph(f"Blockchain TX: {tx_hash} (Polygon Amoy Testnet)")
+                doc.add_paragraph(f"Blockchain TX: {tx_hash} ({settings.POLYGON_NETWORK_NAME})")
             doc.add_paragraph("")
             scope_para = doc.add_paragraph(
                 "Scope of Assessment: This compliance pack is based on information provided by the "
