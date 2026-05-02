@@ -3,7 +3,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from app.core.db import SessionLocal
-from app.core.models import ConsentLog, EnterpriseProfile, ActivityLog, VendorScore
+from app.core.models import ConsentLog, EnterpriseProfile, ActivityLog, VendorScore, User
 from app.core.config import settings
 import logging
 import secrets
@@ -354,6 +354,40 @@ def scrape_stats(
             "with_website": with_website,
             "scraped": scraped,
             "coverage_pct": round(with_email / total * 100, 1) if total else 0,
+        }
+    finally:
+        db.close()
+
+
+class GrantCreditsBody(BaseModel):
+    email: str = Field(..., description="Customer email")
+    credits: int = Field(..., ge=1, le=50, description="Notarization credits to add")
+    pending_cover_sheet: bool = Field(False, description="Set to True for Compliance Evidence Pack backfill")
+
+
+@router.post("/grant-credits")
+def grant_credits(
+    body: GrantCreditsBody,
+    _auth: bool = Depends(_admin_auth),
+):
+    """Backfill notarization credits for a user (e.g. stuck bundle purchase before fan-out fix)."""
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == body.email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail=f"No user with email {body.email}")
+        current = getattr(user, "notarization_credits", 0) or 0
+        user.notarization_credits = current + body.credits
+        if body.pending_cover_sheet:
+            user.pending_cover_sheet = True
+        db.commit()
+        db.refresh(user)
+        logger.info(f"Granted {body.credits} credits to {body.email} (new balance: {user.notarization_credits})")
+        return {
+            "email": user.email,
+            "credits_granted": body.credits,
+            "new_balance": user.notarization_credits,
+            "pending_cover_sheet": bool(getattr(user, "pending_cover_sheet", False)),
         }
     finally:
         db.close()
