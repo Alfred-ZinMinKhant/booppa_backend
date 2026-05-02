@@ -1586,28 +1586,97 @@ def fulfill_cover_sheet_task(
         from app.services.storage import S3Service
         from app.services.email_service import EmailService
         from app.core.config import settings
+        from app.core.models import User, Report
 
         report_id = metadata.get("report_id") or str(_uuid.uuid4())
 
-        # 1. Gather available data
+        # 1. Look up anchored bundle notarizations + PDPA + Vendor Proof for this user
+        anchored_documents: list[dict] = []
+        pdpa_score = metadata.get("pdpa_score", "—")
+        pdpa_status = "Pending"
+        vp_status = "Pending"
+        explorer_base = settings.POLYGON_EXPLORER_URL.rstrip("/")
+        db = SessionLocal()
+        try:
+            user = (
+                db.query(User).filter(User.email == customer_email).first()
+                if customer_email else None
+            )
+            if user:
+                # Pull bundle-redeemed notarizations
+                rows = (
+                    db.query(Report)
+                    .filter(
+                        Report.owner_id == user.id,
+                        Report.framework == "compliance_notarization",
+                    )
+                    .order_by(Report.created_at.desc())
+                    .limit(20)
+                    .all()
+                )
+                for r in rows:
+                    ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
+                    if not ad.get("bundle_credit_redeemed"):
+                        continue
+                    if ad.get("bundle_source") != bundle_type:
+                        continue
+                    anchored_documents.append({
+                        "filename": ad.get("original_filename") or "—",
+                        "descriptor": ad.get("document_descriptor") or "",
+                        "file_hash": ad.get("file_hash") or r.audit_hash or "—",
+                        "tx_hash": r.tx_hash,
+                        "tx_url": f"{explorer_base}/tx/{r.tx_hash}" if r.tx_hash else None,
+                        "anchored_at": ad.get("blockchain_anchored_at"),
+                    })
+                # PDPA + VP status from latest matching reports
+                pdpa_report = (
+                    db.query(Report)
+                    .filter(
+                        Report.owner_id == user.id,
+                        Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
+                    )
+                    .order_by(Report.created_at.desc())
+                    .first()
+                )
+                if pdpa_report:
+                    pdpa_status = pdpa_report.status.title() if pdpa_report.status else "Pending"
+                    pdpa_ad = pdpa_report.assessment_data if isinstance(pdpa_report.assessment_data, dict) else {}
+                    if pdpa_ad.get("risk_score") is not None:
+                        pdpa_score = pdpa_ad.get("risk_score")
+                vp_report = (
+                    db.query(Report)
+                    .filter(Report.owner_id == user.id, Report.framework == "vendor_proof")
+                    .order_by(Report.created_at.desc())
+                    .first()
+                )
+                if vp_report:
+                    vp_status = vp_report.status.title() if vp_report.status else "Pending"
+        finally:
+            db.close()
+
+        # 2. Build cover data
         cover_data = {
             "report_id": report_id,
             "bundle_type": bundle_type,
             "company_name": company_name or metadata.get("company_name", ""),
             "customer_email": customer_email,
-            "pdpa_status": "Completed",
-            "pdpa_score": metadata.get("pdpa_score", "—"),
-            "vendor_proof_status": "Completed",
-            "notarization_count": 3,
+            "pdpa_status": pdpa_status,
+            "pdpa_score": pdpa_score,
+            "vendor_proof_status": vp_status,
+            "notarization_count": len(anchored_documents),
+            "anchored_documents": anchored_documents,
             "tx_hash": "—",
             "network": settings.POLYGON_NETWORK_NAME,
             "recommendations": None,
             "trm_domains": [],
         }
 
-        # 2. Blockchain anchor
+        # 3. Anchor the cover sheet itself (digest of the included evidence)
         try:
-            content_hash = hashlib.sha256(f"cover_sheet:{report_id}".encode()).hexdigest()
+            digest_input = "|".join(
+                [d.get("file_hash", "") for d in anchored_documents] + [report_id]
+            )
+            content_hash = hashlib.sha256(digest_input.encode()).hexdigest()
             blockchain = BlockchainService()
             tx = asyncio.run(blockchain.anchor_evidence(content_hash, metadata=f"cover_sheet:{report_id}"))
             if tx:
@@ -1615,31 +1684,36 @@ def fulfill_cover_sheet_task(
         except Exception as e:
             logger.warning(f"Cover sheet blockchain anchor failed (non-blocking): {e}")
 
-        # 3. Generate PDF
+        # 4. Generate PDF
         pdf_bytes = generate_cover_sheet(cover_data)
 
-        # 4. Upload to S3
+        # 5. Upload to S3
         s3 = S3Service()
         s3_key = f"cover_sheets/{report_id}/compliance_cover_sheet.pdf"
         download_url = s3.upload_bytes(pdf_bytes, s3_key, content_type="application/pdf")
 
-        # 5. Email delivery
+        # 6. Email delivery (link only — EmailService doesn't support attachments)
         if customer_email:
             email_svc = EmailService()
-            asyncio.run(email_svc.send_email(
-                to=customer_email,
-                subject="Your Compliance Evidence Pack is Ready — Booppa",
-                html=(
-                    f"<p>Hi,</p>"
-                    f"<p>Your <strong>Compliance Evidence Pack</strong> is complete.</p>"
-                    f"<p>All components (Vendor Proof, PDPA Report, Notarization Credits) "
-                    f"have been generated. Your summary cover sheet is attached below.</p>"
-                    f"<p><a href='{download_url}'>Download Cover Sheet PDF</a></p>"
-                    f"<p>Thank you for using BOOPPA.</p>"
+            doc_count = len(anchored_documents)
+            doc_summary = (
+                f"{doc_count} compliance document{'s' if doc_count != 1 else ''} anchored on {settings.POLYGON_NETWORK_NAME}"
+                if doc_count
+                else "Cover sheet generated — you can still upload remaining documents at booppa.io/compliance-evidence-pack/upload"
+            )
+            asyncio.run(email_svc.send_html_email(
+                to_email=customer_email,
+                subject="Your Compliance Evidence Pack is ready",
+                body_html=(
+                    f"<div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;'>"
+                    f"<h2 style='color:#0f172a;'>Compliance Evidence Pack</h2>"
+                    f"<p style='color:#334155;'>Your bundle is complete. {doc_summary}.</p>"
+                    f"<p><a href='{download_url}' style='background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;'>Download Cover Sheet PDF</a></p>"
+                    f"<p style='color:#64748b;font-size:13px;'>This 9-section regulator-ready PDF includes your Vendor Proof status, PDPA scan results, and SHA-256 anchored evidence for each uploaded document.</p>"
+                    f"</div>"
                 ),
-                attachments=[{"filename": "compliance_cover_sheet.pdf", "data": pdf_bytes}],
             ))
-            logger.info(f"Cover sheet delivered to {customer_email} for {bundle_type}")
+            logger.info(f"Cover sheet delivered to {customer_email} for {bundle_type} (docs={doc_count})")
 
     except Exception as exc:
         logger.error(f"Cover sheet fulfillment failed: {exc}")

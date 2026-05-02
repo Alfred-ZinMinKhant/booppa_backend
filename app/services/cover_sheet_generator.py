@@ -149,10 +149,17 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
 
     # ── Section 2: Components Delivered ───────────────────────────────────────
     story += _section("Bundle Components Delivered", _STYLES)
+    anchored_docs = data.get("anchored_documents") or []
+    notarization_count = len(anchored_docs) if anchored_docs else data.get("notarization_count", 0)
+    notarization_status = (
+        f"{notarization_count} document(s) anchored on-chain"
+        if anchored_docs
+        else "Available — upload at booppa.io/compliance-evidence-pack/upload"
+    )
     components = [
         ("Vendor Proof Certificate", data.get("vendor_proof_status", "Queued")),
         ("PDPA Quick Scan Report", data.get("pdpa_status", "Queued")),
-        (f"Notarization Credits ({data.get('notarization_count', 0)}×)", "Available — redeem at booppa.io/notarize"),
+        (f"Notarized Compliance Documents ({notarization_count}×)", notarization_status),
         ("Compliance Summary Cover Sheet", "This document"),
     ]
     story.append(_kv_table(components))
@@ -187,6 +194,39 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
         ("Verify URL", f"{explorer}/tx/{tx}" if tx != "—" else "Pending anchor"),
         ("Anchoring Standard", "SHA-256 → EvidenceAnchorV3 smart contract"),
     ]))
+
+    # ── Section 5b: Anchored Compliance Documents ────────────────────────────
+    if anchored_docs:
+        story += _section("Anchored Compliance Documents", _STYLES)
+        doc_rows = [["#", "Document", "SHA-256 Hash", "Tx"]]
+        for i, d in enumerate(anchored_docs, 1):
+            descriptor = d.get("descriptor") or d.get("filename") or "—"
+            file_hash = d.get("file_hash") or "—"
+            short_hash = (file_hash[:18] + "…" + file_hash[-6:]) if len(file_hash) > 28 else file_hash
+            tx = d.get("tx_hash") or ""
+            short_tx = (tx[:12] + "…" + tx[-6:]) if tx else "Pending"
+            doc_rows.append([str(i), descriptor[:48], short_hash, short_tx])
+        doc_table = Table(doc_rows, colWidths=[0.3 * inch, 2.6 * inch, 2.5 * inch, 1.3 * inch])
+        doc_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+            ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+            ("FONTSIZE", (0, 0), (-1, -1), 7),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTNAME", (2, 1), (3, -1), "Courier"),
+            ("GRID", (0, 0), (-1, -1), 0.3, BORDER),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [LIGHT, WHITE]),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        story.append(doc_table)
+        story.append(Spacer(1, 0.05 * inch))
+        story.append(Paragraph(
+            "Each document above has been hashed with SHA-256 and anchored to the "
+            f"{data.get('network', 'Polygon')} network. Verify at "
+            "booppa.io/verify/&lt;hash&gt; or via the linked Polygonscan transaction.",
+            _STYLES["small"],
+        ))
 
     # ── Section 6: MAS TRM Assessment ─────────────────────────────────────────
     trm_domains = data.get("trm_domains", [])

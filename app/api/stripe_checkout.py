@@ -202,6 +202,47 @@ async def checkout_post(request: Request):
         finally:
             _db.close()
 
+    # For bundles: require website (for VP + PDPA scan) and company name.
+    # Falls back to user profile, otherwise 422 to trigger frontend prompt.
+    BUNDLE_TYPES = {
+        "vendor_trust_pack", "rfp_accelerator",
+        "enterprise_bid_kit", "compliance_evidence_pack",
+    }
+    if product_type in BUNDLE_TYPES:
+        from app.core.db import SessionLocal
+        from app.core.models import User
+
+        _db = SessionLocal()
+        try:
+            user = _db.query(User).filter(User.email == prefill_email).first() if prefill_email else None
+            req_website = (data.get("website") or data.get("vendor_url") or "").strip()
+            req_company = (data.get("company_name") or "").strip()
+            website = req_website or ((getattr(user, "website", "") or "").strip() if user else "")
+            company_name = req_company or ((getattr(user, "company", "") or "").strip() if user else "")
+            # Save back to profile so future bundle/scan flows can reuse
+            if user:
+                if req_website and not user.website:
+                    user.website = req_website
+                if req_company and not user.company:
+                    user.company = req_company
+                if req_website or req_company:
+                    _db.commit()
+            if not website:
+                raise HTTPException(
+                    status_code=422,
+                    detail="A website URL is required so we can run the PDPA scan and Vendor Proof check included in this bundle. Please provide your website.",
+                )
+            if not company_name:
+                raise HTTPException(
+                    status_code=422,
+                    detail="A company name is required for this bundle. Please provide your company name.",
+                )
+            # Inject into data so the metadata block below picks them up
+            data["vendor_url"] = website
+            data["company_name"] = company_name
+        finally:
+            _db.close()
+
     # Block vendor_proof purchase if user is already verified
     if product_type == "vendor_proof" and prefill_email:
         from app.core.db import SessionLocal

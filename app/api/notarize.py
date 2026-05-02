@@ -141,10 +141,12 @@ async def upload_document(
         if email:
             assessment_data["contact_email"] = email
 
-        # If redeeming a bundle credit, mark as paid so fulfillment runs without Stripe
+        # If redeeming a bundle credit, mark as paid so fulfillment runs without Stripe.
+        # Tag with bundle_source so cover-sheet generation can find these reports later.
         if bundle_credit_user is not None:
             assessment_data["payment_confirmed"] = True
             assessment_data["bundle_credit_redeemed"] = True
+            assessment_data["bundle_source"] = "compliance_evidence_pack"
 
         report = Report(
             id=report_id,
@@ -171,6 +173,24 @@ async def upload_document(
                 f"[Notarize] Redeemed bundle credit for {email}, queued fulfillment for {report_id}, "
                 f"remaining credits={credits_remaining}"
             )
+            # Auto-fire cover sheet when the user has just used their final credit.
+            # 60s countdown to let the notarization task finish anchoring on-chain
+            # before the cover sheet collects tx_hashes.
+            if credits_remaining == 0:
+                try:
+                    from app.workers.tasks import fulfill_cover_sheet_task
+                    fulfill_cover_sheet_task.apply_async(
+                        kwargs={
+                            "bundle_type": "compliance_evidence_pack",
+                            "customer_email": email,
+                            "company_name": company_name or (bundle_credit_user.company or ""),
+                            "metadata": {},
+                        },
+                        countdown=60,
+                    )
+                    logger.info(f"[Notarize] Last credit redeemed — auto-queued cover sheet for {email}")
+                except Exception as cs_err:
+                    logger.warning(f"[Notarize] Cover sheet auto-fire failed: {cs_err}")
         else:
             db.commit()
 
@@ -396,6 +416,87 @@ async def get_bundle_credits(email: str):
         return {"balance": balance, "has_credits": balance > 0}
     finally:
         db.close()
+
+
+@router.get("/bundle/notarizations")
+async def list_bundle_notarizations(email: str, bundle: str = "compliance_evidence_pack"):
+    """
+    List bundle-credit-redeemed notarization reports for an email.
+    Used by the post-checkout upload page to show what's already anchored.
+    """
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            return {"reports": []}
+        # Find reports that were redeemed via bundle credits for this user.
+        # We filter by owner_id + framework + assessment_data tag.
+        rows = (
+            db.query(Report)
+            .filter(
+                Report.owner_id == user.id,
+                Report.framework == "compliance_notarization",
+            )
+            .order_by(Report.created_at.desc())
+            .limit(20)
+            .all()
+        )
+        reports = []
+        for r in rows:
+            ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
+            if not ad.get("bundle_credit_redeemed"):
+                continue
+            if ad.get("bundle_source") != bundle:
+                continue
+            reports.append({
+                "report_id": str(r.id),
+                "file_name": ad.get("original_filename"),
+                "file_hash": ad.get("file_hash") or r.audit_hash,
+                "tx_hash": r.tx_hash,
+                "status": r.status,
+                "anchored_at": ad.get("blockchain_anchored_at"),
+                "document_descriptor": ad.get("document_descriptor"),
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            })
+        return {"reports": reports, "count": len(reports)}
+    finally:
+        db.close()
+
+
+@router.post("/bundle/cover-sheet/trigger")
+async def trigger_bundle_cover_sheet(payload: dict):
+    """
+    Manually fire the cover sheet for a Compliance Evidence Pack purchase.
+    Body: {"email": "...", "company_name": "..." (optional)}
+    Cover sheet will include all bundle-redeemed notarizations as anchored evidence.
+    """
+    email = (payload.get("email") or "").strip().lower()
+    company_name = (payload.get("company_name") or "").strip()
+    if not email:
+        raise HTTPException(status_code=400, detail="email is required")
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        if not company_name:
+            company_name = (user.company or "").strip() or "Your Organisation"
+    finally:
+        db.close()
+
+    from app.workers.tasks import fulfill_cover_sheet_task
+    fulfill_cover_sheet_task.apply_async(
+        kwargs={
+            "bundle_type": "compliance_evidence_pack",
+            "customer_email": email,
+            "company_name": company_name,
+            "metadata": {"user_triggered": True},
+        },
+        countdown=10,
+    )
+    logger.info(f"[Bundle] User-triggered cover sheet for {email}")
+    return {"queued": True, "email": email}
 
 
 @router.get("/enterprise/credits")

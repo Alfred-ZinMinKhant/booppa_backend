@@ -282,7 +282,6 @@ async def _fulfill_bundle(
         fulfill_vendor_proof_task,
         fulfill_pdpa_task,
         fulfill_rfp_task,
-        fulfill_cover_sheet_task,
     )
 
     db = SessionLocal()
@@ -393,10 +392,10 @@ async def _fulfill_bundle(
         # Send credits-granted notification email
         if notarization_count > 0 and customer_email:
             try:
-                EmailService().send_email(
+                await EmailService().send_html_email(
                     to_email=customer_email,
                     subject=f"Your {notarization_count} included notarizations are ready to redeem",
-                    html_body=f"""
+                    body_html=f"""
                     <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;">
                       <h2 style="color:#0f172a;">Notarization credits issued</h2>
                       <p style="color:#334155;">
@@ -423,18 +422,15 @@ async def _fulfill_bundle(
             except Exception as email_err:
                 logger.warning(f"[Bundle:{product_type}] Credits email failed: {email_err}")
 
-        # 4. Cover Sheet (compliance_evidence_pack only — delayed 300s to let components finish)
+        # 4. Cover Sheet — NOT auto-fired anymore for compliance_evidence_pack.
+        # The user must upload their compliance documents at /compliance-evidence-pack/upload
+        # so the cover sheet can include real anchored hashes. It will be queued automatically
+        # when the user redeems their last credit, or on-demand via the bundle trigger endpoint.
         if components.get("cover_sheet"):
-            fulfill_cover_sheet_task.apply_async(
-                kwargs={
-                    "bundle_type": product_type,
-                    "customer_email": customer_email,
-                    "company_name": company_name,
-                    "metadata": metadata,
-                },
-                countdown=300,
+            logger.info(
+                f"[Bundle:{product_type}] Cover sheet deferred — waiting for user uploads "
+                f"(will fire on last credit redemption or via /bundle/cover-sheet/trigger)"
             )
-            logger.info(f"[Bundle:{product_type}] Queued cover_sheet with 300s delay")
 
         # 5. RFP component (no stub needed — self-contained task)
         rfp_type = components.get("rfp")
