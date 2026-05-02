@@ -512,6 +512,29 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
             # Only store a real hex tx_hash; None means already anchored (no new tx)
             if tx_hash:
                 report.tx_hash = tx_hash
+            else:
+                # Hash already on-chain (e.g. duplicate file upload). Inherit the
+                # tx_hash from the prior report that anchored this same hash so
+                # this report is correctly counted as anchored and the receipt
+                # email/PDF can include a Polygonscan link.
+                prior = (
+                    db.query(Report)
+                    .filter(
+                        Report.audit_hash == file_hash,
+                        Report.id != report_id,
+                        Report.tx_hash.isnot(None),
+                        Report.tx_hash != "already_anchored",
+                    )
+                    .order_by(Report.created_at.asc())
+                    .first()
+                )
+                if prior and prior.tx_hash:
+                    tx_hash = prior.tx_hash
+                    report.tx_hash = tx_hash
+                    logger.info(
+                        f"[Notarize] Hash already anchored — inherited tx={tx_hash} "
+                        f"from prior report {prior.id}"
+                    )
             report.audit_hash = file_hash  # keep as original file hash for verification
             assessment["blockchain_anchored"] = True
             assessment["blockchain_anchored_at"] = datetime.now(
