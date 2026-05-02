@@ -25,7 +25,17 @@ def upgrade() -> None:
             server_default="0",
         ),
     )
+    op.add_column(
+        "users",
+        sa.Column(
+            "pending_cover_sheet",
+            sa.Boolean(),
+            nullable=False,
+            server_default="false",
+        ),
+    )
 
 
 def downgrade() -> None:
+    op.drop_column("users", "pending_cover_sheet")
     op.drop_column("users", "notarization_credits")

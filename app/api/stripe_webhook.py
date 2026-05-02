@@ -365,6 +365,9 @@ async def _fulfill_bundle(
             if user:
                 current_balance = getattr(user, "notarization_credits", 0) or 0
                 user.notarization_credits = current_balance + notarization_count
+                # Only the Compliance Evidence Pack triggers a cover sheet
+                if product_type == "compliance_evidence_pack":
+                    user.pending_cover_sheet = True
                 logger.info(
                     f"[Bundle:{product_type}] Granted {notarization_count} notarization credits "
                     f"to {customer_email} (balance: {current_balance} → {user.notarization_credits})"
