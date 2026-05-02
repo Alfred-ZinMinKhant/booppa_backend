@@ -80,7 +80,9 @@ def _section(title: str, styles) -> list:
 
 
 def _kv_table(rows: list[tuple[str, str]]) -> Table:
-    data = [[Paragraph(f"<b>{k}</b>", _STYLES["Normal"]), Paragraph(str(v), _STYLES["Normal"])] for k, v in rows]
+    def _val(v):
+        return v if isinstance(v, Paragraph) else Paragraph(str(v), _STYLES["Normal"])
+    data = [[Paragraph(f"<b>{k}</b>", _STYLES["Normal"]), _val(v)] for k, v in rows]
     t = Table(data, colWidths=[2.2 * inch, 4.5 * inch])
     t.setStyle(TableStyle([
         ("FONTSIZE", (0, 0), (-1, -1), 8),
@@ -139,7 +141,44 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     story.append(Spacer(1, 0.1 * inch))
     story.append(Paragraph(f"Compliance Evidence Pack", _STYLES["h1"]))
     story.append(Paragraph(f"Summary Cover Sheet — {company}", _STYLES["caption"]))
-    story.append(Spacer(1, 0.05 * inch))
+    story.append(Spacer(1, 0.12 * inch))
+
+    # Hero score badge — quick at-a-glance compliance posture
+    pdpa_score_val = data.get("pdpa_score")
+    score_display = f"{pdpa_score_val}/100" if isinstance(pdpa_score_val, int) else "Pending"
+    score_color = (
+        EMERALD if isinstance(pdpa_score_val, int) and pdpa_score_val >= 70
+        else colors.HexColor("#f59e0b") if isinstance(pdpa_score_val, int) and pdpa_score_val >= 40
+        else colors.HexColor("#ef4444") if isinstance(pdpa_score_val, int)
+        else SLATE
+    )
+    anchored_count = len(data.get("anchored_documents") or [])
+    hero_label = ParagraphStyle("hero_label", fontSize=7, leading=9, textColor=SLATE, alignment=1)
+    hero_value = ParagraphStyle("hero_value", fontSize=18, leading=22, textColor=NAVY, fontName="Helvetica-Bold", alignment=1)
+    hero_score = ParagraphStyle("hero_score", fontSize=18, leading=22, textColor=score_color, fontName="Helvetica-Bold", alignment=1)
+    hero_data = [[
+        Paragraph("PDPA COMPLIANCE", hero_label),
+        Paragraph("DOCUMENTS ANCHORED", hero_label),
+        Paragraph("BUNDLE STATUS", hero_label),
+    ], [
+        Paragraph(score_display, hero_score),
+        Paragraph(str(anchored_count), hero_value),
+        Paragraph("Active", hero_value),
+    ]]
+    hero = Table(hero_data, colWidths=[2.23 * inch, 2.23 * inch, 2.23 * inch])
+    hero.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), LIGHT),
+        ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
+        ("LINEAFTER", (0, 0), (1, -1), 0.5, BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, 0), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 2),
+        ("TOPPADDING", (0, 1), (-1, 1), 2),
+        ("BOTTOMPADDING", (0, 1), (-1, 1), 8),
+    ]))
+    story.append(hero)
+    story.append(Spacer(1, 0.12 * inch))
+
     story.append(_kv_table([
         ("Report ID", data.get("report_id", "—")),
         ("Generated", now),
@@ -166,21 +205,71 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
 
     # ── Section 3: PDPA Status ─────────────────────────────────────────────────
     story += _section("PDPA Compliance Status", _STYLES)
-    story.append(_kv_table([
+    pdpa_score_v = data.get("pdpa_score")
+    score_str = f"{pdpa_score_v} / 100" if isinstance(pdpa_score_v, int) else "Pending — scan still running"
+    pdpa_d = data.get("pdpa_details") or {}
+    sev = pdpa_d.get("severity_counts") or {}
+    sev_summary = (
+        f"{sev.get('High', 0)} High · {sev.get('Medium', 0)} Medium · {sev.get('Low', 0)} Low"
+        if sev else "—"
+    )
+    laws = pdpa_d.get("detected_laws") or []
+    laws_str = ", ".join(laws) if laws else "PDPA (Singapore) 2012"
+    pdpa_rows = [
         ("Status", data.get("pdpa_status", "Pending")),
-        ("Compliance Score", f"{data.get('pdpa_score', '—')}%"),
-        ("Framework", "PDPA (Singapore) 2012"),
-        ("Assessment Type", "Automated + AI-assisted review"),
-    ]))
+        ("Compliance Score", score_str),
+        ("Scanned URL", pdpa_d.get("website_url") or "—"),
+        ("Risk Level", str(pdpa_d.get("risk_level") or "—").title()),
+        ("Findings", f"{pdpa_d.get('total_findings', 0)} total — {sev_summary}"),
+        ("Frameworks Detected", laws_str),
+    ]
+    story.append(_kv_table(pdpa_rows))
+
+    top_findings = pdpa_d.get("top_findings") or []
+    if top_findings:
+        story.append(Spacer(1, 0.06 * inch))
+        story.append(Paragraph("<b>Top Findings</b>", _STYLES["caption"]))
+        for f in top_findings:
+            story.append(Paragraph(f"• {f}", _STYLES["caption"]))
+            story.append(Spacer(1, 2))
+
+    exec_sum = pdpa_d.get("executive_summary")
+    if exec_sum:
+        story.append(Spacer(1, 0.05 * inch))
+        story.append(Paragraph("<b>Executive Summary</b>", _STYLES["caption"]))
+        story.append(Paragraph(exec_sum, _STYLES["caption"]))
 
     # ── Section 4: Vendor Proof ────────────────────────────────────────────────
     story += _section("Vendor Proof Summary", _STYLES)
-    story.append(_kv_table([
+    vp_d = data.get("vendor_proof_details") or {}
+    badge_issued = vp_d.get("badge_issued_at") or "—"
+    if isinstance(badge_issued, str) and "T" in badge_issued:
+        badge_issued = badge_issued.split("T")[0]
+    vp_rows = [
         ("Status", data.get("vendor_proof_status", "Pending")),
-        ("Company", company),
-        ("Verification Level", "Basic (automated)"),
-        ("Registry", "ACRA / GeBIZ"),
-    ]))
+        ("Company", vp_d.get("company_name") or company),
+        ("UEN / Registration", vp_d.get("uen") or "—"),
+        ("Country", vp_d.get("country") or "—"),
+        ("Registry Status", str(vp_d.get("registry_status") or "—").title()),
+        ("Verification Level", str(vp_d.get("verification_level") or "Basic (automated)").title()),
+        ("Badge ID", vp_d.get("badge_id") or "—"),
+        ("Badge Issued", badge_issued),
+    ]
+    story.append(_kv_table(vp_rows))
+
+    checks = vp_d.get("checks_passed") or []
+    if checks:
+        story.append(Spacer(1, 0.06 * inch))
+        story.append(Paragraph("<b>Checks Passed</b>", _STYLES["caption"]))
+        for c in checks[:6]:
+            story.append(Paragraph(f"• {c}", _STYLES["caption"]))
+            story.append(Spacer(1, 2))
+
+    vp_exec = vp_d.get("executive_summary")
+    if vp_exec:
+        story.append(Spacer(1, 0.05 * inch))
+        story.append(Paragraph("<b>Executive Summary</b>", _STYLES["caption"]))
+        story.append(Paragraph(vp_exec, _STYLES["caption"]))
 
     # ── Section 5: Blockchain Evidence Trail ──────────────────────────────────
     story += _section("Blockchain Evidence Trail", _STYLES)
@@ -188,10 +277,13 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     tx = data.get("tx_hash", "—")
     network = data.get("network", settings.POLYGON_NETWORK_NAME)
     explorer = settings.POLYGON_EXPLORER_URL.rstrip("/")
+    short_tx = (tx[:10] + "…" + tx[-8:]) if isinstance(tx, str) and len(tx) > 24 else tx
+    verify_url = f"{explorer}/tx/{tx}" if tx and tx != "—" else "Pending anchor"
+    mono = ParagraphStyle("mono", fontSize=7.5, leading=10, textColor=colors.HexColor("#334155"), fontName="Courier")
     story.append(_kv_table([
         ("Network", network),
-        ("Transaction Hash", tx),
-        ("Verify URL", f"{explorer}/tx/{tx}" if tx != "—" else "Pending anchor"),
+        ("Transaction Hash", Paragraph(short_tx, mono)),
+        ("Verify URL", Paragraph(verify_url, mono)),
         ("Anchoring Standard", "SHA-256 → EvidenceAnchorV3 smart contract"),
     ]))
 
