@@ -1596,6 +1596,8 @@ def fulfill_cover_sheet_task(
         pdpa_status = "Pending"
         vp_status = "Pending"
         explorer_base = settings.POLYGON_EXPLORER_URL.rstrip("/")
+        pdpa_details: dict = {}
+        vp_details: dict = {}
         db = SessionLocal()
         try:
             user = (
@@ -1639,8 +1641,40 @@ def fulfill_cover_sheet_task(
                 if pdpa_report:
                     pdpa_status = pdpa_report.status.title() if pdpa_report.status else "Pending"
                     pdpa_ad = pdpa_report.assessment_data if isinstance(pdpa_report.assessment_data, dict) else {}
-                    if pdpa_ad.get("risk_score") is not None:
-                        pdpa_score = pdpa_ad.get("risk_score")
+                    # PDPA stores a *risk* score (0 = clean, 100 = high risk).
+                    # Convert to a compliance score (100 - risk) for the cover sheet.
+                    raw_risk = (
+                        pdpa_ad.get("overall_risk_score")
+                        if pdpa_ad.get("overall_risk_score") is not None
+                        else pdpa_ad.get("score")
+                        if pdpa_ad.get("score") is not None
+                        else pdpa_ad.get("risk_score")
+                    )
+                    if raw_risk is not None:
+                        try:
+                            pdpa_score = max(0, min(100, 100 - int(raw_risk)))
+                        except (TypeError, ValueError):
+                            pdpa_score = "—"
+                    structured = pdpa_ad.get("booppa_report") if isinstance(pdpa_ad.get("booppa_report"), dict) else {}
+                    findings = structured.get("detailed_findings") or pdpa_ad.get("detailed_findings") or []
+                    sev_counts = {"High": 0, "Medium": 0, "Low": 0}
+                    top_findings: list[str] = []
+                    for f in findings[:20]:
+                        sev = (f.get("severity") or "").title()
+                        if sev in sev_counts:
+                            sev_counts[sev] += 1
+                        if len(top_findings) < 3 and (f.get("title") or f.get("category")):
+                            top_findings.append(f.get("title") or f.get("category"))
+                    pdpa_details = {
+                        "website_url": pdpa_ad.get("website_url") or pdpa_report.company_website or "—",
+                        "risk_level": pdpa_ad.get("risk_level") or structured.get("risk_level") or "—",
+                        "total_findings": len(findings),
+                        "severity_counts": sev_counts,
+                        "top_findings": top_findings,
+                        "executive_summary": (structured.get("executive_summary") or pdpa_report.ai_narrative or "")[:600],
+                        "detected_laws": (pdpa_ad.get("detected_laws") or [])[:6],
+                        "scanned_at": pdpa_report.completed_at.isoformat() if pdpa_report.completed_at else None,
+                    }
                 vp_report = (
                     db.query(Report)
                     .filter(Report.owner_id == user.id, Report.framework == "vendor_proof")
@@ -1649,6 +1683,23 @@ def fulfill_cover_sheet_task(
                 )
                 if vp_report:
                     vp_status = vp_report.status.title() if vp_report.status else "Pending"
+                    vp_ad = vp_report.assessment_data if isinstance(vp_report.assessment_data, dict) else {}
+                    vp_structured = vp_ad.get("booppa_report") if isinstance(vp_ad.get("booppa_report"), dict) else {}
+                    registry = vp_ad.get("registry_data") or vp_structured.get("registry_data") or {}
+                    vp_details = {
+                        "company_name": vp_ad.get("company_name") or vp_report.company_name or "—",
+                        "uen": vp_ad.get("uen") or registry.get("uen") or "—",
+                        "country": vp_ad.get("country") or registry.get("country") or "—",
+                        "registry_status": registry.get("entity_status") or registry.get("status") or vp_ad.get("registry_status") or "—",
+                        "verification_level": vp_ad.get("verification_level") or vp_structured.get("verification_level") or "—",
+                        "badge_id": vp_ad.get("badge_id") or vp_structured.get("badge_id") or "—",
+                        "badge_issued_at": (
+                            vp_ad.get("badge_issued_at")
+                            or (vp_report.completed_at.isoformat() if vp_report.completed_at else None)
+                        ),
+                        "executive_summary": (vp_structured.get("executive_summary") or vp_report.ai_narrative or "")[:600],
+                        "checks_passed": vp_ad.get("checks_passed") or vp_structured.get("checks_passed") or [],
+                    }
         finally:
             db.close()
 
@@ -1660,7 +1711,9 @@ def fulfill_cover_sheet_task(
             "customer_email": customer_email,
             "pdpa_status": pdpa_status,
             "pdpa_score": pdpa_score,
+            "pdpa_details": pdpa_details,
             "vendor_proof_status": vp_status,
+            "vendor_proof_details": vp_details,
             "notarization_count": len(anchored_documents),
             "anchored_documents": anchored_documents,
             "tx_hash": "—",
