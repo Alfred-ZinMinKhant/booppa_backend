@@ -465,6 +465,112 @@ async def list_bundle_notarizations(email: str):
         db.close()
 
 
+@router.get("/bundle/cover-sheet/status")
+async def bundle_cover_sheet_status(email: str):
+    """
+    Status of the Compliance Evidence Pack cover sheet for a user.
+    Returns:
+      - cover_sheet: { ready, generated_at, download_url }
+      - pdpa: { status, score, completed_at }
+      - vendor_proof: { status, completed_at }
+      - notarizations: { anchored, total }
+    """
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            return {"cover_sheet": {"ready": False}, "pdpa": None, "vendor_proof": None}
+
+        cs = (
+            db.query(Report)
+            .filter(Report.owner_id == user.id, Report.framework == "compliance_evidence_pack")
+            .order_by(Report.created_at.desc())
+            .first()
+        )
+        cover_sheet_payload: dict = {"ready": False, "pending": bool(getattr(user, "pending_cover_sheet", False))}
+        if cs:
+            download_url = cs.s3_url
+            if cs.file_key:
+                try:
+                    from app.services.storage import S3Service
+                    s3 = S3Service()
+                    download_url = s3.s3_client.generate_presigned_url(
+                        "get_object",
+                        Params={"Bucket": s3.bucket, "Key": cs.file_key},
+                        ExpiresIn=604800,
+                    )
+                except Exception as e:
+                    logger.warning(f"[CoverSheetStatus] presign failed: {e}")
+            cover_sheet_payload = {
+                "ready": cs.status == "completed",
+                "pending": False,
+                "generated_at": cs.completed_at.isoformat() if cs.completed_at else None,
+                "download_url": download_url,
+                "tx_hash": cs.tx_hash,
+            }
+
+        pdpa = (
+            db.query(Report)
+            .filter(
+                Report.owner_id == user.id,
+                Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
+            )
+            .order_by(Report.created_at.desc())
+            .first()
+        )
+        pdpa_payload = None
+        if pdpa:
+            ad = pdpa.assessment_data if isinstance(pdpa.assessment_data, dict) else {}
+            raw_risk = (
+                ad.get("overall_risk_score")
+                if ad.get("overall_risk_score") is not None
+                else ad.get("score")
+                if ad.get("score") is not None
+                else ad.get("risk_score")
+            )
+            score_val = None
+            if raw_risk is not None:
+                try:
+                    score_val = max(0, min(100, 100 - int(raw_risk)))
+                except (TypeError, ValueError):
+                    score_val = None
+            pdpa_payload = {
+                "status": pdpa.status,
+                "score": score_val,
+                "completed_at": pdpa.completed_at.isoformat() if pdpa.completed_at else None,
+            }
+
+        vp = (
+            db.query(Report)
+            .filter(Report.owner_id == user.id, Report.framework == "vendor_proof")
+            .order_by(Report.created_at.desc())
+            .first()
+        )
+        vp_payload = None
+        if vp:
+            vp_payload = {
+                "status": vp.status,
+                "completed_at": vp.completed_at.isoformat() if vp.completed_at else None,
+            }
+
+        anchored = (
+            db.query(Report)
+            .filter(Report.owner_id == user.id, Report.framework == "compliance_notarization")
+            .all()
+        )
+        anchored_total = sum(1 for r in anchored if isinstance(r.assessment_data, dict) and r.assessment_data.get("bundle_credit_redeemed"))
+        anchored_done = sum(1 for r in anchored if isinstance(r.assessment_data, dict) and r.assessment_data.get("bundle_credit_redeemed") and r.tx_hash)
+
+        return {
+            "cover_sheet": cover_sheet_payload,
+            "pdpa": pdpa_payload,
+            "vendor_proof": vp_payload,
+            "notarizations": {"anchored": anchored_done, "total": anchored_total},
+        }
+    finally:
+        db.close()
+
+
 @router.post("/bundle/cover-sheet/trigger")
 async def trigger_bundle_cover_sheet(payload: dict):
     """
