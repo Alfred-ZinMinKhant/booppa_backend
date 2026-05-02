@@ -1,4 +1,5 @@
 from .celery_app import celery_app
+from celery.exceptions import Retry
 from app.core.db import SessionLocal
 from app.core.models import Report
 from app.services.ai_service import AIService
@@ -1565,7 +1566,7 @@ def fulfill_rfp_task(
             raise
 
 
-@celery_app.task(bind=True, max_retries=3, name="fulfill_cover_sheet_task")
+@celery_app.task(bind=True, max_retries=20, name="fulfill_cover_sheet_task")
 def fulfill_cover_sheet_task(
     self,
     bundle_type: str,
@@ -1703,6 +1704,31 @@ def fulfill_cover_sheet_task(
         finally:
             db.close()
 
+        # 1b. Readiness gate — defer until PDPA + Vendor Proof completed and every
+        # bundle-redeemed notarization is anchored on-chain. Avoids shipping a
+        # cover sheet with "Pending" sections.
+        force = bool(metadata.get("force"))
+        anchors_pending = sum(1 for d in anchored_documents if not d.get("tx_hash"))
+        pdpa_done = pdpa_status.lower() == "completed"
+        vp_done = vp_status.lower() == "completed"
+        if not force and (not pdpa_done or not vp_done or anchors_pending > 0):
+            # Restore the pending flag so the manual button stays available, then retry.
+            try:
+                db_r = SessionLocal()
+                u = db_r.query(User).filter(User.email == customer_email).first() if customer_email else None
+                if u and not getattr(u, "pending_cover_sheet", False):
+                    u.pending_cover_sheet = True
+                    db_r.commit()
+                db_r.close()
+            except Exception:
+                pass
+            countdown = min(600, 60 * (self.request.retries + 1))
+            logger.info(
+                f"[CoverSheet] Deferring — pdpa_done={pdpa_done} vp_done={vp_done} "
+                f"anchors_pending={anchors_pending} retry={self.request.retries} in {countdown}s"
+            )
+            raise self.retry(countdown=countdown)
+
         # 2. Build cover data
         cover_data = {
             "report_id": report_id,
@@ -1754,6 +1780,34 @@ def fulfill_cover_sheet_task(
             ExpiresIn=604800,  # 7 days
         )
 
+        # 5b. Persist a Report row so the frontend can poll for completion + re-presign on demand
+        if user:
+            try:
+                db2 = SessionLocal()
+                cs_report = Report(
+                    owner_id=user.id,
+                    framework="compliance_evidence_pack",
+                    company_name=company_name or "Your Organisation",
+                    assessment_data={
+                        "bundle_type": bundle_type,
+                        "s3_key": s3_key,
+                        "anchored_count": len(anchored_documents),
+                        "pdpa_status": pdpa_status,
+                        "pdpa_score": pdpa_score if isinstance(pdpa_score, int) else None,
+                        "vendor_proof_status": vp_status,
+                    },
+                    status="completed",
+                    tx_hash=cover_data.get("tx_hash") if cover_data.get("tx_hash") != "—" else None,
+                    file_key=s3_key,
+                    s3_url=download_url,
+                    completed_at=datetime.now(timezone.utc),
+                )
+                db2.add(cs_report)
+                db2.commit()
+                db2.close()
+            except Exception as persist_err:
+                logger.warning(f"Cover sheet Report persist failed (non-blocking): {persist_err}")
+
         # 6. Email delivery (link only — EmailService doesn't support attachments)
         if customer_email:
             email_svc = EmailService()
@@ -1777,6 +1831,9 @@ def fulfill_cover_sheet_task(
             ))
             logger.info(f"Cover sheet delivered to {customer_email} for {bundle_type} (docs={doc_count})")
 
+    except Retry:
+        # Readiness-gate retry — let Celery handle it without overriding the countdown.
+        raise
     except Exception as exc:
         logger.error(f"Cover sheet fulfillment failed: {exc}")
         countdown = 120 * (2 ** self.request.retries)
