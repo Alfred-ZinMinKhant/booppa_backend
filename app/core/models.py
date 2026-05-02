@@ -47,6 +47,10 @@ class User(Base):
     # user uploads a document at /notarize. Distinct from monthly enterprise credits
     # (NotarizationCredit table) which are subscription-based.
     notarization_credits = Column(Integer, default=0, nullable=False, server_default="0")
+    # Set to True when the user purchases a Compliance Evidence Pack — triggers
+    # cover-sheet generation on last credit redemption or via the manual trigger
+    # endpoint. Cleared after the cover sheet is queued.
+    pending_cover_sheet = Column(Boolean, default=False, nullable=False, server_default="false")
 
 
 class Report(Base):

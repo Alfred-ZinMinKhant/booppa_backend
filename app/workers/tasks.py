@@ -1618,8 +1618,6 @@ def fulfill_cover_sheet_task(
                     ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
                     if not ad.get("bundle_credit_redeemed"):
                         continue
-                    if ad.get("bundle_source") != bundle_type:
-                        continue
                     anchored_documents.append({
                         "filename": ad.get("original_filename") or "—",
                         "descriptor": ad.get("document_descriptor") or "",
