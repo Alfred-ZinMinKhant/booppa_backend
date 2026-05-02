@@ -608,7 +608,7 @@ async def trigger_bundle_cover_sheet(payload: dict):
             "bundle_type": "compliance_evidence_pack",
             "customer_email": email,
             "company_name": company_name,
-            "metadata": {"user_triggered": True},
+            "metadata": {"user_triggered": True, "force": True},
         },
         countdown=10,
     )
