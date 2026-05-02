@@ -1685,10 +1685,21 @@ def fulfill_cover_sheet_task(
         # 4. Generate PDF
         pdf_bytes = generate_cover_sheet(cover_data)
 
-        # 5. Upload to S3
+        # 5. Upload to S3 (sync put_object since we're in a sync Celery task)
         s3 = S3Service()
         s3_key = f"cover_sheets/{report_id}/compliance_cover_sheet.pdf"
-        download_url = s3.upload_bytes(pdf_bytes, s3_key, content_type="application/pdf")
+        s3.s3_client.put_object(
+            Bucket=s3.bucket,
+            Key=s3_key,
+            Body=pdf_bytes,
+            ContentType="application/pdf",
+            Metadata={"report-id": str(report_id), "kind": "cover-sheet"},
+        )
+        download_url = s3.s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": s3.bucket, "Key": s3_key},
+            ExpiresIn=604800,  # 7 days
+        )
 
         # 6. Email delivery (link only — EmailService doesn't support attachments)
         if customer_email:
