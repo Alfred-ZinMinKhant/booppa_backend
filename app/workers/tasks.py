@@ -1642,6 +1642,12 @@ def fulfill_cover_sheet_task(
                 if pdpa_report:
                     pdpa_status = pdpa_report.status.title() if pdpa_report.status else "Pending"
                     pdpa_ad = pdpa_report.assessment_data if isinstance(pdpa_report.assessment_data, dict) else {}
+                    structured = pdpa_ad.get("booppa_report") if isinstance(pdpa_ad.get("booppa_report"), dict) else {}
+                    structured_ra = (
+                        structured.get("risk_assessment")
+                        if isinstance(structured.get("risk_assessment"), dict)
+                        else {}
+                    )
                     # PDPA stores a *risk* score (0 = clean, 100 = high risk).
                     # Convert to a compliance score (100 - risk) for the cover sheet.
                     raw_risk = (
@@ -1650,13 +1656,14 @@ def fulfill_cover_sheet_task(
                         else pdpa_ad.get("score")
                         if pdpa_ad.get("score") is not None
                         else pdpa_ad.get("risk_score")
+                        if pdpa_ad.get("risk_score") is not None
+                        else structured_ra.get("score")
                     )
                     if raw_risk is not None:
                         try:
                             pdpa_score = max(0, min(100, 100 - int(raw_risk)))
                         except (TypeError, ValueError):
                             pdpa_score = "—"
-                    structured = pdpa_ad.get("booppa_report") if isinstance(pdpa_ad.get("booppa_report"), dict) else {}
                     findings = structured.get("detailed_findings") or pdpa_ad.get("detailed_findings") or []
                     sev_counts = {"High": 0, "Medium": 0, "Low": 0}
                     top_findings: list[str] = []

@@ -521,12 +521,18 @@ async def bundle_cover_sheet_status(email: str):
         pdpa_payload = None
         if pdpa:
             ad = pdpa.assessment_data if isinstance(pdpa.assessment_data, dict) else {}
+            structured = ad.get("booppa_report") if isinstance(ad.get("booppa_report"), dict) else {}
+            structured_risk_assessment = (
+                structured.get("risk_assessment") if isinstance(structured.get("risk_assessment"), dict) else {}
+            )
             raw_risk = (
                 ad.get("overall_risk_score")
                 if ad.get("overall_risk_score") is not None
                 else ad.get("score")
                 if ad.get("score") is not None
                 else ad.get("risk_score")
+                if ad.get("risk_score") is not None
+                else structured_risk_assessment.get("score")
             )
             score_val = None
             if raw_risk is not None:
