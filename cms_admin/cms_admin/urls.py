@@ -25,15 +25,17 @@ urlpatterns = [
     path("api/public/vendor-guides/", cms_views.public_vendor_guides),
     path("api/public/vendor-guides/<slug:slug>/", cms_views.public_vendor_guide_detail),
     # ── Authenticated CRUD (X-Admin-Token header required) ───────────────────
-    path("api/admin/<str:kind>/", cms_admin_api.content_list),
-    path("api/admin/<str:kind>/<uuid:pk>/", cms_admin_api.content_detail),
+    # Specific routes FIRST — generic <str:kind> would otherwise shadow these
     path("api/admin/blogs/<uuid:pk>/images/", cms_admin_api.blog_images),
     path("api/admin/blogs/<uuid:pk>/images/<int:image_id>/", cms_admin_api.blog_image_detail),
     path("api/admin/bookings/", cms_admin_api.bookings_list),
     path("api/admin/bookings/<uuid:pk>/", cms_admin_api.bookings_detail),
     path("api/admin/tickets/", cms_admin_api.tickets_list),
-    path("api/admin/tickets/<uuid:pk>/", cms_admin_api.tickets_detail),
     path("api/admin/tickets/<uuid:pk>/replies/", cms_admin_api.tickets_replies),
+    path("api/admin/tickets/<uuid:pk>/", cms_admin_api.tickets_detail),
+    # Generic catch-all LAST
+    path("api/admin/<str:kind>/", cms_admin_api.content_list),
+    path("api/admin/<str:kind>/<uuid:pk>/", cms_admin_api.content_detail),
 ]
 
 # Serve media in DEBUG, or when explicitly enabled (e.g. behind a reverse proxy)
