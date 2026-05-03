@@ -169,23 +169,29 @@ def get_all_flags() -> dict:
 
 
 def get_growth_metrics(db: Session) -> dict:
-    """Gather current growth metrics for auto-activation checks."""
+    """Gather current growth metrics. Each query is isolated so a single
+    missing table/column doesn't 500 the whole endpoint."""
     from app.core.models import User
     from app.core.models_v6 import VerifyRecord
     from app.core.models_v8 import EvidencePackage, RfpRequirement
     from app.core.models_v10 import MarketplaceVendor, CertificateLog
 
-    vendor_count = db.query(User).filter(User.role == "vendor").count()
-    marketplace_count = db.query(MarketplaceVendor).count()
-    total_vendors = vendor_count + marketplace_count
+    def _safe(q):
+        try:
+            return q()
+        except Exception:
+            db.rollback()
+            return 0
 
-    rfp_count = db.query(RfpRequirement).count()
-    verify_count = db.query(VerifyRecord).count()
-    cert_count = db.query(CertificateLog).count()
-    evidence_count = db.query(EvidencePackage).filter(EvidencePackage.status == "READY").count()
+    vendor_count = _safe(lambda: db.query(User).filter(User.role == "vendor").count())
+    marketplace_count = _safe(lambda: db.query(MarketplaceVendor).count())
+    rfp_count = _safe(lambda: db.query(RfpRequirement).count())
+    verify_count = _safe(lambda: db.query(VerifyRecord).count())
+    cert_count = _safe(lambda: db.query(CertificateLog).count())
+    evidence_count = _safe(lambda: db.query(EvidencePackage).filter(EvidencePackage.status == "READY").count())
 
     return {
-        "total_vendors": total_vendors,
+        "total_vendors": vendor_count + marketplace_count,
         "registered_vendors": vendor_count,
         "marketplace_vendors": marketplace_count,
         "rfp_count": rfp_count,
