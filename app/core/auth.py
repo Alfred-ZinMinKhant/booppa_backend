@@ -49,6 +49,26 @@ def verify_refresh_token(token: str):
         return None
 
 
+def create_password_reset_token(email: str, expires_delta: timedelta = None) -> str:
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=30))
+    return jwt.encode(
+        {"sub": email, "exp": expire, "type": "password_reset"},
+        settings.SECRET_KEY,
+        algorithm="HS256",
+    )
+
+
+def verify_password_reset_token(token: str):
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+        if payload.get("type") != "password_reset":
+            raise JWTError("Invalid token type")
+        return payload
+    except JWTError as e:
+        logger.warning(f"Password reset token verification failed: {e}")
+        return None
+
+
 def verify_access_token(token: str):
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])

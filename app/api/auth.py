@@ -9,6 +9,8 @@ from app.core.auth import (
     authenticate_user, register_user,
     create_access_token, create_refresh_token,
     verify_refresh_token, verify_access_token,
+    create_password_reset_token, verify_password_reset_token,
+    get_password_hash,
 )
 from app.core.db import get_db
 from app.core.config import settings
@@ -370,3 +372,105 @@ async def update_me(
         has_claimed_profile=has_claimed_profile,
         is_verified=is_verified,
     )
+
+
+# ── Password reset ────────────────────────────────────────────────────────────
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    password: str
+
+
+def _reset_token_used_key(jti: str) -> str:
+    return f"pwreset:used:{jti}"
+
+
+def _mark_reset_token_used(token: str, ttl_seconds: int) -> None:
+    r = _get_redis()
+    if r:
+        try:
+            r.setex(_reset_token_used_key(token), max(ttl_seconds, 60), "1")
+            return
+        except Exception as exc:
+            logger.warning("[Auth] Redis setex failed (reset): %s", exc)
+    _token_fallback.add(_reset_token_used_key(token))
+
+
+def _reset_token_already_used(token: str) -> bool:
+    r = _get_redis()
+    if r:
+        try:
+            return bool(r.exists(_reset_token_used_key(token)))
+        except Exception as exc:
+            logger.warning("[Auth] Redis exists failed (reset): %s", exc)
+    return _reset_token_used_key(token) in _token_fallback
+
+
+@router.post("/forgot-password", status_code=202)
+async def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """Always returns 202 to prevent email enumeration. Sends a reset link if the user exists."""
+    from app.core.models import User
+    from app.services.email_service import EmailService
+    import os as _os
+
+    user = db.query(User).filter(User.email == body.email).first()
+    if user:
+        token = create_password_reset_token(user.email)
+        base = (
+            _os.environ.get("NEXT_PUBLIC_BASE_URL")
+            or _os.environ.get("BACKEND_BASE_URL")
+            or "http://localhost:3000"
+        )
+        reset_url = f"{base.rstrip('/')}/reset-password?token={token}"
+        body_html = f"""
+        <html><body style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#0f172a">
+            <h2>Reset your BOOPPA password</h2>
+            <p>We received a request to reset the password for <b>{user.email}</b>.</p>
+            <p>Click the button below to choose a new password. This link expires in 30 minutes and can only be used once.</p>
+            <p><a href="{reset_url}" style="background:#10b981;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:600">Reset password</a></p>
+            <p>If you didn&apos;t request this, you can safely ignore this email.</p>
+            <p style="color:#64748b;font-size:12px">Or copy this link: {reset_url}</p>
+        </body></html>
+        """
+        try:
+            await EmailService().send_html_email(user.email, "Reset your BOOPPA password", body_html)
+        except Exception as exc:
+            logger.error(f"[Auth] Failed to send password reset email: {exc}")
+    return {"ok": True}
+
+
+@router.post("/reset-password")
+async def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
+    from app.core.models import User
+
+    if len(body.password) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters.")
+
+    payload = verify_password_reset_token(body.token)
+    if not payload:
+        raise HTTPException(status_code=400, detail="This reset link is invalid or has expired. Please request a new one.")
+
+    if _reset_token_already_used(body.token):
+        raise HTTPException(status_code=400, detail="This reset link has already been used. Please request a new one.")
+
+    email = payload.get("sub")
+    user = db.query(User).filter(User.email == email).first() if email else None
+    if not user:
+        raise HTTPException(status_code=400, detail="This reset link is invalid or has expired. Please request a new one.")
+
+    user.hashed_password = get_password_hash(body.password)
+    db.commit()
+
+    exp = payload.get("exp")
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        ttl = int(exp - _dt.now(_tz.utc).timestamp()) if exp else 1800
+    except Exception:
+        ttl = 1800
+    _mark_reset_token_used(body.token, ttl)
+
+    return {"ok": True}

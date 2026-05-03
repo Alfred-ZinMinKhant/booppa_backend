@@ -78,8 +78,16 @@ def get_base_url():
 
 @router.post("/checkout")
 @_limiter.limit("20/minute")
-async def checkout_post(request: Request):
-    """Create a Stripe Checkout session via POST with JSON body { productType, priceId (optional), prefill_email (optional) }"""
+async def checkout_post(request: Request, token: str | None = Security(oauth2_scheme)):
+    """Create a Stripe Checkout session. Requires an authenticated user.
+
+    Body: { productType, priceId (optional), prefill_email (optional) }
+    """
+    payload = verify_access_token(token) if token else None
+    if not payload or not payload.get("sub"):
+        raise HTTPException(status_code=401, detail="Please sign in to purchase.")
+    auth_email = payload.get("sub")
+
     try:
         data = await request.json()
     except Exception:
@@ -93,6 +101,7 @@ async def checkout_post(request: Request):
         or data.get("prefillEmail")
         or data.get("customerEmail")
         or data.get("customer_email")
+        or auth_email
     )
 
     if not product_type and not price_id:
