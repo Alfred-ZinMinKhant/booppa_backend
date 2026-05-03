@@ -5,40 +5,81 @@ from typing import List, Optional
 from app.core.db import SessionLocal
 from app.core.models import ConsentLog, EnterpriseProfile, ActivityLog, VendorScore, User
 from app.core.config import settings
+from app.core.auth import create_admin_token, verify_admin_token
 import logging
 import secrets
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-security = HTTPBasic()
+security = HTTPBasic(auto_error=False)
 
 
 def _admin_auth(
     request: Request, credentials: HTTPBasicCredentials = Depends(security)
 ):
-    """Allow either X-Admin-Token header or HTTP Basic credentials (ADMIN_USER/ADMIN_PASSWORD)."""
-    # Check header token first
+    """Accept (in order): Bearer admin JWT, X-Admin-Token header, or HTTP Basic creds."""
+    # 1. Bearer admin JWT (used by the new /admin/login flow)
+    auth_header = request.headers.get("authorization") or ""
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        payload = verify_admin_token(token)
+        if payload and payload.get("sub"):
+            return True
+
+    # 2. Static X-Admin-Token header (legacy machine-to-machine)
     header = request.headers.get("x-admin-token")
     if settings.ADMIN_TOKEN:
         if header and secrets.compare_digest(header, settings.ADMIN_TOKEN):
             return True
 
-    # Fallback to HTTP Basic if configured
-    if settings.ADMIN_USER and settings.ADMIN_PASSWORD:
-        if credentials:
-            valid_user = secrets.compare_digest(
-                credentials.username, settings.ADMIN_USER
-            )
-            valid_pass = secrets.compare_digest(
-                credentials.password, settings.ADMIN_PASSWORD
-            )
-            if valid_user and valid_pass:
-                return True
+    # 3. HTTP Basic (for direct API hits / curl)
+    if settings.ADMIN_USER and settings.ADMIN_PASSWORD and credentials:
+        valid_user = secrets.compare_digest(credentials.username, settings.ADMIN_USER)
+        valid_pass = secrets.compare_digest(credentials.password, settings.ADMIN_PASSWORD)
+        if valid_user and valid_pass:
+            return True
 
-    # Nothing matched
     logger.warning("Admin authentication failed")
     raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+# ── Admin login / logout ──────────────────────────────────────────────────────
+
+class AdminLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class AdminLoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    username: str
+
+
+@router.post("/login", response_model=AdminLoginResponse)
+def admin_login(body: AdminLoginRequest):
+    if not (settings.ADMIN_USER and settings.ADMIN_PASSWORD):
+        raise HTTPException(status_code=503, detail="Admin login is not configured.")
+    valid_user = secrets.compare_digest(body.username, settings.ADMIN_USER)
+    valid_pass = secrets.compare_digest(body.password, settings.ADMIN_PASSWORD)
+    if not (valid_user and valid_pass):
+        raise HTTPException(status_code=401, detail="Invalid admin credentials.")
+    return AdminLoginResponse(
+        access_token=create_admin_token(body.username),
+        username=body.username,
+    )
+
+
+@router.post("/logout")
+def admin_logout():
+    """Stateless JWT — client just deletes the cookie. Endpoint exists for symmetry."""
+    return {"ok": True}
+
+
+@router.get("/me")
+def admin_me(_auth: bool = Depends(_admin_auth)):
+    return {"ok": True}
 
 
 @router.get("/consent/logs")
@@ -389,5 +430,132 @@ def grant_credits(
             "new_balance": user.notarization_credits,
             "pending_cover_sheet": bool(getattr(user, "pending_cover_sheet", False)),
         }
+    finally:
+        db.close()
+
+
+# ── Marketplace Vendor CRUD ───────────────────────────────────────────────────
+
+class VendorIn(BaseModel):
+    company_name: str
+    slug: Optional[str] = None
+    domain: Optional[str] = None
+    website: Optional[str] = None
+    uen: Optional[str] = None
+    industry: Optional[str] = None
+    country: Optional[str] = "Singapore"
+    city: Optional[str] = None
+    short_description: Optional[str] = None
+    contact_email: Optional[str] = None
+
+
+def _serialize_vendor(v) -> dict:
+    return {
+        "id": str(v.id),
+        "company_name": v.company_name,
+        "slug": v.slug,
+        "domain": v.domain,
+        "website": v.website,
+        "uen": v.uen,
+        "industry": v.industry,
+        "country": v.country,
+        "city": v.city,
+        "short_description": v.short_description,
+        "contact_email": v.contact_email,
+        "scan_status": v.scan_status,
+        "claimed_by_user_id": str(v.claimed_by_user_id) if v.claimed_by_user_id else None,
+        "created_at": v.created_at.isoformat() if v.created_at else None,
+        "updated_at": v.updated_at.isoformat() if v.updated_at else None,
+    }
+
+
+@router.get("/vendors")
+def admin_list_vendors(
+    q: Optional[str] = Query(None),
+    industry: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    from app.core.models_v10 import MarketplaceVendor
+    db = SessionLocal()
+    try:
+        query = db.query(MarketplaceVendor)
+        if q:
+            like = f"%{q}%"
+            query = query.filter(MarketplaceVendor.company_name.ilike(like))
+        if industry:
+            query = query.filter(MarketplaceVendor.industry == industry)
+        total = query.count()
+        rows = query.order_by(MarketplaceVendor.created_at.desc()).offset(offset).limit(limit).all()
+        return {"total": total, "items": [_serialize_vendor(r) for r in rows]}
+    finally:
+        db.close()
+
+
+@router.post("/vendors", status_code=201)
+def admin_create_vendor(body: VendorIn, _auth: bool = Depends(_admin_auth)) -> dict:
+    from app.core.models_v10 import MarketplaceVendor
+    db = SessionLocal()
+    try:
+        slug = body.slug
+        if not slug:
+            import re
+            slug = re.sub(r"[^a-z0-9]+", "-", body.company_name.lower()).strip("-")[:240]
+        existing = db.query(MarketplaceVendor).filter(MarketplaceVendor.slug == slug).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="Slug already exists.")
+        v = MarketplaceVendor(
+            company_name=body.company_name, slug=slug,
+            domain=body.domain, website=body.website, uen=body.uen,
+            industry=body.industry, country=body.country or "Singapore",
+            city=body.city, short_description=body.short_description,
+            contact_email=body.contact_email, source="manual",
+        )
+        db.add(v)
+        db.commit()
+        db.refresh(v)
+        return _serialize_vendor(v)
+    finally:
+        db.close()
+
+
+@router.put("/vendors/{vendor_id}")
+def admin_update_vendor(vendor_id: str, body: VendorIn, _auth: bool = Depends(_admin_auth)) -> dict:
+    from app.core.models_v10 import MarketplaceVendor
+    import uuid as _uuid
+    db = SessionLocal()
+    try:
+        try:
+            uid = _uuid.UUID(vendor_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid UUID")
+        v = db.query(MarketplaceVendor).filter(MarketplaceVendor.id == uid).first()
+        if not v:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+        for k, val in body.model_dump(exclude_none=True).items():
+            setattr(v, k, val)
+        db.commit()
+        db.refresh(v)
+        return _serialize_vendor(v)
+    finally:
+        db.close()
+
+
+@router.delete("/vendors/{vendor_id}", status_code=204)
+def admin_delete_vendor(vendor_id: str, _auth: bool = Depends(_admin_auth)):
+    from app.core.models_v10 import MarketplaceVendor
+    import uuid as _uuid
+    db = SessionLocal()
+    try:
+        try:
+            uid = _uuid.UUID(vendor_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid UUID")
+        v = db.query(MarketplaceVendor).filter(MarketplaceVendor.id == uid).first()
+        if not v:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+        db.delete(v)
+        db.commit()
     finally:
         db.close()

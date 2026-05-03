@@ -176,6 +176,10 @@ jobs:
           DB_SECRET_ARN: ${{ secrets.AWS_SECRETSMANAGER_DATABASE_URL_ARN }}
           # Feature flags
           FEATURE_SEO: ${{ secrets.FEATURE_SEO }}
+          # Admin auth + CMS admin token
+          ADMIN_USER: ${{ secrets.ADMIN_USER }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          CMS_ADMIN_TOKEN: ${{ secrets.CMS_ADMIN_TOKEN }}
         run: |
           CPU=${APP_CPU:-256}
           MEMORY=${APP_MEMORY:-512}
@@ -247,7 +251,10 @@ jobs:
                   { "name": "ALLOWED_HOSTS", "value": "api.booppa.io" },
                   { "name": "ALLOWED_ORIGINS", "value": "https://booppa.io,https://www.booppa.io,https://api.booppa.io,https://cms.booppa.io" },
                   { "name": "CSRF_TRUSTED_ORIGINS", "value": "https://api.booppa.io,https://booppa.io,https://www.booppa.io" },
-                  { "name": "CORS_ALLOWED_ORIGINS", "value": "https://api.booppa.io,https://booppa.io,https://www.booppa.io" }
+                  { "name": "CORS_ALLOWED_ORIGINS", "value": "https://api.booppa.io,https://booppa.io,https://www.booppa.io" },
+                  { "name": "ADMIN_USER", "value": "${ADMIN_USER}" },
+                  { "name": "ADMIN_PASSWORD", "value": "${ADMIN_PASSWORD}" },
+                  { "name": "CMS_ADMIN_TOKEN", "value": "${CMS_ADMIN_TOKEN}" }
                 ],
                 "secrets": [
                   { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" }
@@ -409,6 +416,7 @@ jobs:
           TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           DB_SECRET_ARN: ${{ secrets.AWS_SECRETSMANAGER_DATABASE_URL_ARN }}
+          CMS_ADMIN_TOKEN: ${{ secrets.CMS_ADMIN_TOKEN }}
         run: |
           CPU=256
           MEMORY=512
@@ -440,7 +448,8 @@ jobs:
                   { "name": "ALLOWED_HOSTS", "value": "cms.booppa.io" },
                   { "name": "ALLOWED_ORIGINS", "value": "https://booppa.io,https://www.booppa.io,https://api.booppa.io,https://cms.booppa.io" },
                   { "name": "CSRF_TRUSTED_ORIGINS", "value": "https://cms.booppa.io,https://booppa.io,https://api.booppa.io,https://www.booppa.io" },
-                  { "name": "CORS_ALLOWED_ORIGINS", "value": "https://cms.booppa.io,https://booppa.io,https://api.booppa.io,https://www.booppa.io" }
+                  { "name": "CORS_ALLOWED_ORIGINS", "value": "https://cms.booppa.io,https://booppa.io,https://api.booppa.io,https://www.booppa.io" },
+                  { "name": "CMS_ADMIN_TOKEN", "value": "${CMS_ADMIN_TOKEN}" }
                 ],
                 "secrets": [
                   { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" }
