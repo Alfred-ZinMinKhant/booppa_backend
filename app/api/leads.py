@@ -67,6 +67,41 @@ def get_lead_activity(db: Session = Depends(get_db)):
         logger.error(f"Failed to fetch activity: {e}")
         return []
 
+@router.get("/logs")
+def get_agent_logs(limit: int = 50, db: Session = Depends(get_db)):
+    """Returns recent agent log entries derived from real DB activity."""
+    try:
+        events: list[dict] = []
+        recent = db.execute(text("""
+            SELECT domain, score, updated_at
+            FROM hot_leads
+            ORDER BY updated_at DESC NULLS LAST
+            LIMIT :limit
+        """), {"limit": limit}).fetchall()
+        for row in recent:
+            d = dict(row._mapping)
+            level = "warn" if (d.get("score") or 0) >= 80 else "info"
+            events.append({
+                "ts": d["updated_at"].isoformat() if d.get("updated_at") else None,
+                "level": level,
+                "msg": f"Enriched {d['domain']} (score={d.get('score')})",
+            })
+
+        total = db.execute(text("SELECT COUNT(*) FROM hot_leads")).scalar() or 0
+        last_refresh = db.execute(text("""
+            SELECT GREATEST(MAX(updated_at), MAX(created_at)) FROM hot_leads
+        """)).scalar()
+        events.append({
+            "ts": last_refresh.isoformat() if last_refresh else None,
+            "level": "info",
+            "msg": f"hot_leads snapshot: {total} rows",
+        })
+        return events
+    except Exception as e:
+        logger.error(f"Failed to fetch agent logs: {e}")
+        return []
+
+
 @router.get("/{domain}")
 def get_lead_detail(domain: str, db: Session = Depends(get_db)):
     """Returns full lead detail for a specific domain"""
