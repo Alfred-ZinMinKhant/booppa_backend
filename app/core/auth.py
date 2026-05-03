@@ -49,6 +49,26 @@ def verify_refresh_token(token: str):
         return None
 
 
+def create_admin_token(username: str, expires_delta: timedelta = None) -> str:
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(hours=12))
+    return jwt.encode(
+        {"sub": username, "exp": expire, "type": "admin"},
+        settings.SECRET_KEY,
+        algorithm="HS256",
+    )
+
+
+def verify_admin_token(token: str):
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+        if payload.get("type") != "admin":
+            raise JWTError("Invalid token type")
+        return payload
+    except JWTError as e:
+        logger.warning(f"Admin token verification failed: {e}")
+        return None
+
+
 def create_password_reset_token(email: str, expires_delta: timedelta = None) -> str:
     expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=30))
     return jwt.encode(
