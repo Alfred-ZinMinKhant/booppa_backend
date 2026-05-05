@@ -20,6 +20,8 @@ PRO_PRODUCT_KEYS = {
     "compliance_notarization_10",
     "compliance_notarization_50",
     "vendor_proof",
+    "rfp_complete",
+    "compliance_evidence_pack",
 }
 
 
@@ -36,6 +38,7 @@ def resolve_tier(assessment_data: Dict[str, Any] | None, framework: str | None) 
 
     if tier in {
         "enterprise", "ent", "enterprise_monthly", "enterprise_pro",
+        "standard_suite", "pro_suite", "evaluate_suppliers", "verify_supplier_evidence",
         "standard_compliance", "pro_compliance"
     }:
         return ENTERPRISE

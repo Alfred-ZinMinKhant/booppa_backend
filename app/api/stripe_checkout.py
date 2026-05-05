@@ -48,8 +48,13 @@ MODE_MAP = {
     "vendor_active_annual": "subscription",
     "pdpa_monitor_monthly": "subscription",
     "pdpa_monitor_annual": "subscription",
+    "compliance_evidence_monthly": "subscription",
+    "evaluate_suppliers_monthly": "subscription",
+    "verify_supplier_evidence_monthly": "subscription",
     "enterprise_monthly": "subscription",
     "enterprise_pro_monthly": "subscription",
+    "standard_suite_monthly": "subscription",
+    "pro_suite_monthly": "subscription",
     # Legacy subscription keys
     "pdpa_basic": "subscription",
     "pdpa_pro": "subscription",
@@ -108,7 +113,11 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         raise HTTPException(status_code=400, detail="Missing productType or priceId")
 
     # Block vendors from purchasing procurement plans
-    PROCUREMENT_PRODUCTS = {"enterprise_monthly", "enterprise_pro_monthly"}
+    PROCUREMENT_PRODUCTS = {
+        "enterprise_monthly", "enterprise_pro_monthly",
+        "evaluate_suppliers_monthly", "verify_supplier_evidence_monthly",
+        "standard_suite_monthly", "pro_suite_monthly"
+    }
     if product_type in PROCUREMENT_PRODUCTS and prefill_email:
         from app.core.db import SessionLocal
         from app.core.models import User
@@ -130,8 +139,13 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         "vendor_active_annual": "vendor_active",
         "pdpa_monitor_monthly": "pdpa_monitor",
         "pdpa_monitor_annual": "pdpa_monitor",
+        "compliance_evidence_monthly": "compliance_evidence",
+        "evaluate_suppliers_monthly": "evaluate_suppliers",
+        "verify_supplier_evidence_monthly": "verify_supplier_evidence",
         "enterprise_monthly": "enterprise",
         "enterprise_pro_monthly": "enterprise_pro",
+        "standard_suite_monthly": "standard_suite",
+        "pro_suite_monthly": "pro_suite",
     }
     if product_type in SUBSCRIPTION_PLAN_MAP and prefill_email:
         from app.core.db import SessionLocal
