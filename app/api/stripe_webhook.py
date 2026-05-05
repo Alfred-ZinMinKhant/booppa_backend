@@ -38,6 +38,11 @@ SUBSCRIPTION_PRODUCT_TYPES = {
     "pdpa_monitor_annual",
     "enterprise_monthly",
     "enterprise_pro_monthly",
+    "standard_suite_monthly",
+    "pro_suite_monthly",
+    "evaluate_suppliers_monthly",
+    "verify_supplier_evidence_monthly",
+    "compliance_evidence_monthly",
 }
 
 # Bundle → component mapping.
@@ -66,7 +71,7 @@ BUNDLE_COMPONENTS = {
         "vendor_proof": True,
         "pdpa": True,
         "notarization_count": 3,
-        "rfp": None,
+        "rfp": "rfp_complete",
         "cover_sheet": True,   # triggers cover sheet generation with 300s delay
     },
 }
@@ -102,6 +107,11 @@ async def _activate_subscription(
             "pdpa_monitor_annual": "pdpa_monitor",
             "enterprise_monthly": "enterprise",
             "enterprise_pro_monthly": "enterprise_pro",
+            "standard_suite_monthly": "standard_suite",
+            "pro_suite_monthly": "pro_suite",
+            "evaluate_suppliers_monthly": "evaluate_suppliers",
+            "verify_supplier_evidence_monthly": "verify_supplier_evidence",
+            "compliance_evidence_monthly": "compliance_evidence",
             "compliance_standard": "standard_compliance",
             "compliance_pro": "pro_compliance",
         }
@@ -156,6 +166,11 @@ async def _activate_subscription(
                 "pdpa_monitor": "PDPA Monitor",
                 "enterprise": "Enterprise",
                 "enterprise_pro": "Enterprise Pro",
+                "standard_suite": "Standard Suite",
+                "pro_suite": "Pro Suite",
+                "evaluate_suppliers": "Evaluate Suppliers",
+                "verify_supplier_evidence": "Verify Supplier Evidence",
+                "compliance_evidence": "Compliance Evidence",
             }
             label = plan_labels.get(new_plan, new_plan)
 
