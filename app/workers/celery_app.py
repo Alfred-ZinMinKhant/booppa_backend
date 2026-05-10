@@ -6,7 +6,7 @@ celery_app = Celery(
     "booppa",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["app.workers.tasks"],
+    include=["app.workers.tasks", "app.workers.monthly_credit_reset"],
 )
 
 # Celery configuration
@@ -34,7 +34,8 @@ celery_app.conf.update(
         "fulfill_bundle_task": {"queue": "default"},
         "fulfill_cover_sheet_task": {"queue": "default"},
         "vendor_active_health_check_task": {"queue": "default"},
-        "pdpa_monitor_quarterly_rescan_task": {"queue": "reports"},
+        "pdpa_monitor_monthly_rescan_task": {"queue": "reports"},
+        "check_compliance_drift_task": {"queue": "default"},
         "app.workers.tasks.*": {"queue": "default"},
     },
     # Beat schedule
@@ -71,10 +72,22 @@ celery_app.conf.update(
             "task": "run_vendor_active_monthly_checks",
             "schedule": crontab(day_of_month=1, hour=6, minute=0),
         },
-        # PDPA Monitor: quarterly re-scans on the 1st of Jan, Apr, Jul, Oct at 03:00 UTC.
-        "pdpa-monitor-quarterly-rescans": {
-            "task": "run_pdpa_monitor_quarterly_rescans",
-            "schedule": crontab(month_of_year="1,4,7,10", day_of_month=1, hour=3, minute=0),
+        # Pre-seed notarization credit rows for active suite/enterprise subscribers
+        # on the 1st of each month at 00:30 UTC. Lazy creation in notarize.py
+        # remains the source of truth — this just makes allocations visible early.
+        "reset-monthly-notarization-credits": {
+            "task": "reset_monthly_notarization_credits",
+            "schedule": crontab(day_of_month=1, hour=0, minute=30),
+        },
+        # PDPA Monitor: monthly re-scans on the 1st of each month at 03:00 UTC.
+        "pdpa-monitor-monthly-rescans": {
+            "task": "run_pdpa_monitor_monthly_rescans",
+            "schedule": crontab(day_of_month=1, hour=3, minute=0),
+        },
+        # Compliance Evidence Monthly: monthly bundle fulfillment on the 1st of each month at 04:00 UTC.
+        "compliance-evidence-monthly-refresh": {
+            "task": "run_compliance_evidence_monthly_refresh",
+            "schedule": crontab(day_of_month=1, hour=4, minute=0),
         },
         # Weekly intelligence brief — all vendors with completed reports.
         # Monday 00:00 UTC = 08:00 SGT, fires before the score digest.

@@ -1566,6 +1566,54 @@ def fulfill_rfp_task(
             raise
 
 
+@celery_app.task(bind=True, max_retries=5, name="anchor_signed_cover_sheet_task")
+def anchor_signed_cover_sheet_task(self, report_id: str, customer_email: str | None = None, company_name: str = ""):
+    """
+    Anchor the signed Cover Sheet PDF on-chain, then re-fire the cover sheet
+    fulfillment task to regenerate the PDF (Section 5 now shows the signed tx)
+    and email the user a final blockchain receipt.
+    """
+    try:
+        from app.core.models import Report
+        db = SessionLocal()
+        try:
+            report = db.query(Report).filter(Report.id == report_id).first()
+            if not report:
+                logger.warning(f"[SignedCS] Report {report_id} not found, skipping anchor")
+                return
+            ad = report.assessment_data if isinstance(report.assessment_data, dict) else {}
+            file_hash = ad.get("file_hash") or report.audit_hash
+            if not file_hash:
+                logger.error(f"[SignedCS] Report {report_id} has no file_hash, cannot anchor")
+                return
+            blockchain = BlockchainService()
+            tx = asyncio.run(blockchain.anchor_evidence(file_hash, metadata=f"signed_cover_sheet:{report_id}"))
+            if tx:
+                report.tx_hash = tx
+                report.completed_at = datetime.now(timezone.utc)
+                ad["blockchain_anchored_at"] = report.completed_at.isoformat()
+                report.assessment_data = ad
+                db.commit()
+                logger.info(f"[SignedCS] Anchored {report_id} tx={tx[:12]}…")
+        finally:
+            db.close()
+
+        # Regenerate cover sheet so Section 5 picks up the signed tx, and send final receipt.
+        fulfill_cover_sheet_task.apply_async(
+            kwargs={
+                "bundle_type": "compliance_evidence_pack",
+                "customer_email": customer_email,
+                "company_name": company_name,
+                "metadata": {"force": True, "regen_signed": True},
+            },
+            countdown=15,
+        )
+    except Exception as exc:
+        logger.error(f"[SignedCS] Anchor failed for {report_id}: {exc}")
+        countdown = 60 * (2 ** self.request.retries)
+        raise self.retry(exc=exc, countdown=countdown)
+
+
 @celery_app.task(bind=True, max_retries=20, name="fulfill_cover_sheet_task")
 def fulfill_cover_sheet_task(
     self,
@@ -1591,14 +1639,20 @@ def fulfill_cover_sheet_task(
 
         report_id = metadata.get("report_id") or str(_uuid.uuid4())
 
-        # 1. Look up anchored bundle notarizations + PDPA + Vendor Proof for this user
+        # 1. Look up anchored bundle notarizations + PDPA + RFP Complete for this user.
+        # In the new compliance-evidence-pack flow, anchored_documents will be empty
+        # at issue time — the user signs and notarizes the cover sheet AFTER receiving it.
         anchored_documents: list[dict] = []
         pdpa_score = metadata.get("pdpa_score", "—")
         pdpa_status = "Pending"
-        vp_status = "Pending"
+        rfp_status = "Pending"
+        pdpa_tx_hash: str | None = None
+        rfp_tx_hash: str | None = None
+        signed_cs_tx: str | None = None
+        signed_cs_hash: str | None = None
         explorer_base = settings.POLYGON_EXPLORER_URL.rstrip("/")
         pdpa_details: dict = {}
-        vp_details: dict = {}
+        rfp_details: dict = {}
         db = SessionLocal()
         try:
             user = (
@@ -1641,6 +1695,7 @@ def fulfill_cover_sheet_task(
                 )
                 if pdpa_report:
                     pdpa_status = pdpa_report.status.title() if pdpa_report.status else "Pending"
+                    pdpa_tx_hash = pdpa_report.tx_hash
                     pdpa_ad = pdpa_report.assessment_data if isinstance(pdpa_report.assessment_data, dict) else {}
                     structured = pdpa_ad.get("booppa_report") if isinstance(pdpa_ad.get("booppa_report"), dict) else {}
                     structured_ra = (
@@ -1683,43 +1738,51 @@ def fulfill_cover_sheet_task(
                         "detected_laws": (pdpa_ad.get("detected_laws") or [])[:6],
                         "scanned_at": pdpa_report.completed_at.isoformat() if pdpa_report.completed_at else None,
                     }
-                vp_report = (
+                rfp_report = (
                     db.query(Report)
-                    .filter(Report.owner_id == user.id, Report.framework == "vendor_proof")
+                    .filter(Report.owner_id == user.id, Report.framework == "rfp_complete")
                     .order_by(Report.created_at.desc())
                     .first()
                 )
-                if vp_report:
-                    vp_status = vp_report.status.title() if vp_report.status else "Pending"
-                    vp_ad = vp_report.assessment_data if isinstance(vp_report.assessment_data, dict) else {}
-                    vp_structured = vp_ad.get("booppa_report") if isinstance(vp_ad.get("booppa_report"), dict) else {}
-                    registry = vp_ad.get("registry_data") or vp_structured.get("registry_data") or {}
-                    vp_details = {
-                        "company_name": vp_ad.get("company_name") or vp_report.company_name or "—",
-                        "uen": vp_ad.get("uen") or registry.get("uen") or "—",
-                        "country": vp_ad.get("country") or registry.get("country") or "—",
-                        "registry_status": registry.get("entity_status") or registry.get("status") or vp_ad.get("registry_status") or "—",
-                        "verification_level": vp_ad.get("verification_level") or vp_structured.get("verification_level") or "—",
-                        "badge_id": vp_ad.get("badge_id") or vp_structured.get("badge_id") or "—",
-                        "badge_issued_at": (
-                            vp_ad.get("badge_issued_at")
-                            or (vp_report.completed_at.isoformat() if vp_report.completed_at else None)
+                if rfp_report:
+                    rfp_status = rfp_report.status.title() if rfp_report.status else "Pending"
+                    rfp_tx_hash = rfp_report.tx_hash
+                    rfp_ad = rfp_report.assessment_data if isinstance(rfp_report.assessment_data, dict) else {}
+                    rfp_details = {
+                        "product_type": rfp_ad.get("product_type") or "rfp_complete",
+                        "qa_count": rfp_ad.get("qa_count"),
+                        "answer_source": rfp_ad.get("answer_source"),
+                        "generated_at": rfp_ad.get("generated_at") or (
+                            rfp_report.completed_at.isoformat() if rfp_report.completed_at else None
                         ),
-                        "executive_summary": (vp_structured.get("executive_summary") or vp_report.ai_narrative or "")[:600],
-                        "checks_passed": vp_ad.get("checks_passed") or vp_structured.get("checks_passed") or [],
+                        "download_url": rfp_ad.get("download_url"),
+                        "discrepancies": rfp_ad.get("discrepancies") or [],
+                        "executive_summary": (rfp_ad.get("executive_summary") or rfp_report.ai_narrative or "")[:600],
                     }
+                # Signed cover sheet upload — only present in regen-after-signing pass.
+                signed_report = (
+                    db.query(Report)
+                    .filter(
+                        Report.owner_id == user.id,
+                        Report.framework == "compliance_evidence_signed_sheet",
+                    )
+                    .order_by(Report.created_at.desc())
+                    .first()
+                )
+                if signed_report:
+                    signed_cs_tx = signed_report.tx_hash
+                    s_ad = signed_report.assessment_data if isinstance(signed_report.assessment_data, dict) else {}
+                    signed_cs_hash = s_ad.get("file_hash") or signed_report.audit_hash
         finally:
             db.close()
 
-        # 1b. Readiness gate — defer until PDPA + Vendor Proof completed and every
-        # bundle-redeemed notarization is anchored on-chain. Avoids shipping a
-        # cover sheet with "Pending" sections.
+        # 1b. Readiness gate — defer until PDPA + RFP Complete are both done.
+        # Notarization is intentionally NOT a precondition: the user receives the
+        # cover sheet first, signs it, and then notarizes it.
         force = bool(metadata.get("force"))
-        anchors_pending = sum(1 for d in anchored_documents if not d.get("tx_hash"))
         pdpa_done = pdpa_status.lower() == "completed"
-        vp_done = vp_status.lower() == "completed"
-        if not force and (not pdpa_done or not vp_done or anchors_pending > 0):
-            # Restore the pending flag so the manual button stays available, then retry.
+        rfp_done = rfp_status.lower() == "completed"
+        if not force and (not pdpa_done or not rfp_done):
             try:
                 db_r = SessionLocal()
                 u = db_r.query(User).filter(User.email == customer_email).first() if customer_email else None
@@ -1731,8 +1794,8 @@ def fulfill_cover_sheet_task(
                 pass
             countdown = min(600, 60 * (self.request.retries + 1))
             logger.info(
-                f"[CoverSheet] Deferring — pdpa_done={pdpa_done} vp_done={vp_done} "
-                f"anchors_pending={anchors_pending} retry={self.request.retries} in {countdown}s"
+                f"[CoverSheet] Deferring — pdpa_done={pdpa_done} rfp_done={rfp_done} "
+                f"retry={self.request.retries} in {countdown}s"
             )
             raise self.retry(countdown=countdown)
 
@@ -1745,8 +1808,12 @@ def fulfill_cover_sheet_task(
             "pdpa_status": pdpa_status,
             "pdpa_score": pdpa_score,
             "pdpa_details": pdpa_details,
-            "vendor_proof_status": vp_status,
-            "vendor_proof_details": vp_details,
+            "pdpa_tx_hash": pdpa_tx_hash,
+            "rfp_status": rfp_status,
+            "rfp_details": rfp_details,
+            "rfp_tx_hash": rfp_tx_hash,
+            "signed_cs_tx": signed_cs_tx,
+            "signed_cs_hash": signed_cs_hash,
             "notarization_count": len(anchored_documents),
             "anchored_documents": anchored_documents,
             "tx_hash": "—",
@@ -1801,7 +1868,8 @@ def fulfill_cover_sheet_task(
                         "anchored_count": len(anchored_documents),
                         "pdpa_status": pdpa_status,
                         "pdpa_score": pdpa_score if isinstance(pdpa_score, int) else None,
-                        "vendor_proof_status": vp_status,
+                        "rfp_status": rfp_status,
+                        "rfp_download_url": rfp_details.get("download_url"),
                     },
                     status="completed",
                     tx_hash=cover_data.get("tx_hash") if cover_data.get("tx_hash") != "—" else None,
@@ -1815,28 +1883,74 @@ def fulfill_cover_sheet_task(
             except Exception as persist_err:
                 logger.warning(f"Cover sheet Report persist failed (non-blocking): {persist_err}")
 
-        # 6. Email delivery (link only — EmailService doesn't support attachments)
+        # 6. Email delivery — branch on whether signed CS hash is present
         if customer_email:
             email_svc = EmailService()
-            doc_count = len(anchored_documents)
-            doc_summary = (
-                f"{doc_count} compliance document{'s' if doc_count != 1 else ''} anchored on {settings.POLYGON_NETWORK_NAME}"
-                if doc_count
-                else "Cover sheet generated — you can still upload remaining documents at booppa.io/compliance-evidence-pack/upload"
-            )
-            asyncio.run(email_svc.send_html_email(
-                to_email=customer_email,
-                subject="Your Compliance Evidence Pack is ready",
-                body_html=(
-                    f"<div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;'>"
-                    f"<h2 style='color:#0f172a;'>Compliance Evidence Pack</h2>"
-                    f"<p style='color:#334155;'>Your bundle is complete. {doc_summary}.</p>"
-                    f"<p><a href='{download_url}' style='background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;'>Download Cover Sheet PDF</a></p>"
-                    f"<p style='color:#64748b;font-size:13px;'>This 9-section regulator-ready PDF includes your Vendor Proof status, PDPA scan results, and SHA-256 anchored evidence for each uploaded document.</p>"
-                    f"</div>"
-                ),
-            ))
-            logger.info(f"Cover sheet delivered to {customer_email} for {bundle_type} (docs={doc_count})")
+            explorer = settings.POLYGON_EXPLORER_URL.rstrip("/")
+
+            def _tx_link(label: str, tx: str | None) -> str:
+                if not tx or tx == "—":
+                    return f"<li>{label}: <em>pending</em></li>"
+                return (
+                    f"<li>{label}: "
+                    f"<a href='{explorer}/tx/{tx}'>"
+                    f"<code style='font-size:12px;'>{tx[:12]}…{tx[-8:]}</code></a></li>"
+                )
+
+            cs_anchor_tx = cover_data.get("tx_hash") if cover_data.get("tx_hash") != "—" else None
+
+            if signed_cs_tx:
+                # FINAL receipt: signed cover sheet has been uploaded + anchored.
+                asyncio.run(email_svc.send_html_email(
+                    to_email=customer_email,
+                    subject="Your Compliance Evidence Pack — final blockchain receipt",
+                    body_html=(
+                        f"<div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;'>"
+                        f"<h2 style='color:#0f172a;'>Compliance Evidence Pack — complete</h2>"
+                        f"<p style='color:#334155;'>Your signed Cover Sheet is anchored on "
+                        f"{settings.POLYGON_NETWORK_NAME}. Download the regenerated cover sheet — "
+                        f"Section 5 now lists every blockchain anchor below.</p>"
+                        f"<p><a href='{download_url}' style='background:#10b981;color:#fff;padding:12px 24px;"
+                        f"text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;'>"
+                        f"Download Updated Cover Sheet</a></p>"
+                        f"<div style='background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;padding:16px;margin:20px 0;'>"
+                        f"<p style='margin:0 0 8px;font-weight:bold;color:#065f46;'>Blockchain anchors</p>"
+                        f"<ul style='margin:0;padding-left:20px;color:#047857;font-size:13px;'>"
+                        f"{_tx_link('PDPA Snapshot', pdpa_tx_hash)}"
+                        f"{_tx_link('RFP Complete Kit', rfp_tx_hash)}"
+                        f"{_tx_link('Cover Sheet (issued)', cs_anchor_tx)}"
+                        f"{_tx_link('Cover Sheet (signed)', signed_cs_tx)}"
+                        f"</ul></div>"
+                        f"<p style='color:#64748b;font-size:13px;'>Keep this email — the four anchors above are your full audit trail.</p>"
+                        f"</div>"
+                    ),
+                ))
+                logger.info(f"[CoverSheet] Final receipt sent to {customer_email} (signed_cs={signed_cs_tx[:10]}…)")
+            else:
+                asyncio.run(email_svc.send_html_email(
+                    to_email=customer_email,
+                    subject="Your Compliance Evidence Pack — sign & notarize the Cover Sheet",
+                    body_html=(
+                        f"<div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;'>"
+                        f"<h2 style='color:#0f172a;'>Cover Sheet ready — final step inside</h2>"
+                        f"<p style='color:#334155;'>Your PDPA Snapshot and RFP Complete kit are anchored on "
+                        f"{settings.POLYGON_NETWORK_NAME}. The 9-section regulator-ready Cover Sheet below "
+                        f"summarises both and is itself anchored on-chain.</p>"
+                        f"<p><a href='{download_url}' style='background:#10b981;color:#fff;padding:12px 24px;"
+                        f"text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;'>"
+                        f"Download Cover Sheet PDF</a></p>"
+                        f"<div style='background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:16px;margin:20px 0;'>"
+                        f"<p style='margin:0 0 8px;font-weight:bold;color:#92400e;'>Final step</p>"
+                        f"<ol style='margin:0;padding-left:20px;color:#78350f;font-size:14px;'>"
+                        f"<li>Sign the downloaded PDF (digital or wet signature).</li>"
+                        f"<li>Go to <a href='https://www.booppa.io/compliance/cover-sheet'>booppa.io/compliance/cover-sheet</a> and upload the signed copy.</li>"
+                        f"<li>Your 1 included notarization credit is auto-applied — no payment.</li>"
+                        f"</ol></div>"
+                        f"<p style='color:#64748b;font-size:13px;'>You'll receive a final blockchain receipt once the signed Cover Sheet is anchored.</p>"
+                        f"</div>"
+                    ),
+                ))
+                logger.info(f"Cover sheet delivered to {customer_email} for {bundle_type} — awaiting signed upload")
 
     except Retry:
         # Readiness-gate retry — let Celery handle it without overriding the countdown.
@@ -1971,11 +2085,12 @@ def pdpa_monitor_monthly_alert_task(self, vendor_id: str, vendor_email: str):
         raise self.retry(exc=exc, countdown=300)
 
 
-@celery_app.task(bind=True, max_retries=2, name="pdpa_monitor_quarterly_rescan_task")
-def pdpa_monitor_quarterly_rescan_task(self, vendor_id: str, vendor_email: str, website_url: str):
+@celery_app.task(bind=True, max_retries=2, name="pdpa_monitor_monthly_rescan_task")
+def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, website_url: str):
     """
-    Quarterly PDPA re-scan for PDPA Monitor subscribers.
+    Monthly PDPA re-scan for PDPA Monitor subscribers.
     Creates a new PDPA report and queues fulfill_pdpa_task.
+    Schedules a delayed drift check after the scan has had time to complete.
     """
     db = SessionLocal()
     try:
@@ -1996,7 +2111,7 @@ def pdpa_monitor_quarterly_rescan_task(self, vendor_id: str, vendor_email: str, 
                 "on_page_only": False,
                 "tier": "PRO",
                 "contact_email": vendor_email,
-                "triggered_by": "pdpa_monitor_quarterly",
+                "triggered_by": "pdpa_monitor_monthly",
             },
         )
         db.add(stub)
@@ -2005,9 +2120,92 @@ def pdpa_monitor_quarterly_rescan_task(self, vendor_id: str, vendor_email: str, 
 
         from app.api.stripe_webhook import _fulfill_pdpa
         asyncio.run(_fulfill_pdpa(report_id=str(stub.id), customer_email=vendor_email))
-        logger.info(f"PDPA Monitor quarterly re-scan complete for vendor {vendor_id}")
+        logger.info(f"PDPA Monitor monthly re-scan complete for vendor {vendor_id}")
+
+        # Drift detection: scan completion is async (process_report_task writes
+        # results back to assessment_data). Defer drift check by 30 min so the
+        # new report has a comparable risk_score before we diff it.
+        check_compliance_drift_task.apply_async(
+            args=[vendor_id, vendor_email, "pdpa_quick_scan"],
+            countdown=1800,
+        )
     except Exception as exc:
-        logger.error(f"PDPA Monitor quarterly re-scan failed for {vendor_id}: {exc}")
+        logger.error(f"PDPA Monitor monthly re-scan failed for {vendor_id}: {exc}")
+        raise self.retry(exc=exc, countdown=600)
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, max_retries=1, name="check_compliance_drift_task")
+def check_compliance_drift_task(self, vendor_id: str, vendor_email: str, framework: str = "pdpa_quick_scan"):
+    """
+    Compare the latest two completed PDPA reports for this vendor.
+    On material drift, persist a ComplianceDriftEvent and email the vendor.
+    """
+    from app.services.compliance_drift import detect_drift_for_vendor
+    from app.core.models_v8 import ComplianceDriftEvent
+
+    db = SessionLocal()
+    email_svc = EmailService()
+    try:
+        result = detect_drift_for_vendor(db, vendor_id, framework=framework)
+        if not result:
+            return
+
+        if not vendor_email:
+            return
+
+        prev = result["previous_score"]
+        cur = result["current_score"]
+        delta_pct = result["delta_pct"]
+        severity = result["severity"]
+        color = "#dc2626" if severity == "CRITICAL" else "#d97706"
+
+        body_html = f"""<html><body style="font-family:Arial;max-width:600px;margin:0 auto;color:#0f172a;">
+        <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
+          <h1 style="color:{color};margin:0;font-size:18px;">PDPA compliance drift detected — {severity}</h1>
+        </div>
+        <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
+          <p>Your latest monthly PDPA Monitor scan shows a material change in risk posture.</p>
+          <table style="width:100%;border-collapse:collapse;margin:16px 0;">
+            <tr><td style="padding:8px 0;color:#64748b;">Previous risk score</td>
+                <td style="padding:8px 0;text-align:right;font-weight:bold;">{prev:.1f}</td></tr>
+            <tr><td style="padding:8px 0;color:#64748b;">Current risk score</td>
+                <td style="padding:8px 0;text-align:right;font-weight:bold;color:{color};">{cur:.1f}</td></tr>
+            <tr><td style="padding:8px 0;color:#64748b;">Change</td>
+                <td style="padding:8px 0;text-align:right;font-weight:bold;color:{color};">+{delta_pct:.1f}%</td></tr>
+          </table>
+          <p style="font-size:14px;color:#475569;">
+            Higher risk scores indicate degraded PDPA posture. Review the latest report
+            and address the highlighted findings to restore your compliance baseline.
+          </p>
+          <a href="https://www.booppa.io/vendor/dashboard"
+             style="background:#0f172a;color:#fff;padding:10px 20px;text-decoration:none;
+                    border-radius:6px;font-weight:bold;display:inline-block;margin-top:16px;">
+            Review report
+          </a>
+          <p style="margin-top:24px;font-size:11px;color:#94a3b8;">
+            You're receiving this because you subscribe to PDPA Monitor.
+          </p>
+        </div>
+        </body></html>"""
+
+        try:
+            asyncio.run(email_svc.send_html_email(
+                to_email=vendor_email,
+                subject=f"PDPA compliance drift — {severity}",
+                body_html=body_html,
+            ))
+            event = db.query(ComplianceDriftEvent).filter(
+                ComplianceDriftEvent.id == result["event_id"]
+            ).first()
+            if event:
+                event.notified = True
+                db.commit()
+        except Exception as email_exc:
+            logger.warning(f"[ComplianceDrift] Email failed for {vendor_email}: {email_exc}")
+    except Exception as exc:
+        logger.error(f"[ComplianceDrift] Drift check failed for {vendor_id}: {exc}")
         raise self.retry(exc=exc, countdown=600)
     finally:
         db.close()
@@ -2037,10 +2235,10 @@ def run_vendor_active_monthly_checks():
         db.close()
 
 
-@celery_app.task(name="run_pdpa_monitor_quarterly_rescans")
-def run_pdpa_monitor_quarterly_rescans():
+@celery_app.task(name="run_pdpa_monitor_monthly_rescans")
+def run_pdpa_monitor_monthly_rescans():
     """
-    Beat task: runs on the 1st of Jan, Apr, Jul, Oct.
+    Beat task: runs on the 1st of every month.
     Finds all PDPA Monitor subscribers and queues re-scans.
     """
     db = SessionLocal()
@@ -2056,8 +2254,39 @@ def run_pdpa_monitor_quarterly_rescans():
         for user in subscribers:
             website = getattr(user, "website", "") or ""
             if user.email and website:
-                pdpa_monitor_quarterly_rescan_task.delay(str(user.id), user.email, website)
-        logger.info(f"Queued quarterly PDPA re-scans for {len(subscribers)} PDPA Monitor subscribers")
+                pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website)
+        logger.info(f"Queued monthly PDPA re-scans for {len(subscribers)} PDPA Monitor subscribers")
+    finally:
+        db.close()
+
+
+@celery_app.task(name="run_compliance_evidence_monthly_refresh")
+def run_compliance_evidence_monthly_refresh():
+    """
+    Beat task: runs on the 1st of every month.
+    Finds all Compliance Evidence subscribers and triggers their bundle fulfillment.
+    """
+    db = SessionLocal()
+    try:
+        from app.core.models import User, Subscription as SubModel
+        from app.workers.tasks import fulfill_bundle_task
+        
+        active_subs = db.query(SubModel).filter(
+            SubModel.product_type.in_(["compliance_evidence_monthly", "compliance_evidence"]),
+            SubModel.status.in_(("active", "trialing")),
+        ).all()
+        user_ids = {s.user_id for s in active_subs if s.user_id}
+        subscribers = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
+        for user in subscribers:
+            if user.email:
+                fulfill_bundle_task.delay(
+                    product_type="compliance_evidence_pack",
+                    session_id=None,
+                    customer_email=user.email,
+                    metadata={"company_name": getattr(user, "company", ""), "vendor_url": getattr(user, "website", "")},
+                    report_id=None,
+                )
+        logger.info(f"Queued monthly compliance evidence refresh for {len(subscribers)} subscribers")
     finally:
         db.close()
 

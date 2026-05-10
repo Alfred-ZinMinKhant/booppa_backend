@@ -12,24 +12,39 @@ def get_subscription_families():
     (or canonical product_type names) to detect active families instead of
     substring matching.
     """
+    def _opt(name: str):
+        return getattr(settings, name, None)
+
     families = {
         "pdpa_family": [
-            settings.STRIPE_PDPA_MONITOR_MONTHLY,
-            settings.STRIPE_PDPA_MONITOR_ANNUAL,
-            settings.STRIPE_PDPA_BASIC,
-            settings.STRIPE_PDPA_PRO,
-            settings.STRIPE_PDPA_QUICK_SCAN,
+            _opt("STRIPE_PDPA_MONITOR_MONTHLY"),
+            _opt("STRIPE_PDPA_MONITOR_ANNUAL"),
+            _opt("STRIPE_PDPA_BASIC"),
+            _opt("STRIPE_PDPA_PRO"),
+            _opt("STRIPE_PDPA_QUICK_SCAN"),
         ],
         "vendor_family": [
-            settings.STRIPE_VENDOR_ACTIVE_MONTHLY,
-            settings.STRIPE_VENDOR_ACTIVE_ANNUAL,
-            settings.STRIPE_VENDOR_TRUST_PACK,
+            _opt("STRIPE_VENDOR_ACTIVE_MONTHLY"),
+            _opt("STRIPE_VENDOR_ACTIVE_ANNUAL"),
+            _opt("STRIPE_VENDOR_TRUST_PACK"),
         ],
         "enterprise_family": [
-            settings.STRIPE_ENTERPRISE_MONTHLY,
-            settings.STRIPE_ENTERPRISE_PRO_MONTHLY,
-            settings.STRIPE_ENTERPRISE_BID_KIT,
-            settings.STRIPE_ENTERPRISE_MONTHLY,
+            _opt("STRIPE_ENTERPRISE_MONTHLY"),
+            _opt("STRIPE_ENTERPRISE_PRO_MONTHLY"),
+            _opt("STRIPE_ENTERPRISE_BID_KIT"),
+        ],
+        "buyer_family": [
+            _opt("STRIPE_EVALUATE_SUPPLIERS_MONTHLY"),
+            _opt("STRIPE_VERIFY_SUPPLIER_EVIDENCE_MONTHLY"),
+            _opt("STRIPE_ENTERPRISE_MONTHLY"),
+        ],
+        "compliance_family": [
+            _opt("STRIPE_COMPLIANCE_EVIDENCE_MONTHLY"),
+            _opt("STRIPE_COMPLIANCE_EVIDENCE_PACK"),
+        ],
+        "suite_family": [
+            _opt("STRIPE_STANDARD_SUITE_MONTHLY"),
+            _opt("STRIPE_PRO_SUITE_MONTHLY"),
         ],
     }
 

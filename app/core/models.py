@@ -51,6 +51,16 @@ class User(Base):
     # cover-sheet generation on last credit redemption or via the manual trigger
     # endpoint. Cleared after the cover sheet is queued.
     pending_cover_sheet = Column(Boolean, default=False, nullable=False, server_default="false")
+    # Set to True once the RFP Complete kit finishes generating for a Compliance
+    # Evidence Pack purchase. Combined with the PDPA "completed" Report row, this
+    # tells _maybe_fire_cover_sheet that both inputs to Section 4/5 are ready.
+    compliance_evidence_rfp_ready = Column(Boolean, default=False, nullable=False, server_default="false")
+    # Dedicated 1-credit pool for the Compliance Evidence Pack signed-cover-sheet
+    # upload. Kept separate from `notarization_credits` so the Cover Sheet workflow
+    # can never be cannibalised by other bundle uploads.
+    compliance_evidence_credits = Column(Integer, default=0, nullable=False, server_default="0")
+    # True once the user uploads their signed Cover Sheet PDF and we anchor it.
+    signed_cover_sheet_uploaded = Column(Boolean, default=False, nullable=False, server_default="false")
 
 
 class Report(Base):

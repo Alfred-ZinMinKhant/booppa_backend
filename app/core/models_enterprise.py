@@ -177,3 +177,49 @@ class SlaLog(Base):
     met = Column(Boolean)
     event_metadata = Column("metadata", JSONB, default=dict)
     recorded_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ── Organisation invites (team collaboration) ────────────────────────────────
+class OrganisationInvite(Base):
+    __tablename__ = "organisation_invites"
+    __table_args__ = (UniqueConstraint("organisation_id", "email", name="uq_org_invite_email"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organisation_id = Column(UUID(as_uuid=True), ForeignKey("organisations.id", ondelete="CASCADE"), nullable=False)
+    email = Column(String(255), nullable=False, index=True)
+    role = Column(String(50), default="member")            # admin | member
+    token = Column(String(64), unique=True, nullable=False, index=True)
+    invited_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    status = Column(String(20), default="pending")         # pending | accepted | revoked | expired
+    expires_at = Column(DateTime, nullable=False)
+    accepted_at = Column(DateTime, nullable=True)
+    accepted_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ── Shared vendor watchlist (team collaboration) ─────────────────────────────
+class VendorWatchlistItem(Base):
+    __tablename__ = "vendor_watchlist_items"
+    __table_args__ = (UniqueConstraint("organisation_id", "vendor_ref", name="uq_watchlist_org_vendor"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organisation_id = Column(UUID(as_uuid=True), ForeignKey("organisations.id", ondelete="CASCADE"), nullable=False, index=True)
+    # vendor_ref accepts either a marketplace vendor slug or a free-form identifier so
+    # we don't need to FK directly to a single vendor table (multiple vendor models exist).
+    vendor_ref = Column(String(255), nullable=False)
+    vendor_name = Column(String(255), nullable=True)
+    notes = Column(Text, nullable=True)
+    added_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ── Per-vendor comments inside an org's watchlist ────────────────────────────
+class VendorWatchlistComment(Base):
+    __tablename__ = "vendor_watchlist_comments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    watchlist_item_id = Column(UUID(as_uuid=True), ForeignKey("vendor_watchlist_items.id", ondelete="CASCADE"), nullable=False, index=True)
+    author_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)

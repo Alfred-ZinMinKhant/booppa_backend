@@ -68,9 +68,9 @@ BUNDLE_COMPONENTS = {
         "rfp": "rfp_complete",
     },
     "compliance_evidence_pack": {
-        "vendor_proof": True,
+        "vendor_proof": False,
         "pdpa": True,
-        "notarization_count": 3,
+        "notarization_count": 1,
         "rfp": "rfp_complete",
         "cover_sheet": True,   # triggers cover sheet generation with 300s delay
     },
@@ -249,13 +249,13 @@ async def _activate_subscription(
             except Exception as e:
                 logger.error(f"[Subscription] Email failed for {customer_email}: {e}")
 
-        # ── Trigger first PDPA scan for new PDPA Monitor subscribers ────────
+        # ── Trigger features based on plan ────────
         if new_plan == "pdpa_monitor":
             website = (getattr(user, "website", "") or "").strip()
             if website and customer_email:
                 try:
-                    from app.workers.tasks import pdpa_monitor_quarterly_rescan_task
-                    pdpa_monitor_quarterly_rescan_task.delay(
+                    from app.workers.tasks import pdpa_monitor_monthly_rescan_task
+                    pdpa_monitor_monthly_rescan_task.delay(
                         str(user.id), customer_email, website
                     )
                     logger.info(
@@ -269,6 +269,26 @@ async def _activate_subscription(
                 logger.info(
                     f"[Subscription] Skipping initial PDPA scan — no website on profile for {customer_email}"
                 )
+        elif new_plan == "compliance_evidence":
+            try:
+                from app.workers.tasks import fulfill_bundle_task
+                fulfill_bundle_task.delay(
+                    product_type="compliance_evidence_pack",
+                    session_id=stripe_subscription_id,
+                    customer_email=customer_email,
+                    metadata={"company_name": getattr(user, "company", ""), "vendor_url": getattr(user, "website", "")},
+                    report_id=None,
+                )
+                logger.info(f"[Subscription] Auto-fulfilled compliance_evidence_pack bundle for {customer_email}")
+            except Exception as e:
+                logger.warning(f"[Subscription] Failed to fulfill compliance_evidence bundle: {e}")
+        elif new_plan in ["standard_suite", "pro_suite"]:
+            try:
+                from app.trm_workflow_service import initialise_trm_controls
+                initialise_trm_controls(str(user.id))
+                logger.info(f"[Subscription] Initialised MAS TRM controls for {customer_email} ({new_plan})")
+            except Exception as e:
+                logger.warning(f"[Subscription] Failed to initialise MAS TRM controls: {e}")
 
     except Exception as e:
         logger.error(f"[Subscription] Activation error for {product_type}: {e}")
@@ -378,15 +398,23 @@ async def _fulfill_bundle(
         if notarization_count > 0 and customer_email:
             user = db.query(User).filter(User.email == customer_email).first()
             if user:
-                current_balance = getattr(user, "notarization_credits", 0) or 0
-                user.notarization_credits = current_balance + notarization_count
-                # Only the Compliance Evidence Pack triggers a cover sheet
                 if product_type == "compliance_evidence_pack":
+                    # CEP's 1 credit lives in a dedicated pool — it is reserved for
+                    # the signed Cover Sheet upload at /compliance/cover-sheet.
+                    current_ce = getattr(user, "compliance_evidence_credits", 0) or 0
+                    user.compliance_evidence_credits = current_ce + notarization_count
                     user.pending_cover_sheet = True
-                logger.info(
-                    f"[Bundle:{product_type}] Granted {notarization_count} notarization credits "
-                    f"to {customer_email} (balance: {current_balance} → {user.notarization_credits})"
-                )
+                    logger.info(
+                        f"[Bundle:compliance_evidence_pack] Granted {notarization_count} CE credit "
+                        f"to {customer_email} (balance: {current_ce} → {user.compliance_evidence_credits})"
+                    )
+                else:
+                    current_balance = getattr(user, "notarization_credits", 0) or 0
+                    user.notarization_credits = current_balance + notarization_count
+                    logger.info(
+                        f"[Bundle:{product_type}] Granted {notarization_count} notarization credits "
+                        f"to {customer_email} (balance: {current_balance} → {user.notarization_credits})"
+                    )
             else:
                 logger.warning(
                     f"[Bundle:{product_type}] Cannot grant {notarization_count} credits — "
@@ -833,6 +861,43 @@ async def _fulfill_rfp_package(
             f"RFP package fulfilled: product={product_type} vendor={vendor_id} "
             f"url={download_url} errors={result.get('errors')}"
         )
+
+        # If this RFP was generated as part of a Compliance Evidence Pack,
+        # mark the user ready and persist a Report row so the cover-sheet task
+        # can read RFP details. Then try firing the cover sheet.
+        if vendor_email:
+            try:
+                ce_user = db.query(User).filter(User.email == vendor_email).first()
+                if ce_user and getattr(ce_user, "pending_cover_sheet", False):
+                    from datetime import datetime as _dt, timezone as _tz
+                    rfp_report = Report(
+                        owner_id=ce_user.id,
+                        framework="rfp_complete",
+                        company_name=company_name or "Your Organisation",
+                        company_website=vendor_url,
+                        assessment_data={
+                            "product_type": product_type,
+                            "download_url": download_url,
+                            "docx_url": result.get("docx_url"),
+                            "qa_count": len(result.get("qa_answers", []) or []),
+                            "answer_source": result.get("answer_source"),
+                            "discrepancies": result.get("discrepancies") or [],
+                            "data_sources": result.get("data_sources") or {},
+                            "generated_at": result.get("generated_at"),
+                            "polygonscan_url": result.get("polygonscan_url"),
+                        },
+                        status="completed",
+                        tx_hash=result.get("tx_hash"),
+                        completed_at=_dt.now(_tz.utc),
+                    )
+                    db.add(rfp_report)
+                    ce_user.compliance_evidence_rfp_ready = True
+                    db.commit()
+                    _maybe_fire_cover_sheet(vendor_email)
+            except Exception as flag_err:
+                logger.warning(
+                    f"[RFP→CoverSheet] Could not record RFP completion for {vendor_email}: {flag_err}"
+                )
         # Store result keyed by session_id so the result page can retrieve it
         if session_id and download_url:
             from app.core.cache import cache as cache_mod
@@ -865,13 +930,17 @@ async def _fulfill_rfp_package(
 
 def _maybe_fire_cover_sheet(customer_email: str | None) -> None:
     """
-    Auto-fire the Compliance Evidence Pack cover sheet when all 3 components
-    are ready. Called at the tail of PDPA / Vendor Proof / Notarization
-    fulfillment so the cover sheet ships regardless of which finishes last.
+    Auto-fire the Compliance Evidence Pack cover sheet as soon as the two
+    auto-generated inputs — the PDPA Snapshot and the RFP Complete kit —
+    have finished. The user then signs the emailed cover sheet PDF and
+    uploads it via their 1 included notarization credit.
+
+    Notarization is intentionally NOT a precondition here: the cover sheet
+    must reach the user *before* they consume the credit, otherwise they
+    have nothing to sign and notarize.
 
     Idempotent — clears `pending_cover_sheet` once queued so duplicate calls
-    don't re-fire. The task itself has a readiness gate that retries if any
-    notarization is still anchoring.
+    (PDPA finishes after RFP, or vice versa) don't re-fire.
     """
     if not customer_email:
         return
@@ -880,23 +949,14 @@ def _maybe_fire_cover_sheet(customer_email: str | None) -> None:
         user = db.query(User).filter(User.email == customer_email).first()
         if not user or not getattr(user, "pending_cover_sheet", False):
             return
-        # Only fire when no remaining notarization credits — i.e. all bundle
-        # documents the user intends to upload have been uploaded.
-        if (getattr(user, "notarization_credits", 0) or 0) > 0:
-            return
 
-        # Confirm both PDPA and Vendor Proof reports are completed.
         pdpa_done = db.query(Report).filter(
             Report.owner_id == user.id,
             Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
             Report.status == "completed",
         ).first() is not None
-        vp_done = db.query(Report).filter(
-            Report.owner_id == user.id,
-            Report.framework == "vendor_proof",
-            Report.status == "completed",
-        ).first() is not None
-        if not (pdpa_done and vp_done):
+        rfp_done = bool(getattr(user, "compliance_evidence_rfp_ready", False))
+        if not (pdpa_done and rfp_done):
             return
 
         user.pending_cover_sheet = False

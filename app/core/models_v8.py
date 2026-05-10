@@ -342,16 +342,26 @@ class EvidencePackage(Base):
 # Monthly notarization credit tracking for enterprise subscribers.
 # One row per user per calendar month. Resets automatically each month.
 #
-# Enterprise plan: 5,000 credits/month
-# Enterprise Pro:  unlimited (tracked but never capped)
+# Hard monthly caps per plan. No "unlimited" tier — every plan has a ceiling
+# so margins stay predictable and notarization can't be abused at scale.
 #
-# Credits are consumed when an enterprise user notarizes via the
+# Standard Suite : 50 / month
+# Pro Suite      : 100 / month
+# Enterprise Pro : 200 / month
+#
+# Credits are consumed when a subscriber notarizes via the
 # /notarize/upload endpoint without going through Stripe checkout.
 ENTERPRISE_NOTARIZATION_LIMITS = {
-    "enterprise":           5_000,
-    "enterprise_pro":       -1,      # unlimited
-    "standard_compliance":  5_000,
-    "pro_compliance":       -1,      # unlimited
+    "enterprise":              200,
+    "enterprise_monthly":      200,
+    "enterprise_pro":          200,
+    "enterprise_pro_monthly":  200,
+    "standard_compliance":     50,
+    "pro_compliance":          100,
+    "standard_suite":          50,
+    "standard_suite_monthly":  50,
+    "pro_suite":               100,
+    "pro_suite_monthly":       100,
 }
 
 
@@ -380,4 +390,34 @@ class NotarizationCredit(Base):
 
     __table_args__ = (
         UniqueConstraint("user_id", "month", name="uq_notarization_credit_user_month"),
+    )
+
+
+# ── ComplianceDriftEvent ──────────────────────────────────────────────────────
+# PDPA Monitor drift detection: a row is created when a quarterly re-scan
+# shows a material drop in compliance posture compared to the previous scan.
+class ComplianceDriftEvent(Base):
+    __tablename__ = "compliance_drift_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vendor_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    framework = Column(String(64), nullable=False, default="pdpa_quick_scan")
+    previous_report_id = Column(UUID(as_uuid=True), nullable=True)
+    current_report_id = Column(UUID(as_uuid=True), nullable=True)
+    previous_score = Column(Float, nullable=True)
+    current_score = Column(Float, nullable=True)
+    delta = Column(Float, nullable=True)             # current - previous
+    delta_pct = Column(Float, nullable=True)         # signed % change relative to previous
+    severity = Column(String(16), nullable=False, default="WARNING")  # INFO | WARNING | CRITICAL
+    details = Column(JSON, nullable=True)            # per-dimension before/after if available
+    notified = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        Index("ix_compliance_drift_vendor_created", "vendor_id", "created_at"),
     )
