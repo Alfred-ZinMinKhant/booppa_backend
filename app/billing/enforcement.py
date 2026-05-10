@@ -22,6 +22,18 @@ PRO_PRODUCT_KEYS = {
     "vendor_proof",
     "rfp_complete",
     "compliance_evidence_pack",
+    "compliance_evidence_monthly",
+    "pdpa_monitor_monthly",
+    "pdpa_monitor_annual",
+}
+
+ENTERPRISE_PLAN_KEYS = {
+    "enterprise", "ent", "enterprise_monthly", "enterprise_pro", "enterprise_pro_monthly",
+    "standard_suite", "standard_suite_monthly",
+    "pro_suite", "pro_suite_monthly",
+    "evaluate_suppliers", "evaluate_suppliers_monthly",
+    "verify_supplier_evidence", "verify_supplier_evidence_monthly",
+    "standard_compliance", "pro_compliance",
 }
 
 
@@ -36,11 +48,7 @@ def resolve_tier(assessment_data: Dict[str, Any] | None, framework: str | None) 
     tier = _normalize(data.get("tier") or data.get("plan") or data.get("package"))
     product_type = _normalize(data.get("product_type") or data.get("product"))
 
-    if tier in {
-        "enterprise", "ent", "enterprise_monthly", "enterprise_pro",
-        "standard_suite", "pro_suite", "evaluate_suppliers", "verify_supplier_evidence",
-        "standard_compliance", "pro_compliance"
-    }:
+    if tier in ENTERPRISE_PLAN_KEYS or product_type in ENTERPRISE_PLAN_KEYS:
         return ENTERPRISE
 
     if product_type in PRO_PRODUCT_KEYS:
@@ -110,6 +118,13 @@ def enforce_tier(
     allow_pdf = paid and tier in {PRO, ENTERPRISE}
     ai_full = tier in {PRO, ENTERPRISE} and paid
 
+    plan_value = _normalize(data.get("plan") or data.get("tier") or data.get("package"))
+    is_pro_suite = plan_value in {"pro_suite", "pro_suite_monthly", "enterprise_pro", "enterprise_pro_monthly", "pro_compliance"}
+    is_standard_suite = plan_value in {"standard_suite", "standard_suite_monthly", "standard_compliance"}
+
+    from app.core.models_v8 import ENTERPRISE_NOTARIZATION_LIMITS
+    notarization_quota = ENTERPRISE_NOTARIZATION_LIMITS.get(plan_value, 0) if paid else 0
+
     features = {
         "ai_mode": "full" if ai_full else "light",
         "ai_full": ai_full,
@@ -118,6 +133,11 @@ def enforce_tier(
         "monitoring": tier == ENTERPRISE,
         "dashboard": tier == ENTERPRISE,
         "multi_vendor": tier == ENTERPRISE,
+        "api_access": tier in {PRO, ENTERPRISE} and paid,
+        "webhooks": tier == ENTERPRISE and paid,
+        "sso": is_pro_suite and paid,
+        "white_label": is_pro_suite and paid,
+        "monthly_notarization_quota": notarization_quota,
     }
 
     return {

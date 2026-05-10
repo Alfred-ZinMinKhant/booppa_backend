@@ -10,6 +10,7 @@ class BlogPost(models.Model):
     slug = models.SlugField(max_length=255, unique=True)
     content = RichTextField()
     author = models.CharField(max_length=255, null=True, blank=True)
+    category = models.CharField(max_length=64, null=True, blank=True)
     # CTA buttons editable in admin for non-technical users
     cta1_text = models.CharField(max_length=255, null=True, blank=True)
     cta1_url = models.CharField(max_length=1024, null=True, blank=True)

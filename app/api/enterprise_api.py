@@ -19,6 +19,7 @@ from app.core.models_enterprise import (
     WebhookEndpoint, WebhookDelivery,
     TrmControl, TrmEvidence,
     RetentionPolicy, SsoConfig, WhiteLabelConfig, SlaLog,
+    OrganisationInvite, VendorWatchlistItem, VendorWatchlistComment,
     MAS_TRM_DOMAINS,
 )
 
@@ -74,6 +75,26 @@ class WhiteLabelUpdate(BaseModel):
     footer_text: Optional[str] = None
     report_header_text: Optional[str] = None
     custom_domain: Optional[str] = None
+
+
+class InviteCreate(BaseModel):
+    email: str
+    role: str = "member"  # admin | member
+
+
+class WatchlistCreate(BaseModel):
+    vendor_ref: str
+    vendor_name: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class WatchlistUpdate(BaseModel):
+    vendor_name: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class WatchlistCommentCreate(BaseModel):
+    body: str
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -290,6 +311,306 @@ def list_sla_logs(org_id: str, db: Session = Depends(get_db), current_user: User
     _get_org(org_id, current_user, db)
     logs = db.query(SlaLog).filter(SlaLog.organisation_id == org_id).order_by(SlaLog.recorded_at.desc()).limit(100).all()
     return [{"id": str(l.id), "event_type": l.event_type, "target_minutes": l.target_minutes, "actual_minutes": l.actual_minutes, "met": l.met} for l in logs]
+
+
+# ── 9. Members ────────────────────────────────────────────────────────────────
+
+@router.get("/organisations/{org_id}/members")
+def list_members(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _get_org(org_id, current_user, db)
+    rows = (
+        db.query(OrganisationMember, User)
+        .join(User, User.id == OrganisationMember.user_id)
+        .filter(OrganisationMember.organisation_id == org_id)
+        .all()
+    )
+    return [
+        {"user_id": str(u.id), "email": u.email, "role": m.role, "joined_at": m.created_at.isoformat() if m.created_at else None}
+        for m, u in rows
+    ]
+
+
+@router.delete("/organisations/{org_id}/members/{user_id}", status_code=204)
+def remove_member(org_id: str, user_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    org = _get_org(org_id, current_user, db)
+    if str(org.owner_user_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Only the org owner can remove members")
+    if str(org.owner_user_id) == str(user_id):
+        raise HTTPException(status_code=400, detail="Cannot remove the org owner")
+    member = db.query(OrganisationMember).filter(
+        OrganisationMember.organisation_id == org_id,
+        OrganisationMember.user_id == user_id,
+    ).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+    db.delete(member)
+    db.commit()
+
+
+# ── 10. Invites ───────────────────────────────────────────────────────────────
+
+INVITE_TTL_DAYS = 7
+
+
+@router.post("/organisations/{org_id}/invites", status_code=201)
+def create_invite(org_id: str, body: InviteCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    from datetime import datetime, timedelta
+    org = _get_org(org_id, current_user, db)
+
+    email = body.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Valid email required")
+    if body.role not in {"admin", "member"}:
+        raise HTTPException(status_code=400, detail="role must be admin or member")
+
+    existing_user = db.query(User).filter(User.email == email).first()
+    if existing_user:
+        already_member = db.query(OrganisationMember).filter(
+            OrganisationMember.organisation_id == org_id,
+            OrganisationMember.user_id == existing_user.id,
+        ).first()
+        if already_member:
+            raise HTTPException(status_code=409, detail="User is already a member")
+
+    existing_invite = db.query(OrganisationInvite).filter(
+        OrganisationInvite.organisation_id == org_id,
+        OrganisationInvite.email == email,
+        OrganisationInvite.status == "pending",
+    ).first()
+    if existing_invite:
+        raise HTTPException(status_code=409, detail="A pending invite already exists for this email")
+
+    token = secrets.token_urlsafe(32)
+    invite = OrganisationInvite(
+        id=uuid.uuid4(),
+        organisation_id=org_id,
+        email=email,
+        role=body.role,
+        token=token,
+        invited_by_user_id=current_user.id,
+        expires_at=datetime.utcnow() + timedelta(days=INVITE_TTL_DAYS),
+    )
+    db.add(invite)
+    db.commit()
+    db.refresh(invite)
+
+    # Best-effort email notification
+    try:
+        import asyncio as _asyncio
+        from app.services.email_service import EmailService
+        accept_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/orgs/invites/{token}"
+        body_html = f"""<html><body style="font-family:Arial;max-width:600px;margin:0 auto;color:#0f172a;">
+        <div style="padding:32px;border:1px solid #e2e8f0;border-radius:12px;">
+          <h1 style="font-size:20px;margin:0 0 16px;">You've been invited to {org.name} on BOOPPA</h1>
+          <p>{current_user.email} invited you to join <strong>{org.name}</strong> as a {body.role}.</p>
+          <a href="{accept_url}"
+             style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;
+                    border-radius:8px;font-weight:bold;display:inline-block;margin-top:12px;">
+            Accept invite
+          </a>
+          <p style="margin-top:24px;font-size:12px;color:#94a3b8;">This invite expires in {INVITE_TTL_DAYS} days.</p>
+        </div></body></html>"""
+        _asyncio.run(EmailService().send_html_email(
+            to_email=email,
+            subject=f"Invitation to join {org.name} on BOOPPA",
+            body_html=body_html,
+        ))
+    except Exception as exc:
+        logger.warning(f"[OrgInvite] Email failed for {email}: {exc}")
+
+    return {
+        "id": str(invite.id),
+        "email": invite.email,
+        "role": invite.role,
+        "expires_at": invite.expires_at.isoformat(),
+        "token": token,  # surfaced once for testing/manual sharing
+    }
+
+
+@router.get("/organisations/{org_id}/invites")
+def list_invites(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _get_org(org_id, current_user, db)
+    invites = db.query(OrganisationInvite).filter(
+        OrganisationInvite.organisation_id == org_id,
+        OrganisationInvite.status == "pending",
+    ).all()
+    return [
+        {"id": str(i.id), "email": i.email, "role": i.role, "expires_at": i.expires_at.isoformat()}
+        for i in invites
+    ]
+
+
+@router.delete("/organisations/{org_id}/invites/{invite_id}", status_code=204)
+def revoke_invite(org_id: str, invite_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _get_org(org_id, current_user, db)
+    invite = db.query(OrganisationInvite).filter(
+        OrganisationInvite.id == invite_id,
+        OrganisationInvite.organisation_id == org_id,
+    ).first()
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    invite.status = "revoked"
+    db.commit()
+
+
+@router.post("/invites/{token}/accept", status_code=201)
+def accept_invite(token: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    from datetime import datetime
+    invite = db.query(OrganisationInvite).filter(OrganisationInvite.token == token).first()
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    if invite.status != "pending":
+        raise HTTPException(status_code=410, detail=f"Invite is {invite.status}")
+    if invite.expires_at and invite.expires_at < datetime.utcnow():
+        invite.status = "expired"
+        db.commit()
+        raise HTTPException(status_code=410, detail="Invite expired")
+    if (current_user.email or "").strip().lower() != invite.email:
+        raise HTTPException(status_code=403, detail="This invite was issued to a different email")
+
+    already = db.query(OrganisationMember).filter(
+        OrganisationMember.organisation_id == invite.organisation_id,
+        OrganisationMember.user_id == current_user.id,
+    ).first()
+    if not already:
+        db.add(OrganisationMember(
+            id=uuid.uuid4(),
+            organisation_id=invite.organisation_id,
+            user_id=current_user.id,
+            role=invite.role,
+        ))
+
+    invite.status = "accepted"
+    invite.accepted_at = datetime.utcnow()
+    invite.accepted_user_id = current_user.id
+    db.commit()
+    return {"organisation_id": str(invite.organisation_id), "role": invite.role}
+
+
+# ── 11. Shared vendor watchlist ───────────────────────────────────────────────
+
+@router.get("/organisations/{org_id}/watchlist")
+def list_watchlist(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _get_org(org_id, current_user, db)
+    items = db.query(VendorWatchlistItem).filter(
+        VendorWatchlistItem.organisation_id == org_id
+    ).order_by(VendorWatchlistItem.created_at.desc()).all()
+    return [
+        {
+            "id": str(i.id),
+            "vendor_ref": i.vendor_ref,
+            "vendor_name": i.vendor_name,
+            "notes": i.notes,
+            "added_by_user_id": str(i.added_by_user_id),
+            "created_at": i.created_at.isoformat() if i.created_at else None,
+        }
+        for i in items
+    ]
+
+
+@router.post("/organisations/{org_id}/watchlist", status_code=201)
+def add_watchlist_item(org_id: str, body: WatchlistCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _get_org(org_id, current_user, db)
+    vendor_ref = body.vendor_ref.strip()
+    if not vendor_ref:
+        raise HTTPException(status_code=400, detail="vendor_ref required")
+
+    duplicate = db.query(VendorWatchlistItem).filter(
+        VendorWatchlistItem.organisation_id == org_id,
+        VendorWatchlistItem.vendor_ref == vendor_ref,
+    ).first()
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Vendor already on watchlist")
+
+    item = VendorWatchlistItem(
+        id=uuid.uuid4(),
+        organisation_id=org_id,
+        vendor_ref=vendor_ref,
+        vendor_name=body.vendor_name,
+        notes=body.notes,
+        added_by_user_id=current_user.id,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return {"id": str(item.id), "vendor_ref": item.vendor_ref}
+
+
+@router.patch("/organisations/{org_id}/watchlist/{item_id}")
+def update_watchlist_item(org_id: str, item_id: str, body: WatchlistUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _get_org(org_id, current_user, db)
+    item = db.query(VendorWatchlistItem).filter(
+        VendorWatchlistItem.id == item_id,
+        VendorWatchlistItem.organisation_id == org_id,
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Watchlist item not found")
+    if body.vendor_name is not None:
+        item.vendor_name = body.vendor_name
+    if body.notes is not None:
+        item.notes = body.notes
+    db.commit()
+    return {"id": str(item.id), "vendor_name": item.vendor_name, "notes": item.notes}
+
+
+@router.delete("/organisations/{org_id}/watchlist/{item_id}", status_code=204)
+def remove_watchlist_item(org_id: str, item_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _get_org(org_id, current_user, db)
+    item = db.query(VendorWatchlistItem).filter(
+        VendorWatchlistItem.id == item_id,
+        VendorWatchlistItem.organisation_id == org_id,
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Watchlist item not found")
+    db.delete(item)
+    db.commit()
+
+
+@router.get("/organisations/{org_id}/watchlist/{item_id}/comments")
+def list_watchlist_comments(org_id: str, item_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _get_org(org_id, current_user, db)
+    item = db.query(VendorWatchlistItem).filter(
+        VendorWatchlistItem.id == item_id,
+        VendorWatchlistItem.organisation_id == org_id,
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Watchlist item not found")
+    comments = db.query(VendorWatchlistComment).filter(
+        VendorWatchlistComment.watchlist_item_id == item_id
+    ).order_by(VendorWatchlistComment.created_at.asc()).all()
+    return [
+        {
+            "id": str(c.id),
+            "author_user_id": str(c.author_user_id),
+            "body": c.body,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+        }
+        for c in comments
+    ]
+
+
+@router.post("/organisations/{org_id}/watchlist/{item_id}/comments", status_code=201)
+def add_watchlist_comment(org_id: str, item_id: str, body: WatchlistCommentCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _get_org(org_id, current_user, db)
+    item = db.query(VendorWatchlistItem).filter(
+        VendorWatchlistItem.id == item_id,
+        VendorWatchlistItem.organisation_id == org_id,
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Watchlist item not found")
+    text = body.body.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="body required")
+    comment = VendorWatchlistComment(
+        id=uuid.uuid4(),
+        watchlist_item_id=item_id,
+        author_user_id=current_user.id,
+        body=text,
+    )
+    db.add(comment)
+    db.commit()
+    db.refresh(comment)
+    return {"id": str(comment.id), "body": comment.body}
 
 
 # ── SSO router — OIDC callback ────────────────────────────────────────────────

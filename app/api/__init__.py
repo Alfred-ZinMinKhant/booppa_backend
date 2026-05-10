@@ -31,6 +31,7 @@ from .referrals import router as referrals_router
 from .widget import router as widget_router
 from .sse import router as sse_router
 from .notarize import router as notarize_router
+from .compliance import router as compliance_router
 from .leads import router as leads_router
 
 # v17 Hardened — Legal consent endpoint
@@ -82,6 +83,7 @@ router.include_router(widget_router, prefix="/widget", tags=["widget"])
 router.include_router(sse_router, prefix="/sse", tags=["sse"])
 # V10 — Notarization Upload
 router.include_router(notarize_router, prefix="/notarize", tags=["notarization"])
+router.include_router(compliance_router, prefix="/compliance", tags=["compliance-evidence"])
 router.include_router(leads_router, prefix="/leads", tags=["leads"])
 # v17 Hardened — Legal consent
 router.include_router(legal_consent_router, prefix="", tags=["legal-consent"])

@@ -173,26 +173,6 @@ async def upload_document(
                 f"[Notarize] Redeemed bundle credit for {email}, queued fulfillment for {report_id}, "
                 f"remaining credits={credits_remaining}"
             )
-            # Auto-fire cover sheet only for users who bought a Compliance Evidence Pack
-            # (the only bundle that includes one). Fires when they've used their last credit.
-            # 60s countdown gives the notarization task time to anchor on-chain first.
-            if credits_remaining == 0 and getattr(bundle_credit_user, "pending_cover_sheet", False):
-                try:
-                    from app.workers.tasks import fulfill_cover_sheet_task
-                    fulfill_cover_sheet_task.apply_async(
-                        kwargs={
-                            "bundle_type": "compliance_evidence_pack",
-                            "customer_email": email,
-                            "company_name": company_name or (bundle_credit_user.company or ""),
-                            "metadata": {},
-                        },
-                        countdown=60,
-                    )
-                    bundle_credit_user.pending_cover_sheet = False
-                    db.commit()
-                    logger.info(f"[Notarize] Last credit redeemed — auto-queued cover sheet for {email}")
-                except Exception as cs_err:
-                    logger.warning(f"[Notarize] Cover sheet auto-fire failed: {cs_err}")
         else:
             db.commit()
 
@@ -236,10 +216,6 @@ def _check_enterprise_credits(db, user_id: str, plan: str) -> dict:
 
     used = credit.used if credit else 0
 
-    # -1 means unlimited
-    if monthly_limit == -1:
-        return {"has_credits": True, "used": used, "limit": -1, "month": current_month}
-
     return {
         "has_credits": used < monthly_limit,
         "used": used,
@@ -253,9 +229,7 @@ def _consume_credit(db, user_id: str, plan: str) -> None:
     from app.core.models_v8 import NotarizationCredit, ENTERPRISE_NOTARIZATION_LIMITS
 
     current_month = datetime.now(timezone.utc).strftime("%Y-%m")
-    monthly_limit = ENTERPRISE_NOTARIZATION_LIMITS.get(plan, 5000)
-    if monthly_limit == -1:
-        monthly_limit = 999999  # store a large number for unlimited plans
+    monthly_limit = ENTERPRISE_NOTARIZATION_LIMITS.get(plan, 0)
 
     credit = db.query(NotarizationCredit).filter(
         NotarizationCredit.user_id == user_id,
@@ -311,7 +285,13 @@ async def enterprise_upload_document(
             raise HTTPException(status_code=404, detail="User not found.")
 
         plan = getattr(user, "plan", "free") or "free"
-        enterprise_plans = {"enterprise", "enterprise_pro", "standard_compliance", "pro_compliance"}
+        enterprise_plans = {
+            "enterprise", "enterprise_monthly",
+            "enterprise_pro", "enterprise_pro_monthly",
+            "standard_compliance", "pro_compliance",
+            "standard_suite", "standard_suite_monthly",
+            "pro_suite", "pro_suite_monthly",
+        }
         if plan not in enterprise_plans:
             raise HTTPException(status_code=403, detail="Enterprise plan required for included notarizations.")
 
@@ -470,16 +450,16 @@ async def bundle_cover_sheet_status(email: str):
     """
     Status of the Compliance Evidence Pack cover sheet for a user.
     Returns:
-      - cover_sheet: { ready, generated_at, download_url }
+      - cover_sheet: { ready, generated_at, download_url, tx_hash }
       - pdpa: { status, score, completed_at }
-      - vendor_proof: { status, completed_at }
-      - notarizations: { anchored, total }
+      - rfp: { status, completed_at, download_url }
+      - notarizations: { anchored, total }   # signed cover sheet upload
     """
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == email).first()
         if not user:
-            return {"cover_sheet": {"ready": False}, "pdpa": None, "vendor_proof": None}
+            return {"cover_sheet": {"ready": False}, "pdpa": None, "rfp": None}
 
         cs = (
             db.query(Report)
@@ -546,17 +526,19 @@ async def bundle_cover_sheet_status(email: str):
                 "completed_at": pdpa.completed_at.isoformat() if pdpa.completed_at else None,
             }
 
-        vp = (
+        rfp = (
             db.query(Report)
-            .filter(Report.owner_id == user.id, Report.framework == "vendor_proof")
+            .filter(Report.owner_id == user.id, Report.framework == "rfp_complete")
             .order_by(Report.created_at.desc())
             .first()
         )
-        vp_payload = None
-        if vp:
-            vp_payload = {
-                "status": vp.status,
-                "completed_at": vp.completed_at.isoformat() if vp.completed_at else None,
+        rfp_payload = None
+        if rfp:
+            rfp_ad = rfp.assessment_data if isinstance(rfp.assessment_data, dict) else {}
+            rfp_payload = {
+                "status": rfp.status,
+                "completed_at": rfp.completed_at.isoformat() if rfp.completed_at else None,
+                "download_url": rfp_ad.get("download_url"),
             }
 
         anchored = (
@@ -570,7 +552,7 @@ async def bundle_cover_sheet_status(email: str):
         return {
             "cover_sheet": cover_sheet_payload,
             "pdpa": pdpa_payload,
-            "vendor_proof": vp_payload,
+            "rfp": rfp_payload,
             "notarizations": {"anchored": anchored_done, "total": anchored_total},
         }
     finally:

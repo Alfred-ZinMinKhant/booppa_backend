@@ -31,6 +31,7 @@ def public_blogs(request):
             "slug",
             "content",
             "author",
+            "category",
             "cta1_text",
             "cta1_url",
             "cta2_text",
@@ -40,6 +41,15 @@ def public_blogs(request):
             "updated_at",
         )
     )
+
+    limit_param = request.GET.get("limit")
+    if limit_param:
+        try:
+            n = int(limit_param)
+            if n > 0:
+                posts = posts[:n]
+        except (TypeError, ValueError):
+            pass
 
     results = []
     for p in posts:
@@ -71,6 +81,7 @@ def public_blog_detail(request, slug):
         "slug": blog.slug,
         "content": blog.content,
         "author": blog.author,
+        "category": blog.category,
         "cta1_text": blog.cta1_text,
         "cta1_url": blog.cta1_url,
         "cta2_text": blog.cta2_text,

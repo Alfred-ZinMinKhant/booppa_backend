@@ -7,8 +7,8 @@ Sections:
   1. Cover / Executive Summary
   2. Bundle Components Delivered
   3. PDPA Compliance Status
-  4. Vendor Proof Summary
-  5. Blockchain Evidence Trail
+  4. RFP Complete Summary
+  5. Blockchain Evidence Trail (PDPA + RFP anchored, signed sheet pending)
   6. MAS TRM Assessment (if available)
   7. Risk Overview
   8. Recommendations
@@ -113,10 +113,10 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
 
     Expected keys in `data`:
       company_name, customer_email, report_id,
-      pdpa_status, pdpa_score,
-      vendor_proof_status,
+      pdpa_status, pdpa_score, pdpa_details, pdpa_tx_hash,
+      rfp_status, rfp_details (product_type, qa_count, generated_at, download_url), rfp_tx_hash,
       tx_hash, network,
-      notarization_count,
+      anchored_documents (signed cover sheet uploaded by user, post-issue),
       trm_domains (list of {domain, status, risk_rating}),
       recommendations (list of str),
       bundle_type,
@@ -188,18 +188,17 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
 
     # ── Section 2: Components Delivered ───────────────────────────────────────
     story += _section("Bundle Components Delivered", _STYLES)
-    anchored_docs = data.get("anchored_documents") or []
-    notarization_count = len(anchored_docs) if anchored_docs else data.get("notarization_count", 0)
-    notarization_status = (
-        f"{notarization_count} document(s) anchored on-chain"
-        if anchored_docs
-        else "Available — upload at booppa.io/compliance-evidence-pack/upload"
+    signed_cs_tx = data.get("signed_cs_tx")
+    signed_cs_hash = data.get("signed_cs_hash")
+    signed_status = (
+        "Anchored on-chain" if signed_cs_tx
+        else "Awaiting your signature — sign this PDF and upload at booppa.io/compliance/cover-sheet"
     )
     components = [
-        ("Vendor Proof Certificate", data.get("vendor_proof_status", "Queued")),
         ("PDPA Quick Scan Report", data.get("pdpa_status", "Queued")),
-        (f"Notarized Compliance Documents ({notarization_count}×)", notarization_status),
-        ("Compliance Summary Cover Sheet", "This document"),
+        ("RFP Complete Kit", data.get("rfp_status", "Queued")),
+        ("Compliance Summary Cover Sheet", "This document — anchored at issue"),
+        ("Signed Cover Sheet (1× notarization)", signed_status),
     ]
     story.append(_kv_table(components))
 
@@ -239,53 +238,83 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
         story.append(Paragraph("<b>Executive Summary</b>", _STYLES["caption"]))
         story.append(Paragraph(exec_sum, _STYLES["caption"]))
 
-    # ── Section 4: Vendor Proof ────────────────────────────────────────────────
-    story += _section("Vendor Proof Summary", _STYLES)
-    vp_d = data.get("vendor_proof_details") or {}
-    badge_issued = vp_d.get("badge_issued_at") or "—"
-    if isinstance(badge_issued, str) and "T" in badge_issued:
-        badge_issued = badge_issued.split("T")[0]
-    vp_rows = [
-        ("Status", data.get("vendor_proof_status", "Pending")),
-        ("Company", vp_d.get("company_name") or company),
-        ("UEN / Registration", vp_d.get("uen") or "—"),
-        ("Country", vp_d.get("country") or "—"),
-        ("Registry Status", str(vp_d.get("registry_status") or "—").title()),
-        ("Verification Level", str(vp_d.get("verification_level") or "Basic (automated)").title()),
-        ("Badge ID", vp_d.get("badge_id") or "—"),
-        ("Badge Issued", badge_issued),
+    # ── Section 4: RFP Complete Summary ───────────────────────────────────────
+    story += _section("RFP Complete Summary", _STYLES)
+    rfp_d = data.get("rfp_details") or {}
+    generated_at = rfp_d.get("generated_at") or "—"
+    if isinstance(generated_at, str) and "T" in generated_at:
+        generated_at = generated_at.split("T")[0]
+    qa_count = rfp_d.get("qa_count")
+    qa_str = f"{qa_count} questions answered" if isinstance(qa_count, int) and qa_count > 0 else "—"
+    answer_source = str(rfp_d.get("answer_source") or "ai_grounded").replace("_", " ").title()
+    download_url = rfp_d.get("download_url") or "—"
+    download_str = "Available — see email" if download_url and download_url != "—" else "Pending generation"
+    rfp_rows = [
+        ("Status", data.get("rfp_status", "Pending")),
+        ("Product", str(rfp_d.get("product_type") or "rfp_complete").replace("_", " ").title()),
+        ("Q&A Coverage", qa_str),
+        ("Answer Source", answer_source),
+        ("Generated", generated_at),
+        ("Bid Kit Download", download_str),
     ]
-    story.append(_kv_table(vp_rows))
+    story.append(_kv_table(rfp_rows))
 
-    checks = vp_d.get("checks_passed") or []
-    if checks:
+    discrepancies = rfp_d.get("discrepancies") or []
+    if discrepancies:
         story.append(Spacer(1, 0.06 * inch))
-        story.append(Paragraph("<b>Checks Passed</b>", _STYLES["caption"]))
-        for c in checks[:6]:
-            story.append(Paragraph(f"• {c}", _STYLES["caption"]))
+        story.append(Paragraph("<b>Discrepancies flagged for review</b>", _STYLES["caption"]))
+        for d in discrepancies[:5]:
+            label = d if isinstance(d, str) else d.get("description") or d.get("title") or str(d)
+            story.append(Paragraph(f"• {label}", _STYLES["caption"]))
             story.append(Spacer(1, 2))
 
-    vp_exec = vp_d.get("executive_summary")
-    if vp_exec:
+    rfp_exec = rfp_d.get("executive_summary")
+    if rfp_exec:
         story.append(Spacer(1, 0.05 * inch))
         story.append(Paragraph("<b>Executive Summary</b>", _STYLES["caption"]))
-        story.append(Paragraph(vp_exec, _STYLES["caption"]))
+        story.append(Paragraph(rfp_exec, _STYLES["caption"]))
 
     # ── Section 5: Blockchain Evidence Trail ──────────────────────────────────
     story += _section("Blockchain Evidence Trail", _STYLES)
     from app.core.config import settings
-    tx = data.get("tx_hash", "—")
     network = data.get("network", settings.POLYGON_NETWORK_NAME)
     explorer = settings.POLYGON_EXPLORER_URL.rstrip("/")
-    short_tx = (tx[:10] + "…" + tx[-8:]) if isinstance(tx, str) and len(tx) > 24 else tx
-    verify_url = f"{explorer}/tx/{tx}" if tx and tx != "—" else "Pending anchor"
     mono = ParagraphStyle("mono", fontSize=7.5, leading=10, textColor=colors.HexColor("#334155"), fontName="Courier")
-    story.append(_kv_table([
+
+    def _anchor_row(label: str, tx: str | None) -> tuple[str, Any]:
+        if not tx or tx == "—":
+            return (label, Paragraph("Pending anchor", _STYLES["caption"]))
+        short = (tx[:10] + "…" + tx[-8:]) if len(tx) > 24 else tx
+        url = f"{explorer}/tx/{tx}"
+        return (label, Paragraph(f"{short}<br/><font size='6'>{url}</font>", mono))
+
+    pdpa_tx = data.get("pdpa_tx_hash")
+    rfp_tx = data.get("rfp_tx_hash")
+    cs_tx = data.get("tx_hash")
+
+    rows = [
         ("Network", network),
-        ("Transaction Hash", Paragraph(short_tx, mono)),
-        ("Verify URL", Paragraph(verify_url, mono)),
         ("Anchoring Standard", "SHA-256 → EvidenceAnchorV3 smart contract"),
-    ]))
+        _anchor_row("PDPA Snapshot", pdpa_tx),
+        _anchor_row("RFP Complete Kit", rfp_tx),
+        _anchor_row("Cover Sheet (this PDF)", cs_tx),
+    ]
+    if signed_cs_tx:
+        rows.append(_anchor_row("Signed Cover Sheet", signed_cs_tx))
+        if signed_cs_hash:
+            short_h = (signed_cs_hash[:18] + "…" + signed_cs_hash[-6:]) if len(signed_cs_hash) > 28 else signed_cs_hash
+            rows.append(("Signed Cover Sheet SHA-256", Paragraph(short_h, mono)))
+    else:
+        rows.append((
+            "Signed Cover Sheet",
+            Paragraph(
+                "<b>Pending manual upload of signed Cover Sheet.</b><br/>"
+                "Sign this PDF, then upload the signed copy at booppa.io/compliance/cover-sheet "
+                "using your 1 included credit. Once anchored, this row updates with the tx.",
+                _STYLES["caption"],
+            ),
+        ))
+    story.append(_kv_table(rows))
 
     # ── Section 5b: Anchored Compliance Documents ────────────────────────────
     if anchored_docs:
