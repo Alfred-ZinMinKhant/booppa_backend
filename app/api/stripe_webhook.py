@@ -270,18 +270,53 @@ async def _activate_subscription(
                     f"[Subscription] Skipping initial PDPA scan — no website on profile for {customer_email}"
                 )
         elif new_plan == "compliance_evidence":
-            try:
-                from app.workers.tasks import fulfill_bundle_task
-                fulfill_bundle_task.delay(
-                    product_type="compliance_evidence_pack",
-                    session_id=stripe_subscription_id,
-                    customer_email=customer_email,
-                    metadata={"company_name": getattr(user, "company", ""), "vendor_url": getattr(user, "website", "")},
-                    report_id=None,
+            website = (getattr(user, "website", "") or "").strip()
+            if not website:
+                # Defer first-cycle fulfillment until the user adds a website —
+                # PDPA + RFP regen has no target without `vendor_url`. Beat task
+                # will pick them up next cycle once profile is updated.
+                logger.warning(
+                    f"[Subscription] CE activation deferred for {customer_email} — no website on profile"
                 )
-                logger.info(f"[Subscription] Auto-fulfilled compliance_evidence_pack bundle for {customer_email}")
-            except Exception as e:
-                logger.warning(f"[Subscription] Failed to fulfill compliance_evidence bundle: {e}")
+                try:
+                    from app.services.email_service import EmailService
+                    import asyncio as _asyncio
+                    body_html = f"""<!DOCTYPE html><html><body style="font-family:-apple-system,Segoe UI,sans-serif;background:#f8fafc;padding:24px;">
+                    <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:8px;padding:28px;border:1px solid #e2e8f0;">
+                      <h2 style="margin:0 0 12px;color:#0f172a;">Welcome to Compliance Evidence — one more step</h2>
+                      <p style="color:#334155;line-height:1.55;">
+                        Your subscription is active, but we need your website on file to generate
+                        your PDPA Snapshot, RFP Complete Kit, and monthly Cover Sheet.
+                      </p>
+                      <a href="https://www.booppa.io/vendor/profile"
+                         style="background:#0f172a;color:#fff;padding:10px 20px;text-decoration:none;
+                                border-radius:6px;font-weight:bold;display:inline-block;margin-top:12px;">
+                        Add your website
+                      </a>
+                      <p style="margin-top:24px;font-size:11px;color:#94a3b8;">
+                        Once saved, your first cycle will run automatically.
+                      </p>
+                    </div></body></html>"""
+                    _asyncio.run(EmailService().send_html_email(
+                        to_email=customer_email,
+                        subject="Compliance Evidence: add your website to start your first cycle",
+                        body_html=body_html,
+                    ))
+                except Exception as email_exc:
+                    logger.warning(f"[Subscription] Could not send CE website-needed email: {email_exc}")
+            else:
+                try:
+                    from app.workers.tasks import fulfill_bundle_task
+                    fulfill_bundle_task.delay(
+                        product_type="compliance_evidence_pack",
+                        session_id=stripe_subscription_id,
+                        customer_email=customer_email,
+                        metadata={"company_name": getattr(user, "company", ""), "vendor_url": website},
+                        report_id=None,
+                    )
+                    logger.info(f"[Subscription] Auto-fulfilled compliance_evidence_pack bundle for {customer_email}")
+                except Exception as e:
+                    logger.warning(f"[Subscription] Failed to fulfill compliance_evidence bundle: {e}")
         elif new_plan in ["standard_suite", "pro_suite"]:
             try:
                 from app.trm_workflow_service import initialise_trm_controls
@@ -401,12 +436,15 @@ async def _fulfill_bundle(
                 if product_type == "compliance_evidence_pack":
                     # CEP's 1 credit lives in a dedicated pool — it is reserved for
                     # the signed Cover Sheet upload at /compliance/cover-sheet.
+                    # Does NOT accumulate: the workflow is exactly 1 signed sheet
+                    # per cycle (one-time purchase OR per month for subscribers),
+                    # so we normalise to 1 rather than stacking.
                     current_ce = getattr(user, "compliance_evidence_credits", 0) or 0
-                    user.compliance_evidence_credits = current_ce + notarization_count
+                    user.compliance_evidence_credits = max(current_ce, 1)
                     user.pending_cover_sheet = True
                     logger.info(
-                        f"[Bundle:compliance_evidence_pack] Granted {notarization_count} CE credit "
-                        f"to {customer_email} (balance: {current_ce} → {user.compliance_evidence_credits})"
+                        f"[Bundle:compliance_evidence_pack] Set CE credit=1 for {customer_email} "
+                        f"(was {current_ce})"
                     )
                 else:
                     current_balance = getattr(user, "notarization_credits", 0) or 0

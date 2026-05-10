@@ -1760,15 +1760,19 @@ def fulfill_cover_sheet_task(
                         "executive_summary": (rfp_ad.get("executive_summary") or rfp_report.ai_narrative or "")[:600],
                     }
                 # Signed cover sheet upload — only present in regen-after-signing pass.
-                signed_report = (
+                # Scope to THIS cycle: the signed sheet must be newer than the
+                # latest PDPA report. Otherwise a previous month's signed sheet
+                # would leak into the current cycle's cover sheet + final email.
+                signed_q = (
                     db.query(Report)
                     .filter(
                         Report.owner_id == user.id,
                         Report.framework == "compliance_evidence_signed_sheet",
                     )
-                    .order_by(Report.created_at.desc())
-                    .first()
                 )
+                if pdpa_report and pdpa_report.created_at:
+                    signed_q = signed_q.filter(Report.created_at >= pdpa_report.created_at)
+                signed_report = signed_q.order_by(Report.created_at.desc()).first()
                 if signed_report:
                     signed_cs_tx = signed_report.tx_hash
                     s_ad = signed_report.assessment_data if isinstance(signed_report.assessment_data, dict) else {}
@@ -2265,28 +2269,94 @@ def run_compliance_evidence_monthly_refresh():
     """
     Beat task: runs on the 1st of every month.
     Finds all Compliance Evidence subscribers and triggers their bundle fulfillment.
+
+    Reset semantics each cycle:
+      - `signed_cover_sheet_uploaded` flipped back to False (last month's signed
+        sheet stays on record but is out-of-cycle for the new cover sheet).
+      - `compliance_evidence_credits` is normalised to 1 (does NOT roll over —
+        subscription gives one signed-CS upload per month).
+      - `pending_cover_sheet` re-flipped True so the new cycle re-fires the
+        cover-sheet readiness gate after fresh PDPA + RFP regenerate.
     """
     db = SessionLocal()
     try:
         from app.core.models import User, Subscription as SubModel
         from app.workers.tasks import fulfill_bundle_task
-        
+
         active_subs = db.query(SubModel).filter(
             SubModel.product_type.in_(["compliance_evidence_monthly", "compliance_evidence"]),
             SubModel.status.in_(("active", "trialing")),
         ).all()
         user_ids = {s.user_id for s in active_subs if s.user_id}
         subscribers = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
+
+        eligible: list = []
+        missing_website: list = []
         for user in subscribers:
-            if user.email:
-                fulfill_bundle_task.delay(
-                    product_type="compliance_evidence_pack",
-                    session_id=None,
-                    customer_email=user.email,
-                    metadata={"company_name": getattr(user, "company", ""), "vendor_url": getattr(user, "website", "")},
-                    report_id=None,
+            if not user.email:
+                continue
+            website = (getattr(user, "website", "") or "").strip()
+            if not website:
+                missing_website.append(user)
+                continue
+            user.signed_cover_sheet_uploaded = False
+            user.compliance_evidence_credits = 1
+            user.pending_cover_sheet = True
+            eligible.append((user, website))
+        db.commit()
+
+        for user, website in eligible:
+            fulfill_bundle_task.delay(
+                product_type="compliance_evidence_pack",
+                session_id=None,
+                customer_email=user.email,
+                metadata={
+                    "company_name": getattr(user, "company", ""),
+                    "vendor_url": website,
+                    "subscription_cycle": True,
+                },
+                report_id=None,
+            )
+
+        # Prompt subscribers missing a website to backfill their profile —
+        # without `vendor_url` the PDPA scan + RFP regen has no target, so we
+        # skip the cycle for them rather than fail downstream.
+        if missing_website:
+            email_svc = EmailService()
+            for user in missing_website:
+                logger.warning(
+                    f"[CE Refresh] Skipping {user.email} — no website on profile; cycle deferred"
                 )
-        logger.info(f"Queued monthly compliance evidence refresh for {len(subscribers)} subscribers")
+                body_html = f"""<!DOCTYPE html><html><body style="font-family:-apple-system,Segoe UI,sans-serif;background:#f8fafc;padding:24px;">
+                <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:8px;padding:28px;border:1px solid #e2e8f0;">
+                  <h2 style="margin:0 0 12px;color:#0f172a;">Action required: add your website</h2>
+                  <p style="color:#334155;line-height:1.55;">
+                    Your Compliance Evidence subscription cycle could not run this month because
+                    no website is on your profile. We need it to refresh your PDPA Snapshot and
+                    RFP Complete Kit before issuing this month's Cover Sheet.
+                  </p>
+                  <a href="https://www.booppa.io/vendor/profile"
+                     style="background:#0f172a;color:#fff;padding:10px 20px;text-decoration:none;
+                            border-radius:6px;font-weight:bold;display:inline-block;margin-top:12px;">
+                    Update profile
+                  </a>
+                  <p style="margin-top:24px;font-size:11px;color:#94a3b8;">
+                    Once your website is saved, your next cycle will resume automatically.
+                  </p>
+                </div></body></html>"""
+                try:
+                    asyncio.run(email_svc.send_html_email(
+                        to_email=user.email,
+                        subject="Compliance Evidence: add your website to resume monthly cycle",
+                        body_html=body_html,
+                    ))
+                except Exception as email_exc:
+                    logger.warning(f"[CE Refresh] Could not email {user.email}: {email_exc}")
+
+        logger.info(
+            f"Queued monthly compliance evidence refresh for {len(eligible)} subscribers "
+            f"(skipped {len(missing_website)} without website)"
+        )
     finally:
         db.close()
 
