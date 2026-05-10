@@ -46,6 +46,7 @@ async def cover_sheet_status(email: str):
                 "credits": 0,
                 "pending_cover_sheet": False,
                 "signed_uploaded": False,
+                "vendor_url_missing": False,
                 "pdpa": None,
                 "rfp": None,
                 "cover_sheet": {"ready": False},
@@ -113,15 +114,16 @@ async def cover_sheet_status(email: str):
                 "generated_at": cs.completed_at.isoformat() if cs.completed_at else None,
             }
 
-        signed = (
-            db.query(Report)
-            .filter(
-                Report.owner_id == user.id,
-                Report.framework == "compliance_evidence_signed_sheet",
-            )
-            .order_by(Report.created_at.desc())
-            .first()
+        # Scope to current cycle: only show signed report from after the latest
+        # PDPA scan (so monthly subscribers don't see last month's signed sheet
+        # bleed into this cycle's UI).
+        signed_q = db.query(Report).filter(
+            Report.owner_id == user.id,
+            Report.framework == "compliance_evidence_signed_sheet",
         )
+        if pdpa and pdpa.created_at:
+            signed_q = signed_q.filter(Report.created_at >= pdpa.created_at)
+        signed = signed_q.order_by(Report.created_at.desc()).first()
         signed_payload = None
         if signed:
             s_ad = signed.assessment_data if isinstance(signed.assessment_data, dict) else {}
@@ -132,10 +134,12 @@ async def cover_sheet_status(email: str):
                 "file_name": s_ad.get("original_filename"),
             }
 
+        website = (getattr(user, "website", "") or "").strip()
         return {
             "credits": getattr(user, "compliance_evidence_credits", 0) or 0,
             "pending_cover_sheet": bool(getattr(user, "pending_cover_sheet", False)),
             "signed_uploaded": bool(getattr(user, "signed_cover_sheet_uploaded", False)),
+            "vendor_url_missing": not bool(website),
             "pdpa": pdpa_payload,
             "rfp": rfp_payload,
             "cover_sheet": cs_payload,
