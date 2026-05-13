@@ -921,7 +921,10 @@ class RFPExpressBuilder:
         try:
             from app.core.models_v10 import CertificateLog
             import uuid as _uuid
-            s3_key = f"rfp-express/{self.report_id}.pdf"
+            # Use the real S3 key set by _upload_pdf so downstream readers can
+            # presign the URL. Falls back to the (legacy, wrong) express path
+            # only if _upload_pdf wasn't reached for some reason.
+            s3_key = getattr(self, "pdf_s3_key", None) or f"rfp-express/{self.report_id}.pdf"
             log = CertificateLog(
                 vendor_id=_uuid.UUID(self.vendor_id),
                 certificate_type="RFP",

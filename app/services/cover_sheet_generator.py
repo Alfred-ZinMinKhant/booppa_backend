@@ -32,6 +32,11 @@ from reportlab.platypus import (
 
 logger = logging.getLogger(__name__)
 
+# Bumped whenever the visible structure of the cover sheet changes (sections,
+# branding, copy). Stored on the Report row so the UI can detect customers
+# holding an older PDF and offer a free regenerate.
+COVER_SHEET_SCHEMA_VERSION = 2
+
 PAGE_W, PAGE_H = A4
 MARGIN = 0.75 * inch
 HEADER_H = 0.55 * inch

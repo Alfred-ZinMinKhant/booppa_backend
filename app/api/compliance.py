@@ -125,6 +125,39 @@ async def cover_sheet_status(email: str):
                 "completed_at": rfp.completed_at.isoformat() if rfp.completed_at else None,
                 "download_url": rfp_download,
             }
+        else:
+            # Backfill: some RFP completions predate the unconditional Report-row
+            # write. The CertificateLog row is always written, so use it as a
+            # fallback so the bundle progress page can show "completed".
+            try:
+                from app.core.models_v10 import CertificateLog
+                cert = (
+                    db.query(CertificateLog)
+                    .filter(
+                        CertificateLog.vendor_id == user.id,
+                        CertificateLog.certificate_type == "RFP",
+                    )
+                    .order_by(CertificateLog.generated_at.desc())
+                    .first()
+                )
+                if cert:
+                    # The legacy _write_certificate_log hardcoded file_key to
+                    # `rfp-express/{report_id}.pdf` regardless of tier and
+                    # without the `reports/` prefix used by S3Service. The
+                    # bundle flow always uses rfp_complete, so try the
+                    # canonical key first; fall back to the stored value.
+                    canonical_key = (
+                        f"reports/rfp-complete/{cert.report_id}.pdf"
+                        if cert.report_id
+                        else None
+                    )
+                    rfp_payload = {
+                        "status": "completed",
+                        "completed_at": cert.generated_at.isoformat() if cert.generated_at else None,
+                        "download_url": _presign(canonical_key) or _presign(cert.file_key),
+                    }
+            except Exception as e:
+                logger.warning(f"[ComplianceStatus] RFP CertificateLog fallback failed: {e}")
 
         cs = (
             db.query(Report)
@@ -134,14 +167,36 @@ async def cover_sheet_status(email: str):
         )
         cs_payload = {"ready": False}
         if cs and (cs.file_key or cs.s3_url):
+            from app.services.cover_sheet_generator import COVER_SHEET_SCHEMA_VERSION
             cs_ad = cs.assessment_data if isinstance(cs.assessment_data, dict) else {}
             cs_key = cs.file_key or cs_ad.get("s3_key")
+            stored_version = cs_ad.get("schema_version")
             cs_payload = {
                 "ready": True,
                 "download_url": _presign(cs_key) or cs.s3_url,
                 "tx_hash": cs.tx_hash,
                 "generated_at": cs.completed_at.isoformat() if cs.completed_at else None,
+                "schema_version": stored_version,
+                "outdated": stored_version != COVER_SHEET_SCHEMA_VERSION,
             }
+            # The cover sheet only generates after both PDPA and RFP finish, so
+            # its existence is proof both inputs completed. If the upstream
+            # Report rows are missing/incomplete (e.g. predate the unconditional
+            # RFP-row write), fall back to the snapshot stored on the cover
+            # sheet itself so the UI stays consistent.
+            if pdpa_payload is None or pdpa_payload.get("status") != "completed":
+                snapshot_score = cs_ad.get("pdpa_score")
+                pdpa_payload = {
+                    "status": "completed",
+                    "score": snapshot_score if isinstance(snapshot_score, int) else (pdpa_payload or {}).get("score"),
+                    "completed_at": (pdpa_payload or {}).get("completed_at") or cs_payload["generated_at"],
+                }
+            if rfp_payload is None or rfp_payload.get("status") != "completed":
+                rfp_payload = {
+                    "status": "completed",
+                    "completed_at": (rfp_payload or {}).get("completed_at") or cs_payload["generated_at"],
+                    "download_url": (rfp_payload or {}).get("download_url") or cs_ad.get("rfp_download_url"),
+                }
 
         # Scope to current cycle: only show signed report from after the latest
         # PDPA scan (so monthly subscribers don't see last month's signed sheet
@@ -176,6 +231,50 @@ async def cover_sheet_status(email: str):
         }
     finally:
         db.close()
+
+
+@router.post("/cover-sheet/regenerate")
+async def regenerate_cover_sheet(email: str = Form(...)):
+    """
+    Re-fire fulfill_cover_sheet_task with force=True for users whose existing
+    cover sheet was issued by a previous version of cover_sheet_generator.py.
+    Only allowed if the user already has a cover sheet (no second initial issue).
+    """
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found.")
+        existing = (
+            db.query(Report)
+            .filter(
+                Report.owner_id == user.id,
+                Report.framework == "compliance_evidence_pack",
+            )
+            .order_by(Report.created_at.desc())
+            .first()
+        )
+        if not existing:
+            raise HTTPException(
+                status_code=400,
+                detail="No existing Compliance Cover Sheet found for this account.",
+            )
+        company_name = (user.company or "").strip() or "Your Organisation"
+    finally:
+        db.close()
+
+    from app.workers.tasks import fulfill_cover_sheet_task
+    fulfill_cover_sheet_task.apply_async(
+        kwargs={
+            "bundle_type": "compliance_evidence_pack",
+            "customer_email": email,
+            "company_name": company_name,
+            "metadata": {"force": True, "regen_manual": True},
+        },
+        countdown=5,
+    )
+    logger.info(f"[CoverSheet] Manual regen queued for {email}")
+    return {"queued": True}
 
 
 @router.post("/cover-sheet/upload-signed")
