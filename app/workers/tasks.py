@@ -1759,6 +1759,29 @@ def fulfill_cover_sheet_task(
                         "discrepancies": rfp_ad.get("discrepancies") or [],
                         "executive_summary": (rfp_ad.get("executive_summary") or rfp_report.ai_narrative or "")[:600],
                     }
+                else:
+                    # Backfill: some RFP completions predate the unconditional
+                    # Report-row write. CertificateLog is always written, so
+                    # use it as evidence the RFP finished.
+                    try:
+                        from app.core.models_v10 import CertificateLog
+                        cert = (
+                            db.query(CertificateLog)
+                            .filter(
+                                CertificateLog.vendor_id == user.id,
+                                CertificateLog.certificate_type == "RFP",
+                            )
+                            .order_by(CertificateLog.generated_at.desc())
+                            .first()
+                        )
+                        if cert:
+                            rfp_status = "Completed"
+                            rfp_details = {
+                                "product_type": "rfp_complete",
+                                "generated_at": cert.generated_at.isoformat() if cert.generated_at else None,
+                            }
+                    except Exception as e:
+                        logger.warning(f"[CoverSheet] RFP CertificateLog fallback failed: {e}")
                 # Signed cover sheet upload — only present in regen-after-signing pass.
                 # Scope to THIS cycle: the signed sheet must be newer than the
                 # latest PDPA report. Otherwise a previous month's signed sheet
@@ -1861,6 +1884,7 @@ def fulfill_cover_sheet_task(
         # 5b. Persist a Report row so the frontend can poll for completion + re-presign on demand
         if user:
             try:
+                from app.services.cover_sheet_generator import COVER_SHEET_SCHEMA_VERSION
                 db2 = SessionLocal()
                 cs_report = Report(
                     owner_id=user.id,
@@ -1869,6 +1893,7 @@ def fulfill_cover_sheet_task(
                     assessment_data={
                         "bundle_type": bundle_type,
                         "s3_key": s3_key,
+                        "schema_version": COVER_SHEET_SCHEMA_VERSION,
                         "anchored_count": len(anchored_documents),
                         "pdpa_status": pdpa_status,
                         "pdpa_score": pdpa_score if isinstance(pdpa_score, int) else None,
