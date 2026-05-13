@@ -900,13 +900,13 @@ async def _fulfill_rfp_package(
             f"url={download_url} errors={result.get('errors')}"
         )
 
-        # If this RFP was generated as part of a Compliance Evidence Pack,
-        # mark the user ready and persist a Report row so the cover-sheet task
-        # can read RFP details. Then try firing the cover sheet.
+        # Persist a Report row for every completed RFP so the bundle progress
+        # page (and any future audit query) can find it. The cover-sheet
+        # auto-fire is still gated on pending_cover_sheet below.
         if vendor_email:
             try:
                 ce_user = db.query(User).filter(User.email == vendor_email).first()
-                if ce_user and getattr(ce_user, "pending_cover_sheet", False):
+                if ce_user:
                     from datetime import datetime as _dt, timezone as _tz
                     rfp_report = Report(
                         owner_id=ce_user.id,
@@ -916,6 +916,7 @@ async def _fulfill_rfp_package(
                         assessment_data={
                             "product_type": product_type,
                             "download_url": download_url,
+                            "s3_key": result.get("pdf_s3_key"),
                             "docx_url": result.get("docx_url"),
                             "qa_count": len(result.get("qa_answers", []) or []),
                             "answer_source": result.get("answer_source"),
@@ -929,9 +930,11 @@ async def _fulfill_rfp_package(
                         completed_at=_dt.now(_tz.utc),
                     )
                     db.add(rfp_report)
-                    ce_user.compliance_evidence_rfp_ready = True
+                    if getattr(ce_user, "pending_cover_sheet", False):
+                        ce_user.compliance_evidence_rfp_ready = True
                     db.commit()
-                    _maybe_fire_cover_sheet(vendor_email)
+                    if getattr(ce_user, "pending_cover_sheet", False):
+                        _maybe_fire_cover_sheet(vendor_email)
             except Exception as flag_err:
                 logger.warning(
                     f"[RFP→CoverSheet] Could not record RFP completion for {vendor_email}: {flag_err}"
