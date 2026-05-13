@@ -1782,6 +1782,10 @@ def fulfill_cover_sheet_task(
                             }
                     except Exception as e:
                         logger.warning(f"[CoverSheet] RFP CertificateLog fallback failed: {e}")
+                        try:
+                            db.rollback()
+                        except Exception:
+                            pass
                 # Signed cover sheet upload — only present in regen-after-signing pass.
                 # Scope to THIS cycle: the signed sheet must be newer than the
                 # latest PDPA report. Otherwise a previous month's signed sheet
