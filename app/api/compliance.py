@@ -157,7 +157,15 @@ async def cover_sheet_status(email: str):
                         "download_url": _presign(canonical_key) or _presign(cert.file_key),
                     }
             except Exception as e:
+                # Roll back the failed transaction so subsequent queries on this
+                # session don't fail with `InFailedSqlTransaction`. The most
+                # common cause here is a schema/migration mismatch on
+                # certificate_logs in some environments.
                 logger.warning(f"[ComplianceStatus] RFP CertificateLog fallback failed: {e}")
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
 
         cs = (
             db.query(Report)
