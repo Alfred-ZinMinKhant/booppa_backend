@@ -427,6 +427,12 @@ async def _fulfill_bundle(
             pdpa_id = _make_stub("pdpa_quick_scan")
             tasks_to_queue.append(("pdpa", pdpa_id))
 
+        # 2b. RFP Kit — bundle queues the RFP builder directly (no Report stub;
+        # _fulfill_rfp_package writes its own Report row on completion).
+        rfp_product = components.get("rfp")
+        if rfp_product:
+            tasks_to_queue.append(("rfp", rfp_product))
+
         # 3. Notarization credits — grant balance to user, no auto-fulfillment.
         # User redeems credits later by uploading documents at /notarize.
         notarization_count = components.get("notarization_count", 0)
@@ -472,6 +478,21 @@ async def _fulfill_bundle(
             elif task_type == "pdpa":
                 fulfill_pdpa_task.delay(payload, customer_email)
                 logger.info(f"[Bundle:{product_type}] Queued pdpa for report {payload}")
+            elif task_type == "rfp":
+                # payload here is the rfp product_type ("rfp_complete" / "rfp_express").
+                # owner_id is the bundle buyer; vendor_url + company_name come from
+                # the user/profile context already resolved above.
+                fulfill_rfp_task.delay(
+                    product_type=payload,
+                    vendor_id=str(owner_id) if owner_id else "",
+                    vendor_email=customer_email or "",
+                    vendor_url=website or "",
+                    company_name=company_name or "",
+                    rfp_description=metadata.get("rfp_description"),
+                    session_id=session_id,
+                    intake_data=metadata.get("intake_data"),
+                )
+                logger.info(f"[Bundle:{product_type}] Queued rfp ({payload}) for {customer_email}")
 
         # Send credits-granted notification email
         if notarization_count > 0 and customer_email:

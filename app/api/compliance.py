@@ -188,23 +188,42 @@ async def cover_sheet_status(email: str):
                 "outdated": stored_version != COVER_SHEET_SCHEMA_VERSION,
             }
             # The cover sheet only generates after both PDPA and RFP finish, so
-            # its existence is proof both inputs completed. If the upstream
-            # Report rows are missing/incomplete (e.g. predate the unconditional
-            # RFP-row write), fall back to the snapshot stored on the cover
-            # sheet itself so the UI stays consistent.
-            if pdpa_payload is None or pdpa_payload.get("status") != "completed":
+            # its existence is proof those inputs completed at the time it was
+            # issued. Only fall back to the cover-sheet snapshot when the
+            # upstream Report row is missing entirely AND any row that exists
+            # is older than the cover sheet. A newer pending row means a fresh
+            # purchase cycle is in flight — show that real state, not the
+            # stale snapshot.
+            cs_generated_at = cs.completed_at
+            pdpa_is_newer_cycle = (
+                pdpa is not None
+                and cs_generated_at is not None
+                and pdpa.created_at is not None
+                and pdpa.created_at > cs_generated_at
+            )
+            rfp_is_newer_cycle = (
+                rfp is not None
+                and cs_generated_at is not None
+                and rfp.created_at is not None
+                and rfp.created_at > cs_generated_at
+            )
+            if pdpa_payload is None and not pdpa_is_newer_cycle:
                 snapshot_score = cs_ad.get("pdpa_score")
                 pdpa_payload = {
                     "status": "completed",
-                    "score": snapshot_score if isinstance(snapshot_score, int) else (pdpa_payload or {}).get("score"),
-                    "completed_at": (pdpa_payload or {}).get("completed_at") or cs_payload["generated_at"],
+                    "score": snapshot_score if isinstance(snapshot_score, int) else None,
+                    "completed_at": cs_payload["generated_at"],
                 }
-            if rfp_payload is None or rfp_payload.get("status") != "completed":
+            if rfp_payload is None and not rfp_is_newer_cycle:
                 rfp_payload = {
                     "status": "completed",
-                    "completed_at": (rfp_payload or {}).get("completed_at") or cs_payload["generated_at"],
-                    "download_url": (rfp_payload or {}).get("download_url") or cs_ad.get("rfp_download_url"),
+                    "completed_at": cs_payload["generated_at"],
+                    "download_url": cs_ad.get("rfp_download_url"),
                 }
+            # Mark the cover sheet itself as not-yet-current when a fresh
+            # cycle is running, so the UI doesn't show old PDF + new tiles.
+            if pdpa_is_newer_cycle or rfp_is_newer_cycle:
+                cs_payload["stale"] = True
 
         # Scope to current cycle: only show signed report from after the latest
         # PDPA scan (so monthly subscribers don't see last month's signed sheet
@@ -244,9 +263,10 @@ async def cover_sheet_status(email: str):
 @router.post("/cover-sheet/regenerate")
 async def regenerate_cover_sheet(email: str = Form(...)):
     """
-    Re-fire fulfill_cover_sheet_task with force=True for users whose existing
-    cover sheet was issued by a previous version of cover_sheet_generator.py.
-    Only allowed if the user already has a cover sheet (no second initial issue).
+    Run fulfill_cover_sheet_task inline with force=True for users whose
+    existing cover sheet was issued by a previous version of
+    cover_sheet_generator.py. Runs synchronously so any failure surfaces
+    directly in the API response instead of getting buried in celery retries.
     """
     db = SessionLocal()
     try:
@@ -271,18 +291,27 @@ async def regenerate_cover_sheet(email: str = Form(...)):
     finally:
         db.close()
 
+    # Run the task body inline via celery's .apply() (sync). The async celery
+    # task wrapper retries silently on failure, which buries the real error;
+    # apply() runs in-process and propagates exceptions to us.
     from app.workers.tasks import fulfill_cover_sheet_task
-    fulfill_cover_sheet_task.apply_async(
+
+    result = fulfill_cover_sheet_task.apply(
         kwargs={
             "bundle_type": "compliance_evidence_pack",
             "customer_email": email,
             "company_name": company_name,
             "metadata": {"force": True, "regen_manual": True},
         },
-        countdown=5,
+        throw=False,
     )
-    logger.info(f"[CoverSheet] Manual regen queued for {email}")
-    return {"queued": True}
+    if result.failed():
+        exc = result.result
+        logger.exception(f"[CoverSheet] Inline regen failed for {email}: {exc}")
+        raise HTTPException(status_code=500, detail=f"Regeneration failed: {exc}")
+
+    logger.info(f"[CoverSheet] Inline regen complete for {email}")
+    return {"queued": True, "inline": True}
 
 
 @router.post("/cover-sheet/upload-signed")
