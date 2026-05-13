@@ -221,6 +221,7 @@ class RFPExpressBuilder:
             "company_name":   company_name,
             "vendor_url":     vendor_url,
             "download_url":   download_url,
+            "pdf_s3_key":     getattr(self, "pdf_s3_key", None),
             "docx_url":       docx_url,
             "qa_answers":     qa_display,
             "qa_answers_count": len(qa_display),
@@ -741,6 +742,7 @@ class RFPExpressBuilder:
             ]))
             report_data = {
                 "company_name": company_name,
+                "report_id":    self.report_id,
                 "created_at":   datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC"),
                 "framework":    framework_label,
                 "product_type": product_type,
@@ -938,6 +940,7 @@ class RFPExpressBuilder:
             from app.services.storage import S3Service
             s3 = S3Service()
             folder = "rfp-complete" if product_type == "rfp_complete" else "rfp-express"
+            self.pdf_s3_key = f"reports/{folder}/{self.report_id}.pdf"
             url = await s3.upload_pdf(pdf_bytes, f"{folder}/{self.report_id}")
             return url
         except Exception as e:

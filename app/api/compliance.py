@@ -31,6 +31,22 @@ def _validate_signed_extension(filename: str) -> bool:
     return any(filename.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS)
 
 
+def _presign(key: str | None, expires: int = 604800) -> str | None:
+    """Generate a fresh presigned GET URL for an S3 key. Returns None on failure."""
+    if not key:
+        return None
+    try:
+        s3 = S3Service()
+        return s3.s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": s3.bucket, "Key": key},
+            ExpiresIn=expires,
+        )
+    except Exception as e:
+        logger.warning(f"[ComplianceStatus] presign failed for {key}: {e}")
+        return None
+
+
 @router.get("/cover-sheet/status")
 async def cover_sheet_status(email: str):
     """
@@ -65,6 +81,12 @@ async def cover_sheet_status(email: str):
         pdpa_payload = None
         if pdpa:
             pdpa_ad = pdpa.assessment_data if isinstance(pdpa.assessment_data, dict) else {}
+            structured = pdpa_ad.get("booppa_report") if isinstance(pdpa_ad.get("booppa_report"), dict) else {}
+            structured_ra = (
+                structured.get("risk_assessment")
+                if isinstance(structured.get("risk_assessment"), dict)
+                else {}
+            )
             score_val = None
             raw_risk = (
                 pdpa_ad.get("overall_risk_score")
@@ -72,6 +94,8 @@ async def cover_sheet_status(email: str):
                 else pdpa_ad.get("score")
                 if pdpa_ad.get("score") is not None
                 else pdpa_ad.get("risk_score")
+                if pdpa_ad.get("risk_score") is not None
+                else structured_ra.get("score")
             )
             if raw_risk is not None:
                 try:
@@ -93,10 +117,13 @@ async def cover_sheet_status(email: str):
         rfp_payload = None
         if rfp:
             rfp_ad = rfp.assessment_data if isinstance(rfp.assessment_data, dict) else {}
+            # Presigned URLs expire after 7 days — re-presign from the stored
+            # s3_key when available, falling back to the original URL otherwise.
+            rfp_download = _presign(rfp_ad.get("s3_key")) or rfp_ad.get("download_url")
             rfp_payload = {
                 "status": rfp.status,
                 "completed_at": rfp.completed_at.isoformat() if rfp.completed_at else None,
-                "download_url": rfp_ad.get("download_url"),
+                "download_url": rfp_download,
             }
 
         cs = (
@@ -106,10 +133,12 @@ async def cover_sheet_status(email: str):
             .first()
         )
         cs_payload = {"ready": False}
-        if cs and cs.s3_url:
+        if cs and (cs.file_key or cs.s3_url):
+            cs_ad = cs.assessment_data if isinstance(cs.assessment_data, dict) else {}
+            cs_key = cs.file_key or cs_ad.get("s3_key")
             cs_payload = {
                 "ready": True,
-                "download_url": cs.s3_url,
+                "download_url": _presign(cs_key) or cs.s3_url,
                 "tx_hash": cs.tx_hash,
                 "generated_at": cs.completed_at.isoformat() if cs.completed_at else None,
             }
