@@ -985,8 +985,18 @@ def _maybe_fire_cover_sheet(customer_email: str | None) -> None:
         return
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.email == customer_email).first()
+        # Lock the user row so two concurrent callers (PDPA + RFP completing
+        # near-simultaneously) can't both pass the pending_cover_sheet check
+        # and queue the task twice. The loser blocks until the winner commits
+        # the False flip, then exits at the guard below.
+        user = (
+            db.query(User)
+            .filter(User.email == customer_email)
+            .with_for_update()
+            .first()
+        )
         if not user or not getattr(user, "pending_cover_sheet", False):
+            db.commit()
             return
 
         pdpa_done = db.query(Report).filter(
@@ -996,6 +1006,7 @@ def _maybe_fire_cover_sheet(customer_email: str | None) -> None:
         ).first() is not None
         rfp_done = bool(getattr(user, "compliance_evidence_rfp_ready", False))
         if not (pdpa_done and rfp_done):
+            db.commit()
             return
 
         user.pending_cover_sheet = False
