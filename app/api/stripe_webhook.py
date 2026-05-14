@@ -1566,8 +1566,50 @@ async def _fire_strategy_6(sector: str | None, buyer_rfp_title: str) -> None:
         db.close()
 
 
+def _rollback_webhook_idempotency(event_id: str | None) -> None:
+    """
+    Delete the ProcessedWebhookEvent row so a Stripe retry can re-process.
+    Called when the handler raises uncaught — otherwise Stripe's retry would
+    see "already_processed" and skip fulfillment (user paid, never received).
+    """
+    if not event_id:
+        return
+    try:
+        from app.core.models import ProcessedWebhookEvent
+        _db = SessionLocal()
+        try:
+            _db.query(ProcessedWebhookEvent).filter(
+                ProcessedWebhookEvent.event_id == event_id
+            ).delete()
+            _db.commit()
+        finally:
+            _db.close()
+        logger.warning(f"[Webhook] Rolled back idempotency row for {event_id} after handler failure")
+    except Exception as e:
+        logger.error(f"[Webhook] Idempotency rollback failed for {event_id}: {e}")
+
+
 @router.post("/webhook")
 async def stripe_webhook(request: Request):
+    """
+    Thin wrapper around the actual webhook handler. Owns idempotency rollback
+    so an uncaught handler exception doesn't permanently mark the event as
+    processed (which would short-circuit Stripe's retry).
+    """
+    event_id_holder: dict[str, str | None] = {"event_id": None}
+    try:
+        return await _stripe_webhook_impl(request, event_id_holder)
+    except HTTPException:
+        # Signature failures, etc. — don't roll back; they're already terminal.
+        raise
+    except Exception as exc:
+        _rollback_webhook_idempotency(event_id_holder.get("event_id"))
+        logger.exception(f"[Webhook] Unhandled handler error for {event_id_holder.get('event_id')}: {exc}")
+        # Returning 500 lets Stripe retry; rollback above ensures the retry isn't skipped.
+        raise HTTPException(status_code=500, detail="Webhook processing failed")
+
+
+async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str | None]):
     """Handle Stripe webhooks. Verifies signature and processes checkout.session.completed events."""
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
@@ -1589,6 +1631,8 @@ async def stripe_webhook(request: Request):
 
     # Idempotency guard: atomic INSERT ON CONFLICT to prevent race conditions
     event_id = event["id"]
+    # Publish to the wrapper so it can roll the row back on handler failure.
+    event_id_holder["event_id"] = event_id
     if event_id:
         try:
             from app.core.models import ProcessedWebhookEvent
