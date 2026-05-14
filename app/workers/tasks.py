@@ -1905,6 +1905,7 @@ def fulfill_cover_sheet_task(
 
         # 5b. Persist a Report row so the frontend can poll for completion + re-presign on demand
         if user:
+            db2 = None
             try:
                 from app.services.cover_sheet_generator import COVER_SHEET_SCHEMA_VERSION
                 db2 = SessionLocal()
@@ -1930,9 +1931,16 @@ def fulfill_cover_sheet_task(
                 )
                 db2.add(cs_report)
                 db2.commit()
-                db2.close()
             except Exception as persist_err:
                 logger.warning(f"Cover sheet Report persist failed (non-blocking): {persist_err}")
+                if db2 is not None:
+                    try:
+                        db2.rollback()
+                    except Exception:
+                        pass
+            finally:
+                if db2 is not None:
+                    db2.close()
 
         # 6. Email delivery — branch on whether signed CS hash is present
         if customer_email:
@@ -2006,6 +2014,12 @@ def fulfill_cover_sheet_task(
     except Retry:
         # Readiness-gate retry — let Celery handle it without overriding the countdown.
         raise
+    except (NameError, TypeError, AttributeError, KeyError, ImportError, SyntaxError) as exc:
+        # Deterministic code bugs — retrying 20× over 2.5h will fail identically
+        # every time and clog the queue (and waste the readiness/anchor work
+        # already done this attempt). Fail fast so an oncall can ship a fix.
+        logger.exception(f"Cover sheet fulfillment failed permanently (code bug): {exc}")
+        return
     except Exception as exc:
         logger.error(f"Cover sheet fulfillment failed: {exc}")
         countdown = 120 * (2 ** self.request.retries)
