@@ -414,7 +414,14 @@ def grant_credits(
     """Backfill notarization credits for a user (e.g. stuck bundle purchase before fan-out fix)."""
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.email == body.email).first()
+        # Row-locked so two concurrent admin grants for the same email apply
+        # additively instead of lost-update overwriting each other.
+        user = (
+            db.query(User)
+            .filter(User.email == body.email)
+            .with_for_update()
+            .first()
+        )
         if not user:
             raise HTTPException(status_code=404, detail=f"No user with email {body.email}")
         current = getattr(user, "notarization_credits", 0) or 0

@@ -437,7 +437,16 @@ async def _fulfill_bundle(
         # User redeems credits later by uploading documents at /notarize.
         notarization_count = components.get("notarization_count", 0)
         if notarization_count > 0 and customer_email:
-            user = db.query(User).filter(User.email == customer_email).first()
+            # Row-locked: webhook idempotency dedupes the same event_id, but
+            # two *different* bundle purchases for the same email could land
+            # near-simultaneously. Without the lock, both would read the
+            # pre-grant balance and one increment would be lost.
+            user = (
+                db.query(User)
+                .filter(User.email == customer_email)
+                .with_for_update()
+                .first()
+            )
             if user:
                 if product_type == "compliance_evidence_pack":
                     # CEP's 1 credit lives in a dedicated pool — it is reserved for
@@ -1923,6 +1932,9 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                     if product in SUBSCRIPTION_PRODUCT_TYPES:
                         # Already activated by the first checkout.session.completed block;
                         # only handle referral reward here.
+                        # Row-locked: prevents two concurrent checkouts for the same
+                        # referred user from both marking the same Referral REWARDED
+                        # and double-paying the reward.
                         referral = (
                             _db.query(Referral)
                             .filter(
@@ -1930,6 +1942,7 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                                 Referral.status == "SIGNED_UP",
                                 Referral.reward_claimed == False,
                             )
+                            .with_for_update()
                             .first()
                         )
                         if referral:
@@ -1956,7 +1969,8 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                             user.subscription_started_at = datetime.now(_tz.utc)
                         except Exception:
                             pass
-                        # Close the referral reward loop
+                        # Close the referral reward loop.
+                        # Row-locked to prevent concurrent claims (see comment above).
                         referral = (
                             _db.query(Referral)
                             .filter(
@@ -1964,6 +1978,7 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                                 Referral.status == "SIGNED_UP",
                                 Referral.reward_claimed == False,
                             )
+                            .with_for_update()
                             .first()
                         )
                         if referral:

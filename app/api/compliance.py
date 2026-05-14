@@ -337,7 +337,15 @@ async def upload_signed_cover_sheet(
 
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.email == email).first()
+        # Row-level lock — two concurrent signed-sheet uploads must not both
+        # pass the credits/flag checks and double-anchor a single credit. The
+        # loser blocks until the winner commits, then sees the cleared flag.
+        user = (
+            db.query(User)
+            .filter(User.email == email)
+            .with_for_update()
+            .first()
+        )
         if not user:
             raise HTTPException(status_code=404, detail="User not found.")
         credits = getattr(user, "compliance_evidence_credits", 0) or 0
