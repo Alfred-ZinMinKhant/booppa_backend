@@ -493,6 +493,13 @@ async def _fulfill_bundle(
                     intake_data=metadata.get("intake_data"),
                 )
                 logger.info(f"[Bundle:{product_type}] Queued rfp ({payload}) for {customer_email}")
+                # Strategy 6 fires for rfp_accelerator (contains rfp_express)
+                if payload == "rfp_express":
+                    from app.workers.tasks import fire_strategy_6_task
+
+                    sector = metadata.get("sector")
+                    rfp_title = metadata.get("rfp_description") or "New procurement opportunity"
+                    fire_strategy_6_task.delay(sector, rfp_title)
 
         # Send credits-granted notification email
         if notarization_count > 0 and customer_email:
@@ -537,36 +544,6 @@ async def _fulfill_bundle(
                 f"(will fire on last credit redemption or via /bundle/cover-sheet/trigger)"
             )
 
-        # 5. RFP component (no stub needed — self-contained task)
-        rfp_type = components.get("rfp")
-        if rfp_type:
-            vendor_url = metadata.get("vendor_url", website)
-            vendor_id = str(owner_id) if owner_id else (customer_email or "anonymous")
-            rfp_desc = metadata.get("rfp_description")
-            if vendor_url and company_name:
-                fulfill_rfp_task.delay(
-                    product_type=rfp_type,
-                    vendor_id=vendor_id,
-                    vendor_email=customer_email or "",
-                    vendor_url=vendor_url,
-                    company_name=company_name,
-                    rfp_description=rfp_desc,
-                    session_id=session_id,
-                )
-                logger.info(
-                    f"[Bundle:{product_type}] Queued {rfp_type} for vendor {vendor_id}"
-                )
-                # Strategy 6 fires for rfp_accelerator (contains rfp_express)
-                if rfp_type == "rfp_express":
-                    sector = metadata.get("sector")
-                    rfp_title = rfp_desc or "New procurement opportunity"
-                    from app.workers.tasks import fire_strategy_6_task
-
-                    fire_strategy_6_task.delay(sector, rfp_title)
-            else:
-                logger.warning(
-                    f"[Bundle:{product_type}] RFP skipped — missing vendor_url or company_name"
-                )
 
     except Exception as e:
         logger.error(f"[Bundle] Fulfillment error for {product_type}: {e}")

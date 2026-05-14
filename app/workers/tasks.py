@@ -1637,7 +1637,16 @@ def fulfill_cover_sheet_task(
         from app.core.config import settings
         from app.core.models import User, Report
 
-        report_id = metadata.get("report_id") or str(_uuid.uuid4())
+        # Stable across Celery retries: prefer caller-supplied id, then the
+        # task's request id (preserved across retries), then a fresh uuid as
+        # last resort. Stability matters because report_id is mixed into the
+        # blockchain digest below — a per-retry uuid would re-anchor and burn
+        # gas on every retry.
+        report_id = (
+            metadata.get("report_id")
+            or (self.request.id if self.request and self.request.id else None)
+            or str(_uuid.uuid4())
+        )
 
         # 1. Look up anchored bundle notarizations + PDPA + RFP Complete for this user.
         # In the new compliance-evidence-pack flow, anchored_documents will be empty
@@ -1853,16 +1862,25 @@ def fulfill_cover_sheet_task(
             "trm_domains": [],
         }
 
-        # 3. Anchor the cover sheet itself (digest of the included evidence)
+        # 3. Anchor the cover sheet itself (digest of the included evidence).
+        # Cached so retries (PDF render or S3 upload failures) don't re-anchor
+        # and burn another Polygon tx — anchor once per report_id.
+        from app.core.cache import cache as _cache
+        anchor_cache_key = _cache.cache_key(f"cover_sheet_anchor:{report_id}")
         try:
-            digest_input = "|".join(
-                [d.get("file_hash", "") for d in anchored_documents] + [report_id]
-            )
-            content_hash = hashlib.sha256(digest_input.encode()).hexdigest()
-            blockchain = BlockchainService()
-            tx = asyncio.run(blockchain.anchor_evidence(content_hash, metadata=f"cover_sheet:{report_id}"))
-            if tx:
-                cover_data["tx_hash"] = tx
+            cached = _cache.get(anchor_cache_key)
+            if cached and cached.get("tx"):
+                cover_data["tx_hash"] = cached["tx"]
+            else:
+                digest_input = "|".join(
+                    [d.get("file_hash", "") for d in anchored_documents] + [report_id]
+                )
+                content_hash = hashlib.sha256(digest_input.encode()).hexdigest()
+                blockchain = BlockchainService()
+                tx = asyncio.run(blockchain.anchor_evidence(content_hash, metadata=f"cover_sheet:{report_id}"))
+                if tx:
+                    cover_data["tx_hash"] = tx
+                    _cache.set(anchor_cache_key, {"tx": tx}, ttl=86400)
         except Exception as e:
             logger.warning(f"Cover sheet blockchain anchor failed (non-blocking): {e}")
 

@@ -322,6 +322,7 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     story.append(_kv_table(rows))
 
     # ── Section 5b: Anchored Compliance Documents ────────────────────────────
+    anchored_docs = data.get("anchored_documents") or []
     if anchored_docs:
         story += _section("Anchored Compliance Documents", _STYLES)
         doc_rows = [["#", "Document", "SHA-256 Hash", "Tx"]]
