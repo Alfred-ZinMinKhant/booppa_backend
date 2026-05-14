@@ -104,10 +104,18 @@ async def upload_document(
     db = SessionLocal()
     try:
         # Check for bundle-granted notarization credits on this email.
-        # If the user has credits, skip Stripe and queue fulfillment immediately.
+        # Row-level lock so two concurrent uploads can't both pass the >0 check
+        # and double-redeem a single credit. The loser blocks on with_for_update
+        # until the winner commits the decrement, then sees the new (possibly 0)
+        # balance and falls through to the Stripe-checkout path.
         bundle_credit_user = None
         if email:
-            bundle_credit_user = db.query(User).filter(User.email == email).first()
+            bundle_credit_user = (
+                db.query(User)
+                .filter(User.email == email)
+                .with_for_update()
+                .first()
+            )
             if bundle_credit_user and (getattr(bundle_credit_user, "notarization_credits", 0) or 0) > 0:
                 logger.info(
                     f"[Notarize] User {email} has {bundle_credit_user.notarization_credits} bundle credits — "
@@ -573,7 +581,14 @@ async def trigger_bundle_cover_sheet(payload: dict):
 
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.email == email).first()
+        # Row-locked so two simultaneous button-clicks can't both pass the
+        # pending_cover_sheet check and double-queue the fulfillment task.
+        user = (
+            db.query(User)
+            .filter(User.email == email)
+            .with_for_update()
+            .first()
+        )
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         if not getattr(user, "pending_cover_sheet", False):
