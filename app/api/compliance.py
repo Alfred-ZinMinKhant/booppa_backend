@@ -11,6 +11,7 @@ Kept separate from /notarize so other bundle uploads cannot drain the CE credit.
 
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi.responses import RedirectResponse
 from typing import Optional
 import hashlib
 import logging
@@ -45,6 +46,39 @@ def _presign(key: str | None, expires: int = 604800) -> str | None:
     except Exception as e:
         logger.warning(f"[ComplianceStatus] presign failed for {key}: {e}")
         return None
+
+
+@router.get("/cover-sheet/download/{report_id}")
+async def download_cover_sheet(report_id: str):
+    """
+    Stable redirect to a fresh presigned URL for a generated cover sheet PDF.
+    Used in the "Cover Sheet ready" email so the link does not go 403 once
+    the original presigned URL (or its STS-signing credentials) expire. The
+    report_id is a UUID — unguessable enough to serve as the access token
+    for the recipient's own document.
+    """
+    db = SessionLocal()
+    try:
+        report = (
+            db.query(Report)
+            .filter(
+                Report.id == report_id,
+                Report.framework == "compliance_evidence_pack",
+            )
+            .first()
+        )
+        if not report:
+            raise HTTPException(status_code=404, detail="Cover sheet not found.")
+        ad = report.assessment_data if isinstance(report.assessment_data, dict) else {}
+        key = report.file_key or ad.get("s3_key")
+        if not key:
+            raise HTTPException(status_code=404, detail="Cover sheet PDF not available.")
+        url = _presign(key)
+        if not url:
+            raise HTTPException(status_code=500, detail="Could not generate download URL.")
+        return RedirectResponse(url=url, status_code=302)
+    finally:
+        db.close()
 
 
 @router.get("/cover-sheet/status")
