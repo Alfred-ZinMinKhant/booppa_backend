@@ -1614,7 +1614,7 @@ def anchor_signed_cover_sheet_task(self, report_id: str, customer_email: str | N
         raise self.retry(exc=exc, countdown=countdown)
 
 
-@celery_app.task(bind=True, max_retries=20, name="fulfill_cover_sheet_task")
+@celery_app.task(bind=True, max_retries=3, name="fulfill_cover_sheet_task")
 def fulfill_cover_sheet_task(
     self,
     bundle_type: str,
@@ -1904,6 +1904,7 @@ def fulfill_cover_sheet_task(
         )
 
         # 5b. Persist a Report row so the frontend can poll for completion + re-presign on demand
+        cs_report_id: str | None = None
         if user:
             db2 = None
             try:
@@ -1931,6 +1932,7 @@ def fulfill_cover_sheet_task(
                 )
                 db2.add(cs_report)
                 db2.commit()
+                cs_report_id = str(cs_report.id)
             except Exception as persist_err:
                 logger.warning(f"Cover sheet Report persist failed (non-blocking): {persist_err}")
                 if db2 is not None:
@@ -1942,8 +1944,24 @@ def fulfill_cover_sheet_task(
                 if db2 is not None:
                     db2.close()
 
-        # 6. Email delivery — branch on whether signed CS hash is present
+        # 6. Email delivery — branch on whether signed CS hash is present.
+        # Idempotency-keyed on (email, signed-state) so retries, worker
+        # recycles, and accidental regen calls cannot re-flood the inbox.
+        # 24h TTL is long enough to suppress any plausible retry storm and
+        # short enough that the monthly cycle (fires 1st of month) still
+        # delivers a fresh email next cycle.
         if customer_email:
+            email_state = "signed" if signed_cs_tx else "unsigned"
+            email_dedupe_key = _cache.cache_key(
+                f"cover_sheet_email:{customer_email}:{email_state}"
+            )
+            if _cache.get(email_dedupe_key):
+                logger.info(
+                    f"[CoverSheet] Skipping duplicate email to {customer_email} "
+                    f"(state={email_state}, already sent within 24h)"
+                )
+                return
+
             email_svc = EmailService()
             explorer = settings.POLYGON_EXPLORER_URL.rstrip("/")
 
@@ -1958,6 +1976,25 @@ def fulfill_cover_sheet_task(
 
             cs_anchor_tx = cover_data.get("tx_hash") if cover_data.get("tx_hash") != "—" else None
 
+            # Stable download URL — the presigned S3 link expires when the
+            # signing STS credentials rotate (~hours on EC2/ECS roles), well
+            # before the 7-day URL TTL. Route through the backend redirect
+            # endpoint so clicks always get a fresh presigned URL.
+            if cs_report_id:
+                email_download_url = (
+                    f"https://api.booppa.io/api/v1/compliance/cover-sheet/download/{cs_report_id}"
+                )
+            else:
+                email_download_url = download_url
+
+            # Reserve the dedupe slot BEFORE sending so a concurrent
+            # second invocation can't race past the get() check.
+            _cache.set(
+                email_dedupe_key,
+                {"reserved_at": datetime.now(timezone.utc).isoformat()},
+                ttl=86400,
+            )
+
             if signed_cs_tx:
                 # FINAL receipt: signed cover sheet has been uploaded + anchored.
                 asyncio.run(email_svc.send_html_email(
@@ -1969,7 +2006,7 @@ def fulfill_cover_sheet_task(
                         f"<p style='color:#334155;'>Your signed Cover Sheet is anchored on "
                         f"{settings.POLYGON_NETWORK_NAME}. Download the regenerated cover sheet — "
                         f"Section 5 now lists every blockchain anchor below.</p>"
-                        f"<p><a href='{download_url}' style='background:#10b981;color:#fff;padding:12px 24px;"
+                        f"<p><a href='{email_download_url}' style='background:#10b981;color:#fff;padding:12px 24px;"
                         f"text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;'>"
                         f"Download Updated Cover Sheet</a></p>"
                         f"<div style='background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;padding:16px;margin:20px 0;'>"
@@ -1995,7 +2032,7 @@ def fulfill_cover_sheet_task(
                         f"<p style='color:#334155;'>Your PDPA Snapshot and RFP Complete kit are anchored on "
                         f"{settings.POLYGON_NETWORK_NAME}. The 9-section regulator-ready Cover Sheet below "
                         f"summarises both and is itself anchored on-chain.</p>"
-                        f"<p><a href='{download_url}' style='background:#10b981;color:#fff;padding:12px 24px;"
+                        f"<p><a href='{email_download_url}' style='background:#10b981;color:#fff;padding:12px 24px;"
                         f"text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;'>"
                         f"Download Cover Sheet PDF</a></p>"
                         f"<div style='background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:16px;margin:20px 0;'>"
