@@ -400,6 +400,73 @@ def scrape_stats(
         db.close()
 
 
+# ── User directory ────────────────────────────────────────────────────────────
+
+
+@router.get("/users")
+def admin_list_users(
+    q: Optional[str] = Query(None, description="Search by email, full name, or company"),
+    role: Optional[str] = Query(None, description="Filter by role (e.g. VENDOR, PROCUREMENT, ADMIN)"),
+    plan: Optional[str] = Query(None, description="Filter by plan slug"),
+    is_active: Optional[bool] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    """Paginated user directory for the admin console."""
+    from sqlalchemy import or_
+
+    db = SessionLocal()
+    try:
+        query = db.query(User)
+        if q:
+            like = f"%{q.strip()}%"
+            query = query.filter(
+                or_(
+                    User.email.ilike(like),
+                    User.full_name.ilike(like),
+                    User.company.ilike(like),
+                )
+            )
+        if role:
+            query = query.filter(User.role == role)
+        if plan:
+            query = query.filter(User.plan == plan)
+        if is_active is not None:
+            query = query.filter(User.is_active == is_active)
+
+        total = query.count()
+        rows = (
+            query.order_by(User.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
+        items = []
+        for u in rows:
+            items.append({
+                "id": str(u.id),
+                "email": u.email,
+                "full_name": u.full_name,
+                "role": u.role,
+                "company": u.company,
+                "uen": u.uen,
+                "plan": u.plan,
+                "subscription_tier": u.subscription_tier,
+                "is_active": bool(u.is_active),
+                "verified": bool(u.verified_at),
+                "has_stripe_subscription": bool(u.stripe_subscription_id),
+                "notarization_credits": int(u.notarization_credits or 0),
+                "compliance_evidence_credits": int(u.compliance_evidence_credits or 0),
+                "signed_cover_sheet_uploaded": bool(u.signed_cover_sheet_uploaded),
+                "created_at": u.created_at.isoformat() if u.created_at else None,
+            })
+        return {"total": total, "items": items}
+    finally:
+        db.close()
+
+
 class GrantCreditsBody(BaseModel):
     email: str = Field(..., description="Customer email")
     credits: int = Field(..., ge=1, le=50, description="Notarization credits to add")
