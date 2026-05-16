@@ -66,7 +66,7 @@ ORDERING_POLICY = {
 }
 
 
-ENTERPRISE_PLANS = {"enterprise", "enterprise_pro", "standard_compliance", "pro_compliance"}
+ENTERPRISE_PLANS = {"enterprise", "enterprise_pro"}
 
 
 def _require_procurement(current_user):

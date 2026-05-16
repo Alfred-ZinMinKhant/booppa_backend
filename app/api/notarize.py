@@ -296,7 +296,6 @@ async def enterprise_upload_document(
         enterprise_plans = {
             "enterprise", "enterprise_monthly",
             "enterprise_pro", "enterprise_pro_monthly",
-            "standard_compliance", "pro_compliance",
             "standard_suite", "standard_suite_monthly",
             "pro_suite", "pro_suite_monthly",
         }
@@ -629,7 +628,7 @@ async def get_enterprise_credits(email: str):
             raise HTTPException(status_code=404, detail="User not found.")
 
         plan = getattr(user, "plan", "free") or "free"
-        enterprise_plans = {"enterprise", "enterprise_pro", "standard_compliance", "pro_compliance"}
+        enterprise_plans = {"enterprise", "enterprise_pro"}
         if plan not in enterprise_plans:
             return {"has_credits": False, "used": 0, "limit": 0, "plan": plan, "enterprise": False}
 

@@ -133,13 +133,6 @@ jobs:
           NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY }}
           # Stripe price IDs
           STRIPE_PDPA_QUICK_SCAN: ${{ secrets.STRIPE_PDPA_QUICK_SCAN }}
-          STRIPE_PDPA_BASIC: ${{ secrets.STRIPE_PDPA_BASIC }}
-          STRIPE_PDPA_PRO: ${{ secrets.STRIPE_PDPA_PRO }}
-          STRIPE_COMPLIANCE_STANDARD: ${{ secrets.STRIPE_COMPLIANCE_STANDARD }}
-          STRIPE_COMPLIANCE_PRO: ${{ secrets.STRIPE_COMPLIANCE_PRO }}
-          STRIPE_SUPPLY_CHAIN_1: ${{ secrets.STRIPE_SUPPLY_CHAIN_1 }}
-          STRIPE_SUPPLY_CHAIN_10: ${{ secrets.STRIPE_SUPPLY_CHAIN_10 }}
-          STRIPE_SUPPLY_CHAIN_50: ${{ secrets.STRIPE_SUPPLY_CHAIN_50 }}
           STRIPE_COMPLIANCE_NOTARIZATION_1: ${{ secrets.STRIPE_COMPLIANCE_NOTARIZATION_1 }}
           STRIPE_COMPLIANCE_NOTARIZATION_10: ${{ secrets.STRIPE_COMPLIANCE_NOTARIZATION_10 }}
           STRIPE_COMPLIANCE_NOTARIZATION_50: ${{ secrets.STRIPE_COMPLIANCE_NOTARIZATION_50 }}
@@ -157,6 +150,12 @@ jobs:
           STRIPE_PDPA_MONITOR_ANNUAL: ${{ secrets.STRIPE_PDPA_MONITOR_ANNUAL }}
           STRIPE_ENTERPRISE_MONTHLY: ${{ secrets.STRIPE_ENTERPRISE_MONTHLY }}
           STRIPE_ENTERPRISE_PRO_MONTHLY: ${{ secrets.STRIPE_ENTERPRISE_PRO_MONTHLY }}
+          # Stripe Suites + per-side subscriptions
+          STRIPE_COMPLIANCE_EVIDENCE_MONTHLY: ${{ secrets.STRIPE_COMPLIANCE_EVIDENCE_MONTHLY }}
+          STRIPE_EVALUATE_SUPPLIERS_MONTHLY: ${{ secrets.STRIPE_EVALUATE_SUPPLIERS_MONTHLY }}
+          STRIPE_VERIFY_SUPPLIER_EVIDENCE_MONTHLY: ${{ secrets.STRIPE_VERIFY_SUPPLIER_EVIDENCE_MONTHLY }}
+          STRIPE_STANDARD_SUITE_MONTHLY: ${{ secrets.STRIPE_STANDARD_SUITE_MONTHLY }}
+          STRIPE_PRO_SUITE_MONTHLY: ${{ secrets.STRIPE_PRO_SUITE_MONTHLY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN: ${{ secrets.NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN }}
           # Security intelligence
@@ -206,13 +205,6 @@ jobs:
                   { "name": "STRIPE_WEBHOOK_SECRET", "value": "${STRIPE_WEBHOOK_SECRET}" },
                   { "name": "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY", "value": "${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}" },
                   { "name": "STRIPE_PDPA_QUICK_SCAN", "value": "${STRIPE_PDPA_QUICK_SCAN}" },
-                  { "name": "STRIPE_PDPA_BASIC", "value": "${STRIPE_PDPA_BASIC}" },
-                  { "name": "STRIPE_PDPA_PRO", "value": "${STRIPE_PDPA_PRO}" },
-                  { "name": "STRIPE_COMPLIANCE_STANDARD", "value": "${STRIPE_COMPLIANCE_STANDARD}" },
-                  { "name": "STRIPE_COMPLIANCE_PRO", "value": "${STRIPE_COMPLIANCE_PRO}" },
-                  { "name": "STRIPE_SUPPLY_CHAIN_1", "value": "${STRIPE_SUPPLY_CHAIN_1}" },
-                  { "name": "STRIPE_SUPPLY_CHAIN_10", "value": "${STRIPE_SUPPLY_CHAIN_10}" },
-                  { "name": "STRIPE_SUPPLY_CHAIN_50", "value": "${STRIPE_SUPPLY_CHAIN_50}" },
                   { "name": "STRIPE_COMPLIANCE_NOTARIZATION_1", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_1}" },
                   { "name": "STRIPE_COMPLIANCE_NOTARIZATION_10", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_10}" },
                   { "name": "STRIPE_COMPLIANCE_NOTARIZATION_50", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_50}" },
@@ -229,6 +221,11 @@ jobs:
                   { "name": "STRIPE_PDPA_MONITOR_ANNUAL", "value": "${STRIPE_PDPA_MONITOR_ANNUAL}" },
                   { "name": "STRIPE_ENTERPRISE_MONTHLY", "value": "${STRIPE_ENTERPRISE_MONTHLY}" },
                   { "name": "STRIPE_ENTERPRISE_PRO_MONTHLY", "value": "${STRIPE_ENTERPRISE_PRO_MONTHLY}" },
+                  { "name": "STRIPE_COMPLIANCE_EVIDENCE_MONTHLY", "value": "${STRIPE_COMPLIANCE_EVIDENCE_MONTHLY}" },
+                  { "name": "STRIPE_EVALUATE_SUPPLIERS_MONTHLY", "value": "${STRIPE_EVALUATE_SUPPLIERS_MONTHLY}" },
+                  { "name": "STRIPE_VERIFY_SUPPLIER_EVIDENCE_MONTHLY", "value": "${STRIPE_VERIFY_SUPPLIER_EVIDENCE_MONTHLY}" },
+                  { "name": "STRIPE_STANDARD_SUITE_MONTHLY", "value": "${STRIPE_STANDARD_SUITE_MONTHLY}" },
+                  { "name": "STRIPE_PRO_SUITE_MONTHLY", "value": "${STRIPE_PRO_SUITE_MONTHLY}" },
                   { "name": "RESEND_API_KEY", "value": "${RESEND_API_KEY}" },
                   { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" },
                   { "name": "VIRUSTOTAL_API_KEY", "value": "${VIRUSTOTAL_API_KEY}" },
@@ -280,13 +277,6 @@ jobs:
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
           NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY }}
           STRIPE_PDPA_QUICK_SCAN: ${{ secrets.STRIPE_PDPA_QUICK_SCAN }}
-          STRIPE_PDPA_BASIC: ${{ secrets.STRIPE_PDPA_BASIC }}
-          STRIPE_PDPA_PRO: ${{ secrets.STRIPE_PDPA_PRO }}
-          STRIPE_COMPLIANCE_STANDARD: ${{ secrets.STRIPE_COMPLIANCE_STANDARD }}
-          STRIPE_COMPLIANCE_PRO: ${{ secrets.STRIPE_COMPLIANCE_PRO }}
-          STRIPE_SUPPLY_CHAIN_1: ${{ secrets.STRIPE_SUPPLY_CHAIN_1 }}
-          STRIPE_SUPPLY_CHAIN_10: ${{ secrets.STRIPE_SUPPLY_CHAIN_10 }}
-          STRIPE_SUPPLY_CHAIN_50: ${{ secrets.STRIPE_SUPPLY_CHAIN_50 }}
           STRIPE_COMPLIANCE_NOTARIZATION_1: ${{ secrets.STRIPE_COMPLIANCE_NOTARIZATION_1 }}
           STRIPE_COMPLIANCE_NOTARIZATION_10: ${{ secrets.STRIPE_COMPLIANCE_NOTARIZATION_10 }}
           STRIPE_COMPLIANCE_NOTARIZATION_50: ${{ secrets.STRIPE_COMPLIANCE_NOTARIZATION_50 }}
@@ -304,6 +294,11 @@ jobs:
           STRIPE_PDPA_MONITOR_ANNUAL: ${{ secrets.STRIPE_PDPA_MONITOR_ANNUAL }}
           STRIPE_ENTERPRISE_MONTHLY: ${{ secrets.STRIPE_ENTERPRISE_MONTHLY }}
           STRIPE_ENTERPRISE_PRO_MONTHLY: ${{ secrets.STRIPE_ENTERPRISE_PRO_MONTHLY }}
+          STRIPE_COMPLIANCE_EVIDENCE_MONTHLY: ${{ secrets.STRIPE_COMPLIANCE_EVIDENCE_MONTHLY }}
+          STRIPE_EVALUATE_SUPPLIERS_MONTHLY: ${{ secrets.STRIPE_EVALUATE_SUPPLIERS_MONTHLY }}
+          STRIPE_VERIFY_SUPPLIER_EVIDENCE_MONTHLY: ${{ secrets.STRIPE_VERIFY_SUPPLIER_EVIDENCE_MONTHLY }}
+          STRIPE_STANDARD_SUITE_MONTHLY: ${{ secrets.STRIPE_STANDARD_SUITE_MONTHLY }}
+          STRIPE_PRO_SUITE_MONTHLY: ${{ secrets.STRIPE_PRO_SUITE_MONTHLY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN: ${{ secrets.NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN }}
           # Security intelligence
@@ -351,13 +346,6 @@ jobs:
                   { "name": "STRIPE_WEBHOOK_SECRET", "value": "${STRIPE_WEBHOOK_SECRET}" },
                   { "name": "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY", "value": "${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}" },
                   { "name": "STRIPE_PDPA_QUICK_SCAN", "value": "${STRIPE_PDPA_QUICK_SCAN}" },
-                  { "name": "STRIPE_PDPA_BASIC", "value": "${STRIPE_PDPA_BASIC}" },
-                  { "name": "STRIPE_PDPA_PRO", "value": "${STRIPE_PDPA_PRO}" },
-                  { "name": "STRIPE_COMPLIANCE_STANDARD", "value": "${STRIPE_COMPLIANCE_STANDARD}" },
-                  { "name": "STRIPE_COMPLIANCE_PRO", "value": "${STRIPE_COMPLIANCE_PRO}" },
-                  { "name": "STRIPE_SUPPLY_CHAIN_1", "value": "${STRIPE_SUPPLY_CHAIN_1}" },
-                  { "name": "STRIPE_SUPPLY_CHAIN_10", "value": "${STRIPE_SUPPLY_CHAIN_10}" },
-                  { "name": "STRIPE_SUPPLY_CHAIN_50", "value": "${STRIPE_SUPPLY_CHAIN_50}" },
                   { "name": "STRIPE_COMPLIANCE_NOTARIZATION_1", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_1}" },
                   { "name": "STRIPE_COMPLIANCE_NOTARIZATION_10", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_10}" },
                   { "name": "STRIPE_COMPLIANCE_NOTARIZATION_50", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_50}" },
@@ -374,6 +362,11 @@ jobs:
                   { "name": "STRIPE_PDPA_MONITOR_ANNUAL", "value": "${STRIPE_PDPA_MONITOR_ANNUAL}" },
                   { "name": "STRIPE_ENTERPRISE_MONTHLY", "value": "${STRIPE_ENTERPRISE_MONTHLY}" },
                   { "name": "STRIPE_ENTERPRISE_PRO_MONTHLY", "value": "${STRIPE_ENTERPRISE_PRO_MONTHLY}" },
+                  { "name": "STRIPE_COMPLIANCE_EVIDENCE_MONTHLY", "value": "${STRIPE_COMPLIANCE_EVIDENCE_MONTHLY}" },
+                  { "name": "STRIPE_EVALUATE_SUPPLIERS_MONTHLY", "value": "${STRIPE_EVALUATE_SUPPLIERS_MONTHLY}" },
+                  { "name": "STRIPE_VERIFY_SUPPLIER_EVIDENCE_MONTHLY", "value": "${STRIPE_VERIFY_SUPPLIER_EVIDENCE_MONTHLY}" },
+                  { "name": "STRIPE_STANDARD_SUITE_MONTHLY", "value": "${STRIPE_STANDARD_SUITE_MONTHLY}" },
+                  { "name": "STRIPE_PRO_SUITE_MONTHLY", "value": "${STRIPE_PRO_SUITE_MONTHLY}" },
                   { "name": "RESEND_API_KEY", "value": "${RESEND_API_KEY}" },
                   { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" },
                   { "name": "VIRUSTOTAL_API_KEY", "value": "${VIRUSTOTAL_API_KEY}" },

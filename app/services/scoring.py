@@ -112,7 +112,7 @@ class VendorScoreEngine:
                 db.query(Report)
                 .filter(
                     Report.owner_id == vendor_id,
-                    Report.framework.in_(["pdpa_quick_scan", "pdpa_basic", "pdpa_pro", "pdpa_snapshot"]),
+                    Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
                     Report.status == "completed",
                 )
                 .order_by(Report.completed_at.desc())
