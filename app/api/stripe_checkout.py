@@ -112,11 +112,13 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
     if not product_type and not price_id:
         raise HTTPException(status_code=400, detail="Missing productType or priceId")
 
-    # Block vendors from purchasing procurement plans
+    # Block vendors from purchasing procurement-only plans.
+    # Standard/Pro Suites are role-agnostic compliance infrastructure — vendors
+    # (incl. enterprise vendors) can buy them. Only the explicit supplier-evaluation
+    # SKUs are gated to procurement accounts.
     PROCUREMENT_PRODUCTS = {
         "enterprise_monthly", "enterprise_pro_monthly",
         "evaluate_suppliers_monthly", "verify_supplier_evidence_monthly",
-        "standard_suite_monthly", "pro_suite_monthly"
     }
     if product_type in PROCUREMENT_PRODUCTS and prefill_email:
         from app.core.db import SessionLocal
