@@ -9,13 +9,6 @@ FREE_FRAMEWORKS = {"pdpa_free_scan"}
 
 PRO_PRODUCT_KEYS = {
     "pdpa_quick_scan",
-    "pdpa_basic",
-    "pdpa_pro",
-    "compliance_standard",
-    "compliance_pro",
-    "supply_chain_1",
-    "supply_chain_10",
-    "supply_chain_50",
     "compliance_notarization_1",
     "compliance_notarization_10",
     "compliance_notarization_50",
@@ -33,7 +26,6 @@ ENTERPRISE_PLAN_KEYS = {
     "pro_suite", "pro_suite_monthly",
     "evaluate_suppliers", "evaluate_suppliers_monthly",
     "verify_supplier_evidence", "verify_supplier_evidence_monthly",
-    "standard_compliance", "pro_compliance",
 }
 
 
@@ -63,7 +55,7 @@ def resolve_tier(assessment_data: Dict[str, Any] | None, framework: str | None) 
     if tier in {"free", "starter", "trial"}:
         return FREE
 
-    if framework_value in {"pdpa_quick_scan", "pdpa_basic", "pdpa_pro"}:
+    if framework_value == "pdpa_quick_scan":
         return PRO
 
     return FREE
@@ -119,8 +111,8 @@ def enforce_tier(
     ai_full = tier in {PRO, ENTERPRISE} and paid
 
     plan_value = _normalize(data.get("plan") or data.get("tier") or data.get("package"))
-    is_pro_suite = plan_value in {"pro_suite", "pro_suite_monthly", "enterprise_pro", "enterprise_pro_monthly", "pro_compliance"}
-    is_standard_suite = plan_value in {"standard_suite", "standard_suite_monthly", "standard_compliance"}
+    is_pro_suite = plan_value in {"pro_suite", "pro_suite_monthly", "enterprise_pro", "enterprise_pro_monthly"}
+    is_standard_suite = plan_value in {"standard_suite", "standard_suite_monthly"}
 
     from app.core.models_v8 import ENTERPRISE_NOTARIZATION_LIMITS
     notarization_quota = ENTERPRISE_NOTARIZATION_LIMITS.get(plan_value, 0) if paid else 0

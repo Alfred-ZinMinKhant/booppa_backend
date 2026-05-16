@@ -33,6 +33,7 @@ from .sse import router as sse_router
 from .notarize import router as notarize_router
 from .compliance import router as compliance_router
 from .leads import router as leads_router
+from .pricing import router as pricing_router
 
 # v17 Hardened — Legal consent endpoint
 from .legal_consent import router as legal_consent_router
@@ -85,6 +86,7 @@ router.include_router(sse_router, prefix="/sse", tags=["sse"])
 router.include_router(notarize_router, prefix="/notarize", tags=["notarization"])
 router.include_router(compliance_router, prefix="/compliance", tags=["compliance-evidence"])
 router.include_router(leads_router, prefix="/leads", tags=["leads"])
+router.include_router(pricing_router, prefix="/pricing", tags=["pricing"])
 # v17 Hardened — Legal consent
 router.include_router(legal_consent_router, prefix="", tags=["legal-consent"])
 # V10 — Tender Win Probability

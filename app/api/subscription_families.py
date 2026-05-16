@@ -19,8 +19,6 @@ def get_subscription_families():
         "pdpa_family": [
             _opt("STRIPE_PDPA_MONITOR_MONTHLY"),
             _opt("STRIPE_PDPA_MONITOR_ANNUAL"),
-            _opt("STRIPE_PDPA_BASIC"),
-            _opt("STRIPE_PDPA_PRO"),
             _opt("STRIPE_PDPA_QUICK_SCAN"),
         ],
         "vendor_family": [

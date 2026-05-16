@@ -356,8 +356,6 @@ ENTERPRISE_NOTARIZATION_LIMITS = {
     "enterprise_monthly":      200,
     "enterprise_pro":          200,
     "enterprise_pro_monthly":  200,
-    "standard_compliance":     50,
-    "pro_compliance":          100,
     "standard_suite":          50,
     "standard_suite_monthly":  50,
     "pro_suite":               100,

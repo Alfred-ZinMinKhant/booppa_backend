@@ -35,9 +35,6 @@ MODE_MAP = {
     "compliance_notarization_1": "payment",
     "compliance_notarization_10": "payment",
     "compliance_notarization_50": "payment",
-    "supply_chain_1": "payment",
-    "supply_chain_10": "payment",
-    "supply_chain_50": "payment",
     # Bundles (one-time)
     "vendor_trust_pack": "payment",
     "rfp_accelerator": "payment",
@@ -55,11 +52,6 @@ MODE_MAP = {
     "enterprise_pro_monthly": "subscription",
     "standard_suite_monthly": "subscription",
     "pro_suite_monthly": "subscription",
-    # Legacy subscription keys
-    "pdpa_basic": "subscription",
-    "pdpa_pro": "subscription",
-    "compliance_standard": "subscription",
-    "compliance_pro": "subscription",
 }
 
 

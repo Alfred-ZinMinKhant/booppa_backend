@@ -492,24 +492,24 @@ class PDFService:
 
         products = [
             (
-                "PDPA Quick Scan",
-                "S$69",
+                "PDPA Snapshot",
+                "S$299",
                 f"{base}/api/stripe/checkout?product=pdpa_quick_scan&prefill_email={prefill}",
             ),
             (
-                "PDPA Essential",
+                "PDPA Monitor",
                 "S$299 / mo",
-                f"{base}/api/stripe/checkout?product=pdpa_basic&prefill_email={prefill}",
+                f"{base}/api/stripe/checkout?product=pdpa_monitor_monthly&prefill_email={prefill}",
             ),
             (
                 "Standard Suite",
-                "S$1,299 / mo",
-                f"{base}/api/stripe/checkout?product=compliance_standard&prefill_email={prefill}",
+                "S$1,800 / mo",
+                f"{base}/api/stripe/checkout?product=standard_suite_monthly&prefill_email={prefill}",
             ),
             (
                 "Pro Suite",
-                "S$1,999 / mo",
-                f"{base}/api/stripe/checkout?product=compliance_pro&prefill_email={prefill}",
+                "S$4,500 / mo",
+                f"{base}/api/stripe/checkout?product=pro_suite_monthly&prefill_email={prefill}",
             ),
         ]
         rows = [

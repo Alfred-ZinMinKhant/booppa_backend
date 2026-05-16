@@ -25,12 +25,9 @@ NOTARIZATION_PRODUCT_TYPES = {
     "compliance_notarization_1",
     "compliance_notarization_10",
     "compliance_notarization_50",
-    "supply_chain_1",
-    "supply_chain_10",
-    "supply_chain_50",
 }
 VENDOR_PROOF_PRODUCT_TYPES = {"vendor_proof"}
-PDPA_PRODUCT_TYPES = {"pdpa_quick_scan", "pdpa_basic", "pdpa_pro", "pdpa_snapshot"}
+PDPA_PRODUCT_TYPES = {"pdpa_quick_scan", "pdpa_snapshot"}
 SUBSCRIPTION_PRODUCT_TYPES = {
     "vendor_active_monthly",
     "vendor_active_annual",
@@ -112,8 +109,6 @@ async def _activate_subscription(
             "evaluate_suppliers_monthly": "evaluate_suppliers",
             "verify_supplier_evidence_monthly": "verify_supplier_evidence",
             "compliance_evidence_monthly": "compliance_evidence",
-            "compliance_standard": "standard_compliance",
-            "compliance_pro": "pro_compliance",
         }
         new_plan = plan_map.get(product_type, "pro")
 
@@ -184,7 +179,7 @@ async def _activate_subscription(
                         .filter(
                             Report.owner_id == user.id,
                             Report.framework.in_(
-                                ["pdpa_quick_scan", "pdpa_basic", "pdpa_pro", "pdpa_snapshot"]
+                                ["pdpa_quick_scan", "pdpa_snapshot"]
                             ),
                             Report.status == "completed",
                         )
