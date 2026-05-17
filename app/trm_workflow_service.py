@@ -51,36 +51,63 @@ def initialise_trm_controls(organisation_id: str, db: Session) -> list[TrmContro
 
 async def run_gap_analysis(control: TrmControl, context: str, db: Session) -> TrmControl:
     """
-    Use Claude haiku-4-5 to generate a gap analysis narrative for a single control.
+    Use DeepSeek to generate a gap analysis narrative for a single control.
     `context` is free-text the user provides (e.g. existing policy description).
+
+    Raises HTTPException if the API key is missing so the caller surfaces a
+    clear error instead of silently leaving the row blank.
     """
+    import json
+    from fastapi import HTTPException
+    from app.core.config import settings
+    from app.services.ai_provider import DeepSeekProvider
+
+    if not settings.DEEPSEEK_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="AI gap analysis is unavailable — DEEPSEEK_API_KEY is not configured on the backend.",
+        )
+
+    provider = DeepSeekProvider(settings.DEEPSEEK_API_KEY)
+    system = (
+        "You are a MAS TRM compliance expert. Always respond with strict JSON only "
+        "(no markdown fences, no commentary)."
+    )
+    user_prompt = (
+        f"Analyse the following organisation context against the MAS Technology Risk "
+        f"Management domain: **{control.domain}** (ref: {control.control_ref}).\n\n"
+        f"Context provided:\n{context}\n\n"
+        f"Identify gaps and provide a concise gap analysis (max 200 words). "
+        f"Also classify risk rating as one of: low, medium, high, critical, and "
+        f"set status to one of: gap | in_progress | compliant.\n\n"
+        f"Respond in JSON: {{\"gap_analysis\": \"...\", \"risk_rating\": \"...\", \"status\": \"...\"}}"
+    )
+
+    raw = await provider.call_chat([
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_prompt},
+    ])
+    if not raw:
+        raise HTTPException(
+            status_code=502,
+            detail="AI gap analysis failed: DeepSeek returned no content.",
+        )
+
+    cleaned = raw.strip().replace("```json", "").replace("```", "").strip()
     try:
-        import anthropic
-        client = anthropic.AsyncAnthropic()
-        prompt = (
-            f"You are a MAS TRM compliance expert. Analyse the following organisation context "
-            f"against the MAS Technology Risk Management domain: **{control.domain}** "
-            f"(ref: {control.control_ref}).\n\n"
-            f"Context provided:\n{context}\n\n"
-            f"Identify gaps and provide a concise gap analysis (max 200 words). "
-            f"Also classify risk rating as one of: low, medium, high, critical."
-            f"\n\nRespond in JSON: {{\"gap_analysis\": \"...\", \"risk_rating\": \"...\", \"status\": \"gap|in_progress|compliant\"}}"
+        result = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        logger.error("Gap analysis: non-JSON from DeepSeek for %s: %s", control.domain, cleaned[:200])
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI gap analysis failed: model returned non-JSON ({e}).",
         )
-        message = await client.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=400,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        import json
-        raw = message.content[0].text.strip().replace("```json", "").replace("```", "")
-        result = json.loads(raw)
-        control.gap_analysis = result.get("gap_analysis", "")
-        control.risk_rating = result.get("risk_rating", "medium")
-        control.status = result.get("status", "gap")
-        control.updated_at = datetime.utcnow()
-        db.commit()
-        db.refresh(control)
-        logger.info("Gap analysis complete for control %s (%s)", control.control_ref, control.domain)
-    except Exception as e:
-        logger.warning("Gap analysis failed for %s: %s", control.domain, e)
+
+    control.gap_analysis = result.get("gap_analysis", "")
+    control.risk_rating = result.get("risk_rating", "medium")
+    control.status = result.get("status", "gap")
+    control.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(control)
+    logger.info("Gap analysis complete for control %s (%s)", control.control_ref, control.domain)
     return control

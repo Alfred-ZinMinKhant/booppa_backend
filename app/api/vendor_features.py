@@ -568,3 +568,160 @@ def oidc_callback():
         status_code=501,
         detail="OIDC callback not yet implemented. Install authlib and wire up the code-exchange flow before enabling SSO in production.",
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MAS TRM — 13-domain controls + AI gap analysis (user-centric wrapper around
+# the org-keyed TrmControl model)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TrmUpdate(BaseModel):
+    status: Optional[str] = Field(None, pattern="^(not_started|in_progress|compliant|gap)$")
+    risk_rating: Optional[str] = Field(None, pattern="^(low|medium|high|critical)$")
+    gap_analysis: Optional[str] = None
+
+
+class TrmGapRequest(BaseModel):
+    context: str = Field(..., min_length=10, max_length=8000)
+
+
+def _ensure_trm_controls(db: Session, org_id) -> int:
+    """Auto-provision the 13 TRM controls for an org if missing.
+
+    Covers users who subscribed before the webhook fix in 2026-05.
+    """
+    from app.core.models_enterprise import TrmControl as _TrmControl
+    existing = db.query(_TrmControl).filter(_TrmControl.organisation_id == org_id).count()
+    if existing > 0:
+        return existing
+    from app.trm_workflow_service import initialise_trm_controls
+    rows = initialise_trm_controls(str(org_id), db)
+    return len(rows)
+
+
+@router.get("/trm")
+def get_trm(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the user's 13 MAS TRM controls + a roll-up summary."""
+    from app.core.models_enterprise import TrmControl
+    # MAS TRM is part of the Standard/Pro Suite enterprise tier — gate on dashboard,
+    # which is true for both suites.
+    _require_feature(current_user, "dashboard", "MAS TRM dashboard")
+    org = _get_or_create_org(db, current_user)
+    _ensure_trm_controls(db, org.id)
+
+    rows = (
+        db.query(TrmControl)
+        .filter(TrmControl.organisation_id == org.id)
+        .order_by(TrmControl.control_ref.asc())
+        .all()
+    )
+
+    # Roll-up: 13 statuses → compact summary
+    by_status = {"not_started": 0, "in_progress": 0, "compliant": 0, "gap": 0}
+    by_risk = {"low": 0, "medium": 0, "high": 0, "critical": 0}
+    for r in rows:
+        s = (r.status or "not_started").lower()
+        by_status[s] = by_status.get(s, 0) + 1
+        if r.risk_rating:
+            by_risk[r.risk_rating.lower()] = by_risk.get(r.risk_rating.lower(), 0) + 1
+
+    total = len(rows) or 1
+    return {
+        "total": len(rows),
+        "summary": {
+            "compliant_pct": round(100 * by_status["compliant"] / total),
+            "by_status": by_status,
+            "by_risk": by_risk,
+        },
+        "items": [
+            {
+                "id": str(r.id),
+                "domain": r.domain,
+                "control_ref": r.control_ref,
+                "description": r.description,
+                "status": r.status,
+                "risk_rating": r.risk_rating,
+                "gap_analysis": r.gap_analysis,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.patch("/trm/{control_id}")
+def update_trm_control(
+    control_id: str,
+    body: TrmUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    import uuid as _uuid
+    from app.core.models_enterprise import TrmControl
+    _require_feature(current_user, "dashboard", "MAS TRM dashboard")
+    try:
+        cid = _uuid.UUID(control_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid control id")
+    org = _get_or_create_org(db, current_user)
+    ctrl = (
+        db.query(TrmControl)
+        .filter(TrmControl.id == cid, TrmControl.organisation_id == org.id)
+        .first()
+    )
+    if not ctrl:
+        raise HTTPException(status_code=404, detail="Control not found")
+    if body.status is not None:
+        ctrl.status = body.status
+    if body.risk_rating is not None:
+        ctrl.risk_rating = body.risk_rating
+    if body.gap_analysis is not None:
+        ctrl.gap_analysis = body.gap_analysis
+    ctrl.updated_at = datetime.utcnow()
+    db.commit(); db.refresh(ctrl)
+    return {
+        "id": str(ctrl.id),
+        "domain": ctrl.domain,
+        "status": ctrl.status,
+        "risk_rating": ctrl.risk_rating,
+        "gap_analysis": ctrl.gap_analysis,
+        "updated_at": ctrl.updated_at.isoformat() if ctrl.updated_at else None,
+    }
+
+
+@router.post("/trm/{control_id}/gap-analysis")
+async def run_trm_gap_analysis(
+    control_id: str,
+    body: TrmGapRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Run Claude haiku-4-5 gap analysis for a single control."""
+    import uuid as _uuid
+    from app.core.models_enterprise import TrmControl
+    from app.trm_workflow_service import run_gap_analysis
+    _require_feature(current_user, "ai_full", "AI gap analysis")
+    try:
+        cid = _uuid.UUID(control_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid control id")
+    org = _get_or_create_org(db, current_user)
+    ctrl = (
+        db.query(TrmControl)
+        .filter(TrmControl.id == cid, TrmControl.organisation_id == org.id)
+        .first()
+    )
+    if not ctrl:
+        raise HTTPException(status_code=404, detail="Control not found")
+    ctrl = await run_gap_analysis(ctrl, body.context, db)
+    return {
+        "id": str(ctrl.id),
+        "domain": ctrl.domain,
+        "status": ctrl.status,
+        "risk_rating": ctrl.risk_rating,
+        "gap_analysis": ctrl.gap_analysis,
+        "updated_at": ctrl.updated_at.isoformat() if ctrl.updated_at else None,
+    }
