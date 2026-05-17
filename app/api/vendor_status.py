@@ -441,3 +441,107 @@ async def update_profile(
             pass
 
     return {"status": "success", "company": user.company, "industry": user.industry}
+
+
+# ── Subscription surface ──────────────────────────────────────────────────────
+
+
+@router.get("/subscription")
+async def vendor_subscription(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Return the vendor's current plan, unlocked features, and quota usage."""
+    from datetime import datetime as _dt, timezone as _tz
+    from app.billing.enforcement import enforce_tier
+    from app.core.models_v8 import NotarizationCredit, ENTERPRISE_NOTARIZATION_LIMITS
+    from app.services.pricing import get_product
+
+    plan_value = (getattr(current_user, "plan", "free") or "free").lower()
+
+    # Run the same enforcement the rest of the platform uses, so the surfaced
+    # feature flags are guaranteed to match what's actually gated server-side.
+    result = enforce_tier(
+        assessment_data={
+            "plan": plan_value,
+            "subscription_status": "active" if getattr(current_user, "stripe_subscription_id", None) else "inactive",
+            "payment_confirmed": bool(getattr(current_user, "stripe_subscription_id", None)),
+        },
+        framework=None,
+    )
+    features = result.get("features") or {}
+    quota = int(features.get("monthly_notarization_quota") or 0)
+
+    # Notarization usage for the current month
+    month_key = _dt.now(_tz.utc).strftime("%Y-%m")
+    nc = (
+        db.query(NotarizationCredit)
+        .filter(
+            NotarizationCredit.user_id == current_user.id,
+            NotarizationCredit.month == month_key,
+        )
+        .first()
+    )
+    used = int(nc.used) if nc else 0
+
+    # Best-effort marketing label / price from the source-of-truth pricing.py
+    monthly_slug = f"{plan_value}_monthly"
+    product = get_product(monthly_slug) or get_product(plan_value)
+    plan_label = (product or {}).get("name") or plan_value.replace("_", " ").title()
+    price_sgd = (product or {}).get("price_sgd")
+
+    return {
+        "plan": plan_value,
+        "plan_label": plan_label,
+        "price_sgd": price_sgd,
+        "tier": result.get("tier"),
+        "subscription_started_at": (
+            current_user.subscription_started_at.isoformat()
+            if getattr(current_user, "subscription_started_at", None) else None
+        ),
+        "stripe_customer_id": getattr(current_user, "stripe_customer_id", None),
+        "stripe_subscription_id": getattr(current_user, "stripe_subscription_id", None),
+        "features": features,
+        "notarization": {
+            "monthly_quota": quota,
+            "used_this_month": used,
+            "remaining": max(0, quota - used) if quota else 0,
+        },
+        "bundle_credits": {
+            "notarization": int(getattr(current_user, "notarization_credits", 0) or 0),
+            "compliance_evidence": int(getattr(current_user, "compliance_evidence_credits", 0) or 0),
+        },
+    }
+
+
+@router.post("/subscription/portal")
+async def vendor_subscription_portal(
+    current_user=Depends(get_current_user),
+):
+    """Create a Stripe Billing Portal session so the vendor can manage their subscription."""
+    import os as _os
+    import stripe as _stripe
+
+    cust_id = getattr(current_user, "stripe_customer_id", None)
+    if not cust_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No Stripe customer on file. Complete a purchase first, or wait for the webhook to reconcile.",
+        )
+
+    secret = _os.environ.get("STRIPE_SECRET_KEY")
+    if not secret:
+        raise HTTPException(status_code=503, detail="Stripe not configured.")
+    _stripe.api_key = secret
+
+    return_url = (
+        _os.environ.get("NEXT_PUBLIC_BASE_URL")
+        or _os.environ.get("BACKEND_BASE_URL")
+        or "https://booppa.io"
+    ).rstrip("/") + "/vendor/subscription"
+
+    session = _stripe.billing_portal.Session.create(
+        customer=cust_id,
+        return_url=return_url,
+    )
+    return {"url": session.url}
