@@ -615,9 +615,17 @@ def get_trm(
     rows = (
         db.query(TrmControl)
         .filter(TrmControl.organisation_id == org.id)
-        .order_by(TrmControl.control_ref.asc())
         .all()
     )
+    # Natural numeric sort: "TRM-2" < "TRM-10" (string sort would give "TRM-10" < "TRM-2")
+    def _num(ref: str | None) -> int:
+        if not ref:
+            return 999
+        try:
+            return int(ref.split("-", 1)[1])
+        except (IndexError, ValueError):
+            return 999
+    rows.sort(key=lambda r: _num(r.control_ref))
 
     # Roll-up: 13 statuses → compact summary
     by_status = {"not_started": 0, "in_progress": 0, "compliant": 0, "gap": 0}
