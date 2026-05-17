@@ -30,7 +30,7 @@ class Settings(BaseSettings):
 
     # AWS SES
     AWS_SES_REGION: str = "ap-southeast-1"
-    SUPPORT_EMAIL: str = "support@booppa.io"
+    SUPPORT_EMAIL: str = "evidence@booppa.io"
 
     # Resend (preferred over SES — set RESEND_API_KEY to enable)
     RESEND_API_KEY: Optional[str] = None
