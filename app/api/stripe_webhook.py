@@ -315,8 +315,20 @@ async def _activate_subscription(
         elif new_plan in ["standard_suite", "pro_suite"]:
             try:
                 from app.trm_workflow_service import initialise_trm_controls
-                initialise_trm_controls(str(user.id))
-                logger.info(f"[Subscription] Initialised MAS TRM controls for {customer_email} ({new_plan})")
+                from app.api.vendor_features import _get_or_create_org
+                from app.core.models_enterprise import TrmControl
+                org = _get_or_create_org(db, user)
+                # Idempotent — skip if controls already exist (e.g. renewal webhook)
+                existing = (
+                    db.query(TrmControl)
+                    .filter(TrmControl.organisation_id == org.id)
+                    .count()
+                )
+                if existing == 0:
+                    initialise_trm_controls(str(org.id), db)
+                    logger.info(f"[Subscription] Initialised MAS TRM controls for {customer_email} ({new_plan})")
+                else:
+                    logger.info(f"[Subscription] TRM controls already present for {customer_email} ({existing} rows)")
             except Exception as e:
                 logger.warning(f"[Subscription] Failed to initialise MAS TRM controls: {e}")
 
