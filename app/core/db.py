@@ -45,13 +45,49 @@ async def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ):
-    """FastAPI dependency — returns authenticated User or raises 401."""
+    """FastAPI dependency — returns authenticated User or raises 401.
+
+    Accepts either:
+      - JWT access token (issued by /auth/login), or
+      - Bearer API key prefixed with `bp_` (issued via /vendor/api-keys)
+    """
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # ── API key path ──────────────────────────────────────────────────────────
+    if token.startswith("bp_"):
+        import hashlib
+        from datetime import datetime as _dt
+        from app.core.models import User
+        from app.core.models_v12 import ApiKey
+
+        hashed = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        key = (
+            db.query(ApiKey)
+            .filter(ApiKey.hashed_key == hashed, ApiKey.revoked_at.is_(None))
+            .first()
+        )
+        if not key:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or revoked API key",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        user = db.query(User).filter(User.id == key.user_id).first()
+        if not user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        try:
+            key.last_used_at = _dt.utcnow()
+            db.commit()
+        except Exception:
+            db.rollback()
+        return user
+
+    # ── JWT path ──────────────────────────────────────────────────────────────
     from app.core.auth import verify_access_token
     payload = verify_access_token(token)
     if not payload:

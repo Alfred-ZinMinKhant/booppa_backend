@@ -61,6 +61,14 @@ class User(Base):
     compliance_evidence_credits = Column(Integer, default=0, nullable=False, server_default="0")
     # True once the user uploads their signed Cover Sheet PDF and we anchor it.
     signed_cover_sheet_uploaded = Column(Boolean, default=False, nullable=False, server_default="false")
+    # Multi-subsidiary (Pro Suite): if set, this user is a child of another tenant.
+    # Parent users see aggregate data for all children + manage their lifecycle.
+    parent_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
 
 class Report(Base):

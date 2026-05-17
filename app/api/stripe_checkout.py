@@ -192,6 +192,43 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
                             status_code=409,
                             detail=f"You already have an active {expected_plan.replace('_', ' ').title()} subscription. Manage it from your dashboard.",
                         )
+                else:
+                    # No local Subscription row — but the webhook may have failed
+                    # to write it. Ask Stripe directly: any customer with this
+                    # email holding an active sub means they already paid.
+                    try:
+                        stripe_client = get_stripe_client()
+                        customers = stripe_client.Customer.list(
+                            email=prefill_email, limit=5
+                        )
+                        for cust in getattr(customers, "data", customers.get("data", [])):
+                            subs = stripe_client.Subscription.list(
+                                customer=cust.get("id"), limit=10
+                            )
+                            for s in getattr(subs, "data", subs.get("data", [])):
+                                if s.get("status") not in ("active", "trialing"):
+                                    continue
+                                # Match the price against the configured price for this product family.
+                                expected_keys = {
+                                    k.upper() for k in plan_keys
+                                }
+                                expected_prices = {
+                                    os.environ.get(f"STRIPE_{k}") for k in expected_keys
+                                } | {
+                                    os.environ.get(f"NEXT_PUBLIC_STRIPE_{k}") for k in expected_keys
+                                }
+                                expected_prices.discard(None)
+                                for item in (s.get("items", {}).get("data") or []):
+                                    price_id = (item.get("price") or {}).get("id")
+                                    if price_id and price_id in expected_prices:
+                                        raise HTTPException(
+                                            status_code=409,
+                                            detail=f"You already have an active {expected_plan.replace('_', ' ').title()} subscription. Manage it from your dashboard.",
+                                        )
+                    except HTTPException:
+                        raise
+                    except Exception as e:
+                        logger.warning(f"[Checkout] Stripe-by-email guard check failed: {e}")
         finally:
             _db.close()
 
