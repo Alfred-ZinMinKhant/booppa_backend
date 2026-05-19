@@ -38,6 +38,7 @@ from .vendor_features import router as vendor_features_router
 
 # v17 Hardened — Legal consent endpoint
 from .legal_consent import router as legal_consent_router
+from .rfp_intake import router as rfp_intake_router
 
 router = APIRouter()
 
@@ -63,6 +64,8 @@ router.include_router(procurement_router, prefix="/procurement", tags=["procurem
 router.include_router(
     rfp_requirements_router, prefix="/rfp-requirements", tags=["rfp-requirements"]
 )
+# Deferred RFP intake for bundle buyers (rfp_accelerator / enterprise_bid_kit / compliance_evidence_pack)
+router.include_router(rfp_intake_router, prefix="/rfp-intake", tags=["rfp-intake"])
 # V10 — Marketplace & Vendor Directory
 router.include_router(marketplace_router, prefix="/marketplace", tags=["marketplace"])
 # V10 — Feature Flags
