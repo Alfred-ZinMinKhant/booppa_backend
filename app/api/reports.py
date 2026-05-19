@@ -12,6 +12,7 @@ from io import BytesIO
 import qrcode
 from app.workers.tasks import process_report_workflow
 from app.billing.enforcement import enforce_tier
+from sqlalchemy import String, cast
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 import uuid
@@ -319,16 +320,34 @@ async def get_report_by_session(
         or session.get("client_reference_id")
     )
 
-    if not report_id:
-        raise HTTPException(
-            status_code=404, detail="No report mapping found for session"
-        )
-
     db = SessionLocal()
     try:
-        report = db.query(Report).filter(Report.id == report_id).first()
+        report = None
+        if report_id:
+            report = db.query(Report).filter(Report.id == report_id).first()
+
+        # Fallback: standalone /pricing purchases create the stub Report inside
+        # the webhook *after* Stripe issued the session, so the session metadata
+        # may not carry report_id if the metadata-backfill round-trip failed.
+        # The stub stores its session_id in assessment_data, so look it up there.
         if not report:
-            raise HTTPException(status_code=404, detail="Report not found")
+            report = (
+                db.query(Report)
+                .filter(cast(Report.assessment_data["stripe_session_id"], String) == session_id)
+                .order_by(Report.created_at.desc())
+                .first()
+            )
+            if report:
+                logger.info(
+                    f"[by-session] Resolved report {report.id} via assessment_data fallback for {session_id}"
+                )
+
+        if not report:
+            raise HTTPException(
+                status_code=404,
+                detail="No report mapping found for session" if not report_id else "Report not found",
+            )
+        report_id = str(report.id)
 
         # If payment succeeded, mark it on the report so downstream processing can anchor evidence.
         payment_status = session.get("payment_status")
