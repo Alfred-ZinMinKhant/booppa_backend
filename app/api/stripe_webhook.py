@@ -441,6 +441,7 @@ def _create_stub_report(
     customer_email: str | None,
     source: str,
     session_id: str | None = None,
+    test_simulation: bool = False,
 ) -> str:
     """Create a synthetic Report row for fulfillment paths that don't have a
     pre-existing report (standalone /pricing purchases, bundle components).
@@ -461,6 +462,8 @@ def _create_stub_report(
         # Stored so /api/reports/by-session can resolve the stub even when the
         # Stripe metadata backfill failed.
         assessment["stripe_session_id"] = session_id
+    if test_simulation:
+        assessment["test_simulation"] = True
     stub = Report(
         owner_id=owner_id or _uuid.uuid4(),
         framework=framework,
@@ -685,6 +688,7 @@ async def _fulfill_standalone_no_report(
             customer_email=customer_email,
             source=product_type,
             session_id=session_id,
+            test_simulation=bool(metadata.get("test_simulation")),
         )
         db.commit()
 
@@ -795,6 +799,8 @@ async def _fulfill_bundle(
             base_report.company_website if base_report else None
         ) or metadata.get("vendor_url", "")
 
+        _is_test = bool(metadata.get("test_simulation"))
+
         def _make_stub(framework: str) -> str:
             return _create_stub_report(
                 db,
@@ -804,6 +810,8 @@ async def _fulfill_bundle(
                 website=website,
                 customer_email=customer_email,
                 source=product_type,
+                session_id=session_id,
+                test_simulation=_is_test,
             )
 
         # Collect all stub IDs before committing — single atomic commit for all stubs
