@@ -98,7 +98,13 @@ async def _activate_subscription(
             user = db.query(User).filter(User.email == customer_email).first()
 
         if not user:
-            logger.warning(f"[Subscription] No user found for email={customer_email}")
+            await _alert_payment_fulfillment_issue(
+                reason="subscription paid but no user row matched customer_email",
+                product_type=product_type,
+                customer_email=customer_email,
+                session_id=stripe_subscription_id,
+                extra={"stripe_customer_id": stripe_customer_id},
+            )
             return
 
         # Map product_type → platform plan
@@ -344,6 +350,87 @@ async def _activate_subscription(
         db.close()
 
 
+async def _alert_payment_fulfillment_issue(
+    *,
+    reason: str,
+    product_type: str | None,
+    customer_email: str | None,
+    session_id: str | None = None,
+    event_id: str | None = None,
+    extra: dict | None = None,
+    notify_customer: bool = True,
+) -> None:
+    """Loud failure path for any post-payment branch that can't complete fulfillment.
+
+    The user already paid — silently logging a warning is not enough. This:
+      1. Logs at ERROR with full context.
+      2. Emails settings.SUPPORT_EMAIL so the team can resolve manually.
+      3. Optionally emails the customer ("we received your payment, on it") so
+         they're not left wondering when the email never arrives.
+
+    All sends are best-effort: failure of an alert email never propagates.
+    """
+    extra_str = ""
+    if extra:
+        try:
+            extra_str = json.dumps(extra, default=str, sort_keys=True)[:1000]
+        except Exception:
+            extra_str = str(extra)[:1000]
+    logger.error(
+        f"[Fulfillment-ALERT] reason={reason} product={product_type} "
+        f"email={customer_email} session={session_id} event={event_id} extra={extra_str}"
+    )
+
+    try:
+        body_html = f"""
+        <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;padding:24px;">
+          <h2 style="color:#b91c1c;">Fulfillment alert — manual review needed</h2>
+          <p>A Stripe payment landed in a branch that could not complete automatic fulfillment.</p>
+          <table style="border-collapse:collapse;width:100%;font-size:14px;">
+            <tr><td style="padding:6px 8px;color:#64748b;">Reason</td><td style="padding:6px 8px;"><strong>{reason}</strong></td></tr>
+            <tr><td style="padding:6px 8px;color:#64748b;">Product</td><td style="padding:6px 8px;">{product_type or '(unknown)'}</td></tr>
+            <tr><td style="padding:6px 8px;color:#64748b;">Customer email</td><td style="padding:6px 8px;">{customer_email or '(missing)'}</td></tr>
+            <tr><td style="padding:6px 8px;color:#64748b;">Stripe session</td><td style="padding:6px 8px;font-family:monospace;">{session_id or '(missing)'}</td></tr>
+            <tr><td style="padding:6px 8px;color:#64748b;">Webhook event</td><td style="padding:6px 8px;font-family:monospace;">{event_id or '(unknown)'}</td></tr>
+            <tr><td style="padding:6px 8px;color:#64748b;">Extra</td><td style="padding:6px 8px;font-family:monospace;">{extra_str or '-'}</td></tr>
+          </table>
+        </div>
+        """
+        await EmailService().send_html_email(
+            to_email=settings.SUPPORT_EMAIL,
+            subject=f"[FULFILLMENT] {reason} ({product_type or '?'})",
+            body_html=body_html,
+        )
+    except Exception as alert_err:
+        logger.error(f"[Fulfillment-ALERT] ops email failed: {alert_err}")
+
+    if notify_customer and customer_email:
+        try:
+            await EmailService().send_html_email(
+                to_email=customer_email,
+                subject="We received your payment — one small delay",
+                body_html=f"""
+                <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;">
+                  <h2 style="color:#0f172a;">Thank you for your purchase</h2>
+                  <p style="color:#334155;">
+                    Your payment for <strong>{(product_type or '').replace('_', ' ').title() or 'your order'}</strong>
+                    has been received. We hit a small snag finalising your account and our team
+                    has been alerted — we will follow up within a few hours and make sure
+                    everything is sorted.
+                  </p>
+                  <p style="color:#334155;">
+                    If you have any questions in the meantime, just reply to this email.
+                  </p>
+                  <p style="color:#64748b;font-size:13px;margin-top:24px;">
+                    Order reference: <span style="font-family:monospace;">{session_id or 'n/a'}</span>
+                  </p>
+                </div>
+                """,
+            )
+        except Exception as cust_err:
+            logger.warning(f"[Fulfillment-ALERT] customer email failed: {cust_err}")
+
+
 def _create_stub_report(
     db,
     *,
@@ -398,8 +485,13 @@ async def _defer_rfp_to_intake(
     or None if no user could be resolved.
     """
     if not customer_email:
-        logger.warning(
-            f"[RFP-defer:{rfp_product_type}] No customer_email — cannot attach intake"
+        await _alert_payment_fulfillment_issue(
+            reason="RFP purchase paid but webhook had no customer_email",
+            product_type=rfp_product_type,
+            customer_email=None,
+            session_id=session_id,
+            extra={"bundle_source": bundle_source},
+            notify_customer=False,
         )
         return None
     from app.core.models_v12 import PendingRfpIntake
@@ -409,8 +501,12 @@ async def _defer_rfp_to_intake(
     try:
         user = db.query(User).filter(User.email == customer_email).first()
         if not user:
-            logger.warning(
-                f"[RFP-defer:{rfp_product_type}] No user row for email={customer_email}"
+            await _alert_payment_fulfillment_issue(
+                reason="RFP purchase paid but no user row matched customer_email",
+                product_type=rfp_product_type,
+                customer_email=customer_email,
+                session_id=session_id,
+                extra={"bundle_source": bundle_source},
             )
             return None
         resolved_url = vendor_url or (getattr(user, "website", "") or "") or None
@@ -512,9 +608,11 @@ async def _fulfill_standalone_no_report(
         if product_type in NOTARIZATION_PRODUCT_TYPES:
             count = NOTARIZATION_CREDIT_AMOUNTS.get(product_type, 0)
             if not customer_email or not user:
-                logger.warning(
-                    f"[Notarize:{product_type}] Cannot grant {count} credits — "
-                    f"no user row for email={customer_email}"
+                await _alert_payment_fulfillment_issue(
+                    reason=f"notarization purchase paid but cannot grant {count} credits — no user found",
+                    product_type=product_type,
+                    customer_email=customer_email,
+                    extra={"credits_intended": count},
                 )
                 return True
             locked = (
@@ -565,9 +663,10 @@ async def _fulfill_standalone_no_report(
         # PDPA / Vendor Proof: create stub Report and queue the fulfillment task.
         framework = "pdpa_quick_scan" if product_type in PDPA_PRODUCT_TYPES else "vendor_proof"
         if not website and framework == "pdpa_quick_scan":
-            logger.error(
-                f"[Standalone:{product_type}] No website available — cannot create stub for PDPA scan "
-                f"(email={customer_email})"
+            await _alert_payment_fulfillment_issue(
+                reason="PDPA Quick Scan paid but no website found on metadata or profile",
+                product_type=product_type,
+                customer_email=customer_email,
             )
             return True
         stub_id = _create_stub_report(
@@ -599,8 +698,13 @@ async def _fulfill_standalone_no_report(
             )
         return True
     except Exception as e:
-        logger.error(f"[Standalone:{product_type}] Fulfillment error: {e}")
+        logger.exception(f"[Standalone:{product_type}] Fulfillment error: {e}")
         db.rollback()
+        await _alert_payment_fulfillment_issue(
+            reason=f"standalone fulfillment raised exception: {type(e).__name__}: {e}",
+            product_type=product_type,
+            customer_email=customer_email,
+        )
         return True  # still consumed — don't let the caller double-process
     finally:
         db.close()
@@ -650,9 +754,13 @@ async def _fulfill_bundle(
                     f"[Bundle:{product_type}] Resolved owner_id={owner_id} from email={customer_email}"
                 )
             else:
-                logger.warning(
-                    f"[Bundle:{product_type}] No user found for email={customer_email} — stubs will have no owner"
+                await _alert_payment_fulfillment_issue(
+                    reason="bundle paid but no user row matched customer_email — stubs would be orphaned",
+                    product_type=product_type,
+                    customer_email=customer_email,
+                    session_id=session_id,
                 )
+                return  # don't create orphan stub Reports
 
         company_name = (
             base_report.company_name if base_report else None
@@ -753,9 +861,12 @@ async def _fulfill_bundle(
                         f"to {customer_email} (balance: {current_balance} → {user.notarization_credits})"
                     )
             else:
-                logger.warning(
-                    f"[Bundle:{product_type}] Cannot grant {notarization_count} credits — "
-                    f"no user row for email={customer_email}"
+                await _alert_payment_fulfillment_issue(
+                    reason=f"bundle paid but cannot grant {notarization_count} notarization credits — user disappeared between queries",
+                    product_type=product_type,
+                    customer_email=customer_email,
+                    session_id=session_id,
+                    extra={"credits_intended": notarization_count},
                 )
 
         # Commit stubs + credit grant atomically before queuing tasks
@@ -859,8 +970,14 @@ async def _fulfill_bundle(
 
 
     except Exception as e:
-        logger.error(f"[Bundle] Fulfillment error for {product_type}: {e}")
+        logger.exception(f"[Bundle] Fulfillment error for {product_type}: {e}")
         db.rollback()
+        await _alert_payment_fulfillment_issue(
+            reason=f"bundle fulfillment raised exception: {type(e).__name__}: {e}",
+            product_type=product_type,
+            customer_email=customer_email,
+            session_id=session_id,
+        )
     finally:
         db.close()
 
@@ -2086,9 +2203,13 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                         f"vendor={vendor_id} url={vendor_url}"
                     )
                 else:
-                    logger.error(
-                        f"RFP fulfillment skipped: missing vendor_url or company_name "
-                        f"in metadata={metadata}"
+                    await _alert_payment_fulfillment_issue(
+                        reason="RFP fulfillment skipped: missing vendor_url or company_name (had description)",
+                        product_type=product_type,
+                        customer_email=customer_email,
+                        session_id=session.get("id"),
+                        event_id=event_id,
+                        extra={"metadata_keys": sorted(metadata.keys())},
                     )
                 return {"received": True}
 
@@ -2103,8 +2224,13 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
             ):
                 return {"received": True}
 
-            logger.warning(
-                "Checkout session completed but no report_id found in metadata"
+            await _alert_payment_fulfillment_issue(
+                reason="checkout session completed but no handler matched (no report_id and unknown product_type)",
+                product_type=product_type,
+                customer_email=customer_email,
+                session_id=session.get("id"),
+                event_id=event_id,
+                extra={"metadata_keys": sorted(metadata.keys())},
             )
             return {"received": True}
 
@@ -2185,9 +2311,13 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                         session_id=session.get("id"),
                     )
                 elif not vendor_url or not company_name:
-                    logger.error(
-                        f"RFP fulfillment missing vendor_url or company_name for report {report_id}; "
-                        f"metadata={metadata}"
+                    await _alert_payment_fulfillment_issue(
+                        reason="RFP fulfillment skipped: missing vendor_url or company_name (with report_id, had description)",
+                        product_type=product_type,
+                        customer_email=customer_email,
+                        session_id=session.get("id"),
+                        event_id=event_id,
+                        extra={"report_id": str(report_id), "metadata_keys": sorted(metadata.keys())},
                     )
                 else:
                     from app.workers.tasks import fulfill_rfp_task
