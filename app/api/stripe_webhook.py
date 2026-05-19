@@ -26,6 +26,11 @@ NOTARIZATION_PRODUCT_TYPES = {
     "compliance_notarization_10",
     "compliance_notarization_50",
 }
+NOTARIZATION_CREDIT_AMOUNTS = {
+    "compliance_notarization_1": 1,
+    "compliance_notarization_10": 10,
+    "compliance_notarization_50": 50,
+}
 VENDOR_PROOF_PRODUCT_TYPES = {"vendor_proof"}
 PDPA_PRODUCT_TYPES = {"pdpa_quick_scan", "pdpa_snapshot"}
 SUBSCRIPTION_PRODUCT_TYPES = {
@@ -339,6 +344,268 @@ async def _activate_subscription(
         db.close()
 
 
+def _create_stub_report(
+    db,
+    *,
+    framework: str,
+    owner_id,
+    company_name: str | None,
+    website: str | None,
+    customer_email: str | None,
+    source: str,
+) -> str:
+    """Create a synthetic Report row for fulfillment paths that don't have a
+    pre-existing report (standalone /pricing purchases, bundle components).
+
+    Caller is responsible for committing the surrounding session.
+    """
+    from app.core.models import Report
+    import uuid as _uuid
+
+    stub = Report(
+        owner_id=owner_id or _uuid.uuid4(),
+        framework=framework,
+        company_name=company_name,
+        company_website=website,
+        status="pending",
+        assessment_data={
+            "payment_confirmed": True,
+            "on_page_only": False,
+            "tier": "pro",
+            "contact_email": customer_email,
+            "bundle_source": source,
+        },
+    )
+    db.add(stub)
+    db.flush()
+    return str(stub.id)
+
+
+async def _defer_rfp_to_intake(
+    *,
+    rfp_product_type: str,
+    bundle_source: str,
+    customer_email: str | None,
+    vendor_url: str | None,
+    company_name: str | None,
+    session_id: str | None,
+) -> str | None:
+    """Create a PendingRfpIntake row and email the buyer a link to /rfp-intake/{id}.
+
+    Used when an RFP-bearing purchase arrives without a `rfp_description` — bundles
+    bought from /pricing, plus standalone rfp_express/rfp_complete one-click buys.
+    Caller need not commit; this helper owns its own session. Returns intake_id
+    or None if no user could be resolved.
+    """
+    if not customer_email:
+        logger.warning(
+            f"[RFP-defer:{rfp_product_type}] No customer_email — cannot attach intake"
+        )
+        return None
+    from app.core.models_v12 import PendingRfpIntake
+
+    db = SessionLocal()
+    intake_id: str | None = None
+    try:
+        user = db.query(User).filter(User.email == customer_email).first()
+        if not user:
+            logger.warning(
+                f"[RFP-defer:{rfp_product_type}] No user row for email={customer_email}"
+            )
+            return None
+        resolved_url = vendor_url or (getattr(user, "website", "") or "") or None
+        resolved_company = company_name or (getattr(user, "company", "") or "") or None
+        pending = PendingRfpIntake(
+            user_id=user.id,
+            session_id=session_id,
+            rfp_product_type=rfp_product_type,
+            bundle_source=bundle_source,
+            vendor_url=resolved_url,
+            company_name=resolved_company,
+            status="pending",
+        )
+        db.add(pending)
+        db.flush()
+        intake_id = str(pending.id)
+        db.commit()
+        logger.info(
+            f"[RFP-defer:{rfp_product_type}] Created PendingRfpIntake {intake_id} for {customer_email}"
+        )
+    except Exception as e:
+        logger.error(f"[RFP-defer:{rfp_product_type}] DB error: {e}")
+        db.rollback()
+        return None
+    finally:
+        db.close()
+
+    try:
+        kit_label = (
+            "RFP Complete Kit" if rfp_product_type == "rfp_complete" else "RFP Express Kit"
+        )
+        intake_url = f"https://www.booppa.io/rfp-intake/{intake_id}"
+        await EmailService().send_html_email(
+            to_email=customer_email,
+            subject=f"One more step: complete your {kit_label} brief",
+            body_html=f"""
+            <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;">
+              <h2 style="color:#0f172a;">Tell us about your RFP</h2>
+              <p style="color:#334155;">
+                Thanks for your purchase. Share a few details about the procurement and
+                we'll generate your <strong>{kit_label}</strong>.
+              </p>
+              <div style="text-align:center;margin:24px 0;">
+                <a href="{intake_url}"
+                   style="display:inline-block;background:#0ea5e9;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">
+                  Complete your RFP brief
+                </a>
+              </div>
+              <p style="color:#64748b;font-size:13px;">
+                Takes about 2 minutes. Your kit is generated as soon as you submit.
+              </p>
+            </div>
+            """,
+        )
+        logger.info(
+            f"[RFP-defer:{rfp_product_type}] Sent intake email to {customer_email} "
+            f"(intake_id={intake_id})"
+        )
+    except Exception as email_err:
+        logger.warning(f"[RFP-defer:{rfp_product_type}] Intake email failed: {email_err}")
+
+    return intake_id
+
+
+async def _fulfill_standalone_no_report(
+    product_type: str,
+    customer_email: str | None,
+    metadata: dict,
+) -> bool:
+    """Fulfillment path for /pricing-direct purchases that arrived without a
+    pre-existing Report (pdpa_quick_scan, vendor_proof) or that grant credits
+    (compliance_notarization_*).
+
+    Returns True if the product was handled here, False if the caller should
+    fall through to other branches.
+    """
+    if product_type not in (
+        PDPA_PRODUCT_TYPES | VENDOR_PROOF_PRODUCT_TYPES | NOTARIZATION_PRODUCT_TYPES
+    ):
+        return False
+
+    company_name = (metadata.get("company_name") or "").strip()
+    website = (metadata.get("vendor_url") or metadata.get("website_url") or "").strip()
+
+    db = SessionLocal()
+    try:
+        owner_id = None
+        user = None
+        if customer_email:
+            user = db.query(User).filter(User.email == customer_email).first()
+            if user:
+                owner_id = user.id
+                if not company_name:
+                    company_name = (getattr(user, "company", "") or "").strip()
+                if not website:
+                    website = (getattr(user, "website", "") or "").strip()
+
+        # Notarization credits: grant balance, send redemption email.
+        if product_type in NOTARIZATION_PRODUCT_TYPES:
+            count = NOTARIZATION_CREDIT_AMOUNTS.get(product_type, 0)
+            if not customer_email or not user:
+                logger.warning(
+                    f"[Notarize:{product_type}] Cannot grant {count} credits — "
+                    f"no user row for email={customer_email}"
+                )
+                return True
+            locked = (
+                db.query(User)
+                .filter(User.id == user.id)
+                .with_for_update()
+                .first()
+            )
+            current = getattr(locked, "notarization_credits", 0) or 0
+            locked.notarization_credits = current + count
+            db.commit()
+            logger.info(
+                f"[Notarize:{product_type}] Granted {count} credits to {customer_email} "
+                f"(balance: {current} → {locked.notarization_credits})"
+            )
+            try:
+                await EmailService().send_html_email(
+                    to_email=customer_email,
+                    subject=f"Your {count} notarization{'s' if count != 1 else ''} ready to redeem",
+                    body_html=f"""
+                    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;">
+                      <h2 style="color:#0f172a;">Notarization credits issued</h2>
+                      <p style="color:#334155;">
+                        Thanks for your purchase. You now have
+                        <strong>{count} notarization credit{'s' if count != 1 else ''}</strong>
+                        on your account. Each lets you anchor any compliance document (PDF, DOCX, image, etc.)
+                        on the blockchain with SHA-256 proof.
+                      </p>
+                      <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:16px;margin:20px 0;">
+                        <p style="margin:0 0 12px;font-weight:bold;color:#0369a1;">How to redeem</p>
+                        <p style="margin:0;color:#334155;font-size:14px;">
+                          Visit <a href="https://www.booppa.io/notarize" style="color:#0ea5e9;font-weight:bold;">booppa.io/notarize</a>,
+                          upload your document, and enter this email ({customer_email}).
+                          Your credit will be applied automatically — no payment required.
+                        </p>
+                      </div>
+                      <p style="color:#64748b;font-size:13px;">
+                        Credits don't expire. You can use them one at a time or all at once.
+                      </p>
+                    </div>
+                    """,
+                )
+                logger.info(f"[Notarize:{product_type}] Sent credits-granted email to {customer_email}")
+            except Exception as email_err:
+                logger.warning(f"[Notarize:{product_type}] Credits email failed: {email_err}")
+            return True
+
+        # PDPA / Vendor Proof: create stub Report and queue the fulfillment task.
+        framework = "pdpa_quick_scan" if product_type in PDPA_PRODUCT_TYPES else "vendor_proof"
+        if not website and framework == "pdpa_quick_scan":
+            logger.error(
+                f"[Standalone:{product_type}] No website available — cannot create stub for PDPA scan "
+                f"(email={customer_email})"
+            )
+            return True
+        stub_id = _create_stub_report(
+            db,
+            framework=framework,
+            owner_id=owner_id,
+            company_name=company_name or None,
+            website=website or None,
+            customer_email=customer_email,
+            source=product_type,
+        )
+        db.commit()
+
+        if framework == "vendor_proof":
+            from app.workers.tasks import fulfill_vendor_proof_task
+
+            fulfill_vendor_proof_task.delay(stub_id, customer_email)
+            logger.info(
+                f"[Standalone:vendor_proof] Queued fulfillment for stub report {stub_id} "
+                f"(email={customer_email})"
+            )
+        else:
+            from app.workers.tasks import fulfill_pdpa_task
+
+            fulfill_pdpa_task.delay(stub_id, customer_email)
+            logger.info(
+                f"[Standalone:{product_type}] Queued PDPA fulfillment for stub report {stub_id} "
+                f"(email={customer_email}, website={website})"
+            )
+        return True
+    except Exception as e:
+        logger.error(f"[Standalone:{product_type}] Fulfillment error: {e}")
+        db.rollback()
+        return True  # still consumed — don't let the caller double-process
+    finally:
+        db.close()
+
+
 async def _fulfill_bundle(
     product_type: str,
     report_id: str | None,
@@ -358,15 +625,12 @@ async def _fulfill_bundle(
     from app.workers.tasks import (
         fulfill_vendor_proof_task,
         fulfill_pdpa_task,
-        fulfill_rfp_task,
     )
+    from app.core.models_v12 import PendingRfpIntake
 
     db = SessionLocal()
     try:
-        # Create a synthetic Report for components that need one (VP, PDPA)
-        # If report_id was passed from checkout, use it; otherwise create stubs.
         from app.core.models import Report
-        import uuid as _uuid
 
         base_report = (
             db.query(Report).filter(Report.id == report_id).first()
@@ -397,25 +661,16 @@ async def _fulfill_bundle(
             base_report.company_website if base_report else None
         ) or metadata.get("vendor_url", "")
 
-        # Helper to create a stub report for a component
         def _make_stub(framework: str) -> str:
-            stub = Report(
-                owner_id=owner_id or _uuid.uuid4(),
+            return _create_stub_report(
+                db,
                 framework=framework,
+                owner_id=owner_id,
                 company_name=company_name,
-                company_website=website,
-                status="pending",
-                assessment_data={
-                    "payment_confirmed": True,
-                    "on_page_only": False,
-                    "tier": "pro",
-                    "contact_email": customer_email,
-                    "bundle_source": product_type,
-                },
+                website=website,
+                customer_email=customer_email,
+                source=product_type,
             )
-            db.add(stub)
-            db.flush()
-            return str(stub.id)
 
         # Collect all stub IDs before committing — single atomic commit for all stubs
         tasks_to_queue = []
@@ -434,11 +689,33 @@ async def _fulfill_bundle(
             pdpa_id = _make_stub("pdpa_quick_scan")
             tasks_to_queue.append(("pdpa", pdpa_id))
 
-        # 2b. RFP Kit — bundle queues the RFP builder directly (no Report stub;
-        # _fulfill_rfp_package writes its own Report row on completion).
+        # 2b. RFP Kit — defer to a post-checkout intake step. We don't have the
+        # buyer's RFP description at this point (bundle checkouts don't collect it),
+        # so create a PendingRfpIntake row that the user completes at /rfp-intake/{id}.
+        # The intake endpoint queues fulfill_rfp_task once they submit the brief.
         rfp_product = components.get("rfp")
-        if rfp_product:
-            tasks_to_queue.append(("rfp", rfp_product))
+        pending_intake_id: str | None = None
+        if rfp_product and owner_id:
+            pending = PendingRfpIntake(
+                user_id=owner_id,
+                session_id=session_id,
+                rfp_product_type=rfp_product,
+                bundle_source=product_type,
+                vendor_url=website or None,
+                company_name=company_name or None,
+                status="pending",
+            )
+            db.add(pending)
+            db.flush()
+            pending_intake_id = str(pending.id)
+            logger.info(
+                f"[Bundle:{product_type}] Created PendingRfpIntake {pending_intake_id} for {customer_email}"
+            )
+        elif rfp_product:
+            logger.warning(
+                f"[Bundle:{product_type}] RFP component skipped — no user resolved "
+                f"for email={customer_email}; nothing to attach intake to"
+            )
 
         # 3. Notarization credits — grant balance to user, no auto-fulfillment.
         # User redeems credits later by uploading documents at /notarize.
@@ -494,28 +771,7 @@ async def _fulfill_bundle(
             elif task_type == "pdpa":
                 fulfill_pdpa_task.delay(payload, customer_email)
                 logger.info(f"[Bundle:{product_type}] Queued pdpa for report {payload}")
-            elif task_type == "rfp":
-                # payload here is the rfp product_type ("rfp_complete" / "rfp_express").
-                # owner_id is the bundle buyer; vendor_url + company_name come from
-                # the user/profile context already resolved above.
-                fulfill_rfp_task.delay(
-                    product_type=payload,
-                    vendor_id=str(owner_id) if owner_id else "",
-                    vendor_email=customer_email or "",
-                    vendor_url=website or "",
-                    company_name=company_name or "",
-                    rfp_description=metadata.get("rfp_description"),
-                    session_id=session_id,
-                    intake_data=metadata.get("intake_data"),
-                )
-                logger.info(f"[Bundle:{product_type}] Queued rfp ({payload}) for {customer_email}")
-                # Strategy 6 fires for rfp_accelerator (contains rfp_express)
-                if payload == "rfp_express":
-                    from app.workers.tasks import fire_strategy_6_task
-
-                    sector = metadata.get("sector")
-                    rfp_title = metadata.get("rfp_description") or "New procurement opportunity"
-                    fire_strategy_6_task.delay(sector, rfp_title)
+            # RFP is no longer queued at this stage — see PendingRfpIntake above.
 
         # Send credits-granted notification email
         if notarization_count > 0 and customer_email:
@@ -549,6 +805,47 @@ async def _fulfill_bundle(
                 logger.info(f"[Bundle:{product_type}] Sent credits-granted email to {customer_email}")
             except Exception as email_err:
                 logger.warning(f"[Bundle:{product_type}] Credits email failed: {email_err}")
+
+        # Pending RFP intake — prompt the buyer to fill in the brief.
+        if pending_intake_id and customer_email:
+            try:
+                kit_label = (
+                    "RFP Complete Kit"
+                    if rfp_product == "rfp_complete"
+                    else "RFP Express Kit"
+                )
+                intake_url = f"https://www.booppa.io/rfp-intake/{pending_intake_id}"
+                await EmailService().send_html_email(
+                    to_email=customer_email,
+                    subject=f"One more step: complete your {kit_label} brief",
+                    body_html=f"""
+                    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;">
+                      <h2 style="color:#0f172a;">Tell us about your RFP</h2>
+                      <p style="color:#334155;">
+                        Your <strong>{product_type.replace('_', ' ').title()}</strong> bundle includes a
+                        <strong>{kit_label}</strong>. Share a few details about the procurement and we'll
+                        generate the kit for you.
+                      </p>
+                      <div style="text-align:center;margin:24px 0;">
+                        <a href="{intake_url}"
+                           style="display:inline-block;background:#0ea5e9;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">
+                          Complete your RFP brief
+                        </a>
+                      </div>
+                      <p style="color:#64748b;font-size:13px;">
+                        Takes about 2 minutes. Your kit is generated as soon as you submit.
+                      </p>
+                    </div>
+                    """,
+                )
+                logger.info(
+                    f"[Bundle:{product_type}] Sent RFP-intake email to {customer_email} "
+                    f"(intake_id={pending_intake_id})"
+                )
+            except Exception as email_err:
+                logger.warning(
+                    f"[Bundle:{product_type}] RFP-intake email failed: {email_err}"
+                )
 
         # 4. Cover Sheet — NOT auto-fired anymore for compliance_evidence_pack.
         # The user must upload their compliance documents at /compliance-evidence-pack/upload
@@ -1746,6 +2043,18 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
             if product_type in RFP_PRODUCT_TYPES:
                 vendor_url = metadata.get("vendor_url", "")
                 company_name = metadata.get("company_name", "")
+                rfp_description = (metadata.get("rfp_description") or "").strip()
+                # No brief on file → defer to /rfp-intake (e.g. one-click /pricing buy).
+                if not rfp_description:
+                    await _defer_rfp_to_intake(
+                        rfp_product_type=product_type,
+                        bundle_source=product_type,
+                        customer_email=customer_email,
+                        vendor_url=vendor_url or None,
+                        company_name=company_name or None,
+                        session_id=session.get("id"),
+                    )
+                    return {"received": True}
                 if vendor_url and company_name:
                     vendor_id = (
                         metadata.get("vendor_id") or customer_email or "anonymous"
@@ -1768,7 +2077,7 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                         vendor_email=customer_email or "",
                         vendor_url=vendor_url,
                         company_name=company_name,
-                        rfp_description=metadata.get("rfp_description"),
+                        rfp_description=rfp_description,
                         session_id=session.get("id"),
                         intake_data=intake_dict,
                     )
@@ -1781,6 +2090,17 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                         f"RFP fulfillment skipped: missing vendor_url or company_name "
                         f"in metadata={metadata}"
                     )
+                return {"received": True}
+
+            # Standalone /pricing purchases that don't carry a pre-existing report_id:
+            #   - pdpa_quick_scan / pdpa_snapshot → create stub Report + queue PDPA task
+            #   - vendor_proof → create stub Report + queue Vendor Proof task
+            #   - compliance_notarization_{1,10,50} → grant credits + email redemption link
+            if await _fulfill_standalone_no_report(
+                product_type=product_type,
+                customer_email=customer_email,
+                metadata=metadata,
+            ):
                 return {"received": True}
 
             logger.warning(
@@ -1853,8 +2173,18 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                 company_name = metadata.get("company_name") or metadata.get(
                     "company", ""
                 )
-                rfp_desc = metadata.get("rfp_description")
-                if not vendor_url or not company_name:
+                rfp_desc = (metadata.get("rfp_description") or "").strip()
+                # No brief on file → defer to /rfp-intake instead of generating a placeholder kit.
+                if not rfp_desc:
+                    await _defer_rfp_to_intake(
+                        rfp_product_type=product_type,
+                        bundle_source=product_type,
+                        customer_email=customer_email,
+                        vendor_url=vendor_url or None,
+                        company_name=company_name or None,
+                        session_id=session.get("id"),
+                    )
+                elif not vendor_url or not company_name:
                     logger.error(
                         f"RFP fulfillment missing vendor_url or company_name for report {report_id}; "
                         f"metadata={metadata}"

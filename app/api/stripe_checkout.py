@@ -256,6 +256,72 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         finally:
             _db.close()
 
+    # Standalone PDPA Quick Scan from /pricing: needs website + company_name so the
+    # webhook can create a stub Report and run the scan + email the certificate.
+    if product_type == "pdpa_quick_scan" and prefill_email:
+        from app.core.db import SessionLocal
+        from app.core.models import User
+
+        _db = SessionLocal()
+        try:
+            user = _db.query(User).filter(User.email == prefill_email).first()
+            req_website = (data.get("website") or data.get("vendor_url") or "").strip()
+            req_company = (data.get("company_name") or "").strip()
+            website = req_website or ((getattr(user, "website", "") or "").strip() if user else "")
+            company_name = req_company or ((getattr(user, "company", "") or "").strip() if user else "")
+            if user:
+                if req_website and not user.website:
+                    user.website = req_website
+                if req_company and not user.company:
+                    user.company = req_company
+                if req_website or req_company:
+                    _db.commit()
+            if not website:
+                raise HTTPException(
+                    status_code=422,
+                    detail="A website URL is required so we can run your PDPA scan. Please provide your website.",
+                )
+            if not company_name:
+                raise HTTPException(
+                    status_code=422,
+                    detail="A company name is required for the PDPA scan certificate. Please provide your company name.",
+                )
+            data["vendor_url"] = website
+            data["company_name"] = company_name
+        finally:
+            _db.close()
+
+    # Standalone Vendor Proof from /pricing: needs company_name for the verification
+    # record + badge. Website is optional (verification is on the entity, not the site).
+    if product_type == "vendor_proof" and prefill_email:
+        from app.core.db import SessionLocal
+        from app.core.models import User
+
+        _db = SessionLocal()
+        try:
+            user = _db.query(User).filter(User.email == prefill_email).first()
+            req_company = (data.get("company_name") or "").strip()
+            req_website = (data.get("website") or data.get("vendor_url") or "").strip()
+            company_name = req_company or ((getattr(user, "company", "") or "").strip() if user else "")
+            website = req_website or ((getattr(user, "website", "") or "").strip() if user else "")
+            if user:
+                if req_company and not user.company:
+                    user.company = req_company
+                if req_website and not user.website:
+                    user.website = req_website
+                if req_company or req_website:
+                    _db.commit()
+            if not company_name:
+                raise HTTPException(
+                    status_code=422,
+                    detail="A company name is required to issue your Vendor Proof. Please provide your company name.",
+                )
+            data["company_name"] = company_name
+            if website:
+                data["vendor_url"] = website
+        finally:
+            _db.close()
+
     # For bundles: require website (for VP + PDPA scan) and company name.
     # Falls back to user profile, otherwise 422 to trigger frontend prompt.
     BUNDLE_TYPES = {
