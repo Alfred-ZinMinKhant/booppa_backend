@@ -633,3 +633,241 @@ def admin_delete_vendor(vendor_id: str, _auth: bool = Depends(_admin_auth)):
         db.commit()
     finally:
         db.close()
+
+
+# ── Simulate purchase (test harness) ──────────────────────────────────────────
+#
+# Lets admin/QA exercise the full webhook fulfillment path for every paid SKU
+# without going through Stripe. Calls the same helpers a real
+# checkout.session.completed event would call — DB rows, Celery tasks, emails,
+# and Amoy testnet anchors are produced for real. Test records are tagged so
+# they can be identified later (Report.assessment_data.test_simulation = true,
+# and stripe_*_id / session_id prefixed with "admin-sim-").
+
+
+class SimulatePurchaseRequest(BaseModel):
+    product_type: str = Field(..., description="A product_type from MODE_MAP")
+    customer_email: str = Field(..., description="Test email — receives real fulfillment mail")
+    vendor_url: Optional[str] = Field(default="https://booppa.io")
+    company_name: Optional[str] = Field(default="Booppa QA")
+    rfp_description: Optional[str] = Field(default=None)
+
+
+@router.post("/simulate-purchase")
+async def simulate_purchase(
+    body: SimulatePurchaseRequest,
+    _auth: bool = Depends(_admin_auth),
+):
+    """Simulate a Stripe checkout.session.completed event for any SKU."""
+    import uuid as _uuid
+
+    # Lazy imports so admin module can load even if Stripe wiring breaks at boot.
+    from app.api.stripe_checkout import MODE_MAP
+    from app.api.stripe_webhook import (
+        SUBSCRIPTION_PRODUCT_TYPES,
+        BUNDLE_COMPONENTS,
+        RFP_PRODUCT_TYPES,
+        NOTARIZATION_PRODUCT_TYPES,
+        PDPA_PRODUCT_TYPES,
+        VENDOR_PROOF_PRODUCT_TYPES,
+        _activate_subscription,
+        _fulfill_bundle,
+        _fulfill_standalone_no_report,
+        _defer_rfp_to_intake,
+    )
+    from app.core.models import Report, Subscription
+    from app.core.models_v12 import PendingRfpIntake
+
+    product_type = body.product_type
+    if product_type not in MODE_MAP:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown product_type — must be one of {sorted(MODE_MAP.keys())}",
+        )
+
+    customer_email = body.customer_email.strip().lower()
+    vendor_url = (body.vendor_url or "").strip()
+    company_name = (body.company_name or "").strip()
+    rfp_description = (body.rfp_description or "").strip()
+    sim_id = f"admin-sim-{_uuid.uuid4()}"
+
+    # Ensure a User row exists for the test email so fulfillment helpers can attach
+    # owner_id / grant credits / activate plans.
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == customer_email).first()
+        if not user:
+            from app.core.auth import get_password_hash
+
+            user = User(
+                email=customer_email,
+                hashed_password=get_password_hash(_uuid.uuid4().hex),
+                full_name="Booppa QA",
+                role="VENDOR",
+                company=company_name or "Booppa QA",
+                website=vendor_url or "https://booppa.io",
+                is_active=True,
+            )
+            db.add(user)
+            db.commit()
+            logger.info(f"[simulate-purchase] Created test user {customer_email}")
+        else:
+            # Backfill profile so handlers that read user.website / user.company succeed.
+            updated = False
+            if vendor_url and not user.website:
+                user.website = vendor_url; updated = True
+            if company_name and not user.company:
+                user.company = company_name; updated = True
+            if updated:
+                db.commit()
+    finally:
+        db.close()
+
+    metadata = {
+        "company_name": company_name,
+        "vendor_url": vendor_url,
+        "customer_email": customer_email,
+        "test_simulation": "1",
+    }
+    if rfp_description:
+        metadata["rfp_description"] = rfp_description
+
+    # Dispatch ---------------------------------------------------------------
+    dispatch: str
+    details: dict = {}
+
+    if product_type in SUBSCRIPTION_PRODUCT_TYPES:
+        dispatch = "subscription"
+        await _activate_subscription(
+            product_type=product_type,
+            customer_email=customer_email,
+            stripe_subscription_id=sim_id,
+            stripe_customer_id=sim_id,
+        )
+        db = SessionLocal()
+        try:
+            u = db.query(User).filter(User.email == customer_email).first()
+            sub = (
+                db.query(Subscription)
+                .filter(Subscription.stripe_subscription_id == sim_id)
+                .first()
+            )
+            details = {
+                "plan": getattr(u, "plan", None),
+                "subscription_id": str(sub.id) if sub else None,
+                "stripe_subscription_id": sim_id,
+            }
+        finally:
+            db.close()
+
+    elif product_type in BUNDLE_COMPONENTS:
+        dispatch = "bundle"
+        await _fulfill_bundle(
+            product_type=product_type,
+            report_id=None,
+            customer_email=customer_email,
+            metadata=metadata,
+            session_id=sim_id,
+        )
+        # Surface any rows the bundle just created.
+        db = SessionLocal()
+        try:
+            from sqlalchemy import String, cast
+
+            stubs = (
+                db.query(Report)
+                .filter(cast(Report.assessment_data["stripe_session_id"], String) == sim_id)
+                .all()
+            )
+            pending = (
+                db.query(PendingRfpIntake)
+                .filter(PendingRfpIntake.session_id == sim_id)
+                .first()
+            )
+            details = {
+                "session_id": sim_id,
+                "stub_report_ids": [str(s.id) for s in stubs],
+                "pending_rfp_intake_id": str(pending.id) if pending else None,
+            }
+        finally:
+            db.close()
+
+    elif product_type in RFP_PRODUCT_TYPES:
+        if rfp_description:
+            dispatch = "rfp"
+            from app.workers.tasks import fulfill_rfp_task
+
+            db = SessionLocal()
+            try:
+                u = db.query(User).filter(User.email == customer_email).first()
+                vendor_id = str(u.id) if u else customer_email
+            finally:
+                db.close()
+            fulfill_rfp_task.delay(
+                product_type=product_type,
+                vendor_id=vendor_id,
+                vendor_email=customer_email,
+                vendor_url=vendor_url or "https://booppa.io",
+                company_name=company_name or "Booppa QA",
+                rfp_description=rfp_description,
+                session_id=sim_id,
+                intake_data=None,
+            )
+            details = {"session_id": sim_id, "queued": "fulfill_rfp_task"}
+        else:
+            dispatch = "rfp-deferred"
+            intake_id = await _defer_rfp_to_intake(
+                rfp_product_type=product_type,
+                bundle_source=product_type,
+                customer_email=customer_email,
+                vendor_url=vendor_url or None,
+                company_name=company_name or None,
+                session_id=sim_id,
+            )
+            details = {"session_id": sim_id, "pending_rfp_intake_id": intake_id}
+
+    elif product_type in (
+        NOTARIZATION_PRODUCT_TYPES | PDPA_PRODUCT_TYPES | VENDOR_PROOF_PRODUCT_TYPES
+    ):
+        dispatch = "standalone"
+        await _fulfill_standalone_no_report(
+            product_type=product_type,
+            customer_email=customer_email,
+            metadata=metadata,
+            session_id=sim_id,
+        )
+        db = SessionLocal()
+        try:
+            from sqlalchemy import String, cast
+
+            stub = (
+                db.query(Report)
+                .filter(cast(Report.assessment_data["stripe_session_id"], String) == sim_id)
+                .first()
+            )
+            u = db.query(User).filter(User.email == customer_email).first()
+            details = {
+                "session_id": sim_id,
+                "report_id": str(stub.id) if stub else None,
+                "notarization_credits": getattr(u, "notarization_credits", None),
+            }
+        finally:
+            db.close()
+
+    else:
+        # MODE_MAP key not classified — should not happen if all 22 SKUs are covered.
+        raise HTTPException(
+            status_code=500,
+            detail=f"product_type {product_type!r} is in MODE_MAP but no handler bucket matches",
+        )
+
+    logger.info(
+        f"[simulate-purchase] product={product_type} dispatch={dispatch} "
+        f"email={customer_email} sim_id={sim_id} details={details}"
+    )
+    return {
+        "ok": True,
+        "product_type": product_type,
+        "dispatch": dispatch,
+        "details": details,
+    }
