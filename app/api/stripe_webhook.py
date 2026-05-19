@@ -440,6 +440,7 @@ def _create_stub_report(
     website: str | None,
     customer_email: str | None,
     source: str,
+    session_id: str | None = None,
 ) -> str:
     """Create a synthetic Report row for fulfillment paths that don't have a
     pre-existing report (standalone /pricing purchases, bundle components).
@@ -449,19 +450,24 @@ def _create_stub_report(
     from app.core.models import Report
     import uuid as _uuid
 
+    assessment: dict = {
+        "payment_confirmed": True,
+        "on_page_only": False,
+        "tier": "pro",
+        "contact_email": customer_email,
+        "bundle_source": source,
+    }
+    if session_id:
+        # Stored so /api/reports/by-session can resolve the stub even when the
+        # Stripe metadata backfill failed.
+        assessment["stripe_session_id"] = session_id
     stub = Report(
         owner_id=owner_id or _uuid.uuid4(),
         framework=framework,
         company_name=company_name,
         company_website=website,
         status="pending",
-        assessment_data={
-            "payment_confirmed": True,
-            "on_page_only": False,
-            "tier": "pro",
-            "contact_email": customer_email,
-            "bundle_source": source,
-        },
+        assessment_data=assessment,
     )
     db.add(stub)
     db.flush()
@@ -575,6 +581,7 @@ async def _fulfill_standalone_no_report(
     product_type: str,
     customer_email: str | None,
     metadata: dict,
+    session_id: str | None = None,
 ) -> bool:
     """Fulfillment path for /pricing-direct purchases that arrived without a
     pre-existing Report (pdpa_quick_scan, vendor_proof) or that grant credits
@@ -677,8 +684,27 @@ async def _fulfill_standalone_no_report(
             website=website or None,
             customer_email=customer_email,
             source=product_type,
+            session_id=session_id,
         )
         db.commit()
+
+        # Backfill Stripe session metadata so /api/reports/by-session can resolve
+        # the stub report on the user's result page. The session was created without
+        # a report_id (the stub didn't exist yet); without this backfill the result
+        # page would 404-poll until timeout even though fulfillment succeeded.
+        if session_id:
+            try:
+                stripe.api_key = settings.STRIPE_SECRET_KEY
+                stripe.checkout.Session.modify(
+                    session_id, metadata={**(metadata or {}), "report_id": stub_id}
+                )
+                logger.info(
+                    f"[Standalone:{product_type}] Backfilled report_id={stub_id} onto session {session_id}"
+                )
+            except Exception as backfill_err:
+                logger.warning(
+                    f"[Standalone:{product_type}] Could not backfill session metadata: {backfill_err}"
+                )
 
         if framework == "vendor_proof":
             from app.workers.tasks import fulfill_vendor_proof_task
@@ -2221,6 +2247,7 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                 product_type=product_type,
                 customer_email=customer_email,
                 metadata=metadata,
+                session_id=session.get("id"),
             ):
                 return {"received": True}
 
