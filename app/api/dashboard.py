@@ -60,7 +60,8 @@ async def dashboard(
     vendor_id = current_user.id
 
     # ── 1. Trust score ────────────────────────────────────────────────────────
-    from app.core.models_v6 import VendorScore, VerifyRecord, ProofView, GovernanceRecord
+    from app.core.models_v6 import VendorScore, VerifyRecord, ProofView, GovernanceRecord, VerificationLevel
+    from app.services.scoring import VendorScoreEngine
 
     score_row = db.query(VendorScore).filter(VendorScore.vendor_id == vendor_id).first()
     trust_score = score_row.total_score if score_row else 0
@@ -218,6 +219,62 @@ async def dashboard(
     if len(snapshots) >= 2:
         trust_score_delta = int(snapshots[0].final_score) - int(snapshots[1].final_score)
 
+    # ── 5. Score breakdown — show users which lever each purchase pulls ──────
+    _LEVEL_MULTIPLIER = {
+        VerificationLevel.BASIC:      1.0,
+        VerificationLevel.STANDARD:   1.1,
+        VerificationLevel.PREMIUM:    1.3,
+        VerificationLevel.GOVERNMENT: 1.5,
+    }
+    active_level = verify.verification_level if verify else VerificationLevel.BASIC
+    multiplier = _LEVEL_MULTIPLIER.get(active_level, 1.0)
+    weights = VendorScoreEngine.WEIGHTS
+
+    def _component(value: int, weight: float, key: str, hint: str) -> Dict[str, Any]:
+        return {
+            "score":        int(value),
+            "weight":       weight,
+            "contribution": round(int(value) * weight, 1),
+            "hint":         hint,
+        }
+
+    score_breakdown = {
+        "verificationLevel": active_level.value if active_level else "BASIC",
+        "complianceMultiplier": multiplier,
+        "components": {
+            "compliance": _component(
+                score_row.compliance_score if score_row else 0,
+                weights["COMPLIANCE"],
+                "COMPLIANCE",
+                "Buy notarization credits and elevate verification level to raise this.",
+            ),
+            "visibility": _component(
+                score_row.visibility_score if score_row else 0,
+                weights["VISIBILITY"],
+                "VISIBILITY",
+                "Share your proof page externally — each unique domain that views it counts; .gov.sg domains count 3×.",
+            ),
+            "engagement": _component(
+                score_row.engagement_score if score_row else 0,
+                weights["ENGAGEMENT"],
+                "ENGAGEMENT",
+                "Upload proofs and stay active in the platform over the last 30 days.",
+            ),
+            "recency": _component(
+                score_row.recency_score if score_row else 0,
+                weights["RECENCY"],
+                "RECENCY",
+                "Decays after 24h of inactivity — log in and act to keep this at 100.",
+            ),
+            "procurementInterest": _component(
+                score_row.procurement_interest_score if score_row else 0,
+                weights["PROCUREMENT_INTEREST"],
+                "PROCUREMENT_INTEREST",
+                "Unlocks when enterprise / .gov.sg visitors view your proof page during an active procurement window.",
+            ),
+        },
+    }
+
     return {
         "stats": {
             "trustScore":                 trust_score,
@@ -227,6 +284,7 @@ async def dashboard(
             "activeProcurementsSector":   primary_sector,
             "govAgencies":                len(gov_agency_domains),
         },
+        "scoreBreakdown": score_breakdown,
         "chartData":      chart_data,
         "recentActivity": recent_activity,
     }
