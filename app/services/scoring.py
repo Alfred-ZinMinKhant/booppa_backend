@@ -94,13 +94,18 @@ class VendorScoreEngine:
                 weight_sum += level_weight
             base_score = round(total / weight_sum) if weight_sum > 0 else 0
 
-        # Proof document bonus: each verified document adds +8 pts (max +40)
+        # Proof document bonus: first 5 docs are +8 each (40), additional docs
+        # add +2 each up to 10 more (capped at +60). Two-tier curve so big
+        # notarization packs still see movement past the first 5 docs.
         proof_bonus = 0
         try:
             verify_ids = [v.id for v in verifications]
             if verify_ids:
                 proof_count = db.query(Proof).filter(Proof.verify_id.in_(verify_ids)).count()
-                proof_bonus = min(proof_count * 8, 40)
+                if proof_count <= 5:
+                    proof_bonus = proof_count * 8
+                else:
+                    proof_bonus = 40 + min((proof_count - 5) * 2, 20)
         except Exception as e:
             logger.warning(f"Proof bonus calculation failed for vendor {vendor_id}: {e}")
 

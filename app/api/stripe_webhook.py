@@ -79,6 +79,124 @@ BUNDLE_COMPONENTS = {
 }
 
 
+# Subscription tier → VerifyRecord.verification_level mapping.
+# Paid plans elevate the compliance multiplier (BASIC 1.0× → STANDARD 1.1× →
+# PREMIUM 1.3× → GOVERNMENT 1.5×, see scoring.py:92). The mapping is conservative
+# on purpose — enterprise_pro is the only plan that grants GOVERNMENT tier.
+_PLAN_TO_VERIFICATION_LEVEL = {
+    "vendor_active":            "STANDARD",
+    "pdpa_monitor":             "STANDARD",
+    "evaluate_suppliers":       "STANDARD",
+    "standard_suite":           "STANDARD",
+    "enterprise":               "PREMIUM",
+    "pro_suite":                "PREMIUM",
+    "verify_supplier_evidence": "PREMIUM",
+    "compliance_evidence":      "PREMIUM",
+    "enterprise_pro":           "GOVERNMENT",
+}
+_LEVEL_RANK = {"BASIC": 0, "STANDARD": 1, "PREMIUM": 2, "GOVERNMENT": 3}
+
+
+def _log_purchase_activity(db, vendor_id, activity_type: str, description: str, extra: dict | None = None) -> None:
+    """Record a row in ActivityLog so Engagement + Recency score components
+    reflect paid actions (purchases, renewals, fulfillments)."""
+    if not vendor_id:
+        return
+    try:
+        from app.core.models_v6 import ActivityLog
+        db.add(ActivityLog(
+            user_id=vendor_id,
+            type=activity_type,
+            description=description[:500],
+            metadata_json=extra or {},
+        ))
+        db.commit()
+    except Exception as e:
+        logger.warning(f"[Activity] log insert failed for vendor={vendor_id} type={activity_type}: {e}")
+
+
+def _apply_subscription_score_lever(db, vendor_id, plan: str) -> None:
+    """On subscription activation, elevate VerifyRecord.verification_level to
+    the plan's tier (only if higher than current), then recalculate the score."""
+    target = _PLAN_TO_VERIFICATION_LEVEL.get(plan)
+    if not target or not vendor_id:
+        return
+    try:
+        from app.core.models_v6 import VerifyRecord as _VR, VerificationLevel as _VL
+        vr = db.query(_VR).filter(_VR.vendor_id == vendor_id).first()
+        if not vr:
+            # Vendor hasn't completed vendor_proof yet — the lever will apply
+            # when that fulfillment creates the VerifyRecord.
+            logger.info(
+                f"[Subscription] No VerifyRecord for vendor={vendor_id}; "
+                f"score lever deferred (plan={plan})"
+            )
+            return
+        current = vr.verification_level.value if vr.verification_level else "BASIC"
+        if _LEVEL_RANK.get(target, 0) > _LEVEL_RANK.get(current, 0):
+            vr.verification_level = _VL[target]
+            db.commit()
+            logger.info(
+                f"[Subscription] Elevated VerifyRecord.verification_level "
+                f"{current} → {target} for vendor={vendor_id} (plan={plan})"
+            )
+    except Exception as e:
+        logger.warning(
+            f"[Subscription] verification_level elevation failed for vendor={vendor_id}: {e}"
+        )
+    try:
+        from app.services.scoring import VendorScoreEngine
+        VendorScoreEngine.update_vendor_score(db, vendor_id)
+    except Exception as e:
+        logger.warning(f"[Subscription] Score recalc failed for vendor={vendor_id}: {e}")
+
+
+def _revert_subscription_score_lever(db, vendor_id, remaining_plan: str | None) -> None:
+    """On subscription cancellation, recompute verification_level as
+    max(remaining-plan-tier, notarization-depth-tier) so vendors who earned
+    their tier through proofs don't lose it when their sub lapses."""
+    if not vendor_id:
+        return
+    try:
+        from app.core.models_v6 import VerifyRecord as _VR, VerificationLevel as _VL
+        from app.services.vendor_status import compute_verification_depth
+
+        vr = db.query(_VR).filter(_VR.vendor_id == vendor_id).first()
+        if not vr:
+            return
+        depth_to_level = {
+            "STANDARD":   "STANDARD",
+            "DEEP":       "PREMIUM",
+            "CERTIFIED":  "GOVERNMENT",
+            "ENTERPRISE": "GOVERNMENT",
+        }
+        depth_level = depth_to_level.get(
+            compute_verification_depth(db, str(vendor_id)), "BASIC"
+        )
+        plan_level = _PLAN_TO_VERIFICATION_LEVEL.get(remaining_plan or "", "BASIC")
+        winner = max(
+            (depth_level, plan_level),
+            key=lambda lvl: _LEVEL_RANK.get(lvl, 0),
+        )
+        current = vr.verification_level.value if vr.verification_level else "BASIC"
+        if current != winner:
+            vr.verification_level = _VL[winner]
+            db.commit()
+            logger.info(
+                f"[Subscription] Reverted verification_level {current} → {winner} "
+                f"for vendor={vendor_id} (depth={depth_level}, remaining_plan={remaining_plan})"
+            )
+    except Exception as e:
+        logger.warning(
+            f"[Subscription] verification_level revert failed for vendor={vendor_id}: {e}"
+        )
+    try:
+        from app.services.scoring import VendorScoreEngine
+        VendorScoreEngine.update_vendor_score(db, vendor_id)
+    except Exception as e:
+        logger.warning(f"[Subscription] Score recalc failed for vendor={vendor_id}: {e}")
+
+
 async def _activate_subscription(
     product_type: str,
     customer_email: str | None,
@@ -342,6 +460,24 @@ async def _activate_subscription(
                     logger.info(f"[Subscription] TRM controls already present for {customer_email} ({existing} rows)")
             except Exception as e:
                 logger.warning(f"[Subscription] Failed to initialise MAS TRM controls: {e}")
+
+        # Record activation in ActivityLog so Engagement + Recency move.
+        _log_purchase_activity(
+            db,
+            user.id,
+            activity_type="SUBSCRIPTION_ACTIVATED",
+            description=f"Subscription activated: {new_plan}",
+            extra={"product_type": product_type, "plan": new_plan},
+        )
+
+        # Elevate verification level for the duration of this subscription so
+        # the trust-score compliance multiplier reflects the paid tier.
+        try:
+            _apply_subscription_score_lever(db, user.id, new_plan)
+        except Exception as lever_err:
+            logger.warning(
+                f"[Subscription] Score lever apply failed for {customer_email}: {lever_err}"
+            )
 
     except Exception as e:
         logger.error(f"[Subscription] Activation error for {product_type}: {e}")
@@ -1292,6 +1428,15 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                 logger.warning(
                     f"[Notarize] verification_level sync failed for {vendor_id}: {lvl_err}"
                 )
+
+            # Record fulfillment so Engagement + Recency move on each notarization.
+            _log_purchase_activity(
+                db,
+                vendor_id,
+                activity_type="NOTARIZATION_FULFILLED",
+                description=f"Notarization fulfilled: report={report_id}",
+                extra={"report_id": str(report_id), "tx_hash": tx_hash},
+            )
 
             # Recalculate compliance score so the dashboard reflects the new document.
             try:
@@ -2697,6 +2842,16 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                         logger.info(
                             f"[Webhook] Subscription canceled for {cust_email}, plan now={user.plan}"
                         )
+                        try:
+                            _revert_subscription_score_lever(
+                                _db3,
+                                user.id,
+                                None if user.plan == "free" else user.plan,
+                            )
+                        except Exception as lever_err:
+                            logger.warning(
+                                f"[Webhook] Score lever revert failed for {cust_email}: {lever_err}"
+                            )
             except Exception as exc:
                 logger.error(f"[Webhook] Cancellation handling failed: {exc}")
             finally:
