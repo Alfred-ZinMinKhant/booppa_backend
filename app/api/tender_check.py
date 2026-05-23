@@ -23,6 +23,73 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _log_tender_check_lookup(db: Session, tender_no: str, vendor_id: Optional[str], result: dict) -> None:
+    """Append-only log of /tender-check calls for the Vendor Pro
+    competitor-awareness signal. Respects per-user opt-out and swallows
+    errors so a logging failure never breaks the user-facing call."""
+    try:
+        from app.core.models_vendor_pro import TenderCheckLookup
+        from app.core.models import User
+        from app.core.models_v6 import VerifyRecord  # type: ignore
+
+        is_verified = False
+        opted_out = False
+        if vendor_id:
+            user = db.query(User).filter(User.id == vendor_id).first()
+            if user:
+                opted_out = bool(getattr(user, "tender_lookup_opt_out", False))
+                # Crude verified check: presence of a VerifyRecord row.
+                try:
+                    is_verified = (
+                        db.query(VerifyRecord).filter(VerifyRecord.vendor_id == user.id).first()
+                        is not None
+                    )
+                except Exception:
+                    is_verified = False
+        if opted_out:
+            return
+        db.add(TenderCheckLookup(
+            tender_no=tender_no,
+            vendor_id=vendor_id if vendor_id else None,
+            sector=(result or {}).get("sector"),
+            is_verified=is_verified,
+        ))
+        db.commit()
+
+        # Threshold-based real-time push: if lookups on this tender in the last
+        # hour cross 3 (with at least one verified), fire an SSE event so any
+        # Vendor Pro dashboard subscribed to the stream renders a live signal.
+        try:
+            from datetime import datetime, timedelta, timezone
+            from app.api.sse import publish_event
+            since = datetime.now(timezone.utc) - timedelta(hours=1)
+            recent = (
+                db.query(TenderCheckLookup)
+                .filter(
+                    TenderCheckLookup.tender_no == tender_no,
+                    TenderCheckLookup.created_at >= since.replace(tzinfo=None),
+                )
+                .all()
+            )
+            if len(recent) >= 3 and any(r.is_verified for r in recent):
+                publish_event("competitor_signal", {
+                    "tender_no": tender_no,
+                    "lookups_last_hour": len(recent),
+                    "verified_lookups_last_hour": sum(1 for r in recent if r.is_verified),
+                    "sector": (result or {}).get("sector"),
+                    "agency": (result or {}).get("agency"),
+                })
+        except Exception as sse_err:
+            logger.debug(f"[TenderCheckLookup] SSE publish skipped: {sse_err}")
+    except Exception as e:
+        # Logging is best-effort. Roll back any partial state and continue.
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.warning(f"[TenderCheckLookup] failed to log lookup for tender={tender_no}: {e}")
+
+
 @router.get("")
 def tender_check(
     tenderNo: str = Query(..., description="GeBIZ tender number to evaluate"),
@@ -40,6 +107,9 @@ def tender_check(
 
     if result.get("error") == "tender_not_found":
         raise HTTPException(status_code=404, detail=f"Tender '{tenderNo}' not found in shortlist")
+
+    # Append a row to TenderCheckLookup (Vendor Pro competitor-awareness signal).
+    _log_tender_check_lookup(db, tenderNo, vendorId, result)
 
     return result
 

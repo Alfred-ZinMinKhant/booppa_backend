@@ -163,6 +163,9 @@ jobs:
           # Tender Intelligence — standalone GeBIZ analytics subscription
           STRIPE_TENDER_INTELLIGENCE_MONTHLY: ${{ secrets.STRIPE_TENDER_INTELLIGENCE_MONTHLY }}
           STRIPE_TENDER_INTELLIGENCE_ANNUAL: ${{ secrets.STRIPE_TENDER_INTELLIGENCE_ANNUAL }}
+          # Vendor Pro — SGD 99/mo tier (Vendor Active + quarterly PDPA + analytics + competitor awareness)
+          STRIPE_VENDOR_PRO_MONTHLY: ${{ secrets.STRIPE_VENDOR_PRO_MONTHLY }}
+          STRIPE_VENDOR_PRO_ANNUAL: ${{ secrets.STRIPE_VENDOR_PRO_ANNUAL }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN: ${{ secrets.NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN }}
           # Security intelligence
@@ -235,6 +238,8 @@ jobs:
                   { "name": "STRIPE_PRO_SUITE_MONTHLY", "value": "${STRIPE_PRO_SUITE_MONTHLY}" },
                   { "name": "STRIPE_TENDER_INTELLIGENCE_MONTHLY", "value": "${STRIPE_TENDER_INTELLIGENCE_MONTHLY}" },
                   { "name": "STRIPE_TENDER_INTELLIGENCE_ANNUAL", "value": "${STRIPE_TENDER_INTELLIGENCE_ANNUAL}" },
+                  { "name": "STRIPE_VENDOR_PRO_MONTHLY", "value": "${STRIPE_VENDOR_PRO_MONTHLY}" },
+                  { "name": "STRIPE_VENDOR_PRO_ANNUAL", "value": "${STRIPE_VENDOR_PRO_ANNUAL}" },
                   { "name": "RESEND_API_KEY", "value": "${RESEND_API_KEY}" },
                   { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" },
                   { "name": "VIRUSTOTAL_API_KEY", "value": "${VIRUSTOTAL_API_KEY}" },
@@ -311,6 +316,9 @@ jobs:
           # Tender Intelligence — standalone GeBIZ analytics subscription
           STRIPE_TENDER_INTELLIGENCE_MONTHLY: ${{ secrets.STRIPE_TENDER_INTELLIGENCE_MONTHLY }}
           STRIPE_TENDER_INTELLIGENCE_ANNUAL: ${{ secrets.STRIPE_TENDER_INTELLIGENCE_ANNUAL }}
+          # Vendor Pro — SGD 99/mo tier (Vendor Active + quarterly PDPA + analytics + competitor awareness)
+          STRIPE_VENDOR_PRO_MONTHLY: ${{ secrets.STRIPE_VENDOR_PRO_MONTHLY }}
+          STRIPE_VENDOR_PRO_ANNUAL: ${{ secrets.STRIPE_VENDOR_PRO_ANNUAL }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN: ${{ secrets.NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN }}
           # Security intelligence
@@ -381,6 +389,8 @@ jobs:
                   { "name": "STRIPE_PRO_SUITE_MONTHLY", "value": "${STRIPE_PRO_SUITE_MONTHLY}" },
                   { "name": "STRIPE_TENDER_INTELLIGENCE_MONTHLY", "value": "${STRIPE_TENDER_INTELLIGENCE_MONTHLY}" },
                   { "name": "STRIPE_TENDER_INTELLIGENCE_ANNUAL", "value": "${STRIPE_TENDER_INTELLIGENCE_ANNUAL}" },
+                  { "name": "STRIPE_VENDOR_PRO_MONTHLY", "value": "${STRIPE_VENDOR_PRO_MONTHLY}" },
+                  { "name": "STRIPE_VENDOR_PRO_ANNUAL", "value": "${STRIPE_VENDOR_PRO_ANNUAL}" },
                   { "name": "RESEND_API_KEY", "value": "${RESEND_API_KEY}" },
                   { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" },
                   { "name": "VIRUSTOTAL_API_KEY", "value": "${VIRUSTOTAL_API_KEY}" },

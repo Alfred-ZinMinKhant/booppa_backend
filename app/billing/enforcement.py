@@ -18,6 +18,8 @@ PRO_PRODUCT_KEYS = {
     "compliance_evidence_monthly",
     "pdpa_monitor_monthly",
     "pdpa_monitor_annual",
+    "vendor_pro_monthly",
+    "vendor_pro_annual",
 }
 
 ENTERPRISE_PLAN_KEYS = {
@@ -34,6 +36,26 @@ TENDER_INTELLIGENCE_PLAN_KEYS = {
     "tender_intelligence_annual",
     "enterprise_pro", "enterprise_pro_monthly",
     "pro_suite", "pro_suite_monthly",
+}
+
+# Vendor Pro gets the "lite" slice of tender analytics: sector-trends + forecast,
+# but NOT historical awards lookup, timing recommendation, or supplier-benchmark.
+# A Vendor Pro user calling those premium endpoints gets a 403 with an upsell hint.
+TENDER_LITE_PLAN_KEYS = TENDER_INTELLIGENCE_PLAN_KEYS | {
+    "vendor_pro",
+    "vendor_pro_monthly",
+    "vendor_pro_annual",
+}
+
+# Vendor Pro plan keys (used by the competitor-signals + opt-out endpoints).
+VENDOR_PRO_PLAN_KEYS = {
+    "vendor_pro",
+    "vendor_pro_monthly",
+    "vendor_pro_annual",
+    # Superset plans inherit Vendor Pro features.
+    "enterprise_pro", "enterprise_pro_monthly",
+    "pro_suite", "pro_suite_monthly",
+    "tender_intelligence", "tender_intelligence_monthly", "tender_intelligence_annual",
 }
 
 

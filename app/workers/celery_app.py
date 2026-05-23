@@ -68,6 +68,20 @@ celery_app.conf.update(
             "task": "send_tender_intelligence_digest",
             "schedule": crontab(day_of_month=1, hour=0, minute=0),
         },
+        # Vendor Pro subscribers: daily competitor-activity digest at 00:00 UTC
+        # (08:00 SGT). Summarises last 24h of TenderCheckLookup activity on
+        # tenders each subscriber has tracked.
+        "send-vendor-pro-daily-alerts": {
+            "task": "send_vendor_pro_daily_alerts",
+            "schedule": crontab(hour=0, minute=0),
+        },
+        # Vendor Pro subscribers: quarterly PDPA rescans on the 1st of
+        # Jan/Apr/Jul/Oct at 03:30 UTC (30 minutes after PDPA Monitor's
+        # monthly rescan window so the worker queue doesn't double-spike).
+        "vendor-pro-quarterly-pdpa-rescans": {
+            "task": "run_vendor_pro_quarterly_pdpa_rescans",
+            "schedule": crontab(day_of_month=1, month_of_year="1,4,7,10", hour=3, minute=30),
+        },
         # Send every active vendor their weekly score digest every Monday at 08:00 UTC.
         "send-weekly-vendor-scores": {
             "task": "send_weekly_vendor_scores",

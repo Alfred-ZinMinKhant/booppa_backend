@@ -106,6 +106,14 @@ router.include_router(
     prefix="/tender-intelligence",
     tags=["tender-intelligence"],
 )
+# Vendor Pro — SGD 99/mo tier (competitor signals, opt-out, quota snapshot)
+from .vendor_pro import router as vendor_pro_router
+
+router.include_router(
+    vendor_pro_router,
+    prefix="/vendor-pro",
+    tags=["vendor-pro"],
+)
 # PDPA Free Scan
 from .pdpa_free_scan import router as pdpa_free_scan_router
 
