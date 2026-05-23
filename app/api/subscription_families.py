@@ -44,6 +44,10 @@ def get_subscription_families():
             _opt("STRIPE_STANDARD_SUITE_MONTHLY"),
             _opt("STRIPE_PRO_SUITE_MONTHLY"),
         ],
+        "tender_intelligence_family": [
+            _opt("STRIPE_TENDER_INTELLIGENCE_MONTHLY"),
+            _opt("STRIPE_TENDER_INTELLIGENCE_ANNUAL"),
+        ],
     }
 
     # Filter out empty/None values to keep response compact

@@ -320,6 +320,19 @@ def trigger_gebiz_sync(
     return {"queued": True, "task_id": task.id}
 
 
+@router.post("/tenders/send-intelligence-digest", status_code=202)
+def trigger_tender_intelligence_digest(
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    """
+    Trigger an immediate Tender Intelligence monthly digest send.
+    Useful for QA before the 1st-of-month schedule fires.
+    """
+    from app.workers.tasks import send_tender_intelligence_digest
+    task = send_tender_intelligence_digest.delay()
+    return {"queued": True, "task_id": task.id}
+
+
 @router.delete("/tenders/{tender_id}", status_code=204)
 def delete_tender(
     tender_id: str,

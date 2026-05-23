@@ -52,6 +52,8 @@ MODE_MAP = {
     "enterprise_pro_monthly": "subscription",
     "standard_suite_monthly": "subscription",
     "pro_suite_monthly": "subscription",
+    "tender_intelligence_monthly": "subscription",
+    "tender_intelligence_annual": "subscription",
 }
 
 
@@ -140,6 +142,8 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         "enterprise_pro_monthly": "enterprise_pro",
         "standard_suite_monthly": "standard_suite",
         "pro_suite_monthly": "pro_suite",
+        "tender_intelligence_monthly": "tender_intelligence",
+        "tender_intelligence_annual": "tender_intelligence",
     }
     if product_type in SUBSCRIPTION_PLAN_MAP and prefill_email:
         from app.core.db import SessionLocal

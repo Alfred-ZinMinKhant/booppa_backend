@@ -62,6 +62,12 @@ celery_app.conf.update(
             "task": "send_gebiz_alert_newsletter",
             "schedule": crontab(day_of_week="monday", hour=7, minute=0),
         },
+        # Tender Intelligence subscribers: monthly digest on the 1st at 00:00 UTC
+        # (08:00 SGT). Summarises last 30d of awards by sector and procuring entity.
+        "send-tender-intelligence-digest-monthly": {
+            "task": "send_tender_intelligence_digest",
+            "schedule": crontab(day_of_month=1, hour=0, minute=0),
+        },
         # Send every active vendor their weekly score digest every Monday at 08:00 UTC.
         "send-weekly-vendor-scores": {
             "task": "send_weekly_vendor_scores",

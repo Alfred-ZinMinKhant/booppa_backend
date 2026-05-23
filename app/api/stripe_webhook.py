@@ -45,6 +45,8 @@ SUBSCRIPTION_PRODUCT_TYPES = {
     "evaluate_suppliers_monthly",
     "verify_supplier_evidence_monthly",
     "compliance_evidence_monthly",
+    "tender_intelligence_monthly",
+    "tender_intelligence_annual",
 }
 
 # Bundle → component mapping.
@@ -88,6 +90,7 @@ _PLAN_TO_VERIFICATION_LEVEL = {
     "pdpa_monitor":             "STANDARD",
     "evaluate_suppliers":       "STANDARD",
     "standard_suite":           "STANDARD",
+    "tender_intelligence":      "STANDARD",
     "enterprise":               "PREMIUM",
     "pro_suite":                "PREMIUM",
     "verify_supplier_evidence": "PREMIUM",
@@ -238,6 +241,8 @@ async def _activate_subscription(
             "evaluate_suppliers_monthly": "evaluate_suppliers",
             "verify_supplier_evidence_monthly": "verify_supplier_evidence",
             "compliance_evidence_monthly": "compliance_evidence",
+            "tender_intelligence_monthly": "tender_intelligence",
+            "tender_intelligence_annual": "tender_intelligence",
         }
         new_plan = plan_map.get(product_type, "pro")
 
@@ -295,6 +300,7 @@ async def _activate_subscription(
                 "evaluate_suppliers": "Evaluate Suppliers",
                 "verify_supplier_evidence": "Verify Supplier Evidence",
                 "compliance_evidence": "Compliance Evidence",
+                "tender_intelligence": "Tender Intelligence",
             }
             label = plan_labels.get(new_plan, new_plan)
 
@@ -2821,6 +2827,13 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                             "pdpa_monitor_annual":   "pdpa_monitor",
                             "enterprise_monthly":    "enterprise",
                             "enterprise_pro_monthly":"enterprise_pro",
+                            "standard_suite_monthly":         "standard_suite",
+                            "pro_suite_monthly":              "pro_suite",
+                            "evaluate_suppliers_monthly":     "evaluate_suppliers",
+                            "verify_supplier_evidence_monthly":"verify_supplier_evidence",
+                            "compliance_evidence_monthly":    "compliance_evidence",
+                            "tender_intelligence_monthly":    "tender_intelligence",
+                            "tender_intelligence_annual":     "tender_intelligence",
                         }
                         remaining = (
                             _db3.query(SubModel)

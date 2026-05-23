@@ -2475,6 +2475,9 @@ def refresh_gebiz_base_rates():
 
     async def _fetch_and_update():
         from app.core.models_v10 import TenderShortlist
+        from app.core.models_gebiz import GebizAwardHistory
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from datetime import datetime as _dt
         db = SessionLocal()
         try:
             # ── 1. Fetch GeBIZ award data from data.gov.sg ──────────────────────
@@ -2533,6 +2536,7 @@ def refresh_gebiz_base_rates():
                             break
 
                         fetched_any = True
+                        award_rows_batch: list[dict] = []
                         for rec in records:
                             # Normalise field names across dataset schema variants
                             description = (
@@ -2562,6 +2566,48 @@ def refresh_gebiz_base_rates():
                             if awarded:
                                 sector_awards[matched_sector] = sector_awards.get(matched_sector, 0) + 1
                                 agency_awards[agency] = agency_awards.get(agency, 0) + 1
+
+                                # Stash row for batch upsert into gebiz_award_history.
+                                # Parse awarded_date defensively — data.gov.sg has used
+                                # both "YYYY-MM-DD" and "DD/MM/YYYY" historically.
+                                raw_date = rec.get("awarded_date") or rec.get("award_date")
+                                parsed_date = None
+                                if raw_date:
+                                    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d"):
+                                        try:
+                                            parsed_date = _dt.strptime(str(raw_date)[:10], fmt).date()
+                                            break
+                                        except (ValueError, TypeError):
+                                            continue
+                                amt_raw = rec.get("award_amt") or rec.get("award_amount")
+                                try:
+                                    amt = float(str(amt_raw).replace(",", "")) if amt_raw not in (None, "") else None
+                                except (ValueError, TypeError):
+                                    amt = None
+                                award_rows_batch.append({
+                                    "tender_no": (rec.get("tender_no") or rec.get("tender_no_") or "")[:100] or None,
+                                    "awarded_date": parsed_date,
+                                    "supplier_name": (rec.get("supplier_name") or "")[:255] or None,
+                                    "award_amt": amt,
+                                    "tender_description": rec.get("tender_description") or rec.get("award_details") or None,
+                                    "procuring_entity": (rec.get("agency") or rec.get("procuring_entity") or "")[:255] or None,
+                                    "sector": matched_sector,
+                                    "raw": rec,
+                                })
+
+                        # Idempotent upsert: ON CONFLICT DO NOTHING via unique
+                        # (tender_no, supplier_name, awarded_date) constraint.
+                        if award_rows_batch:
+                            try:
+                                stmt = pg_insert(GebizAwardHistory).values(award_rows_batch)
+                                stmt = stmt.on_conflict_do_nothing(
+                                    constraint="uq_gebiz_award_history_tender_supplier_date"
+                                )
+                                db.execute(stmt)
+                                db.commit()
+                            except Exception as e:
+                                logger.warning(f"[GeBIZ] award_history upsert failed (offset={offset}): {e}")
+                                db.rollback()
 
                         total = data.get("result", {}).get("total", 0)
                         offset += PAGE_SIZE
@@ -2898,6 +2944,8 @@ def post_payment_drip(vendor_email: str, product_type: str = "",
         "vendor_trust_pack": "Vendor Trust Pack",
         "rfp_accelerator": "RFP Accelerator",
         "enterprise_bid_kit": "Enterprise Bid Kit",
+        "tender_intelligence_monthly": "Tender Intelligence",
+        "tender_intelligence_annual": "Tender Intelligence",
     }
     label = labels.get(product_type, "your BOOPPA product")
     name = company_name or vendor_email
@@ -3057,6 +3105,239 @@ def send_gebiz_alert_newsletter():
         db.close()
 
     logger.info(f"[GeBIZAlert] Tenders={len(tenders)} Sent={sent} Failed={failed}")
+
+
+@celery_app.task(name="send_tender_intelligence_digest")
+def send_tender_intelligence_digest():
+    """
+    Monthly digest for Tender Intelligence subscribers — sector trend summary
+    over the past 30 days. Runs on the 1st of each month at 00:00 UTC.
+
+    Only sends to users with an active subscription whose plan is in
+    TENDER_INTELLIGENCE_PLAN_KEYS. Non-fatal — failures per recipient logged.
+    """
+    from app.core.models import User
+    from app.core.models_gebiz import GebizAwardHistory
+    from app.billing.enforcement import TENDER_INTELLIGENCE_PLAN_KEYS
+    from sqlalchemy import func
+    from datetime import timedelta
+    import asyncio as _asyncio
+    from io import BytesIO
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib import colors
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    db = SessionLocal()
+    sent = 0
+    failed = 0
+    try:
+        since = datetime.now(timezone.utc).date() - timedelta(days=30)
+        rows = (
+            db.query(GebizAwardHistory)
+            .filter(
+                GebizAwardHistory.awarded_date != None,  # noqa: E711
+                GebizAwardHistory.awarded_date >= since,
+            )
+            .all()
+        )
+
+        if not rows:
+            logger.info("[TenderIntelDigest] No award rows in last 30d — skipping send")
+            return
+
+        # Aggregate top sectors and agencies by award count + total value.
+        sector_stats: dict[str, dict] = {}
+        agency_stats: dict[str, dict] = {}
+        total_value = 0.0
+        for r in rows:
+            amt = float(r.award_amt) if r.award_amt is not None else 0.0
+            total_value += amt
+            sec = (r.sector or "OTHER").upper()
+            ag = (r.procuring_entity or "UNKNOWN").upper()
+            for bucket, key in ((sector_stats, sec), (agency_stats, ag)):
+                e = bucket.setdefault(key, {"count": 0, "value": 0.0})
+                e["count"] += 1
+                e["value"] += amt
+
+        top_sectors = sorted(sector_stats.items(), key=lambda kv: kv[1]["count"], reverse=True)[:5]
+        top_agencies = sorted(agency_stats.items(), key=lambda kv: kv[1]["count"], reverse=True)[:5]
+
+        # ── Build PDF once and upload to S3 (link is shared by every subscriber) ──
+        pdf_url: str | None = None
+        try:
+            buf = BytesIO()
+            doc = SimpleDocTemplate(
+                buf, pagesize=A4,
+                leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+                topMargin=0.6 * inch, bottomMargin=0.6 * inch,
+            )
+            styles = getSampleStyleSheet()
+            h_style = ParagraphStyle(
+                "h", parent=styles["Heading1"], fontSize=18, textColor=colors.HexColor("#0f172a"),
+                spaceAfter=6,
+            )
+            sub_style = ParagraphStyle(
+                "sub", parent=styles["Normal"], fontSize=10,
+                textColor=colors.HexColor("#64748b"), spaceAfter=18,
+            )
+            h2_style = ParagraphStyle(
+                "h2", parent=styles["Heading2"], fontSize=12,
+                textColor=colors.HexColor("#0f172a"), spaceAfter=8, spaceBefore=14,
+            )
+            body_style = ParagraphStyle(
+                "body", parent=styles["Normal"], fontSize=10,
+                textColor=colors.HexColor("#0f172a"), spaceAfter=6,
+            )
+
+            story: list = []
+            story.append(Paragraph("Tender Intelligence — Monthly Digest", h_style))
+            story.append(Paragraph(
+                f"{since.strftime('%b %Y')} · {len(rows)} awards · "
+                f"Total value S${total_value:,.0f}",
+                sub_style,
+            ))
+
+            def _build_table(rows_data: list[list], header: list[str]) -> Table:
+                t = Table([header] + rows_data, hAlign="LEFT", colWidths=[3.2 * inch, 1.2 * inch, 1.8 * inch])
+                t.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f1f5f9")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#475569")),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 9),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#fafafa")]),
+                    ("LINEBELOW", (0, 0), (-1, 0), 0.5, colors.HexColor("#cbd5e1")),
+                    ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ]))
+                return t
+
+            story.append(Paragraph("Top sectors", h2_style))
+            story.append(_build_table(
+                [[k, str(v["count"]), f"S${v['value']:,.0f}"] for k, v in top_sectors],
+                ["Sector", "Awards", "Total value"],
+            ))
+
+            story.append(Paragraph("Top procuring entities", h2_style))
+            story.append(_build_table(
+                [[k, str(v["count"]), f"S${v['value']:,.0f}"] for k, v in top_agencies],
+                ["Agency", "Awards", "Total value"],
+            ))
+
+            story.append(Spacer(1, 0.3 * inch))
+            story.append(Paragraph(
+                "Source: GeBIZ / data.gov.sg Government Procurement Awards. "
+                "Open the live dashboard for sector trends, supplier benchmarking, "
+                "and bid/watch/pass timing on current tenders.",
+                body_style,
+            ))
+
+            doc.build(story)
+            pdf_bytes = buf.getvalue()
+
+            from app.services.storage import S3Service
+            s3 = S3Service()
+            digest_id = f"tender-intel-digest-{since.strftime('%Y-%m')}"
+            pdf_url = _asyncio.run(s3.upload_pdf(pdf_bytes, digest_id))
+            logger.info(f"[TenderIntelDigest] PDF uploaded: {digest_id}")
+        except Exception as exc:
+            logger.warning(f"[TenderIntelDigest] PDF generation/upload failed: {exc} — falling back to email-only")
+            pdf_url = None
+
+        def _row(label: str, e: dict) -> str:
+            return f"""
+            <tr>
+              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#e5e5e5;">{label}</td>
+              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#60a5fa;text-align:right;">{e['count']}</td>
+              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#a3a3a3;text-align:right;">S${e['value']:,.0f}</td>
+            </tr>"""
+
+        sector_rows = "".join(_row(k, v) for k, v in top_sectors)
+        agency_rows = "".join(_row(k, v) for k, v in top_agencies)
+
+        subscribers = (
+            db.query(User)
+            .filter(
+                User.is_active == True,  # noqa: E712
+                func.lower(User.plan).in_([p.lower() for p in TENDER_INTELLIGENCE_PLAN_KEYS]),
+            )
+            .all()
+        )
+
+        if not subscribers:
+            logger.info("[TenderIntelDigest] No active subscribers — skipping send")
+            return
+
+        email_svc = EmailService()
+        period = since.strftime("%b %Y")
+
+        for sub in subscribers:
+            try:
+                subject = f"Tender Intelligence — {len(rows)} awards in the last 30 days"
+                body_html = f"""
+                <html><body style="font-family:Arial,sans-serif;background:#0a0a0a;color:#e5e5e5;padding:32px;">
+                <div style="max-width:640px;margin:0 auto;">
+                  <p style="font-size:0.8em;color:#525252;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px;">
+                    BOOPPA · Tender Intelligence
+                  </p>
+                  <h2 style="color:#ffffff;margin-top:0;">Monthly Sector Trends — {period}</h2>
+                  <p style="color:#a3a3a3;">
+                    Hi {sub.full_name or sub.company or sub.email},<br>
+                    Across the last 30 days, GeBIZ awarded <strong style="color:#ffffff;">{len(rows)} contracts</strong>
+                    totalling <strong style="color:#60a5fa;">S${total_value:,.0f}</strong>.
+                  </p>
+
+                  <h3 style="color:#ffffff;margin-top:32px;font-size:1.05em;">Top sectors</h3>
+                  <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
+                    <thead><tr style="border-bottom:1px solid #404040;">
+                      <th style="padding:8px;text-align:left;color:#737373;">Sector</th>
+                      <th style="padding:8px;text-align:right;color:#737373;">Awards</th>
+                      <th style="padding:8px;text-align:right;color:#737373;">Total value</th>
+                    </tr></thead>
+                    <tbody>{sector_rows}</tbody>
+                  </table>
+
+                  <h3 style="color:#ffffff;margin-top:32px;font-size:1.05em;">Top procuring entities</h3>
+                  <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
+                    <thead><tr style="border-bottom:1px solid #404040;">
+                      <th style="padding:8px;text-align:left;color:#737373;">Agency</th>
+                      <th style="padding:8px;text-align:right;color:#737373;">Awards</th>
+                      <th style="padding:8px;text-align:right;color:#737373;">Total value</th>
+                    </tr></thead>
+                    <tbody>{agency_rows}</tbody>
+                  </table>
+
+                  <div style="margin:32px 0;display:flex;gap:12px;flex-wrap:wrap;">
+                    <a href="https://www.booppa.io/tender-intelligence"
+                       style="display:inline-block;background:#7c3aed;color:#ffffff;padding:12px 24px;
+                              border-radius:8px;text-decoration:none;font-weight:bold;">
+                      Open the dashboard →
+                    </a>
+                    {("<a href='" + pdf_url + "' style='display:inline-block;background:#1a1a1a;color:#a78bfa;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;border:1px solid #404040;'>Download PDF report</a>") if pdf_url else ""}
+                  </div>
+
+                  <p style="margin-top:24px;font-size:0.8em;color:#525252;">
+                    You're receiving this as a Tender Intelligence subscriber.
+                    <a href="https://www.booppa.io/account/billing" style="color:#7c3aed;">Manage subscription</a>
+                  </p>
+                </div>
+                </body></html>
+                """
+                _asyncio.run(email_svc.send_html_email(sub.email, subject, body_html))
+                sent += 1
+            except Exception as exc:
+                logger.warning(f"[TenderIntelDigest] Failed for {sub.email}: {exc}")
+                failed += 1
+
+    except Exception as exc:
+        logger.error(f"[TenderIntelDigest] Task aborted: {exc}")
+    finally:
+        db.close()
+
+    logger.info(f"[TenderIntelDigest] Sent={sent} Failed={failed}")
 
 
 @celery_app.task(name="weekly_intelligence_brief")

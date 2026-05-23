@@ -185,6 +185,22 @@ PRODUCTS = {
         "description": "Everything in Standard Suite plus SSO, white-label, multi-subsidiary, unlimited notarizations",
         "type": "subscription",
     },
+    "tender_intelligence_monthly": {
+        "name": "Tender Intelligence (Monthly)",
+        "slug": "tender_intelligence_monthly",
+        "price_sgd": 149,
+        "price_cents": 14900,
+        "description": "Sector trend reports, historical award lookups, AI-driven bid/watch/pass timing, supplier benchmarking, monthly digest",
+        "type": "subscription",
+    },
+    "tender_intelligence_annual": {
+        "name": "Tender Intelligence (Annual)",
+        "slug": "tender_intelligence_annual",
+        "price_sgd": 1499,
+        "price_cents": 149900,
+        "description": "Annual Tender Intelligence — effectively two months free vs monthly billing",
+        "type": "subscription",
+    },
 }
 
 
