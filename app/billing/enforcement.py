@@ -28,6 +28,14 @@ ENTERPRISE_PLAN_KEYS = {
     "verify_supplier_evidence", "verify_supplier_evidence_monthly",
 }
 
+TENDER_INTELLIGENCE_PLAN_KEYS = {
+    "tender_intelligence",
+    "tender_intelligence_monthly",
+    "tender_intelligence_annual",
+    "enterprise_pro", "enterprise_pro_monthly",
+    "pro_suite", "pro_suite_monthly",
+}
+
 
 def _normalize(value: Any) -> str:
     return str(value or "").strip().lower()

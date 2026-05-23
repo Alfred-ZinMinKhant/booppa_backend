@@ -98,6 +98,14 @@ router.include_router(legal_consent_router, prefix="", tags=["legal-consent"])
 router.include_router(
     tender_check_router, prefix="/tender-check", tags=["tender-check"]
 )
+# Tender Intelligence — paid subscription product (sector trends, award history, timing)
+from .tender_intelligence import router as tender_intelligence_router
+
+router.include_router(
+    tender_intelligence_router,
+    prefix="/tender-intelligence",
+    tags=["tender-intelligence"],
+)
 # PDPA Free Scan
 from .pdpa_free_scan import router as pdpa_free_scan_router
 
