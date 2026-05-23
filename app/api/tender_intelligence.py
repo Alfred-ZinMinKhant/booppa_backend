@@ -22,7 +22,7 @@ from app.core.db import get_db, get_current_user
 from app.core.models import User
 from app.core.models_gebiz import GebizAwardHistory
 from app.core.models_v10 import TenderShortlist
-from app.billing.enforcement import TENDER_INTELLIGENCE_PLAN_KEYS
+from app.billing.enforcement import TENDER_INTELLIGENCE_PLAN_KEYS, TENDER_LITE_PLAN_KEYS
 from app.services.tender_service import compute_tender_win_probability
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,24 @@ def require_tender_intelligence(
     return user
 
 
+def require_tender_lite(
+    user: User = Depends(get_current_user),
+) -> User:
+    """Lite gate: accepts Vendor Pro AND full Tender Intelligence plans.
+
+    Used on /sector-trends and /forecast — endpoints we deliberately expose
+    in the Vendor Pro tier. Awards, timing, and supplier-benchmark continue
+    to require the full Tender Intelligence subscription.
+    """
+    plan = (getattr(user, "plan", "") or "").lower().strip()
+    if plan not in TENDER_LITE_PLAN_KEYS:
+        raise HTTPException(
+            status_code=403,
+            detail="Vendor Pro or Tender Intelligence subscription required. Visit /pricing to subscribe.",
+        )
+    return user
+
+
 def _classify_amount_band(amt: Optional[float]) -> str:
     if amt is None:
         return "unknown"
@@ -71,7 +89,7 @@ def sector_trends(
     agency: Optional[str] = Query(None, description="Filter to one procuring entity"),
     months: int = Query(12, ge=1, le=60, description="Rolling window in months"),
     db: Session = Depends(get_db),
-    user: User = Depends(require_tender_intelligence),
+    user: User = Depends(require_tender_lite),
 ):
     """Win-rate patterns over a rolling window, segmented by agency,
     sector, and contract-size band."""
@@ -392,7 +410,7 @@ def forecast(
     history_months: int = Query(18, ge=6, le=60, description="History window for the fit"),
     horizon_months: int = Query(3, ge=1, le=12, description="How many months ahead to forecast"),
     db: Session = Depends(get_db),
-    user: User = Depends(require_tender_intelligence),
+    user: User = Depends(require_tender_lite),
 ):
     """Project expected awards (count + total value) for the next
     `horizon_months` by linear regression over the historical monthly

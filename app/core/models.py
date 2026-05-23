@@ -61,6 +61,10 @@ class User(Base):
     compliance_evidence_credits = Column(Integer, default=0, nullable=False, server_default="0")
     # True once the user uploads their signed Cover Sheet PDF and we anchor it.
     signed_cover_sheet_uploaded = Column(Boolean, default=False, nullable=False, server_default="false")
+    # Vendor Pro: opt-out from being counted in TenderCheckLookup. When True,
+    # /tender-check skips the lookup insert for this user. Default False so the
+    # competitor-awareness signal has data from day one.
+    tender_lookup_opt_out = Column(Boolean, default=False, nullable=False, server_default="false")
     # Multi-subsidiary (Pro Suite): if set, this user is a child of another tenant.
     # Parent users see aggregate data for all children + manage their lifecycle.
     parent_user_id = Column(

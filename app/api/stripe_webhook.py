@@ -47,6 +47,8 @@ SUBSCRIPTION_PRODUCT_TYPES = {
     "compliance_evidence_monthly",
     "tender_intelligence_monthly",
     "tender_intelligence_annual",
+    "vendor_pro_monthly",
+    "vendor_pro_annual",
 }
 
 # Bundle → component mapping.
@@ -91,6 +93,7 @@ _PLAN_TO_VERIFICATION_LEVEL = {
     "evaluate_suppliers":       "STANDARD",
     "standard_suite":           "STANDARD",
     "tender_intelligence":      "STANDARD",
+    "vendor_pro":               "STANDARD",
     "enterprise":               "PREMIUM",
     "pro_suite":                "PREMIUM",
     "verify_supplier_evidence": "PREMIUM",
@@ -243,6 +246,8 @@ async def _activate_subscription(
             "compliance_evidence_monthly": "compliance_evidence",
             "tender_intelligence_monthly": "tender_intelligence",
             "tender_intelligence_annual": "tender_intelligence",
+            "vendor_pro_monthly": "vendor_pro",
+            "vendor_pro_annual": "vendor_pro",
         }
         new_plan = plan_map.get(product_type, "pro")
 
@@ -301,6 +306,7 @@ async def _activate_subscription(
                 "verify_supplier_evidence": "Verify Supplier Evidence",
                 "compliance_evidence": "Compliance Evidence",
                 "tender_intelligence": "Tender Intelligence",
+                "vendor_pro": "Vendor Pro",
             }
             label = plan_labels.get(new_plan, new_plan)
 
@@ -2834,6 +2840,8 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                             "compliance_evidence_monthly":    "compliance_evidence",
                             "tender_intelligence_monthly":    "tender_intelligence",
                             "tender_intelligence_annual":     "tender_intelligence",
+                            "vendor_pro_monthly":             "vendor_pro",
+                            "vendor_pro_annual":              "vendor_pro",
                         }
                         remaining = (
                             _db3.query(SubModel)

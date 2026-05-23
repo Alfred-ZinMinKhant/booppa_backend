@@ -24,6 +24,8 @@ def get_subscription_families():
         "vendor_family": [
             _opt("STRIPE_VENDOR_ACTIVE_MONTHLY"),
             _opt("STRIPE_VENDOR_ACTIVE_ANNUAL"),
+            _opt("STRIPE_VENDOR_PRO_MONTHLY"),
+            _opt("STRIPE_VENDOR_PRO_ANNUAL"),
             _opt("STRIPE_VENDOR_TRUST_PACK"),
         ],
         "enterprise_family": [

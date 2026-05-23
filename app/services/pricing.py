@@ -113,6 +113,22 @@ PRODUCTS = {
         "description": "Annual profile health checks + score updates",
         "type": "subscription",
     },
+    "vendor_pro_monthly": {
+        "name": "Vendor Pro (Monthly)",
+        "slug": "vendor_pro_monthly",
+        "price_sgd": 99,
+        "price_cents": 9900,
+        "description": "Compliance visibility and tender intelligence for growing vendors — Vendor Active + quarterly PDPA scan + 1 notarization/mo + tender analytics + competitor awareness",
+        "type": "subscription",
+    },
+    "vendor_pro_annual": {
+        "name": "Vendor Pro (Annual)",
+        "slug": "vendor_pro_annual",
+        "price_sgd": 1099,
+        "price_cents": 109900,
+        "description": "Annual Vendor Pro — 2 months free vs monthly",
+        "type": "subscription",
+    },
     "pdpa_monitor_monthly": {
         "name": "PDPA Monitor (Monthly)",
         "slug": "pdpa_monitor_monthly",

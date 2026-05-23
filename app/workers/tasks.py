@@ -2324,7 +2324,11 @@ def run_vendor_active_monthly_checks():
         from app.core.models import User, Subscription as SubModel
         # Query Subscription table (source of truth) for active vendor_active subs
         active_subs = db.query(SubModel).filter(
-            SubModel.product_type.in_(["vendor_active_monthly", "vendor_active_annual", "vendor_active"]),
+            SubModel.product_type.in_([
+                "vendor_active_monthly", "vendor_active_annual", "vendor_active",
+                # Vendor Pro inherits Vendor Active health checks.
+                "vendor_pro_monthly", "vendor_pro_annual", "vendor_pro",
+            ]),
             SubModel.status.in_(("active", "trialing")),
         ).all()
         user_ids = {s.user_id for s in active_subs if s.user_id}
@@ -2332,7 +2336,7 @@ def run_vendor_active_monthly_checks():
         for user in subscribers:
             if user.email:
                 vendor_active_health_check_task.delay(str(user.id), user.email)
-        logger.info(f"Queued monthly health checks for {len(subscribers)} Vendor Active subscribers")
+        logger.info(f"Queued monthly health checks for {len(subscribers)} Vendor Active + Vendor Pro subscribers")
     finally:
         db.close()
 
@@ -2358,6 +2362,38 @@ def run_pdpa_monitor_monthly_rescans():
             if user.email and website:
                 pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website)
         logger.info(f"Queued monthly PDPA re-scans for {len(subscribers)} PDPA Monitor subscribers")
+    finally:
+        db.close()
+
+
+@celery_app.task(name="run_vendor_pro_quarterly_pdpa_rescans")
+def run_vendor_pro_quarterly_pdpa_rescans():
+    """
+    Beat task: runs on the 1st of Jan/Apr/Jul/Oct.
+    Finds all Vendor Pro subscribers and queues a PDPA re-scan for each.
+
+    Uses the same pdpa_monitor_monthly_rescan_task because the per-user scan
+    logic is identical — only the cadence differs (quarterly instead of
+    monthly). Subscribers without a `website` set are skipped.
+    """
+    db = SessionLocal()
+    try:
+        from app.core.models import User, Subscription as SubModel
+        active_subs = db.query(SubModel).filter(
+            SubModel.product_type.in_([
+                "vendor_pro_monthly", "vendor_pro_annual", "vendor_pro",
+            ]),
+            SubModel.status.in_(("active", "trialing")),
+        ).all()
+        user_ids = {s.user_id for s in active_subs if s.user_id}
+        subscribers = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
+        queued = 0
+        for user in subscribers:
+            website = getattr(user, "website", "") or ""
+            if user.email and website:
+                pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website)
+                queued += 1
+        logger.info(f"[VendorProPDPA] Queued quarterly PDPA rescans for {queued}/{len(subscribers)} Vendor Pro subscribers")
     finally:
         db.close()
 
@@ -2946,6 +2982,8 @@ def post_payment_drip(vendor_email: str, product_type: str = "",
         "enterprise_bid_kit": "Enterprise Bid Kit",
         "tender_intelligence_monthly": "Tender Intelligence",
         "tender_intelligence_annual": "Tender Intelligence",
+        "vendor_pro_monthly": "Vendor Pro",
+        "vendor_pro_annual": "Vendor Pro",
     }
     label = labels.get(product_type, "your BOOPPA product")
     name = company_name or vendor_email
@@ -3119,7 +3157,7 @@ def send_tender_intelligence_digest():
     from app.core.models import User
     from app.core.models_gebiz import GebizAwardHistory
     from app.billing.enforcement import TENDER_INTELLIGENCE_PLAN_KEYS
-    from sqlalchemy import func
+    from sqlalchemy import func  # noqa: F401  (used elsewhere in this file via late binding)
     from datetime import timedelta
     import asyncio as _asyncio
     from io import BytesIO
@@ -3338,6 +3376,162 @@ def send_tender_intelligence_digest():
         db.close()
 
     logger.info(f"[TenderIntelDigest] Sent={sent} Failed={failed}")
+
+
+@celery_app.task(name="send_vendor_pro_daily_alerts")
+def send_vendor_pro_daily_alerts():
+    """
+    Daily competitor-activity digest for Vendor Pro subscribers.
+
+    For each active Vendor Pro user, find the tenders they've checked in the
+    last 14d, then for each tender count new TenderCheckLookups in the last
+    24h. If any tender has new activity, send the user an email summary.
+
+    Runs at 00:00 UTC (08:00 SGT) via Celery Beat.
+    """
+    from app.core.models import User, Subscription as SubModel
+    from app.core.models_vendor_pro import TenderCheckLookup
+    from app.billing.enforcement import VENDOR_PRO_PLAN_KEYS  # noqa: F401
+    from sqlalchemy import func
+    from datetime import timedelta
+    import asyncio as _asyncio
+
+    db = SessionLocal()
+    sent = 0
+    failed = 0
+    try:
+        now = datetime.now(timezone.utc)
+        since_24h = (now - timedelta(hours=24)).replace(tzinfo=None)
+        since_tracked = (now - timedelta(days=14)).replace(tzinfo=None)
+
+        # All users with an active Vendor-Pro-tier (or superset) subscription.
+        active_subs = (
+            db.query(SubModel)
+            .filter(
+                SubModel.status.in_(("active", "trialing")),
+                SubModel.product_type.in_([
+                    "vendor_pro_monthly", "vendor_pro_annual", "vendor_pro",
+                ]),
+            )
+            .all()
+        )
+        user_ids = {s.user_id for s in active_subs if s.user_id}
+        subscribers = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
+
+        if not subscribers:
+            logger.info("[VendorProDaily] No active subscribers — skipping")
+            return
+
+        email_svc = EmailService()
+        for sub in subscribers:
+            try:
+                # Tenders this user looked at in the last 14d
+                tracked = (
+                    db.query(TenderCheckLookup.tender_no)
+                    .filter(
+                        TenderCheckLookup.vendor_id == sub.id,
+                        TenderCheckLookup.created_at >= since_tracked,
+                        TenderCheckLookup.tender_no != None,  # noqa: E711
+                    )
+                    .distinct()
+                    .all()
+                )
+                tender_nos = [t[0] for t in tracked if t[0]]
+                if not tender_nos:
+                    continue
+
+                # Per-tender competitor activity in the last 24h (excluding this user)
+                rows = (
+                    db.query(
+                        TenderCheckLookup.tender_no.label("tno"),
+                        func.count(TenderCheckLookup.id).label("total"),
+                        func.sum(
+                            func.cast(TenderCheckLookup.is_verified, sa_int())
+                        ).label("verified"),
+                    )
+                    .filter(
+                        TenderCheckLookup.tender_no.in_(tender_nos),
+                        TenderCheckLookup.created_at >= since_24h,
+                        # Exclude the recipient's own lookups
+                        (TenderCheckLookup.vendor_id != sub.id) | (TenderCheckLookup.vendor_id.is_(None)),
+                    )
+                    .group_by(TenderCheckLookup.tender_no)
+                    .all()
+                )
+                if not rows:
+                    continue
+
+                row_html = ""
+                for r in rows:
+                    total = int(r.total or 0)
+                    verified = int(r.verified or 0)
+                    if total == 0:
+                        continue
+                    badge_color = "#ef4444" if verified >= 3 else "#f59e0b" if verified >= 1 else "#737373"
+                    row_html += f"""
+                    <tr>
+                      <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#e5e5e5;font-weight:500;">{r.tno}</td>
+                      <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#60a5fa;text-align:right;">{total}</td>
+                      <td style="padding:10px 8px;border-bottom:1px solid #262626;text-align:right;">
+                        <span style="color:{badge_color};font-weight:600;">{verified}</span>
+                      </td>
+                    </tr>"""
+
+                if not row_html:
+                    continue
+
+                subject = "Competitor activity on tenders you're tracking"
+                body_html = f"""
+                <html><body style="font-family:Arial,sans-serif;background:#0a0a0a;color:#e5e5e5;padding:32px;">
+                <div style="max-width:640px;margin:0 auto;">
+                  <p style="font-size:0.8em;color:#525252;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px;">
+                    BOOPPA · Vendor Pro
+                  </p>
+                  <h2 style="color:#ffffff;margin-top:0;">Competitor activity — last 24 hours</h2>
+                  <p style="color:#a3a3a3;">
+                    Hi {sub.full_name or sub.company or sub.email},<br>
+                    Other vendors ran probability checks on tenders you're tracking. Counts only — no identities shown.
+                  </p>
+                  <table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:0.9em;">
+                    <thead>
+                      <tr style="border-bottom:1px solid #404040;">
+                        <th style="padding:8px;text-align:left;color:#737373;font-weight:600;">Tender</th>
+                        <th style="padding:8px;text-align:right;color:#737373;font-weight:600;">Lookups</th>
+                        <th style="padding:8px;text-align:right;color:#737373;font-weight:600;">Verified</th>
+                      </tr>
+                    </thead>
+                    <tbody>{row_html}</tbody>
+                  </table>
+                  <div style="margin:24px 0;">
+                    <a href="https://www.booppa.io/vendor/dashboard"
+                       style="display:inline-block;background:#7c3aed;color:#ffffff;padding:12px 24px;
+                              border-radius:8px;text-decoration:none;font-weight:bold;">
+                      Open Vendor Pro dashboard →
+                    </a>
+                  </div>
+                  <p style="margin-top:24px;font-size:0.8em;color:#525252;">
+                    You can opt out of being counted in these signals from your dashboard.
+                  </p>
+                </div>
+                </body></html>
+                """
+                _asyncio.run(email_svc.send_html_email(sub.email, subject, body_html))
+                sent += 1
+            except Exception as exc:
+                logger.warning(f"[VendorProDaily] Failed for {sub.email}: {exc}")
+                failed += 1
+    except Exception as exc:
+        logger.error(f"[VendorProDaily] Task aborted: {exc}")
+    finally:
+        db.close()
+
+    logger.info(f"[VendorProDaily] Sent={sent} Failed={failed}")
+
+
+def sa_int():
+    """Lazy import of sqlalchemy.Integer so `func.cast` works above."""
+    from sqlalchemy import Integer
+    return Integer
 
 
 @celery_app.task(name="weekly_intelligence_brief")

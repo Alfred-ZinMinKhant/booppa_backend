@@ -360,6 +360,10 @@ ENTERPRISE_NOTARIZATION_LIMITS = {
     "standard_suite_monthly":  50,
     "pro_suite":               100,
     "pro_suite_monthly":       100,
+    # Vendor Pro: 1 notarization included per month (the tier's marquee feature).
+    "vendor_pro":              1,
+    "vendor_pro_monthly":      1,
+    "vendor_pro_annual":       1,
 }
 
 
