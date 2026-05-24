@@ -7,6 +7,7 @@ The service is purely read-only (no writes), so a minimal fixture is enough.
 
 import uuid
 import pytest
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from app.services.tender_service import (
@@ -45,6 +46,10 @@ def _mock_snapshot(
     s.risk_adjusted_pct  = risk_adjusted_pct
     s.evidence_count     = evidence_count
     s.risk_signal        = risk_signal
+    # tender_service compares `datetime.now() - snapshot.updated_at` to a
+    # stale-cutoff timedelta — give it a real datetime so the comparison
+    # doesn't blow up trying to subtract a MagicMock.
+    s.updated_at         = datetime.now(timezone.utc)
     return s
 
 

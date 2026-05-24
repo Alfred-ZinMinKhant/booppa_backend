@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.core.db import Base, get_db
@@ -33,20 +33,59 @@ engine = create_engine(TEST_DATABASE_URL)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
+# Tables the tests write to. Truncated on teardown so re-runs are clean.
+# Other tables (marketplace_vendors seed data, gebiz_tenders, etc.) are left
+# alone. List exists separately from Base.metadata because we deliberately do
+# NOT use Base.metadata.create_all — see comment in `test_db`.
+_TRUNCATABLE_TABLES = [
+    "pending_rfp_intakes",
+    "subscriptions",
+    "processed_webhook_events",
+    "activity_logs",
+    "funnel_events",
+    "verify_records",
+    "certificate_logs",
+    "reports",
+    "users",
+]
+
+
+def _truncate_test_tables():
+    """Wipe data the tests write to. CASCADE handles FK chains."""
+    with engine.begin() as conn:
+        for table in _TRUNCATABLE_TABLES:
+            try:
+                conn.execute(text(f'TRUNCATE TABLE "{table}" RESTART IDENTITY CASCADE'))
+            except Exception:
+                # Table may not exist in older alembic revs; that's fine.
+                pass
+
+
 @pytest.fixture(scope="function")
 def test_db():
-    """Fresh schema per test."""
-    Base.metadata.create_all(bind=engine)
+    """Test session against the alembic-migrated schema.
+
+    We deliberately do NOT call `Base.metadata.create_all` — at least one
+    model (RfpRequirementFlag in models_v8.py) declares the same index twice
+    (once via `index=True` on the column, once via an explicit `Index(...)` in
+    `__table_args__`), which raises DuplicateTable on `create_all`. Alembic
+    sidesteps this because its migrations are hand-written.
+
+    Setup expectation: `alembic upgrade head` has been run before pytest.
+    The CI workflow already does this; locally, run it once after spinning up
+    the test DB. See TESTING.md.
+    """
+    _truncate_test_tables()
     db = TestingSessionLocal()
     try:
         yield db
     finally:
         db.close()
-        Base.metadata.drop_all(bind=engine)
+        _truncate_test_tables()
 
 
 @pytest.fixture(scope="function")
-def client(test_db):
+def client(test_db, _disable_rate_limit):
     """TestClient with the test DB wired into get_db."""
     def override_get_db():
         try:
@@ -58,6 +97,18 @@ def client(test_db):
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def _disable_rate_limit(monkeypatch):
+    """slowapi limits requests by remote IP. In tests every request comes from
+    the same TestClient host, so the 20/minute /checkout limit trips quickly
+    when parametrized tests run together. Disable rate-limiting for tests."""
+    try:
+        from app.api.stripe_checkout import _limiter
+        monkeypatch.setattr(_limiter, "enabled", False)
+    except Exception:
+        pass
 
 
 # ── AWS / S3 ────────────────────────────────────────────────────────────────

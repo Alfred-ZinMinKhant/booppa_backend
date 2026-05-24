@@ -7,7 +7,13 @@ from tests.fixtures.stripe_events import wrap_event
 
 def _seed_user(db, email: str):
     from app.core.models import User
-    user = User(email=email, role="VENDOR", plan="free", website="https://example.test")
+    user = User(
+        email=email,
+        hashed_password="not-a-real-hash",  # User.hashed_password is NOT NULL
+        role="VENDOR",
+        plan="free",
+        website="https://example.test",
+    )
     db.add(user)
     db.commit()
     db.refresh(user)

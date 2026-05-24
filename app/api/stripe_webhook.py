@@ -415,7 +415,6 @@ async def _activate_subscription(
                     f"[Subscription] CE activation deferred for {customer_email} — no website on profile"
                 )
                 try:
-                    from app.services.email_service import EmailService
                     import asyncio as _asyncio
                     body_html = f"""<!DOCTYPE html><html><body style="font-family:-apple-system,Segoe UI,sans-serif;background:#f8fafc;padding:24px;">
                     <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:8px;padding:28px;border:1px solid #e2e8f0;">
