@@ -1,0 +1,108 @@
+name: Backend tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: booppa_test
+          POSTGRES_USER: booppa
+          POSTGRES_PASSWORD: password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U booppa"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg2://booppa:password@localhost:5432/booppa_test
+      DATABASE_URL: postgresql+psycopg2://booppa:password@localhost:5432/booppa_test
+      REDIS_URL: redis://localhost:6379/0
+      ENVIRONMENT: test
+      SECRET_KEY: test-only-do-not-use-in-prod
+      S3_BUCKET: booppa-reports
+      SKIP_EMAIL: "True"
+      AWS_REGION: ap-southeast-1
+      AWS_SES_REGION: ap-southeast-1
+      # Real AWS credentials — scoped IAM user with PutObject/DeleteObject/HeadObject
+      # on s3://booppa-reports/test/* only. See TESTING.md.
+      AWS_ACCESS_KEY_ID: ${{ secrets.TEST_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.TEST_AWS_SECRET_ACCESS_KEY }}
+      # Stripe credentials are supplied via repo secrets. Tests that need a
+      # real Stripe call are skipped if STRIPE_SECRET_KEY is missing or not a
+      # sk_test_ key, so the workflow still passes for forks/PRs from outside
+      # the org where secrets aren't exposed.
+      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
+      STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}
+      STRIPE_PRICE_IDS_JSON: ${{ secrets.STRIPE_TEST_PRICE_IDS_JSON }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Wait for Postgres
+        run: |
+          for i in $(seq 1 30); do
+            pg_isready -h localhost -p 5432 -U booppa && exit 0
+            sleep 1
+          done
+          echo "Postgres never came up"; exit 1
+
+      - name: Run alembic migrations
+        run: alembic upgrade head
+
+      - name: Export Stripe price IDs from JSON secret
+        if: env.STRIPE_PRICE_IDS_JSON != ''
+        run: |
+          python - <<'PY' >> "$GITHUB_ENV"
+          import json, os
+          raw = os.environ.get("STRIPE_PRICE_IDS_JSON", "")
+          if not raw:
+              raise SystemExit(0)
+          for k, v in json.loads(raw).items():
+              if not k.startswith("STRIPE_"):
+                  k = f"STRIPE_{k}"
+              print(f"{k}={v}")
+          PY
+
+      - name: Run pytest
+        run: pytest -v --cov=app --cov-report=term-missing tests/
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: .coverage
+          if-no-files-found: ignore
