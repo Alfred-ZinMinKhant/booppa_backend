@@ -1,0 +1,36 @@
+Price ID,Product ID,Product Name,Product Statement Descriptor,Product Tax Code,Description,Created (UTC),Amount,Currency,Interval,Interval Count,Usage Type,Aggregate Usage,Billing Scheme,Trial Period Days,Tax Behavior
+price_1TaHtiHOrR48Mz6bmRusAGs9,prod_UZQlewUpQPhxN7,STRIPE_VENDOR_PRO_ANNUAL,,,,2026-05-23 15:55,1099.00,sgd,year,1,licensed,,per_unit,,unspecified
+price_1TaHsZHOrR48Mz6bxvj2X9DY,prod_UZQkPNexCsTwZF,STRIPE_VENDOR_PRO_MONTHLY,,,,2026-05-23 15:54,99.00,sgd,month,1,licensed,,per_unit,,unspecified
+price_1TaDbBHOrR48Mz6biz48TMBZ,prod_UZMJSAiWWyxef8,STRIPE_TENDER_INTELLIGENCE_ANNUAL,,,,2026-05-23 11:20,1499.00,sgd,year,1,licensed,,per_unit,,unspecified
+price_1TaDaoHOrR48Mz6bs8tDDMoy,prod_UZMJy3Ez99XCB8,STRIPE_TENDER_INTELLIGENCE_MONTHLY,,,,2026-05-23 11:19,149.00,sgd,month,1,licensed,,per_unit,,unspecified
+price_1TXjorHOrR48Mz6b2DSBE210,prod_UWnPBoNMpgPjSC,STRIPE_PRO_SUITE_MONTHLY,,,,2026-05-16 15:08,4500.00,sgd,month,1,licensed,,per_unit,,unspecified
+price_1TXjobHOrR48Mz6bma336HWq,prod_UWnPooOb1isgUK,STRIPE_STANDARD_SUITE_MONTHLY,,,,2026-05-16 15:07,1800.00,sgd,month,1,licensed,,per_unit,,unspecified
+price_1TXjoEHOrR48Mz6b5uTe8Doi,prod_UWnPg0i75sKek4,STRIPE_VERIFY_SUPPLIER_EVIDENCE_MONTHLY,,,,2026-05-16 15:07,799.00,sgd,month,1,licensed,,per_unit,,unspecified
+price_1TXjnxHOrR48Mz6bxmQh1MWx,prod_UWnOg58hLREDxY,STRIPE_EVALUATE_SUPPLIERS_MONTHLY,,,,2026-05-16 15:07,499.00,sgd,month,1,licensed,,per_unit,,unspecified
+price_1TXjmxHOrR48Mz6b9B7ssQWJ,prod_UWnNvxQVCXkfgQ,STRIPE_COMPLIANCE_EVIDENCE_MONTHLY,,,,2026-05-16 15:06,499.00,sgd,month,1,licensed,,per_unit,,unspecified
+price_1TSFStHOrR48Mz6bBx7AFpzp,prod_UR7ipX7QFNSDyD,STRIPE_COMPLIANCE_PRO,,,,2026-05-01 11:42,4500.00,usd,month,1,licensed,,per_unit,,unspecified
+price_1TSFQLHOrR48Mz6bSUtAkUZw,prod_UR7fsYgmwNOvep,STRIPE_COMPLIANCE_STANDARD,,,,2026-05-01 11:40,1800.00,usd,month,1,licensed,,per_unit,,unspecified
+price_1TSFOhHOrR48Mz6b9Km61lAy,prod_UR7dXhXGgf54iD,STRIPE_COMPLIANCE_EVIDENCE_PACK,,,,2026-05-01 11:38,599.00,usd,,,,,per_unit,,unspecified
+price_1TLHQBHOrR48Mz6brOfRVKk4,prod_UJvGHclvLfscUe,STRIPE_PDPA_MONITOR_ANNUAL,,,,2026-04-12 06:23,490.00,sgd,year,1,licensed,,per_unit,,unspecified
+price_1TLHPuHOrR48Mz6brIOZ1GEv,prod_UJvG8STlddVxRj,STRIPE_VENDOR_ACTIVE_ANNUAL,,,,2026-04-12 06:22,390.00,sgd,year,1,licensed,,per_unit,,unspecified
+price_1TLHPSHOrR48Mz6bfC6akXaQ,prod_UJvFyp4sgIwKzJ,STRIPE_ENTERPRISE_PRO_MONTHLY,,,,2026-04-12 06:22,599.00,sgd,month,1,licensed,,per_unit,,unspecified
+price_1TLHOlHOrR48Mz6bTkyFEQnP,prod_UJvFbNFstGnIvu,STRIPE_ENTERPRISE_MONTHLY,,,,2026-04-12 06:21,299.00,sgd,month,1,licensed,,per_unit,,unspecified
+price_1TLHOPHOrR48Mz6biqjnLr7K,prod_UJvEumxnk12YWG,STRIPE_PDPA_MONITOR_MONTHLY,,,,2026-04-12 06:21,49.00,sgd,month,1,licensed,,per_unit,,unspecified
+price_1TLHO8HOrR48Mz6bSJ6P0yW3,prod_UJvEV6XkbQug2C,STRIPE_VENDOR_ACTIVE_MONTHLY,,,,2026-04-12 06:20,39.00,sgd,month,1,licensed,,per_unit,,unspecified
+price_1TLHNnHOrR48Mz6bzKEweEdU,prod_UJvEQPw0h86MQ0,STRIPE_ENTERPRISE_BID_KIT,,,,2026-04-12 06:20,899.00,sgd,,,,,per_unit,,unspecified
+price_1TLHNRHOrR48Mz6bDAoBTarH,prod_UJvDm0qf5hL41m,STRIPE_RFP_ACCELERATOR,,,,2026-04-12 06:20,449.00,sgd,,,,,per_unit,,unspecified
+price_1TLHMxHOrR48Mz6b0tqnYmmR,prod_UJvDfXzWVaa0Jt,STRIPE_VENDOR_TRUST_PACK,,,,2026-04-12 06:19,249.00,sgd,,,,,per_unit,,unspecified
+price_1TB4CpHOrR48Mz6bdCv3NSTz,prod_U9Mw53wofunZLx,RFP Complete,,,,2026-03-15 02:15,599.00,usd,,,,,per_unit,,unspecified
+price_1TB4CYHOrR48Mz6b37cMN5wv,prod_U9Mw2bmwDfaKem,RFP Express,,,,2026-03-15 02:14,249.00,usd,,,,,per_unit,,unspecified
+price_1TB4CGHOrR48Mz6bAuVbMest,prod_U9MwC6FEZRhAFI,Vendor Proof,,,,2026-03-15 02:14,149.00,usd,,,,,per_unit,,unspecified
+price_1TB4BvHOrR48Mz6b67T7kI6g,prod_U9Mvll7yvyWMEE,Notarization ×50,,,,2026-03-15 02:14,1750.00,usd,,,,,per_unit,,unspecified
+price_1TB4BdHOrR48Mz6bJ817A2G6,prod_U9MvvXoerg3nkY,Notarization ×10,,,,2026-03-15 02:13,390.00,usd,,,,,per_unit,,unspecified
+price_1TB4BLHOrR48Mz6bzUep8sO3,prod_U9MvR9jILFUYq4,Notarization ×1,,,,2026-03-15 02:13,69.00,usd,,,,,per_unit,,unspecified
+price_1TB4B5HOrR48Mz6bYHNDmNqU,prod_U9MuaFyjwfmMOw,Supply Chain ×50,,,,2026-03-15 02:13,1750.00,usd,,,,,per_unit,,unspecified
+price_1TB4AkHOrR48Mz6bYe4BY8ck,prod_U9MucrpJsaGVBO,Supply Chain ×10,,,,2026-03-15 02:12,399.00,usd,,,,,per_unit,,unspecified
+price_1TB4AOHOrR48Mz6b1xYfBExW,prod_U9MuwnssfC6QLT,Supply Chain ×1,,,,2026-03-15 02:12,69.00,usd,,,,,per_unit,,unspecified
+price_1TB49wHOrR48Mz6bJnqL68oI,prod_U9Mt71IDC70EyU,Compliance Pro,,,,2026-03-15 02:12,1999.00,usd,month,1,licensed,,per_unit,,unspecified
+price_1TB49aHOrR48Mz6bCaXq3Wwl,prod_U9Mt63DsRABg6F,Compliance Standard,,,,2026-03-15 02:11,1299.00,usd,month,1,licensed,,per_unit,,unspecified
+price_1TB49GHOrR48Mz6bPSoxbkbu,prod_U9MtIbFLtDcnaG,PDPA Pro,,,,2026-03-15 02:11,799.00,usd,month,1,licensed,,per_unit,,unspecified
+price_1TB48tHOrR48Mz6bO3b2uCsz,prod_U9MsU7PPEJedT4,PDPA Basic,,,,2026-03-15 02:10,299.00,usd,month,1,licensed,,per_unit,,unspecified
+price_1SnsPEHOrR48Mz6bvRWPezVK,prod_TlPDVBD5VEdU7V,PDPA Quick Scan,,,,2026-01-10 03:00,69.00,sgd,,,,,per_unit,,unspecified

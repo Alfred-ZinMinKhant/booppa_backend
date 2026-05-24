@@ -26,18 +26,19 @@ async def test_rfp_express_builder_generates_pdf(monkeypatch):
             raising=False,
         )
 
-    builder = RFPExpressBuilder()
+    builder = RFPExpressBuilder(
+        vendor_id="vendor_test",
+        vendor_email="rfp@example.test",
+        session_id="cs_test_rfp",
+    )
     if not hasattr(builder, "generate_express_package"):
         pytest.skip("generate_express_package not exposed by this build")
 
     try:
         pkg = await builder.generate_express_package(
-            vendor_id="vendor_test",
-            vendor_email="rfp@example.test",
             vendor_url="https://example.test",
             company_name="RFP Test Co",
             rfp_description="Cloud migration for SG retail chain",
-            session_id="cs_test_rfp",
             product_type="rfp_express",
         )
     except NotImplementedError:
