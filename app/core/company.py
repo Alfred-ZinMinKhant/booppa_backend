@@ -5,7 +5,7 @@ COMPANY_NAME_SINGAPORE = "Booppa Smart Care LLC (Singapore)"
 COMPANY_UEN = "202415732W"          # Singapore Business Registration No. — update if changed
 COMPANY_FRAMEWORK_VERSION = "BACF-v1.0"
 COMPANY_LEGAL_FOOTER = "www.booppa.io  ·  Booppa Smart Care LLC  ·  Singapore"
-COMPANY_DPO_EMAIL = "dpo@booppa.io"
+COMPANY_DPO_EMAIL = "evidence@booppa.io"
 
 __all__ = [
     "COMPANY_NAME", "COMPANY_NAME_SINGAPORE", "COMPANY_UEN",
