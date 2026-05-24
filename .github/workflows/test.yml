@@ -40,7 +40,7 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       ENVIRONMENT: test
       SECRET_KEY: test-only-do-not-use-in-prod
-      S3_BUCKET: booppa-reports
+      S3_BUCKET: booppa-reports-04bd50c4
       SKIP_EMAIL: "True"
       AWS_REGION: ap-southeast-1
       AWS_SES_REGION: ap-southeast-1
