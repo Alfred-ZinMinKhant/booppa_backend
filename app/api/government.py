@@ -586,7 +586,7 @@ def generate_shortlist_report(body: ShortlistReportRequest, db: Session = Depend
         "information, ACRA registration data, GeBIZ supplier history, and Booppa trust",
         "signals at the time of generation. It does not substitute for legal due diligence.",
         "",
-        "Booppa Smart Care LLC  ·  booppa.io  ·  compliance@booppa.io  ·  UEN 202415732W",
+        "Booppa Smart Care LLC  ·  booppa.io  ·  evidence@booppa.io  ·  UEN 202415732W",
     ]
 
     return "\n".join(lines)
