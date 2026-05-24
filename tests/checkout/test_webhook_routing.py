@@ -119,8 +119,10 @@ def test_standalone_one_time_calls_fulfill_standalone(
     assert kwargs["product_type"] == case.product_type
 
 
-def test_webhook_rejects_bad_signature(client):
-    """Tampered signature → 400."""
+def test_webhook_rejects_bad_signature(client, signed_webhook):
+    """Tampered signature → 400. Requests `signed_webhook` so the fixture's
+    monkeypatch ensures STRIPE_WEBHOOK_SECRET is set (otherwise the handler
+    would 500 before even attempting signature verification)."""
     resp = client.post(
         "/api/v1/stripe/webhook",
         content=b'{"id":"evt_x","type":"checkout.session.completed","data":{"object":{}}}',

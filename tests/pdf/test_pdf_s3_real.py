@@ -7,10 +7,13 @@ Skipped automatically if AWS credentials aren't configured."""
 import asyncio
 import uuid
 import pytest
-from freezegun import freeze_time
+
+# NOTE: deliberately NOT using @freeze_time here. Frozen time bleeds into
+# botocore's request signing, which makes AWS reject S3 PutObject with
+# `RequestTimeTooSkewed`. PDF content determinism isn't asserted in this
+# round-trip test — content checks live in test_pdf_pdpa.py.
 
 
-@freeze_time("2026-05-24T12:00:00Z")
 def test_pdpa_pdf_uploads_to_real_s3_and_cleans_up(real_s3):
     from app.services.pdf_service import PDFService
     from app.services.storage import S3Service
