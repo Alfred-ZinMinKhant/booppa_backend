@@ -37,7 +37,7 @@ noted otherwise.
 | `STRIPE_TEST_PRICE_IDS_JSON` | both | A JSON object mapping `STRIPE_<UPPER_PRODUCT_TYPE>` → price ID. Example:<br>`{"STRIPE_VENDOR_PROOF":"price_1Abc…","STRIPE_PDPA_QUICK_SCAN":"price_1Def…", …}`<br>One entry per SKU in `app/api/stripe_checkout.py:MODE_MAP` (26 entries). |
 | `PLAYWRIGHT_TEST_JWT` | frontend only | A pre-issued backend JWT for a seeded test user. Mint with: `python -c 'from app.core.auth import create_access_token; print(create_access_token({"sub":"qa+playwright@booppa.io"}))'` against the same `SECRET_KEY` the test backend uses. Required only for `api-direct.spec.ts` and `smoke-full-flow.spec.ts` — others auto-skip. |
 | `GH_PAT_BACKEND_READ` | frontend only | A fine-scoped GitHub PAT with `Contents: Read` on `booppa_backend`. The frontend workflow checks out the backend as a sibling to boot uvicorn. Use a [fine-grained PAT](https://github.com/settings/personal-access-tokens) restricted to `booppa_backend`. |
-| `TEST_AWS_ACCESS_KEY_ID` | backend | IAM user scoped to `booppa-reports/test/*` only — see "Real-AWS S3 setup" below. Used by tests that opt into the `real_s3` fixture. |
+| `TEST_AWS_ACCESS_KEY_ID` | backend | IAM user scoped to `booppa-reports-04bd50c4/test/*` only — see "Real-AWS S3 setup" below. Used by tests that opt into the `real_s3` fixture. |
 | `TEST_AWS_SECRET_ACCESS_KEY` | backend | Secret for the above IAM user. |
 
 ### Generating `STRIPE_TEST_PRICE_IDS_JSON`
@@ -81,7 +81,7 @@ the lookup pattern in `_get_price()` at `app/api/stripe_checkout.py:21`.
 
 ## Real-AWS S3 setup
 
-Tests using the `real_s3` fixture write PDFs to the production `booppa-reports`
+Tests using the `real_s3` fixture write PDFs to the production `booppa-reports-04bd50c4`
 bucket under a `test/<run-id>/` prefix and delete them on teardown. To make
 that safe:
 
@@ -97,7 +97,7 @@ rule) with:
 Or via CLI:
 
 ```bash
-aws s3api put-bucket-lifecycle-configuration --bucket booppa-reports \
+aws s3api put-bucket-lifecycle-configuration --bucket booppa-reports-04bd50c4 \
   --lifecycle-configuration '{
     "Rules": [{
       "ID": "expire-test-uploads",
@@ -121,7 +121,7 @@ keys, never production ones:
       "Sid": "TestPrefixObjectOps",
       "Effect": "Allow",
       "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
-      "Resource": "arn:aws:s3:::booppa-reports/test/*"
+      "Resource": "arn:aws:s3:::booppa-reports-04bd50c4/test/*"
     }
   ]
 }
