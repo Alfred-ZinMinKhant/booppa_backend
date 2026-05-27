@@ -56,6 +56,15 @@ MODE_MAP = {
     "tender_intelligence_annual": "subscription",
     "vendor_pro_monthly": "subscription",
     "vendor_pro_annual": "subscription",
+    # Buyer ladder (replaces legacy evaluate_suppliers / verify_supplier_evidence
+    # — those keys above are retained for backward-compat with existing subs).
+    "buyer_starter_monthly": "subscription",
+    "buyer_starter_annual": "subscription",
+    "buyer_pro_monthly": "subscription",
+    "buyer_pro_annual": "subscription",
+    "buyer_enterprise_monthly": "subscription",
+    "buyer_enterprise_annual": "subscription",
+    "notana_document_monthly": "subscription",
 }
 
 
@@ -115,6 +124,12 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
     PROCUREMENT_PRODUCTS = {
         "enterprise_monthly", "enterprise_pro_monthly",
         "evaluate_suppliers_monthly", "verify_supplier_evidence_monthly",
+        # New buyer ladder — same gating: vendors cannot buy buyer-side plans.
+        "buyer_starter_monthly", "buyer_starter_annual",
+        "buyer_pro_monthly", "buyer_pro_annual",
+        "buyer_enterprise_monthly", "buyer_enterprise_annual",
+        # Notana Document is a buyer add-on; gate it too.
+        "notana_document_monthly",
     }
     if product_type in PROCUREMENT_PRODUCTS and prefill_email:
         from app.core.db import SessionLocal
@@ -148,6 +163,18 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         "tender_intelligence_annual": "tender_intelligence",
         "vendor_pro_monthly": "vendor_pro",
         "vendor_pro_annual": "vendor_pro",
+        # Buyer ladder — monthly + annual share the same plan family so
+        # the duplicate-active-subscription guard treats them as one.
+        "buyer_starter_monthly": "buyer_starter",
+        "buyer_starter_annual": "buyer_starter",
+        "buyer_pro_monthly": "buyer_pro",
+        "buyer_pro_annual": "buyer_pro",
+        "buyer_enterprise_monthly": "buyer_enterprise",
+        "buyer_enterprise_annual": "buyer_enterprise",
+        # Notana Document is its own plan family — a buyer can hold one
+        # buyer tier AND a Notana add-on simultaneously, so the guard
+        # only blocks re-purchasing the add-on itself.
+        "notana_document_monthly": "notana_document",
     }
     if product_type in SUBSCRIPTION_PLAN_MAP and prefill_email:
         from app.core.db import SessionLocal

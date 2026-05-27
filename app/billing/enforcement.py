@@ -28,6 +28,11 @@ ENTERPRISE_PLAN_KEYS = {
     "pro_suite", "pro_suite_monthly",
     "evaluate_suppliers", "evaluate_suppliers_monthly",
     "verify_supplier_evidence", "verify_supplier_evidence_monthly",
+    # New buyer ladder — Pro and Enterprise tiers get enterprise-class access
+    # to vendor-evaluation features; Starter is intentionally excluded so the
+    # entry-level price still has a meaningful upgrade path.
+    "buyer_pro", "buyer_pro_monthly", "buyer_pro_annual",
+    "buyer_enterprise", "buyer_enterprise_monthly", "buyer_enterprise_annual",
 }
 
 TENDER_INTELLIGENCE_PLAN_KEYS = {
