@@ -17,6 +17,7 @@ Sections:
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from io import BytesIO
 from typing import Optional, Dict, Any
@@ -31,6 +32,22 @@ from reportlab.platypus import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Logo resolution mirrors pdf_service.py so both generators find the same asset
+# regardless of whether running from source tree or container.
+_HERE = os.path.dirname(__file__)
+_LOGO_CANDIDATES = [
+    os.path.join(_HERE, "..", "..", "static", "logo.png"),
+    "/app/static/logo.png",
+    os.path.join(_HERE, "..", "..", "data", "logo.png"),
+    "/app/data/logo.png",
+]
+_LOGO_PATH: str | None = None
+for _c in _LOGO_CANDIDATES:
+    _abs = os.path.abspath(_c)
+    if os.path.exists(_abs):
+        _LOGO_PATH = _abs
+        break
 
 # Bumped whenever the visible structure of the cover sheet changes (sections,
 # branding, copy). Stored on the Report row so the UI can detect customers
@@ -55,12 +72,30 @@ def _draw_page(canvas, doc):
     canvas.setFillColor(NAVY)
     canvas.rect(0, PAGE_H - HEADER_H, PAGE_W, HEADER_H, fill=1, stroke=0)
 
-    canvas.setFillColor(EMERALD)
-    canvas.setFont("Helvetica-Bold", 8)
-    canvas.drawString(MARGIN, PAGE_H - HEADER_H + 0.18 * inch, "BOOPPA")
+    logo_h = 0.30 * inch
+    logo_y = PAGE_H - HEADER_H + (HEADER_H - logo_h) / 2
+    logo_drawn = False
+    if _LOGO_PATH:
+        try:
+            canvas.drawImage(
+                _LOGO_PATH,
+                MARGIN,
+                logo_y,
+                height=logo_h,
+                preserveAspectRatio=True,
+                mask="auto",
+            )
+            logo_drawn = True
+        except Exception:
+            logo_drawn = False
+    if not logo_drawn:
+        canvas.setFillColor(EMERALD)
+        canvas.setFont("Helvetica-Bold", 8)
+        canvas.drawString(MARGIN, PAGE_H - HEADER_H + 0.18 * inch, "BOOPPA")
+
     canvas.setFillColor(WHITE)
     canvas.setFont("Helvetica", 8)
-    canvas.drawString(MARGIN + 0.6 * inch, PAGE_H - HEADER_H + 0.18 * inch, "Compliance Evidence Pack")
+    canvas.drawString(MARGIN + 0.85 * inch, PAGE_H - HEADER_H + 0.18 * inch, "Compliance Evidence Pack")
 
     canvas.setFillColor(EMERALD)
     canvas.setFont("Helvetica-Bold", 7.5)
