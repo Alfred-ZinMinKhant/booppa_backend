@@ -68,6 +68,22 @@ MODE_MAP = {
 }
 
 
+# Block vendors from purchasing procurement-only plans.
+# Standard/Pro Suites are role-agnostic compliance infrastructure — vendors
+# (incl. enterprise vendors) can buy them. Only the explicit supplier-evaluation
+# SKUs are gated to procurement accounts.
+PROCUREMENT_PRODUCTS = {
+    "enterprise_monthly", "enterprise_pro_monthly",
+    "evaluate_suppliers_monthly", "verify_supplier_evidence_monthly",
+    # New buyer ladder — same gating: vendors cannot buy buyer-side plans.
+    "buyer_starter_monthly", "buyer_starter_annual",
+    "buyer_pro_monthly", "buyer_pro_annual",
+    "buyer_enterprise_monthly", "buyer_enterprise_annual",
+    # Notana Document is a buyer add-on; gate it too.
+    "notana_document_monthly",
+}
+
+
 def get_stripe_client():
     secret = os.environ.get("STRIPE_SECRET_KEY")
     if not secret:
@@ -117,20 +133,6 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
     if not product_type and not price_id:
         raise HTTPException(status_code=400, detail="Missing productType or priceId")
 
-    # Block vendors from purchasing procurement-only plans.
-    # Standard/Pro Suites are role-agnostic compliance infrastructure — vendors
-    # (incl. enterprise vendors) can buy them. Only the explicit supplier-evaluation
-    # SKUs are gated to procurement accounts.
-    PROCUREMENT_PRODUCTS = {
-        "enterprise_monthly", "enterprise_pro_monthly",
-        "evaluate_suppliers_monthly", "verify_supplier_evidence_monthly",
-        # New buyer ladder — same gating: vendors cannot buy buyer-side plans.
-        "buyer_starter_monthly", "buyer_starter_annual",
-        "buyer_pro_monthly", "buyer_pro_annual",
-        "buyer_enterprise_monthly", "buyer_enterprise_annual",
-        # Notana Document is a buyer add-on; gate it too.
-        "notana_document_monthly",
-    }
     if product_type in PROCUREMENT_PRODUCTS and prefill_email:
         from app.core.db import SessionLocal
         from app.core.models import User
