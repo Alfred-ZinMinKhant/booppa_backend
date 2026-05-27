@@ -131,7 +131,19 @@ SUBSCRIPTIONS: list[ProductCase] = [
         "compliance_evidence_monthly",
         "tender_intelligence_monthly", "tender_intelligence_annual",
         "vendor_pro_monthly", "vendor_pro_annual",
+        # Buyer ladder + Notana add-on (new 2026-05).
+        "buyer_starter_monthly", "buyer_starter_annual",
+        "buyer_pro_monthly", "buyer_pro_annual",
+        "buyer_enterprise_monthly", "buyer_enterprise_annual",
+        "notana_document_monthly",
     ]
+]
+
+# Subset used by buyer-specific tests so they can iterate just the new ladder
+# without re-parametrizing across the whole subscription set.
+BUYER_LADDER: list[ProductCase] = [
+    c for c in SUBSCRIPTIONS
+    if c.product_type.startswith("buyer_") or c.product_type == "notana_document_monthly"
 ]
 
 ALL_SKUS: list[ProductCase] = ONE_TIME + BUNDLES + SUBSCRIPTIONS

@@ -185,6 +185,66 @@ PRODUCTS = {
         "description": "Full audit-ready verification suite with on-chain logs and custom evaluation frameworks",
         "type": "subscription",
     },
+    # ── Buyer subscriptions (new ladder — replaces evaluate_suppliers /
+    #    verify_supplier_evidence above; those entries remain only for
+    #    backward compatibility with existing Stripe subscriptions until
+    #    they are migrated). ────────────────────────────────────────────
+    "buyer_starter_monthly": {
+        "name": "Buyer Starter (Monthly)",
+        "slug": "buyer_starter_monthly",
+        "price_sgd": 99,
+        "price_cents": 9900,
+        "description": "Entry-level vendor evaluation — 10 vendor scans/month, basic risk signals, single-user",
+        "type": "subscription",
+    },
+    "buyer_starter_annual": {
+        "name": "Buyer Starter (Annual)",
+        "slug": "buyer_starter_annual",
+        "price_sgd": 990,
+        "price_cents": 99000,
+        "description": "Annual Buyer Starter — 2 months free",
+        "type": "subscription",
+    },
+    "buyer_pro_monthly": {
+        "name": "Buyer Pro (Monthly)",
+        "slug": "buyer_pro_monthly",
+        "price_sgd": 399,
+        "price_cents": 39900,
+        "description": "Active buyer teams — 50 vendor scans/month, comparison engine, drift tracking, 5 seats",
+        "type": "subscription",
+    },
+    "buyer_pro_annual": {
+        "name": "Buyer Pro (Annual)",
+        "slug": "buyer_pro_annual",
+        "price_sgd": 3990,
+        "price_cents": 399000,
+        "description": "Annual Buyer Pro — 2 months free",
+        "type": "subscription",
+    },
+    "buyer_enterprise_monthly": {
+        "name": "Buyer Enterprise (Monthly)",
+        "slug": "buyer_enterprise_monthly",
+        "price_sgd": 999,
+        "price_cents": 99900,
+        "description": "Institutional procurement — 250 vendor scans/month + unlimited re-runs, on-chain logs, SSO, audit-ready exports",
+        "type": "subscription",
+    },
+    "buyer_enterprise_annual": {
+        "name": "Buyer Enterprise (Annual)",
+        "slug": "buyer_enterprise_annual",
+        "price_sgd": 9990,
+        "price_cents": 999000,
+        "description": "Annual Buyer Enterprise — 2 months free",
+        "type": "subscription",
+    },
+    "notana_document_monthly": {
+        "name": "Notana Document (Add-On, Monthly)",
+        "slug": "notana_document_monthly",
+        "price_sgd": 199,
+        "price_cents": 19900,
+        "description": "Notarisation add-on for buyer plans — 10 buyer-initiated notarisations/month with on-chain timestamped evidence",
+        "type": "subscription",
+    },
     "standard_suite_monthly": {
         "name": "Standard Suite (Monthly)",
         "slug": "standard_suite_monthly",

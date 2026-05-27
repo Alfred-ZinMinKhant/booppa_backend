@@ -166,6 +166,15 @@ jobs:
           # Vendor Pro — SGD 99/mo tier (Vendor Active + quarterly PDPA + analytics + competitor awareness)
           STRIPE_VENDOR_PRO_MONTHLY: ${{ secrets.STRIPE_VENDOR_PRO_MONTHLY }}
           STRIPE_VENDOR_PRO_ANNUAL: ${{ secrets.STRIPE_VENDOR_PRO_ANNUAL }}
+          # Buyer ladder (2026-05 redesign) — replaces evaluate_suppliers / verify_supplier_evidence above.
+          STRIPE_BUYER_STARTER_MONTHLY: ${{ secrets.STRIPE_BUYER_STARTER_MONTHLY }}
+          STRIPE_BUYER_STARTER_ANNUAL: ${{ secrets.STRIPE_BUYER_STARTER_ANNUAL }}
+          STRIPE_BUYER_PRO_MONTHLY: ${{ secrets.STRIPE_BUYER_PRO_MONTHLY }}
+          STRIPE_BUYER_PRO_ANNUAL: ${{ secrets.STRIPE_BUYER_PRO_ANNUAL }}
+          STRIPE_BUYER_ENTERPRISE_MONTHLY: ${{ secrets.STRIPE_BUYER_ENTERPRISE_MONTHLY }}
+          STRIPE_BUYER_ENTERPRISE_ANNUAL: ${{ secrets.STRIPE_BUYER_ENTERPRISE_ANNUAL }}
+          # Notana Document add-on — buyer-side notarisation pack.
+          STRIPE_NOTANA_DOCUMENT_MONTHLY: ${{ secrets.STRIPE_NOTANA_DOCUMENT_MONTHLY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN: ${{ secrets.NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN }}
           # Security intelligence
@@ -240,6 +249,13 @@ jobs:
                   { "name": "STRIPE_TENDER_INTELLIGENCE_ANNUAL", "value": "${STRIPE_TENDER_INTELLIGENCE_ANNUAL}" },
                   { "name": "STRIPE_VENDOR_PRO_MONTHLY", "value": "${STRIPE_VENDOR_PRO_MONTHLY}" },
                   { "name": "STRIPE_VENDOR_PRO_ANNUAL", "value": "${STRIPE_VENDOR_PRO_ANNUAL}" },
+                  { "name": "STRIPE_BUYER_STARTER_MONTHLY", "value": "${STRIPE_BUYER_STARTER_MONTHLY}" },
+                  { "name": "STRIPE_BUYER_STARTER_ANNUAL", "value": "${STRIPE_BUYER_STARTER_ANNUAL}" },
+                  { "name": "STRIPE_BUYER_PRO_MONTHLY", "value": "${STRIPE_BUYER_PRO_MONTHLY}" },
+                  { "name": "STRIPE_BUYER_PRO_ANNUAL", "value": "${STRIPE_BUYER_PRO_ANNUAL}" },
+                  { "name": "STRIPE_BUYER_ENTERPRISE_MONTHLY", "value": "${STRIPE_BUYER_ENTERPRISE_MONTHLY}" },
+                  { "name": "STRIPE_BUYER_ENTERPRISE_ANNUAL", "value": "${STRIPE_BUYER_ENTERPRISE_ANNUAL}" },
+                  { "name": "STRIPE_NOTANA_DOCUMENT_MONTHLY", "value": "${STRIPE_NOTANA_DOCUMENT_MONTHLY}" },
                   { "name": "RESEND_API_KEY", "value": "${RESEND_API_KEY}" },
                   { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" },
                   { "name": "VIRUSTOTAL_API_KEY", "value": "${VIRUSTOTAL_API_KEY}" },
@@ -319,6 +335,15 @@ jobs:
           # Vendor Pro — SGD 99/mo tier (Vendor Active + quarterly PDPA + analytics + competitor awareness)
           STRIPE_VENDOR_PRO_MONTHLY: ${{ secrets.STRIPE_VENDOR_PRO_MONTHLY }}
           STRIPE_VENDOR_PRO_ANNUAL: ${{ secrets.STRIPE_VENDOR_PRO_ANNUAL }}
+          # Buyer ladder (2026-05 redesign) — replaces evaluate_suppliers / verify_supplier_evidence above.
+          STRIPE_BUYER_STARTER_MONTHLY: ${{ secrets.STRIPE_BUYER_STARTER_MONTHLY }}
+          STRIPE_BUYER_STARTER_ANNUAL: ${{ secrets.STRIPE_BUYER_STARTER_ANNUAL }}
+          STRIPE_BUYER_PRO_MONTHLY: ${{ secrets.STRIPE_BUYER_PRO_MONTHLY }}
+          STRIPE_BUYER_PRO_ANNUAL: ${{ secrets.STRIPE_BUYER_PRO_ANNUAL }}
+          STRIPE_BUYER_ENTERPRISE_MONTHLY: ${{ secrets.STRIPE_BUYER_ENTERPRISE_MONTHLY }}
+          STRIPE_BUYER_ENTERPRISE_ANNUAL: ${{ secrets.STRIPE_BUYER_ENTERPRISE_ANNUAL }}
+          # Notana Document add-on — buyer-side notarisation pack.
+          STRIPE_NOTANA_DOCUMENT_MONTHLY: ${{ secrets.STRIPE_NOTANA_DOCUMENT_MONTHLY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN: ${{ secrets.NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN }}
           # Security intelligence
@@ -391,6 +416,13 @@ jobs:
                   { "name": "STRIPE_TENDER_INTELLIGENCE_ANNUAL", "value": "${STRIPE_TENDER_INTELLIGENCE_ANNUAL}" },
                   { "name": "STRIPE_VENDOR_PRO_MONTHLY", "value": "${STRIPE_VENDOR_PRO_MONTHLY}" },
                   { "name": "STRIPE_VENDOR_PRO_ANNUAL", "value": "${STRIPE_VENDOR_PRO_ANNUAL}" },
+                  { "name": "STRIPE_BUYER_STARTER_MONTHLY", "value": "${STRIPE_BUYER_STARTER_MONTHLY}" },
+                  { "name": "STRIPE_BUYER_STARTER_ANNUAL", "value": "${STRIPE_BUYER_STARTER_ANNUAL}" },
+                  { "name": "STRIPE_BUYER_PRO_MONTHLY", "value": "${STRIPE_BUYER_PRO_MONTHLY}" },
+                  { "name": "STRIPE_BUYER_PRO_ANNUAL", "value": "${STRIPE_BUYER_PRO_ANNUAL}" },
+                  { "name": "STRIPE_BUYER_ENTERPRISE_MONTHLY", "value": "${STRIPE_BUYER_ENTERPRISE_MONTHLY}" },
+                  { "name": "STRIPE_BUYER_ENTERPRISE_ANNUAL", "value": "${STRIPE_BUYER_ENTERPRISE_ANNUAL}" },
+                  { "name": "STRIPE_NOTANA_DOCUMENT_MONTHLY", "value": "${STRIPE_NOTANA_DOCUMENT_MONTHLY}" },
                   { "name": "RESEND_API_KEY", "value": "${RESEND_API_KEY}" },
                   { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" },
                   { "name": "VIRUSTOTAL_API_KEY", "value": "${VIRUSTOTAL_API_KEY}" },
