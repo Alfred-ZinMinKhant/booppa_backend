@@ -293,14 +293,9 @@ async def enterprise_upload_document(
             raise HTTPException(status_code=404, detail="User not found.")
 
         plan = getattr(user, "plan", "free") or "free"
-        enterprise_plans = {
-            "enterprise", "enterprise_monthly",
-            "enterprise_pro", "enterprise_pro_monthly",
-            "standard_suite", "standard_suite_monthly",
-            "pro_suite", "pro_suite_monthly",
-        }
-        if plan not in enterprise_plans:
-            raise HTTPException(status_code=403, detail="Enterprise plan required for included notarizations.")
+        from app.core.models_v8 import ENTERPRISE_NOTARIZATION_LIMITS
+        if plan not in ENTERPRISE_NOTARIZATION_LIMITS:
+            raise HTTPException(status_code=403, detail="A plan with included monthly notarizations is required.")
 
         # Check credits
         credit_info = _check_enterprise_credits(db, str(user.id), plan)
@@ -628,8 +623,8 @@ async def get_enterprise_credits(email: str):
             raise HTTPException(status_code=404, detail="User not found.")
 
         plan = getattr(user, "plan", "free") or "free"
-        enterprise_plans = {"enterprise", "enterprise_pro"}
-        if plan not in enterprise_plans:
+        from app.core.models_v8 import ENTERPRISE_NOTARIZATION_LIMITS
+        if plan not in ENTERPRISE_NOTARIZATION_LIMITS:
             return {"has_credits": False, "used": 0, "limit": 0, "plan": plan, "enterprise": False}
 
         credit_info = _check_enterprise_credits(db, str(user.id), plan)

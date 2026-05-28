@@ -21,15 +21,14 @@ router = APIRouter()
 
 
 RFP_PRODUCT_TYPES = {"rfp_express", "rfp_complete"}
+# Single-document notarization is one-time (pay-per-doc, grants a credit balance).
+# The 10/50 batch tiers are now subscriptions (monthly quota) — see
+# SUBSCRIPTION_PRODUCT_TYPES + ENTERPRISE_NOTARIZATION_LIMITS.
 NOTARIZATION_PRODUCT_TYPES = {
     "compliance_notarization_1",
-    "compliance_notarization_10",
-    "compliance_notarization_50",
 }
 NOTARIZATION_CREDIT_AMOUNTS = {
     "compliance_notarization_1": 1,
-    "compliance_notarization_10": 10,
-    "compliance_notarization_50": 50,
 }
 VENDOR_PROOF_PRODUCT_TYPES = {"vendor_proof"}
 PDPA_PRODUCT_TYPES = {"pdpa_quick_scan", "pdpa_snapshot"}
@@ -57,6 +56,9 @@ SUBSCRIPTION_PRODUCT_TYPES = {
     "buyer_enterprise_monthly",
     "buyer_enterprise_annual",
     "notana_document_monthly",
+    # Batch notarization tiers are recurring monthly allowances.
+    "compliance_notarization_10",
+    "compliance_notarization_50",
 }
 
 # Bundle → component mapping.
@@ -273,6 +275,9 @@ async def _activate_subscription(
             "buyer_enterprise_monthly": "buyer_enterprise",
             "buyer_enterprise_annual": "buyer_enterprise",
             "notana_document_monthly": "notana_document",
+            # Batch notarization subscriptions keep their slug as the plan.
+            "compliance_notarization_10": "compliance_notarization_10",
+            "compliance_notarization_50": "compliance_notarization_50",
         }
         new_plan = plan_map.get(product_type, "pro")
 
@@ -332,10 +337,12 @@ async def _activate_subscription(
                 "compliance_evidence": "Compliance Evidence",
                 "tender_intelligence": "Tender Intelligence",
                 "vendor_pro": "Vendor Pro",
-                "buyer_starter": "Buyer Starter",
-                "buyer_pro": "Buyer Pro",
+                "buyer_starter": "Buyer Essentials",
+                "buyer_pro": "Buyer Professional",
                 "buyer_enterprise": "Buyer Enterprise",
                 "notana_document": "Notana Document",
+                "compliance_notarization_10": "Small Batch (10 notarizations/mo)",
+                "compliance_notarization_50": "Enterprise Batch (50 notarizations/mo)",
             }
             label = plan_labels.get(new_plan, new_plan)
 

@@ -345,9 +345,12 @@ class EvidencePackage(Base):
 # Hard monthly caps per plan. No "unlimited" tier — every plan has a ceiling
 # so margins stay predictable and notarization can't be abused at scale.
 #
-# Standard Suite : 50 / month
-# Pro Suite      : 100 / month
-# Enterprise Pro : 200 / month
+# Standard Suite     : 50 / month
+# Pro Suite          : 100 / month
+# Enterprise Pro     : 200 / month
+# Buyer Essentials   : 1 / month
+# Buyer Professional : 5 / month
+# Buyer Enterprise   : 20 / month
 #
 # Credits are consumed when a subscriber notarizes via the
 # /notarize/upload endpoint without going through Stripe checkout.
@@ -364,6 +367,19 @@ ENTERPRISE_NOTARIZATION_LIMITS = {
     "vendor_pro":              1,
     "vendor_pro_monthly":      1,
     "vendor_pro_annual":       1,
+    # Buyer ladder — notarizations bundled into each tier.
+    "buyer_starter":             1,
+    "buyer_starter_monthly":     1,
+    "buyer_starter_annual":      1,
+    "buyer_pro":                 5,
+    "buyer_pro_monthly":         5,
+    "buyer_pro_annual":          5,
+    "buyer_enterprise":          20,
+    "buyer_enterprise_monthly":  20,
+    "buyer_enterprise_annual":   20,
+    # Batch notarization subscriptions — monthly allowance, resets each cycle.
+    "compliance_notarization_10": 10,
+    "compliance_notarization_50": 50,
 }
 
 
