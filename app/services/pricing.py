@@ -31,6 +31,14 @@ PRODUCTS = {
         "description": "Single-document blockchain notarization",
         "type": "one-time",
     },
+    "notarization_addon_1": {
+        "name": "Extra Notarization",
+        "slug": "notarization_addon_1",
+        "price_sgd": 29,
+        "price_cents": 2900,
+        "description": "Top-up — 1 additional notarization credit when a plan's monthly allowance runs out",
+        "type": "one-time",
+    },
     "compliance_notarization_10": {
         "name": "Small Batch (Monthly)",
         "slug": "compliance_notarization_10",

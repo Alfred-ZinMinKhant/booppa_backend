@@ -26,9 +26,11 @@ RFP_PRODUCT_TYPES = {"rfp_express", "rfp_complete"}
 # SUBSCRIPTION_PRODUCT_TYPES + ENTERPRISE_NOTARIZATION_LIMITS.
 NOTARIZATION_PRODUCT_TYPES = {
     "compliance_notarization_1",
+    "notarization_addon_1",
 }
 NOTARIZATION_CREDIT_AMOUNTS = {
     "compliance_notarization_1": 1,
+    "notarization_addon_1": 1,
 }
 VENDOR_PROOF_PRODUCT_TYPES = {"vendor_proof"}
 PDPA_PRODUCT_TYPES = {"pdpa_quick_scan", "pdpa_snapshot"}

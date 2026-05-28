@@ -33,6 +33,8 @@ MODE_MAP = {
     "rfp_express": "payment",
     "rfp_complete": "payment",
     "compliance_notarization_1": "payment",
+    # One-time top-up: 1 extra notarization credit.
+    "notarization_addon_1": "payment",
     # Batch notarization tiers are recurring monthly allowances.
     "compliance_notarization_10": "subscription",
     "compliance_notarization_50": "subscription",
