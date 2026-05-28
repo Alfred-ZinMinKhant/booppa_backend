@@ -1045,8 +1045,8 @@ class PDFService:
 
             story.append(Spacer(1, 0.25 * inch))
 
-            # Logo on cover page (if available)
-            if _LOGO_PATH and is_pdpa:
+            # Logo on cover page (if available) — shown for every report type
+            if _LOGO_PATH:
                 try:
                     story.append(Image(_LOGO_PATH, width=1.2 * inch, height=0.4 * inch,
                                        hAlign="LEFT"))
