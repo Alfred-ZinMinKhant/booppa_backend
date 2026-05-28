@@ -2,7 +2,7 @@
 """
 scripts/seed_fake_users.py — Seed verified users and fake vendors
 ===================================================================
-Generates around 500 verified users (claimed vendors) and 200-300 unclaimed fake vendors.
+Generates 100 verified users (claimed vendors). No unclaimed fake vendors.
 Fully populates related tables: users, marketplace_vendors, verify_records,
 vendor_scores, vendor_status_snapshots, vendor_sectors, and discovered_vendors.
 
@@ -122,9 +122,9 @@ def run(clean: bool, dry_run: bool) -> None:
     if clean and not dry_run:
         clean_existing_mock_data(db)
         
-    # Target random counts
-    target_verified = random.randint(485, 515)
-    target_unclaimed = random.randint(200, 300)
+    # Target counts: 100 verified (claimed) vendors, no unclaimed fake vendors.
+    target_verified = 100
+    target_unclaimed = 0
     
     print(f"[seed_fake_users] Targets:")
     print(f"  Verified Users (Claimed Vendors) : {target_verified}")
