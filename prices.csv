@@ -1,4 +1,13 @@
 Price ID,Product ID,Product Name,Product Statement Descriptor,Product Tax Code,Description,Created (UTC),Amount,Currency,Interval,Interval Count,Usage Type,Aggregate Usage,Billing Scheme,Trial Period Days,Tax Behavior
+price_1Tbu7THOrR48Mz6bMiSXzPcZ,prod_Ub6K3CBf3r2tHG,STRIPE_COMPLIANCE_NOTARIZATION_50,,,,2026-05-28 02:56,1750.00,sgd,month,1,licensed,,per_unit,,unspecified
+price_1Tbu4NHOrR48Mz6bJAxgOgZE,prod_Ub6GhWr0D9JMIj,STRIPE_COMPLIANCE_NOTARIZATION_10,,,,2026-05-28 02:53,390.00,sgd,month,1,licensed,,per_unit,,unspecified
+price_1TbhJ6HOrR48Mz6bcBGj3AJb,prod_Uat5spnoiNzFOK,STRIPE_NOTANA_DOCUMENT_MONTHLY,,,,2026-05-27 13:15,199.00,sgd,month,1,licensed,,per_unit,,unspecified
+price_1TbhIVHOrR48Mz6b0ZRki1di,prod_Uat44Mk1qQYJuB,STRIPE_BUYER_ENTERPRISE_ANNUAL,,,,2026-05-27 13:14,8150.00,sgd,year,1,licensed,,per_unit,,unspecified
+price_1TbhI4HOrR48Mz6bSOZDOhHy,prod_Uat4N6TksM4MMM,STRIPE_BUYER_ENTERPRISE_MONTHLY,,,,2026-05-27 13:14,799.00,sgd,month,1,licensed,,per_unit,,unspecified
+price_1TbhHNHOrR48Mz6bFyraaeJo,prod_Uat3dadJtTDn3t,STRIPE_BUYER_PRO_ANNUAL,,,,2026-05-27 13:13,4070.00,sgd,year,1,licensed,,per_unit,,unspecified
+price_1TbhGyHOrR48Mz6bC1XEV7bH,prod_Uat3ay85mogaxA,STRIPE_BUYER_PRO_MONTHLY,,,,2026-05-27 13:13,399.00,sgd,month,1,licensed,,per_unit,,unspecified
+price_1TbhGLHOrR48Mz6bPGElcbIq,prod_Uat2oJxLzdmQzN,STRIPE_BUYER_STARTER_ANNUAL,,,,2026-05-27 13:12,1520.00,sgd,year,1,licensed,,per_unit,,unspecified
+price_1TbhFvHOrR48Mz6bBjvp2VuE,prod_Uat1DkCkTU5hTg,STRIPE_BUYER_STARTER_MONTHLY,,,,2026-05-27 13:12,149.00,sgd,month,1,licensed,,per_unit,,unspecified
 price_1TaHtiHOrR48Mz6bmRusAGs9,prod_UZQlewUpQPhxN7,STRIPE_VENDOR_PRO_ANNUAL,,,,2026-05-23 15:55,1099.00,sgd,year,1,licensed,,per_unit,,unspecified
 price_1TaHsZHOrR48Mz6bxvj2X9DY,prod_UZQkPNexCsTwZF,STRIPE_VENDOR_PRO_MONTHLY,,,,2026-05-23 15:54,99.00,sgd,month,1,licensed,,per_unit,,unspecified
 price_1TaDbBHOrR48Mz6biz48TMBZ,prod_UZMJSAiWWyxef8,STRIPE_TENDER_INTELLIGENCE_ANNUAL,,,,2026-05-23 11:20,1499.00,sgd,year,1,licensed,,per_unit,,unspecified
