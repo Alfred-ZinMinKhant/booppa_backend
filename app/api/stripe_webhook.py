@@ -50,14 +50,13 @@ SUBSCRIPTION_PRODUCT_TYPES = {
     "tender_intelligence_annual",
     "vendor_pro_monthly",
     "vendor_pro_annual",
-    # Buyer ladder + Notana add-on
+    # Buyer ladder
     "buyer_starter_monthly",
     "buyer_starter_annual",
     "buyer_pro_monthly",
     "buyer_pro_annual",
     "buyer_enterprise_monthly",
     "buyer_enterprise_annual",
-    "notana_document_monthly",
     # Batch notarization tiers are recurring monthly allowances.
     "compliance_notarization_10",
     "compliance_notarization_50",
@@ -118,7 +117,6 @@ _PLAN_TO_VERIFICATION_LEVEL = {
     "buyer_starter":            "STANDARD",
     "buyer_pro":                "STANDARD",
     "buyer_enterprise":         "PREMIUM",
-    "notana_document":          "STANDARD",
 }
 _LEVEL_RANK = {"BASIC": 0, "STANDARD": 1, "PREMIUM": 2, "GOVERNMENT": 3}
 
@@ -268,15 +266,14 @@ async def _activate_subscription(
             "tender_intelligence_annual": "tender_intelligence",
             "vendor_pro_monthly": "vendor_pro",
             "vendor_pro_annual": "vendor_pro",
-            # Buyer ladder + Notana add-on. Monthly + annual share the same
-            # plan family so cancellation/upgrade flows treat them as one.
+            # Buyer ladder. Monthly + annual share the same plan family so
+            # cancellation/upgrade flows treat them as one.
             "buyer_starter_monthly": "buyer_starter",
             "buyer_starter_annual": "buyer_starter",
             "buyer_pro_monthly": "buyer_pro",
             "buyer_pro_annual": "buyer_pro",
             "buyer_enterprise_monthly": "buyer_enterprise",
             "buyer_enterprise_annual": "buyer_enterprise",
-            "notana_document_monthly": "notana_document",
             # Batch notarization subscriptions keep their slug as the plan.
             "compliance_notarization_10": "compliance_notarization_10",
             "compliance_notarization_50": "compliance_notarization_50",
@@ -342,7 +339,6 @@ async def _activate_subscription(
                 "buyer_starter": "Buyer Essentials",
                 "buyer_pro": "Buyer Professional",
                 "buyer_enterprise": "Buyer Enterprise",
-                "notana_document": "Notana Document",
                 "compliance_notarization_10": "Small Batch (10 notarizations/mo)",
                 "compliance_notarization_50": "Enterprise Batch (50 notarizations/mo)",
             }

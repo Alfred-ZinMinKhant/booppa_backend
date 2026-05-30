@@ -253,14 +253,6 @@ PRODUCTS = {
         "type": "subscription",
         "notarizations_per_month": 20,
     },
-    "notana_document_monthly": {
-        "name": "Notana Document (Add-On, Monthly)",
-        "slug": "notana_document_monthly",
-        "price_sgd": 199,
-        "price_cents": 19900,
-        "description": "Notarisation add-on for buyer plans — 10 buyer-initiated notarisations/month with on-chain timestamped evidence",
-        "type": "subscription",
-    },
     "standard_suite_monthly": {
         "name": "Standard Suite (Monthly)",
         "slug": "standard_suite_monthly",

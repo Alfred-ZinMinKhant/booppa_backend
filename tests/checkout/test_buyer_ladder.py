@@ -6,7 +6,7 @@ These tests pin the four behavioural changes from the strategy diagnosis
   1. The new ladder has a sub-499 entry point (Starter at SGD 99).
   2. There is exactly ONE tier per price band — no duplicate 499s.
   3. Notarisations are NOT bundled into a buyer tier; they exist as the
-     `notana_document_monthly` add-on.
+     `notarization_addon_1` one-time top-up SKU.
   4. Buyer tiers are correctly classified as subscriptions in MODE_MAP and
      route through `_activate_subscription` in the webhook.
 
@@ -32,13 +32,12 @@ BUYER_TIER_KEYS = (
     "buyer_enterprise_monthly",
     "buyer_enterprise_annual",
 )
-NOTANA_KEY = "notana_document_monthly"
 
 
 # ── 1. Catalog completeness — pricing.py + MODE_MAP + webhook agree ──────────
 
 
-@pytest.mark.parametrize("key", (*BUYER_TIER_KEYS, NOTANA_KEY))
+@pytest.mark.parametrize("key", BUYER_TIER_KEYS)
 def test_buyer_sku_present_in_pricing_catalog(key):
     """Every new buyer SKU must be defined in app/services/pricing.py."""
     p = get_product(key)
@@ -48,7 +47,7 @@ def test_buyer_sku_present_in_pricing_catalog(key):
     assert p["price_cents"] == p["price_sgd"] * 100
 
 
-@pytest.mark.parametrize("key", (*BUYER_TIER_KEYS, NOTANA_KEY))
+@pytest.mark.parametrize("key", BUYER_TIER_KEYS)
 def test_buyer_sku_routes_as_subscription(key):
     """MODE_MAP and the webhook's subscription set must include the SKU."""
     assert MODE_MAP.get(key) == "subscription", f"{key} not subscription in MODE_MAP"
@@ -96,27 +95,26 @@ def test_buyer_annual_is_15_percent_off(monthly, annual):
     assert a == expected, f"{annual} should be 15% off 12× {monthly} ({expected}), got {a}"
 
 
-# ── 3. Notana add-on exists as its own discrete SKU ──────────────────────────
+# ── 3. Notarization top-up exists as its own discrete one-time SKU ───────────
 #
 # Note: buyer tier descriptions intentionally mention bundled notarisation
 # counts (1/5/20 per month) — those are real plan inclusions tracked by the
-# `notarizations_per_month` field. `notana_document_monthly` is a top-up
-# add-on for buyers who need MORE than the included allowance.
+# `notarizations_per_month` field. `notarization_addon_1` is the one-time
+# top-up for buyers who need MORE than the included allowance.
 
 
-def test_notana_addon_is_its_own_sku():
-    """Notana Document exists as a discrete subscription SKU, not bundled into a tier."""
-    addon = get_product(NOTANA_KEY)
+def test_notarization_addon_is_one_time_topup():
+    """notarization_addon_1 exists as a one-time top-up SKU, not bundled into a tier."""
+    addon = get_product("notarization_addon_1")
     assert addon is not None
-    assert addon["type"] == "subscription"
-    # Sanity: it should mention notarisation in its copy (it's the whole point).
+    assert addon["type"] == "one-time"
     assert "notari" in addon["description"].lower()
 
 
 # ── 4. Procurement-only gating extends to the new ladder ─────────────────────
 
 
-@pytest.mark.parametrize("key", (*BUYER_TIER_KEYS, NOTANA_KEY))
+@pytest.mark.parametrize("key", BUYER_TIER_KEYS)
 def test_buyer_sku_is_procurement_gated(key):
     """A vendor account must not be able to buy any buyer-side plan."""
     assert key in PROCUREMENT_PRODUCTS, (
