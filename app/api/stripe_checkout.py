@@ -67,7 +67,6 @@ MODE_MAP = {
     "buyer_pro_annual": "subscription",
     "buyer_enterprise_monthly": "subscription",
     "buyer_enterprise_annual": "subscription",
-    "notana_document_monthly": "subscription",
 }
 
 
@@ -82,8 +81,6 @@ PROCUREMENT_PRODUCTS = {
     "buyer_starter_monthly", "buyer_starter_annual",
     "buyer_pro_monthly", "buyer_pro_annual",
     "buyer_enterprise_monthly", "buyer_enterprise_annual",
-    # Notana Document is a buyer add-on; gate it too.
-    "notana_document_monthly",
 }
 
 
@@ -176,10 +173,6 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         "buyer_pro_annual": "buyer_pro",
         "buyer_enterprise_monthly": "buyer_enterprise",
         "buyer_enterprise_annual": "buyer_enterprise",
-        # Notana Document is its own plan family — a buyer can hold one
-        # buyer tier AND a Notana add-on simultaneously, so the guard
-        # only blocks re-purchasing the add-on itself.
-        "notana_document_monthly": "notana_document",
     }
     if product_type in SUBSCRIPTION_PLAN_MAP and prefill_email:
         from app.core.db import SessionLocal

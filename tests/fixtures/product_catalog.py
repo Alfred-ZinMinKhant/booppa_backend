@@ -72,6 +72,14 @@ ONE_TIME: list[ProductCase] = [
         expected_pdf=False,  # cert is generated on redemption, not at checkout
         email_subject_keywords=("Notarization",),
     ),
+    ProductCase(
+        product_type="notarization_addon_1",
+        mode="payment",
+        family="one_time",
+        expected_fulfillment="_fulfill_notarization",
+        expected_pdf=False,
+        email_subject_keywords=("Notarization",),
+    ),
 ]
 
 BUNDLES: list[ProductCase] = [
@@ -117,11 +125,10 @@ SUBSCRIPTIONS: list[ProductCase] = [
         "compliance_evidence_monthly",
         "tender_intelligence_monthly", "tender_intelligence_annual",
         "vendor_pro_monthly", "vendor_pro_annual",
-        # Buyer ladder + Notana add-on (new 2026-05).
+        # Buyer ladder (new 2026-05).
         "buyer_starter_monthly", "buyer_starter_annual",
         "buyer_pro_monthly", "buyer_pro_annual",
         "buyer_enterprise_monthly", "buyer_enterprise_annual",
-        "notana_document_monthly",
         # Notarization batch plans — recurring monthly subscriptions
         # (10 or 50 notarizations/mo). MODE_MAP marks them subscription
         # and the webhook routes them through _activate_subscription.
@@ -134,7 +141,7 @@ SUBSCRIPTIONS: list[ProductCase] = [
 # without re-parametrizing across the whole subscription set.
 BUYER_LADDER: list[ProductCase] = [
     c for c in SUBSCRIPTIONS
-    if c.product_type.startswith("buyer_") or c.product_type == "notana_document_monthly"
+    if c.product_type.startswith("buyer_")
 ]
 
 ALL_SKUS: list[ProductCase] = ONE_TIME + BUNDLES + SUBSCRIPTIONS
