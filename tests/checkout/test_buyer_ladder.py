@@ -87,24 +87,21 @@ def test_ladder_is_strictly_increasing():
         ("buyer_enterprise_monthly", "buyer_enterprise_annual"),
     ],
 )
-def test_annual_is_two_months_free(monthly, annual):
-    """Annual = 10 × monthly per the existing convention (vendor_active, pdpa_monitor)."""
+def test_buyer_annual_is_15_percent_off(monthly, annual):
+    """Buyer annuals price at 15% off monthly × 12 — matches the "save 15%"
+    copy on the pricing & procurement pages."""
     m = PRODUCTS[monthly]["price_sgd"]
     a = PRODUCTS[annual]["price_sgd"]
-    assert a == m * 10, f"{annual} should be 10× {monthly} ({m * 10}), got {a}"
+    expected = round(m * 12 * 0.85)
+    assert a == expected, f"{annual} should be 15% off 12× {monthly} ({expected}), got {a}"
 
 
-# ── 3. Notarisations are NOT bundled into buyer tiers — Diagnosis Problem #3 ─
-
-
-@pytest.mark.parametrize("key", BUYER_TIER_KEYS)
-def test_buyer_tier_description_does_not_advertise_notarisations(key):
-    """Buyer tier copy must not claim N notarisations — that's the add-on's job."""
-    description = PRODUCTS[key]["description"].lower()
-    assert "notarization" not in description and "notarisation" not in description, (
-        f"{key} description still advertises notarisations: {description!r}. "
-        f"Notarisations belong to {NOTANA_KEY}, not buyer tiers."
-    )
+# ── 3. Notana add-on exists as its own discrete SKU ──────────────────────────
+#
+# Note: buyer tier descriptions intentionally mention bundled notarisation
+# counts (1/5/20 per month) — those are real plan inclusions tracked by the
+# `notarizations_per_month` field. `notana_document_monthly` is a top-up
+# add-on for buyers who need MORE than the included allowance.
 
 
 def test_notana_addon_is_its_own_sku():

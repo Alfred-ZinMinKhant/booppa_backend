@@ -72,20 +72,6 @@ ONE_TIME: list[ProductCase] = [
         expected_pdf=False,  # cert is generated on redemption, not at checkout
         email_subject_keywords=("Notarization",),
     ),
-    ProductCase(
-        product_type="compliance_notarization_10",
-        mode="payment",
-        family="one_time",
-        expected_fulfillment="_fulfill_notarization",
-        email_subject_keywords=("Notarization",),
-    ),
-    ProductCase(
-        product_type="compliance_notarization_50",
-        mode="payment",
-        family="one_time",
-        expected_fulfillment="_fulfill_notarization",
-        email_subject_keywords=("Notarization",),
-    ),
 ]
 
 BUNDLES: list[ProductCase] = [
@@ -136,6 +122,11 @@ SUBSCRIPTIONS: list[ProductCase] = [
         "buyer_pro_monthly", "buyer_pro_annual",
         "buyer_enterprise_monthly", "buyer_enterprise_annual",
         "notana_document_monthly",
+        # Notarization batch plans — recurring monthly subscriptions
+        # (10 or 50 notarizations/mo). MODE_MAP marks them subscription
+        # and the webhook routes them through _activate_subscription.
+        "compliance_notarization_10",
+        "compliance_notarization_50",
     ]
 ]
 
