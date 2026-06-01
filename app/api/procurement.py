@@ -66,7 +66,8 @@ ORDERING_POLICY = {
 }
 
 
-ENTERPRISE_PLANS = {"enterprise", "enterprise_pro"}
+from app.billing.enforcement import PROCUREMENT_PLAN_KEYS
+from app.billing.scan_credits import consume_scan, scan_usage
 
 
 def _require_procurement(current_user):
@@ -75,11 +76,11 @@ def _require_procurement(current_user):
         raise HTTPException(status_code=403, detail="Procurement account required.")
     if role == "ADMIN":
         return  # admins always pass
-    plan = getattr(current_user, "plan", "free") or "free"
-    if plan not in ENTERPRISE_PLANS:
+    plan = (getattr(current_user, "plan", "free") or "free").lower().strip()
+    if plan not in PROCUREMENT_PLAN_KEYS:
         raise HTTPException(
             status_code=403,
-            detail="Enterprise plan required. Upgrade to access procurement tools.",
+            detail="Procurement plan required. Subscribe to a Buyer or Suite tier to access procurement tools.",
         )
 
 
@@ -249,13 +250,23 @@ async def procurement_vendor_status(
     db: Session  = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
-    """Full VendorStatusProfile for a vendor identified by slug/email prefix."""
+    """Full VendorStatusProfile for a vendor identified by slug/email prefix.
+
+    Consumes one QUICK scan credit per unique vendor per month (re-views free).
+    """
     _require_procurement(current_user)
     user = db.query(User).filter(User.email.like(f"{vendor_slug}@%")).first()
     if not user:
         user = db.query(User).filter(User.company == vendor_slug).first()
     if not user:
         raise HTTPException(status_code=404, detail="Vendor not found.")
+
+    # Enforce quota BEFORE returning data — admins skip the meter.
+    if getattr(current_user, "role", "") != "ADMIN":
+        plan = (getattr(current_user, "plan", "free") or "free").lower().strip()
+        consume_scan(db, current_user.id, plan, user.id, "QUICK")
+        db.commit()
+
     return get_vendor_status(db, str(user.id))
 
 
@@ -358,7 +369,11 @@ async def procurement_snapshot(
     db: Session  = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
-    """Institutional-grade, audit-ready vendor record."""
+    """Institutional-grade, audit-ready vendor record.
+
+    Consumes one DEEP scan credit per unique vendor per month (re-views free).
+    Buyer Starter does not include DEEP scans — endpoint returns 402.
+    """
     _require_procurement(current_user)
 
     user = db.query(User).filter(
@@ -366,6 +381,11 @@ async def procurement_snapshot(
     ).first()
     if not user:
         raise HTTPException(status_code=404, detail="Vendor not found.")
+
+    if getattr(current_user, "role", "") != "ADMIN":
+        plan = (getattr(current_user, "plan", "free") or "free").lower().strip()
+        consume_scan(db, current_user.id, plan, user.id, "DEEP")
+        db.commit()
 
     vendor_id  = str(user.id)
     score_row  = db.query(VendorScore).filter(VendorScore.vendor_id == user.id).first()
@@ -424,6 +444,21 @@ async def ordering_policy():
         "retrievedAt":   datetime.now(timezone.utc).isoformat(),
         "documentation": "https://docs.booppa.com/procurement/ordering-policy",
     }
+
+
+@router.get("/scan-quota")
+async def procurement_scan_quota(
+    db: Session  = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    """Current month's scan usage per tier — feeds the dashboard widget.
+
+    Response: { month, plan, scans: { QUICK: {used, limit, remaining}, ... } }
+    `limit: null` = unlimited.
+    """
+    _require_procurement(current_user)
+    plan = (getattr(current_user, "plan", "free") or "free").lower().strip()
+    return scan_usage(db, current_user.id, plan)
 
 
 @router.get("/sector-percentiles/{sector}")

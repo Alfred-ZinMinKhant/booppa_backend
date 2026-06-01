@@ -100,6 +100,9 @@ class WatchlistCommentCreate(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+from app.billing.enforcement import SUITE_PLAN_KEYS, PRO_SUITE_PLAN_KEYS
+
+
 def _get_org(org_id: str, user: User, db: Session) -> Organisation:
     org = db.query(Organisation).filter(Organisation.id == org_id).first()
     if not org:
@@ -113,6 +116,30 @@ def _get_org(org_id: str, user: User, db: Session) -> Organisation:
     return org
 
 
+def _org_owner_plan(org: Organisation, db: Session) -> str:
+    """Resolve the org's billing owner's current plan (lowercase, stripped)."""
+    owner = db.query(User).filter(User.id == org.owner_user_id).first()
+    return (getattr(owner, "plan", "") or "").lower().strip()
+
+
+def _require_suite_plan(org_id: str, user: User, db: Session, *, pro_only: bool = False) -> Organisation:
+    """Gate: org membership AND owner has an active Standard/Pro Suite (or legacy) plan.
+
+    `pro_only=True` restricts to Pro Suite + legacy Enterprise Pro (for SSO,
+    white-label, multi-subsidiary). Otherwise either Standard or Pro is accepted.
+    """
+    org = _get_org(org_id, user, db)
+    plan = _org_owner_plan(org, db)
+    allowed = PRO_SUITE_PLAN_KEYS if pro_only else SUITE_PLAN_KEYS
+    if plan not in allowed:
+        tier_label = "Pro Suite" if pro_only else "Standard Suite or Pro Suite"
+        raise HTTPException(
+            status_code=402,
+            detail=f"{tier_label} subscription required for this feature.",
+        )
+    return org
+
+
 # ── 1. Org CRUD ───────────────────────────────────────────────────────────────
 
 @router.post("/activate", status_code=201)
@@ -120,12 +147,14 @@ def activate_organisation(body: OrgCreate, db: Session = Depends(get_db), curren
     """Create org + initialise 13 MAS TRM controls."""
     if db.query(Organisation).filter(Organisation.slug == body.slug).first():
         raise HTTPException(status_code=409, detail="Slug already taken")
+    from app.billing.enforcement import max_seats_for
     org = Organisation(
         id=uuid.uuid4(),
         name=body.name,
         slug=body.slug,
         tier=body.tier,
         owner_user_id=current_user.id,
+        max_seats=max_seats_for(getattr(current_user, "plan", None)),
     )
     db.add(org)
     db.flush()
@@ -172,7 +201,7 @@ def update_organisation(org_id: str, body: OrgUpdate, db: Session = Depends(get_
 
 @router.post("/organisations/{org_id}/subsidiaries", status_code=201)
 def add_subsidiary(org_id: str, body: SubsidiaryCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_suite_plan(org_id, current_user, db, pro_only=True)
     sub = Subsidiary(id=uuid.uuid4(), organisation_id=org_id, **body.model_dump())
     db.add(sub)
     db.commit()
@@ -181,7 +210,7 @@ def add_subsidiary(org_id: str, body: SubsidiaryCreate, db: Session = Depends(ge
 
 @router.get("/organisations/{org_id}/subsidiaries")
 def list_subsidiaries(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_suite_plan(org_id, current_user, db, pro_only=True)
     subs = db.query(Subsidiary).filter(Subsidiary.organisation_id == org_id).all()
     return [{"id": str(s.id), "name": s.name, "uen": s.uen, "country": s.country} for s in subs]
 
@@ -190,7 +219,7 @@ def list_subsidiaries(org_id: str, db: Session = Depends(get_db), current_user: 
 
 @router.post("/organisations/{org_id}/webhooks", status_code=201)
 def create_webhook(org_id: str, body: WebhookCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_suite_plan(org_id, current_user, db)
     ep = WebhookEndpoint(
         id=uuid.uuid4(),
         organisation_id=org_id,
@@ -205,14 +234,14 @@ def create_webhook(org_id: str, body: WebhookCreate, db: Session = Depends(get_d
 
 @router.get("/organisations/{org_id}/webhooks")
 def list_webhooks(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_suite_plan(org_id, current_user, db)
     eps = db.query(WebhookEndpoint).filter(WebhookEndpoint.organisation_id == org_id).all()
     return [{"id": str(e.id), "url": e.url, "events": e.events, "is_active": e.is_active} for e in eps]
 
 
 @router.delete("/organisations/{org_id}/webhooks/{webhook_id}", status_code=204)
 def delete_webhook(org_id: str, webhook_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_suite_plan(org_id, current_user, db)
     ep = db.query(WebhookEndpoint).filter(WebhookEndpoint.id == webhook_id, WebhookEndpoint.organisation_id == org_id).first()
     if not ep:
         raise HTTPException(status_code=404, detail="Webhook not found")
@@ -224,14 +253,14 @@ def delete_webhook(org_id: str, webhook_id: str, db: Session = Depends(get_db), 
 
 @router.get("/organisations/{org_id}/trm")
 def list_trm_controls(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_suite_plan(org_id, current_user, db)
     controls = db.query(TrmControl).filter(TrmControl.organisation_id == org_id).all()
     return [{"id": str(c.id), "domain": c.domain, "control_ref": c.control_ref, "status": c.status, "risk_rating": c.risk_rating, "gap_analysis": c.gap_analysis} for c in controls]
 
 
 @router.patch("/organisations/{org_id}/trm/{control_id}")
 def update_trm_control(org_id: str, control_id: str, body: TrmControlUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_suite_plan(org_id, current_user, db)
     ctrl = db.query(TrmControl).filter(TrmControl.id == control_id, TrmControl.organisation_id == org_id).first()
     if not ctrl:
         raise HTTPException(status_code=404, detail="Control not found")
@@ -245,7 +274,8 @@ def update_trm_control(org_id: str, control_id: str, body: TrmControlUpdate, db:
 
 @router.post("/organisations/{org_id}/trm/gap-analysis")
 async def run_gap_analysis(org_id: str, body: TrmGapRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    # DeepSeek-billed — must be gated to paying Suite tier to avoid cost leak.
+    _require_suite_plan(org_id, current_user, db)
     ctrl = db.query(TrmControl).filter(TrmControl.id == body.control_id, TrmControl.organisation_id == org_id).first()
     if not ctrl:
         raise HTTPException(status_code=404, detail="Control not found")
@@ -258,7 +288,7 @@ async def run_gap_analysis(org_id: str, body: TrmGapRequest, db: Session = Depen
 
 @router.post("/organisations/{org_id}/retention", status_code=201)
 def create_retention_policy(org_id: str, body: RetentionPolicyCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_suite_plan(org_id, current_user, db)
     policy = RetentionPolicy(id=uuid.uuid4(), organisation_id=org_id, **body.model_dump())
     db.add(policy)
     db.commit()
@@ -267,7 +297,7 @@ def create_retention_policy(org_id: str, body: RetentionPolicyCreate, db: Sessio
 
 @router.get("/organisations/{org_id}/retention")
 def list_retention_policies(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_suite_plan(org_id, current_user, db)
     policies = db.query(RetentionPolicy).filter(RetentionPolicy.organisation_id == org_id).all()
     return [{"id": str(p.id), "data_category": p.data_category, "retention_days": p.retention_days, "auto_purge": p.auto_purge} for p in policies]
 
@@ -276,7 +306,7 @@ def list_retention_policies(org_id: str, db: Session = Depends(get_db), current_
 
 @router.put("/organisations/{org_id}/white-label")
 def upsert_white_label(org_id: str, body: WhiteLabelUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_suite_plan(org_id, current_user, db, pro_only=True)
     cfg = db.query(WhiteLabelConfig).filter(WhiteLabelConfig.organisation_id == org_id).first()
     if not cfg:
         cfg = WhiteLabelConfig(id=uuid.uuid4(), organisation_id=org_id)
@@ -292,7 +322,7 @@ def upsert_white_label(org_id: str, body: WhiteLabelUpdate, db: Session = Depend
 @router.get("/organisations/{org_id}/sso")
 def get_sso_config(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Read SSO config for an organisation, including the SP URLs to give the IdP."""
-    _get_org(org_id, current_user, db)
+    _require_suite_plan(org_id, current_user, db, pro_only=True)
     cfg = db.query(SsoConfig).filter(SsoConfig.organisation_id == org_id).first()
     org = db.query(Organisation).filter(Organisation.id == org_id).first()
     if not cfg:
@@ -325,7 +355,7 @@ def get_sso_config(org_id: str, db: Session = Depends(get_db), current_user: Use
 
 @router.put("/organisations/{org_id}/sso")
 def upsert_sso_config(org_id: str, body: SsoConfigCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_suite_plan(org_id, current_user, db, pro_only=True)
     cfg = db.query(SsoConfig).filter(SsoConfig.organisation_id == org_id).first()
     if not cfg:
         cfg = SsoConfig(id=uuid.uuid4(), organisation_id=org_id)
@@ -360,6 +390,31 @@ def list_sla_logs(org_id: str, db: Session = Depends(get_db), current_user: User
 
 
 # ── 9. Members ────────────────────────────────────────────────────────────────
+
+@router.get("/organisations/{org_id}/seats")
+def get_org_seats(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Seat usage summary for the team-management UI.
+
+    Response: { used, limit, pending_invites, remaining }
+    `limit: null` = unlimited.
+    """
+    org = _get_org(org_id, current_user, db)
+    members = db.query(OrganisationMember).filter(
+        OrganisationMember.organisation_id == org_id,
+    ).count()
+    pending = db.query(OrganisationInvite).filter(
+        OrganisationInvite.organisation_id == org_id,
+        OrganisationInvite.status == "pending",
+    ).count()
+    limit = org.max_seats
+    remaining = None if limit is None else max(0, limit - (members + pending))
+    return {
+        "used": members,
+        "pending_invites": pending,
+        "limit": limit,
+        "remaining": remaining,
+    }
+
 
 @router.get("/organisations/{org_id}/members")
 def list_members(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -425,6 +480,26 @@ def create_invite(org_id: str, body: InviteCreate, db: Session = Depends(get_db)
     ).first()
     if existing_invite:
         raise HTTPException(status_code=409, detail="A pending invite already exists for this email")
+
+    # Seat cap — count active members + pending invites. Pending invites count
+    # so a Starter can't queue N invitations and bypass the cap until accept.
+    if org.max_seats is not None:
+        members_count = db.query(OrganisationMember).filter(
+            OrganisationMember.organisation_id == org_id,
+        ).count()
+        pending_count = db.query(OrganisationInvite).filter(
+            OrganisationInvite.organisation_id == org_id,
+            OrganisationInvite.status == "pending",
+        ).count()
+        if members_count + pending_count >= org.max_seats:
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    f"Seat limit reached ({org.max_seats} seat"
+                    f"{'s' if org.max_seats != 1 else ''}). "
+                    f"Upgrade your subscription to invite more team members."
+                ),
+            )
 
     token = secrets.token_urlsafe(32)
     invite = OrganisationInvite(

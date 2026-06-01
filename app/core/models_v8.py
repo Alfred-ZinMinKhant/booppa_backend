@@ -383,6 +383,46 @@ ENTERPRISE_NOTARIZATION_LIMITS = {
 }
 
 
+# ── VendorScanLedger ──────────────────────────────────────────────────────────
+# Buyer-ladder scan quotas. One row per (buyer, vendor, month, scan_type).
+# Unique constraint means re-scanning the same vendor within the same month
+# for the same scan tier is a no-op (insert-or-ignore semantics in the helper).
+# Count rows by (buyer_id, month, scan_type) to compute usage; subtract from
+# BUYER_SCAN_LIMITS[plan][scan_type] for remaining.
+#
+# Scan types (marketing language → enum):
+#   QUICK    — L1 ACRA + MAS watchlist + PDPA flag
+#   DEEP     — L2 8-dimension PDPA + certifications + financial risk
+#   EVIDENCE — L3 blockchain evidence retrieval + complete dossier
+class VendorScanLedger(Base):
+    __tablename__ = "vendor_scan_ledger"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    buyer_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # The vendor being scanned — can reference users.id (claimed) or
+    # marketplace_vendors.id (unclaimed). No FK so either source works.
+    vendor_id = Column(UUID(as_uuid=True), nullable=False)
+    month = Column(String(7), nullable=False)              # "YYYY-MM"
+    scan_type = Column(String(20), nullable=False)         # "QUICK" | "DEEP" | "EVIDENCE"
+    plan_at_consumption = Column(String(64))               # audit trail
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "buyer_id", "vendor_id", "month", "scan_type",
+            name="uq_scan_ledger_buyer_vendor_month_type",
+        ),
+        Index(
+            "ix_scan_ledger_buyer_month_type",
+            "buyer_id", "month", "scan_type",
+        ),
+    )
+
+
 class NotarizationCredit(Base):
     __tablename__ = "notarization_credits"
 

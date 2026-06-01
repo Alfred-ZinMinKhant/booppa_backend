@@ -35,6 +35,104 @@ ENTERPRISE_PLAN_KEYS = {
     "buyer_enterprise", "buyer_enterprise_monthly", "buyer_enterprise_annual",
 }
 
+# Procurement endpoints (vendor list, vendor status, sector intel, RFP requirements)
+# accept the full enterprise set PLUS Buyer Starter — Starter is a paying customer
+# and the marketing card promises a procurement dashboard. Per-tier scan-quota
+# differentiation is enforced separately via BUYER_SCAN_LIMITS / VendorScanLedger.
+PROCUREMENT_PLAN_KEYS = ENTERPRISE_PLAN_KEYS | {
+    "buyer_starter", "buyer_starter_monthly", "buyer_starter_annual",
+}
+
+# Standard Suite + Pro Suite (and grandfathered legacy enterprise plans).
+# Gates: MAS TRM controls, AI gap analysis (DeepSeek — costs money per call),
+# webhooks CRUD, retention policies.
+SUITE_PLAN_KEYS = {
+    "standard_suite", "standard_suite_monthly",
+    "pro_suite", "pro_suite_monthly",
+    # Grandfathered legacy plans
+    "enterprise", "enterprise_monthly",
+    "enterprise_pro", "enterprise_pro_monthly",
+}
+
+# Pro Suite only (plus the legacy GOVERNMENT-tier Enterprise Pro).
+# Gates: SSO, white-label reports, multi-subsidiary management.
+PRO_SUITE_PLAN_KEYS = {
+    "pro_suite", "pro_suite_monthly",
+    "enterprise_pro", "enterprise_pro_monthly",
+}
+
+# Buyer-ladder + Suite scan quotas (per unique vendor per month per scan-type).
+# None = unlimited. Used by app.billing.scan_credits.consume_scan.
+# A re-view of an already-scanned vendor within the same month is free.
+BUYER_SCAN_LIMITS: dict[str, dict[str, int | None]] = {
+    "buyer_starter":           {"QUICK": 10,  "DEEP": 0,    "EVIDENCE": 0},
+    "buyer_starter_monthly":   {"QUICK": 10,  "DEEP": 0,    "EVIDENCE": 0},
+    "buyer_starter_annual":    {"QUICK": 10,  "DEEP": 0,    "EVIDENCE": 0},
+    "buyer_pro":               {"QUICK": 50,  "DEEP": 20,   "EVIDENCE": 0},
+    "buyer_pro_monthly":       {"QUICK": 50,  "DEEP": 20,   "EVIDENCE": 0},
+    "buyer_pro_annual":        {"QUICK": 50,  "DEEP": 20,   "EVIDENCE": 0},
+    "buyer_enterprise":        {"QUICK": 100, "DEEP": 100,  "EVIDENCE": 15},
+    "buyer_enterprise_monthly": {"QUICK": 100, "DEEP": 100, "EVIDENCE": 15},
+    "buyer_enterprise_annual": {"QUICK": 100, "DEEP": 100,  "EVIDENCE": 15},
+    # Suites get generous defaults; Pro Suite is unlimited.
+    "standard_suite":          {"QUICK": 500, "DEEP": 100,  "EVIDENCE": 50},
+    "standard_suite_monthly":  {"QUICK": 500, "DEEP": 100,  "EVIDENCE": 50},
+    "pro_suite":               {"QUICK": None, "DEEP": None, "EVIDENCE": None},
+    "pro_suite_monthly":       {"QUICK": None, "DEEP": None, "EVIDENCE": None},
+    # Legacy plans (grandfathered)
+    "enterprise":              {"QUICK": 500, "DEEP": 100,  "EVIDENCE": 50},
+    "enterprise_monthly":      {"QUICK": 500, "DEEP": 100,  "EVIDENCE": 50},
+    "enterprise_pro":          {"QUICK": None, "DEEP": None, "EVIDENCE": None},
+    "enterprise_pro_monthly":  {"QUICK": None, "DEEP": None, "EVIDENCE": None},
+    "evaluate_suppliers":      {"QUICK": 50,  "DEEP": 20,   "EVIDENCE": 0},
+    "evaluate_suppliers_monthly": {"QUICK": 50, "DEEP": 20, "EVIDENCE": 0},
+    "verify_supplier_evidence": {"QUICK": 100, "DEEP": 100, "EVIDENCE": 15},
+    "verify_supplier_evidence_monthly": {"QUICK": 100, "DEEP": 100, "EVIDENCE": 15},
+}
+
+
+SCAN_TYPES = ("QUICK", "DEEP", "EVIDENCE")
+
+
+def scan_limit_for(plan: str, scan_type: str) -> int | None:
+    """Return the monthly cap for a plan + scan_type. None = unlimited. 0 = not allowed."""
+    limits = BUYER_SCAN_LIMITS.get((plan or "").lower().strip())
+    if not limits:
+        return 0  # free / unknown plan: no scans
+    return limits.get(scan_type, 0)
+
+
+# Organisation seat caps per plan. None = unlimited.
+# Used by Organisation.max_seats at activation and at plan-change webhook events.
+PLAN_TO_MAX_SEATS: dict[str, int | None] = {
+    "buyer_starter":           1,
+    "buyer_starter_monthly":   1,
+    "buyer_starter_annual":    1,
+    "buyer_pro":               3,
+    "buyer_pro_monthly":       3,
+    "buyer_pro_annual":        3,
+    "buyer_enterprise":        None,  # unlimited
+    "buyer_enterprise_monthly": None,
+    "buyer_enterprise_annual": None,
+    # Suites — no seat cap in marketing; treat as unlimited.
+    "standard_suite":          None,
+    "standard_suite_monthly":  None,
+    "pro_suite":               None,
+    "pro_suite_monthly":       None,
+    # Legacy plans (grandfathered)
+    "enterprise":              None,
+    "enterprise_monthly":      None,
+    "enterprise_pro":          None,
+    "enterprise_pro_monthly":  None,
+}
+
+
+def max_seats_for(plan: str | None) -> int | None:
+    """Return the seat cap for a plan. None = unlimited. 1 = single-seat (Starter)."""
+    if not plan:
+        return 1  # free / unknown — single seat
+    return PLAN_TO_MAX_SEATS.get(plan.lower().strip(), 1)
+
 TENDER_INTELLIGENCE_PLAN_KEYS = {
     "tender_intelligence",
     "tender_intelligence_monthly",
