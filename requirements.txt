@@ -47,6 +47,8 @@ passlib[bcrypt]==1.7.4
 bcrypt>=3.2.0,<4.0.0
 cryptography==41.0.7
 slowapi==0.1.9
+# Enterprise SSO — SAML 2.0 (used by /api/v1/enterprise/sso/saml/*)
+pysaml2==7.5.0
 
 # Monitoring
 opentelemetry-api==1.21.0

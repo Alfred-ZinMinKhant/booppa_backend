@@ -7,7 +7,7 @@ import uuid
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -68,6 +68,7 @@ class SsoConfigCreate(BaseModel):
     client_id: Optional[str] = None
     client_secret: Optional[str] = None
     discovery_url: Optional[str] = None
+    is_active: Optional[bool] = None
 
 class WhiteLabelUpdate(BaseModel):
     primary_color: Optional[str] = None
@@ -288,6 +289,40 @@ def upsert_white_label(org_id: str, body: WhiteLabelUpdate, db: Session = Depend
 
 # ── 7. SSO Config ─────────────────────────────────────────────────────────────
 
+@router.get("/organisations/{org_id}/sso")
+def get_sso_config(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Read SSO config for an organisation, including the SP URLs to give the IdP."""
+    _get_org(org_id, current_user, db)
+    cfg = db.query(SsoConfig).filter(SsoConfig.organisation_id == org_id).first()
+    org = db.query(Organisation).filter(Organisation.id == org_id).first()
+    if not cfg:
+        return {"configured": False, "organisation_id": org_id}
+    acs_url = None
+    metadata_url = None
+    login_url = None
+    if cfg.protocol == "saml" and org:
+        from app.services.saml_service import sp_acs_url, sp_entity_id
+        from app.core.config import settings as _s
+        acs_url = sp_acs_url(org.slug)
+        metadata_url = sp_entity_id(org.slug)
+        login_url = f"{_s.VERIFY_BASE_URL.rstrip('/')}/api/v1/enterprise/sso/saml/login/{org.slug}"
+    return {
+        "configured": True,
+        "organisation_id": org_id,
+        "protocol": cfg.protocol,
+        "is_active": cfg.is_active,
+        "idp_metadata_url": cfg.idp_metadata_url,
+        "idp_entity_id": cfg.idp_entity_id,
+        "oidc_client_id": cfg.client_id,
+        "oidc_discovery_url": cfg.discovery_url,
+        "has_oidc_client_secret": bool(cfg.client_secret),
+        "acs_url": acs_url,
+        "metadata_url": metadata_url,
+        "login_url": login_url,
+        "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
+    }
+
+
 @router.put("/organisations/{org_id}/sso")
 def upsert_sso_config(org_id: str, body: SsoConfigCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     _get_org(org_id, current_user, db)
@@ -298,10 +333,21 @@ def upsert_sso_config(org_id: str, body: SsoConfigCreate, db: Session = Depends(
     for field, val in body.model_dump(exclude_none=True).items():
         setattr(cfg, field, val)
     db.commit()
-    from app.white_label_and_sso import get_saml_acs_url
-    from app.core.models_enterprise import Organisation as _Org
-    org = db.query(_Org).filter(_Org.id == org_id).first()
-    return {"organisation_id": org_id, "protocol": cfg.protocol, "is_active": cfg.is_active, "acs_url": get_saml_acs_url(org.slug) if cfg.protocol == "saml" else None}
+    org = db.query(Organisation).filter(Organisation.id == org_id).first()
+    acs_url = None
+    metadata_url = None
+    if cfg.protocol == "saml" and org:
+        from app.services.saml_service import sp_acs_url, sp_entity_id
+        acs_url = sp_acs_url(org.slug)
+        # The SP metadata XML lives at the entity-id URL by convention.
+        metadata_url = sp_entity_id(org.slug)
+    return {
+        "organisation_id": org_id,
+        "protocol": cfg.protocol,
+        "is_active": cfg.is_active,
+        "acs_url": acs_url,
+        "metadata_url": metadata_url,
+    }
 
 
 # ── 8. SLA Logs ───────────────────────────────────────────────────────────────
@@ -631,7 +677,223 @@ async def oidc_callback(code: str, state: str, db: Session = Depends(get_db)):
     return {"access_token": tokens.get("access_token"), "id_token": tokens.get("id_token")}
 
 
+# ── SSO discovery (no auth) ───────────────────────────────────────────────────
+#
+# Used by the public /auth/login page to decide whether to show a
+# "Log in with SSO" button. Given an email, look up the user's organisation
+# memberships; if any of those orgs have an active SSO config, return the
+# slug and protocol so the frontend can redirect to the right SP-initiated
+# login URL.
+
+@sso_router.get("/sso/discover")
+def sso_discover(email: str, db: Session = Depends(get_db)):
+    """Return SSO options for the given email, if any."""
+    email_clean = (email or "").strip().lower()
+    if not email_clean or "@" not in email_clean:
+        return {"options": []}
+
+    user = db.query(User).filter(User.email == email_clean).first()
+    if not user:
+        return {"options": []}
+
+    memberships = (
+        db.query(OrganisationMember).filter(OrganisationMember.user_id == user.id).all()
+    )
+    if not memberships:
+        return {"options": []}
+
+    org_ids = [m.organisation_id for m in memberships]
+    configs = (
+        db.query(SsoConfig, Organisation)
+        .join(Organisation, Organisation.id == SsoConfig.organisation_id)
+        .filter(
+            SsoConfig.organisation_id.in_(org_ids),
+            SsoConfig.is_active == True,
+        )
+        .all()
+    )
+    options = []
+    for cfg, org in configs:
+        if cfg.protocol == "saml":
+            login_url = f"/api/v1/enterprise/sso/saml/login/{org.slug}"
+        elif cfg.protocol == "oidc":
+            # OIDC SP-initiated flow uses state=org_id; the frontend can post
+            # to a small helper, but for now expose the protocol so the UI can
+            # at least show "Log in with SSO" and route accordingly.
+            login_url = None
+        else:
+            continue
+        options.append({
+            "org_slug": org.slug,
+            "org_name": org.name,
+            "protocol": cfg.protocol,
+            "login_url": login_url,
+        })
+    return {"options": options}
+
+
+# ── SAML 2.0 SSO ──────────────────────────────────────────────────────────────
+#
+# Three endpoints per tenant (keyed by org slug):
+#   GET  /sso/saml/metadata/{org_slug}   — SP metadata XML for the IdP admin
+#   GET  /sso/saml/login/{org_slug}      — initiate SP-initiated login → 302 to IdP
+#   POST /sso/saml/acs/{org_slug}        — Assertion Consumer Service (IdP POST)
+#
+# On a successful ACS the user is JIT-provisioned into the org as `member` if
+# they don't already exist, then redirected to the frontend with access and
+# refresh tokens in the URL fragment (so they never hit server logs or
+# referrers). The frontend reads `window.location.hash` and stores them.
+
+def _saml_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail="SAML support is not installed on this deployment. Install pysaml2 and restart.",
+    )
+
+
+def _resolve_saml_context(org_slug: str, db: Session):
+    """Look up the org and an active SAML SsoConfig, raise 404/400 otherwise."""
+    org = db.query(Organisation).filter(Organisation.slug == org_slug).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organisation not found")
+    sso = (
+        db.query(SsoConfig)
+        .filter(
+            SsoConfig.organisation_id == org.id,
+            SsoConfig.protocol == "saml",
+            SsoConfig.is_active == True,
+        )
+        .first()
+    )
+    if not sso:
+        raise HTTPException(status_code=400, detail="SAML SSO is not active for this organisation")
+    return org, sso
+
+
+@sso_router.get("/sso/saml/metadata/{org_slug}")
+def saml_metadata(org_slug: str, db: Session = Depends(get_db)):
+    """SP metadata XML — give this URL to the tenant's IdP admin."""
+    from fastapi.responses import Response
+
+    org, sso = _resolve_saml_context(org_slug, db)
+    try:
+        from app.services.saml_service import sp_metadata_xml
+        xml = sp_metadata_xml(sso, org)
+    except ImportError:
+        raise _saml_unavailable()
+    except Exception as e:
+        logger.exception("SAML metadata generation failed for %s: %s", org_slug, e)
+        raise HTTPException(status_code=500, detail="Failed to generate SP metadata")
+    return Response(content=xml, media_type="application/samlmetadata+xml")
+
+
+@sso_router.get("/sso/saml/login/{org_slug}")
+def saml_login(org_slug: str, db: Session = Depends(get_db)):
+    """Begin SP-initiated SSO — 302 redirect to the IdP."""
+    from fastapi.responses import RedirectResponse
+
+    org, sso = _resolve_saml_context(org_slug, db)
+    relay_state = secrets.token_urlsafe(24)
+    try:
+        from app.services.saml_service import build_login_redirect
+        url = build_login_redirect(sso, org, relay_state)
+    except ImportError:
+        raise _saml_unavailable()
+    except Exception as e:
+        logger.exception("SAML login init failed for %s: %s", org_slug, e)
+        raise HTTPException(status_code=502, detail="IdP metadata unreachable or invalid")
+    return RedirectResponse(url=url, status_code=302)
+
+
 @sso_router.post("/sso/saml/acs/{org_slug}")
-async def saml_acs(org_slug: str):
-    """SAML 2.0 ACS endpoint stub — integrate a SAML library for production use."""
-    return {"message": f"SAML ACS for {org_slug} — integrate python3-saml or pysaml2 for full SAML processing"}
+async def saml_acs(org_slug: str, request: Request, db: Session = Depends(get_db)):
+    """
+    SAML 2.0 Assertion Consumer Service.
+
+    Validates the IdP-signed assertion, JIT-provisions the user into the org,
+    mints Booppa access + refresh JWTs, and redirects to the frontend with the
+    tokens in the URL fragment.
+    """
+    from fastapi.responses import RedirectResponse
+
+    org, sso = _resolve_saml_context(org_slug, db)
+
+    form = await request.form()
+    saml_response_b64 = form.get("SAMLResponse")
+    relay_state = form.get("RelayState") or ""
+    if not saml_response_b64:
+        raise HTTPException(status_code=400, detail="Missing SAMLResponse")
+
+    try:
+        from app.services.saml_service import parse_assertion
+        identity = parse_assertion(sso, org, saml_response_b64)
+    except ImportError:
+        raise _saml_unavailable()
+    except ValueError as e:
+        logger.warning("SAML assertion rejected for org=%s: %s", org_slug, e)
+        raise HTTPException(status_code=401, detail=f"Invalid SAML assertion: {e}")
+    except Exception as e:
+        logger.exception("SAML ACS processing failed for %s: %s", org_slug, e)
+        raise HTTPException(status_code=500, detail="Failed to process SAML response")
+
+    email = identity["email"]
+
+    # Find or JIT-provision the user.
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        from app.core.auth import get_password_hash
+        # SSO users authenticate through the IdP; we set a random unguessable
+        # password so they can never log in with /auth/token directly.
+        user = User(
+            id=uuid.uuid4(),
+            email=email,
+            hashed_password=get_password_hash(secrets.token_urlsafe(48)),
+            role="VENDOR",
+        )
+        db.add(user)
+        db.flush()
+
+    # Ensure org membership.
+    existing = (
+        db.query(OrganisationMember)
+        .filter(
+            OrganisationMember.organisation_id == org.id,
+            OrganisationMember.user_id == user.id,
+        )
+        .first()
+    )
+    if not existing:
+        db.add(OrganisationMember(
+            id=uuid.uuid4(),
+            organisation_id=org.id,
+            user_id=user.id,
+            role="member",
+        ))
+    db.commit()
+
+    # Mint tokens.
+    from app.core.auth import create_access_token, create_refresh_token
+    access = create_access_token(data={"sub": user.email})
+    refresh = create_refresh_token(data={"sub": user.email})
+
+    # Optionally persist refresh token if the auth router's store is available.
+    try:
+        from app.api.auth import _store_token  # type: ignore
+        _store_token(refresh)
+    except Exception:
+        pass
+
+    import os as _os
+    frontend_base = (
+        _os.environ.get("NEXT_PUBLIC_BASE_URL")
+        or getattr(settings, "VERIFY_BASE_URL", None)
+        or "https://app.booppa.io"
+    ).rstrip("/")
+    # Tokens in the URL fragment never reach the server / referrer / access log.
+    target = (
+        f"{frontend_base}/auth/sso-callback"
+        f"#access_token={access}&refresh_token={refresh}&org={org.slug}"
+    )
+    if relay_state and relay_state.startswith("/"):
+        target += f"&next={relay_state}"
+    return RedirectResponse(url=target, status_code=302)

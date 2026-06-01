@@ -57,14 +57,6 @@ PRODUCTS = {
         "type": "subscription",
         "notarizations_per_month": 50,
     },
-    "rfp_express": {
-        "name": "RFP Express",
-        "slug": "rfp_express",
-        "price_sgd": 249,
-        "price_cents": 24900,
-        "description": "Quick RFP response package",
-        "type": "one-time",
-    },
     "rfp_complete": {
         "name": "RFP Complete",
         "slug": "rfp_complete",
@@ -150,9 +142,9 @@ PRODUCTS = {
     "pdpa_monitor_annual": {
         "name": "PDPA Monitor (Annual)",
         "slug": "pdpa_monitor_annual",
-        "price_sgd": 490,
-        "price_cents": 49000,
-        "description": "Annual PDPA compliance monitoring",
+        "price_sgd": 2990,
+        "price_cents": 299000,
+        "description": "Annual PDPA compliance monitoring — 2 months free",
         "type": "subscription",
     },
     "enterprise_monthly": {
@@ -258,7 +250,7 @@ PRODUCTS = {
         "slug": "standard_suite_monthly",
         "price_sgd": 1800,
         "price_cents": 180000,
-        "description": "MAS TRM 13 domains, AI gap analysis, 5,000 notarizations/month, RESTful API + webhooks",
+        "description": "MAS TRM 13 domains with DeepSeek AI gap analysis, RESTful API + webhooks, 50 notarizations/month — built for MAS-regulated banks, fintechs, and healthcare",
         "type": "subscription",
     },
     "pro_suite_monthly": {
@@ -266,7 +258,7 @@ PRODUCTS = {
         "slug": "pro_suite_monthly",
         "price_sgd": 4500,
         "price_cents": 450000,
-        "description": "Everything in Standard Suite plus SSO, white-label, multi-subsidiary, unlimited notarizations",
+        "description": "Everything in Standard Suite plus SSO (SAML 2.0 + OIDC), white-label reports, and multi-subsidiary management, 100 notarizations/month — built for groups, GLC subsidiaries, and enterprise vendors managing multiple entities",
         "type": "subscription",
     },
     "tender_intelligence_monthly": {
