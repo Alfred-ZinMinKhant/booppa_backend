@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
+from app.core.cache import cache as cache_mod
 from app.services.pdpa_free_scan_service import run_free_scan
 
 import logging
@@ -21,8 +22,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Simple in-memory rate limit: max 5 scans per IP per hour
-_rate_cache: dict[str, list[float]] = {}
+# Redis-backed per-IP rate limit. Shared across ECS tasks so the effective
+# limit is "5 scans / hour / IP" globally, not "5 × N_pods" as the previous
+# in-process dict allowed.
 RATE_LIMIT = 5
 RATE_WINDOW = 3600  # seconds
 
@@ -36,15 +38,12 @@ class FreeScanRequest(BaseModel):
 @router.post("/free-scan")
 def pdpa_free_scan(body: FreeScanRequest, request: Request, db: Session = Depends(get_db)):
     """Run a free lightweight PDPA compliance scan."""
-    # Rate limit by IP
+    # Rate limit by IP (Redis-backed — shared across all pods)
     client_ip = request.client.host if request.client else "unknown"
-    now = datetime.now(timezone.utc).timestamp()
-    hits = _rate_cache.get(client_ip, [])
-    hits = [t for t in hits if now - t < RATE_WINDOW]
-    if len(hits) >= RATE_LIMIT:
+    if not cache_mod.rate_limit_check(
+        f"pdpa_free_scan:{client_ip}", max_count=RATE_LIMIT, window_seconds=RATE_WINDOW
+    ):
         raise HTTPException(status_code=429, detail="Too many scans. Try again later.")
-    hits.append(now)
-    _rate_cache[client_ip] = hits
 
     # Validate URL
     url = body.website_url.strip()

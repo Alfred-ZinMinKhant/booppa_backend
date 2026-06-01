@@ -23,6 +23,10 @@ class Organisation(Base):
     tier = Column(String(50), default="standard")          # standard | pro | custom
     owner_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     is_active = Column(Boolean, default=True)
+    # Seat cap. NULL = unlimited (Suites + legacy Enterprise + Buyer Enterprise).
+    # Source of truth is PLAN_TO_MAX_SEATS — set on org creation and refreshed
+    # by the subscription webhook on plan change.
+    max_seats = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

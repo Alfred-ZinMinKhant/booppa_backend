@@ -294,6 +294,26 @@ async def _activate_subscription(
             user.stripe_customer_id = stripe_customer_id
         db.commit()
 
+        # Refresh seat caps on every org this user owns so plan upgrades take
+        # effect immediately (e.g. Starter -> Pro bumps max_seats 1 -> 3).
+        # Downgrades do NOT retroactively evict members — they just block new
+        # invites until seats free up.
+        try:
+            from app.billing.enforcement import max_seats_for
+            from app.core.models_enterprise import Organisation as _Org
+
+            new_cap = max_seats_for(new_plan)
+            owned_orgs = db.query(_Org).filter(_Org.owner_user_id == user.id).all()
+            for _org in owned_orgs:
+                _org.max_seats = new_cap
+            if owned_orgs:
+                db.commit()
+                logger.info(
+                    f"[Subscription] Updated max_seats={new_cap} on {len(owned_orgs)} org(s) for {customer_email}"
+                )
+        except Exception as seat_err:
+            logger.warning(f"[Subscription] Failed to refresh org seat caps: {seat_err}")
+
         # Upsert the Subscription table row so it's the source of truth for
         # multi-subscription support (a user can have vendor_active + pdpa_monitor).
         if stripe_subscription_id:

@@ -44,7 +44,7 @@ DEPTH_ORDER = {
 }
 
 
-ENTERPRISE_PLANS = {"enterprise", "enterprise_pro"}
+from app.billing.enforcement import PROCUREMENT_PLAN_KEYS
 
 
 def _require_procurement(current_user):
@@ -53,11 +53,11 @@ def _require_procurement(current_user):
         raise HTTPException(status_code=403, detail="Procurement account required.")
     if role == "ADMIN":
         return
-    plan = getattr(current_user, "plan", "free") or "free"
-    if plan not in ENTERPRISE_PLANS:
+    plan = (getattr(current_user, "plan", "free") or "free").lower().strip()
+    if plan not in PROCUREMENT_PLAN_KEYS:
         raise HTTPException(
             status_code=403,
-            detail="Enterprise plan required. Upgrade to access procurement tools.",
+            detail="Procurement plan required. Subscribe to a Buyer or Suite tier to access procurement tools.",
         )
 
 
