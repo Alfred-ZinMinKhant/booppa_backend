@@ -303,7 +303,7 @@ async def enterprise_upload_document(
             raise HTTPException(
                 status_code=429,
                 detail=f"Monthly notarization limit reached ({credit_info['limit']} / month). "
-                       f"Purchase additional notarizations or upgrade to Enterprise Pro for unlimited.",
+                       f"Purchase additional notarization credits to continue.",
             )
 
         # Compute hash + upload to S3

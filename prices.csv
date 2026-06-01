@@ -1,7 +1,9 @@
 Price ID,Product ID,Product Name,Product Statement Descriptor,Product Tax Code,Description,Created (UTC),Amount,Currency,Interval,Interval Count,Usage Type,Aggregate Usage,Billing Scheme,Trial Period Days,Tax Behavior
+price_1TdNTvHOrR48Mz6bbE1a977Q,prod_UccjT2z4EbuPyj,STRIPE_PDPA_MONITOR_ANNUAL,,,,2026-06-01 04:29,2990.00,sgd,year,1,licensed,,per_unit,,unspecified
+price_1TdNPuHOrR48Mz6boe875OJM,prod_UccfWzC1hzizHL,STRIPE_PDPA_MONITOR_MONTHLY,,,,2026-06-01 04:25,299.00,sgd,month,1,licensed,,per_unit,,unspecified
 price_1Tbu7THOrR48Mz6bMiSXzPcZ,prod_Ub6K3CBf3r2tHG,STRIPE_COMPLIANCE_NOTARIZATION_50,,,,2026-05-28 02:56,1750.00,sgd,month,1,licensed,,per_unit,,unspecified
 price_1Tbu4NHOrR48Mz6bJAxgOgZE,prod_Ub6GhWr0D9JMIj,STRIPE_COMPLIANCE_NOTARIZATION_10,,,,2026-05-28 02:53,390.00,sgd,month,1,licensed,,per_unit,,unspecified
-price_1TbhJ6HOrR48Mz6bcBGj3AJb,prod_Uat5spnoiNzFOK,STRIPE_NOTARIZATION_ADDON_1,,,,2026-05-27 13:15,29.00,sgd,,,one_time,,per_unit,,unspecified
+price_1TbhJ6HOrR48Mz6bcBGj3AJb,prod_Uat5spnoiNzFOK,STRIPE_NOTARIZATION_ADDON_1,,,,2026-05-27 13:15,29.00,sgd,,,,,per_unit,,unspecified
 price_1TbhIVHOrR48Mz6b0ZRki1di,prod_Uat44Mk1qQYJuB,STRIPE_BUYER_ENTERPRISE_ANNUAL,,,,2026-05-27 13:14,8150.00,sgd,year,1,licensed,,per_unit,,unspecified
 price_1TbhI4HOrR48Mz6bSOZDOhHy,prod_Uat4N6TksM4MMM,STRIPE_BUYER_ENTERPRISE_MONTHLY,,,,2026-05-27 13:14,799.00,sgd,month,1,licensed,,per_unit,,unspecified
 price_1TbhHNHOrR48Mz6bFyraaeJo,prod_Uat3dadJtTDn3t,STRIPE_BUYER_PRO_ANNUAL,,,,2026-05-27 13:13,4070.00,sgd,year,1,licensed,,per_unit,,unspecified

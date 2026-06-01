@@ -30,7 +30,6 @@ MODE_MAP = {
     # One-time products
     "pdpa_quick_scan": "payment",
     "vendor_proof": "payment",
-    "rfp_express": "payment",
     "rfp_complete": "payment",
     "compliance_notarization_1": "payment",
     # One-time top-up: 1 extra notarization credit.
@@ -677,6 +676,46 @@ async def checkout_verify(session_id: str | None = None):
         ):
             succeeded = True
 
+        product_type_resolved = (
+            (metadata or {}).get("product_type")
+            if isinstance(metadata, dict)
+            else None
+        )
+
+        # RFP-bearing purchases defer kit generation until the buyer submits a
+        # brief. The post-checkout page needs to know whether to show the
+        # "Complete your brief" CTA — surface the pending intake on the verify
+        # response so the frontend doesn't race the webhook with a separate call.
+        requires_brief = product_type_resolved in {
+            "rfp_complete", "rfp_express",
+            "rfp_accelerator", "enterprise_bid_kit", "compliance_evidence_pack",
+        }
+        pending_rfp_intake_id = None
+        if requires_brief and customer_email and succeeded:
+            try:
+                from app.core.db import SessionLocal
+                from app.core.models import User as _U
+                from app.core.models_v12 import PendingRfpIntake
+                _db = SessionLocal()
+                try:
+                    _user = _db.query(_U).filter(_U.email == customer_email).first()
+                    if _user:
+                        _intake = (
+                            _db.query(PendingRfpIntake)
+                            .filter(
+                                PendingRfpIntake.user_id == _user.id,
+                                PendingRfpIntake.status == "pending",
+                            )
+                            .order_by(PendingRfpIntake.created_at.desc())
+                            .first()
+                        )
+                        if _intake:
+                            pending_rfp_intake_id = str(_intake.id)
+                finally:
+                    _db.close()
+            except Exception as e:
+                logger.warning("[checkout/verify] PendingRfpIntake lookup failed: %s", e)
+
         return JSONResponse(
             {
                 "success": succeeded,
@@ -686,11 +725,7 @@ async def checkout_verify(session_id: str | None = None):
                     if hasattr(session, "get")
                     else getattr(session, "id", None)
                 ),
-                "product_type": (
-                    (metadata or {}).get("product_type")
-                    if isinstance(metadata, dict)
-                    else None
-                ),
+                "product_type": product_type_resolved,
                 "report_id": (
                     (metadata or {}).get("report_id")
                     if isinstance(metadata, dict)
@@ -702,6 +737,8 @@ async def checkout_verify(session_id: str | None = None):
                     else getattr(session, "client_reference_id", None)
                 ),
                 "customer_email": customer_email,
+                "requires_brief": requires_brief,
+                "pending_rfp_intake_id": pending_rfp_intake_id,
             }
         )
     except stripe.error.InvalidRequestError as e:
