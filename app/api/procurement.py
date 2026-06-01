@@ -461,6 +461,158 @@ async def procurement_scan_quota(
     return scan_usage(db, current_user.id, plan)
 
 
+@router.get("/vendor/{vendor_slug}/evidence")
+async def procurement_vendor_evidence(
+    vendor_slug: str,
+    db: Session  = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    """Evidence Scan (L3) — blockchain evidence retrieval + complete dossier.
+
+    Consumes one EVIDENCE credit per unique vendor per month (re-views free).
+    Only Buyer Enterprise + Pro Suite + legacy Enterprise Pro include this tier.
+
+    Aggregates:
+      - All notarization tx_hashes (Polygon anchors) from Report
+      - NotarizationMetadata (validation_id, public_hash, depth, confidence)
+      - VerifyRecord lifecycle + expiry
+      - CertificateLog entries (audit trail of all PDFs ever generated)
+      - Recent ComplianceDriftEvent rows (last 10)
+      - Snapshot-style headline fields (matches DEEP for continuity)
+    """
+    _require_procurement(current_user)
+
+    user = db.query(User).filter(
+        (User.company == vendor_slug) | (User.email.like(f"{vendor_slug}@%"))
+    ).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Vendor not found.")
+
+    if getattr(current_user, "role", "") != "ADMIN":
+        plan = (getattr(current_user, "plan", "free") or "free").lower().strip()
+        consume_scan(db, current_user.id, plan, user.id, "EVIDENCE")
+        db.commit()
+
+    from app.core.models import Report
+    from app.core.models_v10 import CertificateLog
+    from app.core.models_v8 import NotarizationMetadata, ComplianceDriftEvent
+
+    # ── Blockchain anchors (every Report with a tx_hash) ─────────────────────
+    anchored_reports = (
+        db.query(Report)
+        .filter(Report.owner_id == user.id, Report.tx_hash.isnot(None))
+        .order_by(Report.completed_at.desc().nullslast(), Report.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    anchors = [
+        {
+            "reportId":   str(r.id),
+            "framework":  r.framework,
+            "txHash":     r.tx_hash,
+            "auditHash":  r.audit_hash,
+            "anchoredAt": (r.completed_at or r.created_at).isoformat() if (r.completed_at or r.created_at) else None,
+            "explorerUrl": f"https://polygonscan.com/tx/{r.tx_hash}" if r.tx_hash else None,
+        }
+        for r in anchored_reports
+    ]
+
+    # ── Notarization metadata (single row per vendor) ────────────────────────
+    notmeta = db.query(NotarizationMetadata).filter(
+        NotarizationMetadata.vendor_id == user.id
+    ).first()
+    notarization = (
+        {
+            "structuralLevel":   notmeta.structural_level,
+            "verificationDepth": notmeta.verification_depth,
+            "validationId":      notmeta.validation_id,
+            "publicHash":        notmeta.public_hash,
+            "evidenceCount":     notmeta.evidence_count,
+            "confidenceScore":   notmeta.confidence_score,
+            "notarizedAt":       notmeta.notarized_at.isoformat() if notmeta.notarized_at else None,
+        }
+        if notmeta
+        else None
+    )
+
+    # ── Verify record (lifecycle, expiry) ────────────────────────────────────
+    verify = db.query(VerifyRecord).filter(VerifyRecord.vendor_id == user.id).first()
+    verify_record = (
+        {
+            "lifecycleStatus":     verify.lifecycle_status.value if verify.lifecycle_status else "NONE",
+            "verificationLevel":   verify.verification_level.value if verify.verification_level else "BASIC",
+            "complianceScore":     verify.compliance_score,
+            "expiresAt":           verify.expires_at.isoformat() if verify.expires_at else None,
+            "lastRefreshedAt":     verify.last_refreshed_at.isoformat() if verify.last_refreshed_at else None,
+        }
+        if verify
+        else None
+    )
+
+    # ── Certificate log (audit trail of every PDF generated) ─────────────────
+    certs = (
+        db.query(CertificateLog)
+        .filter(CertificateLog.vendor_id == user.id)
+        .order_by(CertificateLog.generated_at.desc())
+        .limit(50)
+        .all()
+    )
+    certificate_log = [
+        {
+            "certificateType":  c.certificate_type,
+            "fileHash":         c.file_hash,
+            "generatedAt":      c.generated_at.isoformat() if c.generated_at else None,
+            "downloadCount":    c.download_count,
+            "lastDownloadedAt": c.downloaded_at.isoformat() if c.downloaded_at else None,
+        }
+        for c in certs
+    ]
+
+    # ── Compliance drift (last 10) ───────────────────────────────────────────
+    drifts = (
+        db.query(ComplianceDriftEvent)
+        .filter(ComplianceDriftEvent.vendor_id == user.id)
+        .order_by(ComplianceDriftEvent.created_at.desc())
+        .limit(10)
+        .all()
+    )
+    drift_history = [
+        {
+            "framework":     d.framework,
+            "severity":      d.severity,
+            "previousScore": d.previous_score,
+            "currentScore":  d.current_score,
+            "deltaPct":      d.delta_pct,
+            "occurredAt":    d.created_at.isoformat() if d.created_at else None,
+        }
+        for d in drifts
+    ]
+
+    # ── Score headline (same field as DEEP for continuity) ───────────────────
+    score_row = db.query(VendorScore).filter(VendorScore.vendor_id == user.id).first()
+    elevation = fetch_elevation_metadata(db, str(user.id))
+
+    return {
+        "vendor": {
+            "company": user.company,
+            "email":   user.email,
+        },
+        "currentScore":     score_row.total_score if score_row else 0,
+        "verify":           verify_record,
+        "notarization":     notarization,
+        "elevation": {
+            "structuralLevel": elevation.get("structural_level"),
+            "validationId":    elevation.get("validation_id"),
+            "publicHash":      elevation.get("public_hash"),
+            "confidenceScore": elevation.get("confidence_score"),
+        },
+        "blockchainAnchors": anchors,
+        "certificateLog":    certificate_log,
+        "driftHistory":      drift_history,
+        "generatedAt":       datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @router.get("/sector-percentiles/{sector}")
 async def sector_percentiles(
     sector:      str,
