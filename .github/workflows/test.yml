@@ -83,7 +83,17 @@ jobs:
       - name: Run alembic migrations
         run: alembic upgrade head
 
-      - name: Export Stripe price IDs from JSON secret
+      # Stripe price IDs flow into pytest in two layers:
+      #   1. STRIPE_PRICE_IDS_JSON secret (fallback) — covers legacy SKUs whose
+      #      Stripe Product Name doesn't follow the STRIPE_<KEY> convention
+      #      (e.g. "Vendor Proof", "RFP Complete", "PDPA Quick Scan").
+      #   2. prices.csv (source of truth) — overrides the JSON for any SKU
+      #      whose Product Name is STRIPE_<KEY>. Updating the CSV is enough
+      #      to keep CI in sync after a Stripe price change; the secret no
+      #      longer needs editing for catalogue updates.
+      #
+      # Order matters: JSON first, CSV last so the committed catalogue wins.
+      - name: Export Stripe price IDs from JSON secret (fallback)
         if: env.STRIPE_PRICE_IDS_JSON != ''
         run: |
           python - <<'PY' >> "$GITHUB_ENV"
@@ -96,6 +106,10 @@ jobs:
                   k = f"STRIPE_{k}"
               print(f"{k}={v}")
           PY
+
+      - name: Export Stripe price IDs from prices.csv (source of truth)
+        if: hashFiles('prices.csv') != ''
+        run: python scripts/export_stripe_price_ids.py >> "$GITHUB_ENV"
 
       - name: Run pytest
         run: pytest -v --cov=app --cov-report=term-missing tests/
