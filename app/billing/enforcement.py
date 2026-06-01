@@ -61,6 +61,18 @@ PRO_SUITE_PLAN_KEYS = {
     "enterprise_pro", "enterprise_pro_monthly",
 }
 
+# Team-collaboration features (shared watchlist, invites, member listing).
+# Marketing promises this on Buyer Pro+ (3 seats) and Buyer Enterprise (RBAC).
+# Suites + legacy enterprise are also included. Buyer Starter (single-seat)
+# is intentionally excluded — Starter users don't collaborate.
+COLLABORATION_PLAN_KEYS = SUITE_PLAN_KEYS | PRO_SUITE_PLAN_KEYS | {
+    "buyer_pro", "buyer_pro_monthly", "buyer_pro_annual",
+    "buyer_enterprise", "buyer_enterprise_monthly", "buyer_enterprise_annual",
+    # Legacy buyer-side plans still grandfathered
+    "evaluate_suppliers", "evaluate_suppliers_monthly",
+    "verify_supplier_evidence", "verify_supplier_evidence_monthly",
+}
+
 # Buyer-ladder + Suite scan quotas (per unique vendor per month per scan-type).
 # None = unlimited. Used by app.billing.scan_credits.consume_scan.
 # A re-view of an already-scanned vendor within the same month is free.

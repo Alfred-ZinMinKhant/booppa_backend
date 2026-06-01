@@ -100,7 +100,9 @@ class WatchlistCommentCreate(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-from app.billing.enforcement import SUITE_PLAN_KEYS, PRO_SUITE_PLAN_KEYS
+from app.billing.enforcement import (
+    SUITE_PLAN_KEYS, PRO_SUITE_PLAN_KEYS, COLLABORATION_PLAN_KEYS,
+)
 
 
 def _get_org(org_id: str, user: User, db: Session) -> Organisation:
@@ -136,6 +138,25 @@ def _require_suite_plan(org_id: str, user: User, db: Session, *, pro_only: bool 
         raise HTTPException(
             status_code=402,
             detail=f"{tier_label} subscription required for this feature.",
+        )
+    return org
+
+
+def _require_collaboration_plan(org_id: str, user: User, db: Session) -> Organisation:
+    """Gate team-collaboration endpoints (watchlist, invites, member-list).
+
+    Allowed: Buyer Pro+, Suite tiers, and legacy enterprise/buyer-side plans.
+    Blocked: free, Buyer Starter (single-seat by design), Vendor-side plans.
+    """
+    org = _get_org(org_id, user, db)
+    plan = _org_owner_plan(org, db)
+    if plan not in COLLABORATION_PLAN_KEYS:
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                "Team-collaboration features require Buyer Professional, "
+                "Buyer Enterprise, or a Suite subscription."
+            ),
         )
     return org
 
@@ -456,7 +477,7 @@ INVITE_TTL_DAYS = 7
 @router.post("/organisations/{org_id}/invites", status_code=201)
 def create_invite(org_id: str, body: InviteCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     from datetime import datetime, timedelta
-    org = _get_org(org_id, current_user, db)
+    org = _require_collaboration_plan(org_id, current_user, db)
 
     email = body.email.strip().lower()
     if not email or "@" not in email:
@@ -550,7 +571,7 @@ def create_invite(org_id: str, body: InviteCreate, db: Session = Depends(get_db)
 
 @router.get("/organisations/{org_id}/invites")
 def list_invites(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_collaboration_plan(org_id, current_user, db)
     invites = db.query(OrganisationInvite).filter(
         OrganisationInvite.organisation_id == org_id,
         OrganisationInvite.status == "pending",
@@ -563,7 +584,7 @@ def list_invites(org_id: str, db: Session = Depends(get_db), current_user: User 
 
 @router.delete("/organisations/{org_id}/invites/{invite_id}", status_code=204)
 def revoke_invite(org_id: str, invite_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_collaboration_plan(org_id, current_user, db)
     invite = db.query(OrganisationInvite).filter(
         OrganisationInvite.id == invite_id,
         OrganisationInvite.organisation_id == org_id,
@@ -612,7 +633,7 @@ def accept_invite(token: str, db: Session = Depends(get_db), current_user: User 
 
 @router.get("/organisations/{org_id}/watchlist")
 def list_watchlist(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_collaboration_plan(org_id, current_user, db)
     items = db.query(VendorWatchlistItem).filter(
         VendorWatchlistItem.organisation_id == org_id
     ).order_by(VendorWatchlistItem.created_at.desc()).all()
@@ -631,7 +652,7 @@ def list_watchlist(org_id: str, db: Session = Depends(get_db), current_user: Use
 
 @router.post("/organisations/{org_id}/watchlist", status_code=201)
 def add_watchlist_item(org_id: str, body: WatchlistCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_collaboration_plan(org_id, current_user, db)
     vendor_ref = body.vendor_ref.strip()
     if not vendor_ref:
         raise HTTPException(status_code=400, detail="vendor_ref required")
@@ -659,7 +680,7 @@ def add_watchlist_item(org_id: str, body: WatchlistCreate, db: Session = Depends
 
 @router.patch("/organisations/{org_id}/watchlist/{item_id}")
 def update_watchlist_item(org_id: str, item_id: str, body: WatchlistUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_collaboration_plan(org_id, current_user, db)
     item = db.query(VendorWatchlistItem).filter(
         VendorWatchlistItem.id == item_id,
         VendorWatchlistItem.organisation_id == org_id,
@@ -676,7 +697,7 @@ def update_watchlist_item(org_id: str, item_id: str, body: WatchlistUpdate, db: 
 
 @router.delete("/organisations/{org_id}/watchlist/{item_id}", status_code=204)
 def remove_watchlist_item(org_id: str, item_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_collaboration_plan(org_id, current_user, db)
     item = db.query(VendorWatchlistItem).filter(
         VendorWatchlistItem.id == item_id,
         VendorWatchlistItem.organisation_id == org_id,
@@ -689,7 +710,7 @@ def remove_watchlist_item(org_id: str, item_id: str, db: Session = Depends(get_d
 
 @router.get("/organisations/{org_id}/watchlist/{item_id}/comments")
 def list_watchlist_comments(org_id: str, item_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_collaboration_plan(org_id, current_user, db)
     item = db.query(VendorWatchlistItem).filter(
         VendorWatchlistItem.id == item_id,
         VendorWatchlistItem.organisation_id == org_id,
@@ -712,7 +733,7 @@ def list_watchlist_comments(org_id: str, item_id: str, db: Session = Depends(get
 
 @router.post("/organisations/{org_id}/watchlist/{item_id}/comments", status_code=201)
 def add_watchlist_comment(org_id: str, item_id: str, body: WatchlistCommentCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _get_org(org_id, current_user, db)
+    _require_collaboration_plan(org_id, current_user, db)
     item = db.query(VendorWatchlistItem).filter(
         VendorWatchlistItem.id == item_id,
         VendorWatchlistItem.organisation_id == org_id,
@@ -827,7 +848,13 @@ def _saml_unavailable() -> HTTPException:
 
 
 def _resolve_saml_context(org_slug: str, db: Session):
-    """Look up the org and an active SAML SsoConfig, raise 404/400 otherwise."""
+    """Look up the org and an active SAML SsoConfig, raise 404/400/402 otherwise.
+
+    Also gates on Pro Suite — the subscription-cancel webhook flips SsoConfig.is_active
+    to False on lapse, but this is a belt-and-suspenders check in case the webhook
+    didn't run (e.g. payment provider lag). A lapsed customer's SSO will not mint
+    Booppa JWTs even if the SsoConfig row was somehow left active.
+    """
     org = db.query(Organisation).filter(Organisation.slug == org_slug).first()
     if not org:
         raise HTTPException(status_code=404, detail="Organisation not found")
@@ -842,6 +869,12 @@ def _resolve_saml_context(org_slug: str, db: Session):
     )
     if not sso:
         raise HTTPException(status_code=400, detail="SAML SSO is not active for this organisation")
+    plan = _org_owner_plan(org, db)
+    if plan not in PRO_SUITE_PLAN_KEYS:
+        raise HTTPException(
+            status_code=402,
+            detail="SSO is a Pro Suite feature. The organisation's subscription has lapsed.",
+        )
     return org, sso
 
 

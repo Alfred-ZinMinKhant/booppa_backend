@@ -2749,10 +2749,21 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                 _db.close()
 
     # ── Subscription lifecycle events ────────────────────────────────────────
+    # Stripe fires `customer.subscription.updated` with status=canceled when a
+    # cancel happens, and `customer.subscription.deleted` when the row is
+    # finally removed (after the cancel period ends). We handle both so the
+    # downgrade flow doesn't depend on which one Stripe sends first.
     if event["type"] in (
         "customer.subscription.created",
         "customer.subscription.updated",
+        "customer.subscription.deleted",
     ):
+        # `.deleted` events always represent a finalised cancel — coerce the
+        # sub_status into "canceled" so the cancel branch below fires.
+        if event["type"] == "customer.subscription.deleted":
+            _force_canceled = True
+        else:
+            _force_canceled = False
         raw = json.loads(payload)
         sub = raw.get("data", {}).get("object", {})
         stripe_sub_id = sub.get("id")
@@ -2769,6 +2780,12 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
             )
         except Exception:
             pass
+
+        # `.deleted` always means canceled, regardless of what status the
+        # payload claims (Stripe sometimes leaves the last-seen status on the
+        # row when it deletes).
+        if _force_canceled:
+            sub_status = "canceled"
 
         if stripe_sub_id and sub_status in ("active", "trialing"):
             items = sub.get("items", {}).get("data", [])
@@ -2895,6 +2912,13 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                             "tender_intelligence_annual":     "tender_intelligence",
                             "vendor_pro_monthly":             "vendor_pro",
                             "vendor_pro_annual":              "vendor_pro",
+                            # Buyer ladder — monthly + annual share a plan family.
+                            "buyer_starter_monthly":          "buyer_starter",
+                            "buyer_starter_annual":           "buyer_starter",
+                            "buyer_pro_monthly":              "buyer_pro",
+                            "buyer_pro_annual":               "buyer_pro",
+                            "buyer_enterprise_monthly":       "buyer_enterprise",
+                            "buyer_enterprise_annual":        "buyer_enterprise",
                         }
                         remaining = (
                             _db3.query(SubModel)
@@ -2925,6 +2949,66 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                         except Exception as lever_err:
                             logger.warning(
                                 f"[Webhook] Score lever revert failed for {cust_email}: {lever_err}"
+                            )
+
+                        # Refresh seat caps on every org this user owns so a
+                        # downgrade (e.g. Pro -> Starter -> free) shrinks the
+                        # cap and blocks further invites. Existing members are
+                        # NOT evicted — only the next invite is gated.
+                        try:
+                            from app.billing.enforcement import max_seats_for
+                            from app.core.models_enterprise import Organisation as _Org
+
+                            new_cap = max_seats_for(user.plan)
+                            owned_orgs = _db3.query(_Org).filter(
+                                _Org.owner_user_id == user.id,
+                            ).all()
+                            for _org in owned_orgs:
+                                _org.max_seats = new_cap
+                            if owned_orgs:
+                                _db3.commit()
+                                logger.info(
+                                    f"[Webhook] Refreshed max_seats={new_cap} on "
+                                    f"{len(owned_orgs)} org(s) for {cust_email}"
+                                )
+                        except Exception as seat_err:
+                            logger.warning(
+                                f"[Webhook] Seat-cap refresh failed for {cust_email}: {seat_err}"
+                            )
+
+                        # If the user's new plan no longer includes Pro Suite,
+                        # deactivate SAML SSO on each owned org so the login
+                        # URLs stop minting Booppa tokens. White-label config
+                        # and saved IdP metadata stay (re-activating is just
+                        # a flag flip after the customer re-subscribes).
+                        try:
+                            from app.billing.enforcement import PRO_SUITE_PLAN_KEYS
+                            from app.core.models_enterprise import (
+                                Organisation as _Org2, SsoConfig as _SsoCfg,
+                            )
+                            if user.plan not in PRO_SUITE_PLAN_KEYS:
+                                org_ids = [
+                                    o.id for o in _db3.query(_Org2)
+                                    .filter(_Org2.owner_user_id == user.id).all()
+                                ]
+                                if org_ids:
+                                    deactivated = (
+                                        _db3.query(_SsoCfg)
+                                        .filter(
+                                            _SsoCfg.organisation_id.in_(org_ids),
+                                            _SsoCfg.is_active == True,  # noqa: E712
+                                        )
+                                        .update({"is_active": False}, synchronize_session=False)
+                                    )
+                                    if deactivated:
+                                        _db3.commit()
+                                        logger.info(
+                                            f"[Webhook] Deactivated SSO on {deactivated} org(s) "
+                                            f"for {cust_email} (lapsed Pro Suite)"
+                                        )
+                        except Exception as sso_err:
+                            logger.warning(
+                                f"[Webhook] SSO deactivation failed for {cust_email}: {sso_err}"
                             )
             except Exception as exc:
                 logger.error(f"[Webhook] Cancellation handling failed: {exc}")

@@ -30,6 +30,28 @@ def upgrade() -> None:
         sa.Column("max_seats", sa.Integer(), nullable=True),
     )
 
+    # Backfill: existing orgs get their owner's current-plan seat cap.
+    # NULL stays NULL (= unlimited) for plans we don't recognise — safer than
+    # accidentally shrinking a paying customer's cap mid-deploy.
+    op.execute(
+        """
+        UPDATE organisations o
+           SET max_seats = CASE u.plan
+               WHEN 'buyer_starter'           THEN 1
+               WHEN 'buyer_starter_monthly'   THEN 1
+               WHEN 'buyer_starter_annual'    THEN 1
+               WHEN 'buyer_pro'               THEN 3
+               WHEN 'buyer_pro_monthly'       THEN 3
+               WHEN 'buyer_pro_annual'        THEN 3
+               -- All other plans (Buyer Enterprise, Suites, legacy Enterprise,
+               -- free) leave max_seats NULL (= unlimited).
+               ELSE NULL
+           END
+          FROM users u
+         WHERE u.id = o.owner_user_id;
+        """
+    )
+
 
 def downgrade() -> None:
     op.drop_column("organisations", "max_seats")
