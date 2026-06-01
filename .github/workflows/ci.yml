@@ -142,7 +142,6 @@ jobs:
           STRIPE_COMPLIANCE_NOTARIZATION_10: ${{ secrets.STRIPE_COMPLIANCE_NOTARIZATION_10 }}
           STRIPE_COMPLIANCE_NOTARIZATION_50: ${{ secrets.STRIPE_COMPLIANCE_NOTARIZATION_50 }}
           STRIPE_VENDOR_PROOF: ${{ secrets.STRIPE_VENDOR_PROOF }}
-          STRIPE_RFP_EXPRESS: ${{ secrets.STRIPE_RFP_EXPRESS }}
           STRIPE_RFP_COMPLETE: ${{ secrets.STRIPE_RFP_COMPLETE }}
           # Stripe v11 new SKUs: bundles + subscriptions
           STRIPE_VENDOR_TRUST_PACK: ${{ secrets.STRIPE_VENDOR_TRUST_PACK }}
@@ -228,7 +227,6 @@ jobs:
                   { "name": "STRIPE_COMPLIANCE_NOTARIZATION_10", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_10}" },
                   { "name": "STRIPE_COMPLIANCE_NOTARIZATION_50", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_50}" },
                   { "name": "STRIPE_VENDOR_PROOF", "value": "${STRIPE_VENDOR_PROOF}" },
-                  { "name": "STRIPE_RFP_EXPRESS", "value": "${STRIPE_RFP_EXPRESS}" },
                   { "name": "STRIPE_RFP_COMPLETE", "value": "${STRIPE_RFP_COMPLETE}" },
                   { "name": "STRIPE_VENDOR_TRUST_PACK", "value": "${STRIPE_VENDOR_TRUST_PACK}" },
                   { "name": "STRIPE_RFP_ACCELERATOR", "value": "${STRIPE_RFP_ACCELERATOR}" },
@@ -311,7 +309,6 @@ jobs:
           STRIPE_COMPLIANCE_NOTARIZATION_10: ${{ secrets.STRIPE_COMPLIANCE_NOTARIZATION_10 }}
           STRIPE_COMPLIANCE_NOTARIZATION_50: ${{ secrets.STRIPE_COMPLIANCE_NOTARIZATION_50 }}
           STRIPE_VENDOR_PROOF: ${{ secrets.STRIPE_VENDOR_PROOF }}
-          STRIPE_RFP_EXPRESS: ${{ secrets.STRIPE_RFP_EXPRESS }}
           STRIPE_RFP_COMPLETE: ${{ secrets.STRIPE_RFP_COMPLETE }}
           # Stripe v11 new SKUs: bundles + subscriptions
           STRIPE_VENDOR_TRUST_PACK: ${{ secrets.STRIPE_VENDOR_TRUST_PACK }}
@@ -394,7 +391,6 @@ jobs:
                   { "name": "STRIPE_COMPLIANCE_NOTARIZATION_10", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_10}" },
                   { "name": "STRIPE_COMPLIANCE_NOTARIZATION_50", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_50}" },
                   { "name": "STRIPE_VENDOR_PROOF", "value": "${STRIPE_VENDOR_PROOF}" },
-                  { "name": "STRIPE_RFP_EXPRESS", "value": "${STRIPE_RFP_EXPRESS}" },
                   { "name": "STRIPE_RFP_COMPLETE", "value": "${STRIPE_RFP_COMPLETE}" },
                   { "name": "STRIPE_VENDOR_TRUST_PACK", "value": "${STRIPE_VENDOR_TRUST_PACK}" },
                   { "name": "STRIPE_RFP_ACCELERATOR", "value": "${STRIPE_RFP_ACCELERATOR}" },
