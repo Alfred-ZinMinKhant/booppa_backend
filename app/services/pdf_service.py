@@ -62,6 +62,25 @@ SEVERITY_HEX = {
     "INFO": "#64748b",
 }
 
+# Tier 5: weighted scoring. Dimensions that the PDPC has historically
+# enforced most aggressively (NRIC, breach notification, cookie consent /
+# tracker firing, privacy policy completeness) carry double weight in the
+# overall score; remaining dimensions carry baseline weight. Any dimension
+# not listed here falls back to weight 1 via dict.get(name, 1).
+_DIMENSION_WEIGHTS: dict[str, int] = {
+    "NRIC Exposure": 2,
+    "Data Breach Notification (§26B-D)": 2,
+    "Privacy Policy (PDPA §11/13)": 2,
+    "Third-Party Tracker Inventory": 2,
+    "Cookie Consent Mechanism": 2,
+    "Cross-Border Transfer (§26)": 1,
+    "Retention Limitation (§25)": 1,
+    "Security HTTP Headers": 1,
+    "Cookie Attributes": 1,
+    "DNC Registry Reference": 1,
+    "Data Subject Rights Mechanism": 1,
+}
+
 # ── Logo resolution (tried at import time) ─────────────────────────────────────
 _HERE = os.path.dirname(__file__)
 _LOGO_CANDIDATES = [
@@ -561,6 +580,8 @@ class PDFService:
         in_scope = [
             ("Cookie Consent Mechanism",
              "Analysis of consent banner implementation and pre-consent cookie behaviour"),
+            ("Third-Party Tracker Inventory",
+             "Pre-consent third-party request capture via headless-browser rendering"),
             ("Privacy Policy (PDPA §11/13)",
              "Detection of privacy policy link and content indicators on homepage"),
             ("Security HTTP Headers",
@@ -571,8 +592,14 @@ class PDFService:
              "Detection of marketing opt-out mechanism and DNC references"),
             ("Data Subject Rights Mechanism",
              "Presence of access, correction and withdrawal request pathways"),
-            ("NRIC / FIN Collection Signals",
-             "Keyword detection of regulated identity document collection"),
+            ("NRIC Exposure",
+             "Detection of NRIC/FIN collection or exposure on publicly accessible pages"),
+            ("Retention Limitation (§25)",
+             "Privacy-policy clause check for stated retention period or destruction policy"),
+            ("Data Breach Notification (§26B-D)",
+             "Cross-reference against PDPC public enforcement decisions"),
+            ("Cross-Border Transfer (§26)",
+             "Hosting infrastructure inference from HTTP signals; Singapore vs. overseas region"),
         ]
         out_scope = [
             ("Backend Systems & Internal Data Flows",
@@ -581,8 +608,8 @@ class PDFService:
              "HR data, payroll, staff records"),
             ("Third-Party Processor Agreements",
              "DPA agreements and sub-processor contracts"),
-            ("Data Breach Notification Procedures",
-             "Internal incident response and PDPC notification workflows"),
+            ("Internal Breach Response Procedures",
+             "Internal incident response runbooks (not publicly observable)"),
         ]
 
         rows: list = [header]
@@ -656,51 +683,104 @@ class PDFService:
                     return f
             return None
 
-        # ── Cookie Consent ────────────────────────────────────────────────
+        # ── Cookie Consent (behaviour-aware) ──────────────────────────────
         cookie_finding = _has(["consent", "cookie_consent", "no_consent_banner", "tracking_cookie"])
         consent_mech = sd.get("consent_mechanism") or {}
         detected_providers = consent_mech.get("detected_providers") or []
-        if cookie_finding is None:
+        trackers_data = sd.get("trackers") if isinstance(sd.get("trackers"), dict) else {}
+        pre_consent_trackers = trackers_data.get("inventory") or []
+
+        if pre_consent_trackers:
+            # Trackers fired before consent — hard non-compliance regardless of banner
+            cookie_score = 8
+            cookie_status = "Non-Compliant"
+            cookie_note = (
+                f"{len(pre_consent_trackers)} third-party tracker(s) fired before consent: "
+                f"{', '.join(pre_consent_trackers[:3])}"
+                f"{'…' if len(pre_consent_trackers) > 3 else ''}."
+            )
+        elif cookie_finding is None:
             cookie_score = 96
             cookie_status = "Compliant"
             provider_list = ", ".join(detected_providers[:3]) if detected_providers else "compliant mechanism"
-            cookie_note = f"Consent mechanism detected ({provider_list}); pre-consent cookies blocked."
+            cookie_note = f"Consent mechanism detected ({provider_list}); no pre-consent trackers observed."
         else:
-            # Start at 40 (HIGH floor), add points for partial compliance
             cookie_score = 15
             if consent_mech.get("has_cookie_banner"):
-                cookie_score += 25  # banner exists but flawed
+                cookie_score += 25
             if consent_mech.get("policy_mentions_banner"):
-                cookie_score += 10  # at least mentioned in policy
+                cookie_score += 10
             cookie_status = "Non-Compliant" if cookie_score < 50 else "Partial"
             cookie_note = "Cookie consent mechanism absent or non-compliant — consent required before tracking."
 
-        # ── Privacy Policy + DPO ──────────────────────────────────────────
-        pp_finding = _has(["privacy_policy", "no_privacy_policy", "privacy policy", "dpo", "no_dpo_contact"])
+        # ── Privacy Policy (§11/13) — clause-classifier driven when available
+        clauses = sd.get("policy_clauses") if isinstance(sd.get("policy_clauses"), dict) else None
         pp_data = sd.get("privacy_policy") or {}
         dpo_data = sd.get("dpo_compliance") or {}
-        if pp_finding is None:
-            pp_score = 97
-            pp_status = "Compliant"
-            pp_link = pp_data.get("link") or ""
-            dpo_email = dpo_data.get("dpo_email") or ""
-            pp_note = "Privacy policy linked"
-            if pp_link:
-                pp_note += f" at {pp_link}"
-            if dpo_email:
-                pp_note += f"; DPO contact: {dpo_email}"
-            pp_note += "."
-        else:
-            pp_score = 30
-            if pp_data.get("found"):
-                pp_score += 25  # policy exists but DPO missing
-                pp_note = "Privacy policy found but DPO contact not publicly disclosed on website."
-            elif dpo_data.get("has_dpo"):
-                pp_score += 15  # DPO found but no policy link
-                pp_note = "DPO reference found but no privacy policy link on homepage."
+        if clauses:
+            pp_score = int(clauses.get("score", 0))
+            pp_status = clauses.get("status", "Non-Compliant")
+            present_n = clauses.get("present_count", 0)
+            total_n = clauses.get("total", 6)
+            missing = clauses.get("missing") or []
+            if missing:
+                # Show up to 3 missing clauses by their canonical label
+                from app.services.policy_clause_classifier import CLAUSE_LABELS
+                missing_labels = [CLAUSE_LABELS.get(c, c) for c in missing[:3]]
+                pp_note = (
+                    f"{present_n}/{total_n} §13 clauses present. Missing: "
+                    f"{', '.join(missing_labels)}."
+                )
             else:
-                pp_note = "Neither privacy policy link nor DPO contact found on publicly accessible pages."
-            pp_status = "Non-Compliant" if pp_score < 50 else "Partial"
+                pp_note = f"All {total_n} required §13 clauses present in the privacy policy."
+        else:
+            pp_finding = _has(["privacy_policy", "no_privacy_policy", "privacy policy", "dpo", "no_dpo_contact"])
+            if pp_finding is None:
+                pp_score = 97
+                pp_status = "Compliant"
+                pp_link = pp_data.get("link") or ""
+                dpo_email = dpo_data.get("dpo_email") or ""
+                pp_note = "Privacy policy linked"
+                if pp_link:
+                    pp_note += f" at {pp_link}"
+                if dpo_email:
+                    pp_note += f"; DPO contact: {dpo_email}"
+                pp_note += "."
+            else:
+                pp_score = 30
+                if pp_data.get("found"):
+                    pp_score += 25
+                    pp_note = "Privacy policy found but DPO contact not publicly disclosed on website."
+                elif dpo_data.get("has_dpo"):
+                    pp_score += 15
+                    pp_note = "DPO reference found but no privacy policy link on homepage."
+                else:
+                    pp_note = "Neither privacy policy link nor DPO contact found on publicly accessible pages."
+                pp_status = "Non-Compliant" if pp_score < 50 else "Partial"
+
+        # ── Retention Limitation (§25) — derived from clause classifier ────
+        if clauses:
+            items = clauses.get("items") or []
+            retention_v = next((i for i in items if i.get("clause") == "retention"), None)
+            if retention_v and retention_v.get("present"):
+                ret_score = 92
+                ret_status = "Compliant"
+                ret_note = "Privacy policy states a retention period or destruction/anonymisation policy."
+            elif retention_v:
+                ret_score = 20
+                ret_status = "Non-Compliant"
+                ret_note = (
+                    "Retention period not stated in the privacy policy — required under §25 "
+                    "Retention Limitation Obligation."
+                )
+            else:
+                ret_score = 60
+                ret_status = "Partial"
+                ret_note = "Retention obligation not assessed (no clause snippet harvested)."
+        else:
+            ret_score = 70
+            ret_status = "Partial"
+            ret_note = "Retention obligation not assessed (policy classifier did not run)."
 
         # ── Security Headers ──────────────────────────────────────────────
         sec_finding = _has(["hsts", "csp", "x_frame", "x_content_type", "referrer", "security_headers", "https"])
@@ -759,31 +839,134 @@ class PDFService:
             rights_note = "Data subject rights mechanism not detected — required under PDPA §21–22."
             rights_status = "Non-Compliant" if rights_score < 50 else "Partial"
 
-        # ── NRIC / FIN ────────────────────────────────────────────────────
-        nric_finding = _has(["nric", "fin", "nric_collection", "identity document"])
-        if nric_finding is None:
-            nric_score = 100
-            nric_status = "Compliant"
-            nric_note = "No NRIC/FIN collection points detected on publicly accessible pages."
+        # ── NRIC Exposure ─────────────────────────────────────────────────
+        # Prefer the structured classifier output written by the worker; fall
+        # back to legacy boolean signals when running against older scan data.
+        nric_summary = sd.get("nric") if isinstance(sd.get("nric"), dict) else None
+        if nric_summary:
+            nric_kind = nric_summary.get("kind", "none")
+            nric_status = nric_summary.get("status", "Compliant")
+            nric_score = int(nric_summary.get("score", 100))
+            items = nric_summary.get("items") or []
+            first = items[0] if items else None
+            if nric_kind == "leakage":
+                nric_note = (
+                    f"NRIC leakage detected on public content — "
+                    f"{first['source_url']}" if first else "NRIC leakage detected."
+                )
+            elif nric_kind == "collection":
+                nric_note = (
+                    f"Active NRIC collection detected — "
+                    f"{first['source_url']}" if first else "NRIC collection detected."
+                )
+            elif nric_kind == "policy_mention":
+                nric_note = (
+                    "NRIC referenced only in privacy/policy text "
+                    "(no collection or leakage signal)."
+                )
+            else:
+                nric_note = "No NRIC exposure detected on publicly accessible pages."
         else:
-            nric_evidence = sd.get("nric_evidence") or "NRIC/FIN keywords detected"
-            nric_score = 5
-            nric_note = f"Possible NRIC/FIN collection detected: {nric_evidence}."
-            nric_status = "Non-Compliant"
+            nric_finding = _has(["nric", "fin", "nric_collection", "nric_exposure", "identity document"])
+            if nric_finding is None:
+                nric_score = 100
+                nric_status = "Compliant"
+                nric_note = "No NRIC exposure detected on publicly accessible pages."
+            else:
+                nric_evidence = sd.get("nric_evidence") or "NRIC/FIN keywords detected"
+                nric_score = 5
+                nric_note = f"Possible NRIC exposure detected: {nric_evidence}."
+                nric_status = "Non-Compliant"
+
+        # ── Data Breach Notification (§26B-D) ─────────────────────────────
+        pdpc = sd.get("pdpc_enforcement") if isinstance(sd.get("pdpc_enforcement"), dict) else {}
+        if pdpc.get("found"):
+            cases = pdpc.get("cases") or []
+            first_case = cases[0] if cases else None
+            breach_score = 10
+            breach_status = "Non-Compliant"
+            breach_note = (
+                f"PDPC enforcement record found: {first_case['title']}."
+                if first_case else "PDPC enforcement record found for this organisation."
+            )
+        elif pdpc.get("checked"):
+            breach_score = 95
+            breach_status = "Compliant"
+            breach_note = "No PDPC enforcement actions or breach decisions found for this organisation."
+        else:
+            breach_score = 70
+            breach_status = "Partial"
+            breach_note = "PDPC enforcement check unavailable — manual verification recommended."
+
+        # ── Cross-Border Transfer (§26) ───────────────────────────────────
+        hosting = sd.get("hosting") if isinstance(sd.get("hosting"), dict) else {}
+        if hosting.get("checked"):
+            provider = hosting.get("inferred_provider") or "unknown provider"
+            region = hosting.get("inferred_region")
+            if region == "Singapore":
+                xbt_score = 92
+                xbt_status = "Compliant"
+                xbt_note = f"Hosting infrastructure ({provider}) indicates Singapore region — no cross-border transfer signal."
+            elif provider:
+                xbt_score = 60
+                xbt_status = "Partial"
+                xbt_note = (
+                    f"Hosting via {provider} with no Singapore region marker. Cross-border data "
+                    f"transfer likely — ensure Transfer Impact Assessment is in place under §26."
+                )
+            else:
+                xbt_score = 75
+                xbt_status = "Partial"
+                xbt_note = "Hosting provider could not be inferred from response headers."
+        else:
+            xbt_score = 75
+            xbt_status = "Partial"
+            xbt_note = "Hosting signal check unavailable — manual verification recommended."
+
+        # ── Third-Party Tracker Inventory ─────────────────────────────────
+        if trackers_data:
+            inventory = trackers_data.get("inventory") or []
+            if inventory:
+                tr_score = 30
+                tr_status = "Non-Compliant"
+                tr_note = (
+                    f"Detected {len(inventory)} third-party tracker(s) without prior consent: "
+                    f"{', '.join(inventory[:5])}"
+                    f"{'…' if len(inventory) > 5 else ''}. Each requires §13 consent before firing."
+                )
+            else:
+                tr_score = 95
+                tr_status = "Compliant"
+                tr_note = "No third-party trackers observed during page load."
+        else:
+            tr_score = 70
+            tr_status = "Partial"
+            tr_note = "Tracker inventory check unavailable (rendered scan did not run)."
 
         dimensions = [
             ("Cookie Consent Mechanism", cookie_score, cookie_status, cookie_note),
+            ("Third-Party Tracker Inventory", tr_score, tr_status, tr_note),
             ("Privacy Policy (PDPA §11/13)", pp_score, pp_status, pp_note),
             ("Security HTTP Headers", sec_score, sec_status, sec_note),
             ("Cookie Attributes", attr_score, attr_status, attr_note),
             ("DNC Registry Reference", dnc_score, dnc_status, dnc_note),
             ("Data Subject Rights Mechanism", rights_score, rights_status, rights_note),
-            ("NRIC / FIN Collection Signals", nric_score, nric_status, nric_note),
+            ("NRIC Exposure", nric_score, nric_status, nric_note),
+            ("Retention Limitation (§25)", ret_score, ret_status, ret_note),
+            ("Data Breach Notification (§26B-D)", breach_score, breach_status, breach_note),
+            ("Cross-Border Transfer (§26)", xbt_score, xbt_status, xbt_note),
         ]
 
         scores = [d[1] for d in dimensions]
         statuses = [d[2] for d in dimensions]
-        overall = round(sum(scores) / len(scores))
+        # Tier 5: weighted average. High-enforcement-priority dimensions
+        # (NRIC, Breach Notification, Privacy Policy §13, Tracker Inventory,
+        # Cookie Consent) carry 2x weight; everything else 1x. Default for
+        # any unmapped dimension = 1.
+        weights = [_DIMENSION_WEIGHTS.get(d[0], 1) for d in dimensions]
+        weighted_sum = sum(s * w for s, w in zip(scores, weights))
+        total_weight = sum(weights) or 1
+        overall = round(weighted_sum / total_weight)
         if all(s == "Compliant" for s in statuses):
             overall_status = "Compliant"
             overall_color = "#065f46"
@@ -844,6 +1027,54 @@ class PDFService:
             ("FONTNAME",      (0, -1), (-1, -1), "Helvetica-Bold"),
         ]
         t.setStyle(TableStyle(style_cmds))
+        return t
+
+    # ── PDPA: Remediation Status (Tier 6) ─────────────────────────────────────
+
+    def _remediation_status_table(self, remediations: list[dict]) -> Table:
+        """Render the vendor's remediation history. Each row carries a
+        confirmation badge (Confirmed = green, Pending = amber, Regressed = red).
+        """
+        s = self._s
+        header = [
+            Paragraph("FINDING", s["Label"]),
+            Paragraph("USER STATUS", s["Label"]),
+            Paragraph("CONFIRMATION", s["Label"]),
+            Paragraph("MARKED", s["Label"]),
+        ]
+        rows: list = [header]
+        for r in remediations[:15]:
+            cs = (r.get("confirmation_status") or "pending").lower()
+            if cs == "confirmed":
+                badge_html = '<font color="#065f46"><b>✓ Confirmed</b></font>'
+            elif cs == "regressed":
+                badge_html = '<font color="#dc2626"><b>✗ Regressed</b></font>'
+            else:
+                badge_html = '<font color="#92400e"><b>… Pending</b></font>'
+
+            marked = (r.get("marked_at") or "")[:10]  # YYYY-MM-DD
+            rows.append([
+                Paragraph(r.get("label") or r.get("finding_key", ""), s["Body"]),
+                Paragraph((r.get("status") or "fixed").capitalize(), s["Body"]),
+                Paragraph(badge_html, s["Body"]),
+                Paragraph(marked, s["Body"]),
+            ])
+
+        col_w = [CONTENT_W * 0.46, CONTENT_W * 0.16, CONTENT_W * 0.22, CONTENT_W * 0.16]
+        t = Table(rows, colWidths=col_w)
+        t.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, 0), NAVY),
+            ("TEXTCOLOR",     (0, 0), (-1, 0), WHITE),
+            ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE",      (0, 0), (-1, -1), 8),
+            ("GRID",          (0, 0), (-1, -1), 0.5, BORDER),
+            ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
+            ("TOPPADDING",    (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, LIGHT_BG]),
+        ]))
         return t
 
     # ── PDPA: Assessment Conducted By ─────────────────────────────────────────
@@ -1273,6 +1504,21 @@ class PDFService:
                 _scan_data = report_data.get("scan_data") or report_data
                 story.append(self._compliance_score_table(findings, scan_data=_scan_data))
                 story.append(Spacer(1, 0.1 * inch))
+
+                # ── Remediation Status (Tier 6) ────────────────────────────────
+                _remediations = report_data.get("remediations") or []
+                if _remediations:
+                    story.append(Spacer(1, 0.15 * inch))
+                    story.append(self._section_header("4a. Remediation Status"))
+                    story.append(Spacer(1, 6))
+                    story.append(Paragraph(
+                        "Findings the vendor has marked as fixed, and whether the most recent "
+                        "scan confirmed each remediation.",
+                        s["Body"],
+                    ))
+                    story.append(Spacer(1, 8))
+                    story.append(self._remediation_status_table(_remediations))
+                    story.append(Spacer(1, 0.1 * inch))
 
                 # ── Section 5: Developer Implementation Tasks ──────────────────
                 story.append(_PageBreak())
