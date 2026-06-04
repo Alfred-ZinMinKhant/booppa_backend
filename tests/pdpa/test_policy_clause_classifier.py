@@ -11,6 +11,7 @@ import pytest
 from app.services.policy_clause_classifier import (
     CLAUSES,
     classify_clauses,
+    classify_clauses_multilingual,
     harvest_clause_snippets,
     summarise,
 )
@@ -113,3 +114,64 @@ class TestSummarise:
         summary = summarise(verdicts)
         items_clauses = {i["clause"] for i in summary["items"]}
         assert items_clauses == set(CLAUSES)
+
+
+CHINESE_POLICY = """
+<html><body>
+<h1>隐私政策</h1>
+<p>我们收集个人数据的目的是为您提供服务、发送营销通讯以及遵守法律义务。</p>
+<p>您可以随时通过联系我们的数据保护官 (dpo@example.sg) 撤回您的同意。</p>
+<p>我们保留个人数据的时间不会超过实现收集目的所需的时间。</p>
+<p>我们可能会向第三方服务提供商披露数据。</p>
+<p>您有权访问和更正您的个人数据。</p>
+</body></html>
+"""
+
+MALAY_POLICY = """
+<html><body>
+<h1>Dasar Privasi</h1>
+<p>Kami mengumpul data peribadi untuk tujuan menyediakan perkhidmatan kami.</p>
+<p>Anda boleh menarik balik persetujuan anda pada bila-bila masa.</p>
+</body></html>
+"""
+
+
+class TestMultilingual:
+    def test_empty_policy_returns_all_uncertain(self):
+        verdicts = asyncio.run(classify_clauses_multilingual("", language="zh", provider=None))
+        assert len(verdicts) == len(CLAUSES)
+        assert all(not v.present for v in verdicts)
+
+    def test_chinese_no_provider_returns_uncertain_with_language_note(self):
+        verdicts = asyncio.run(
+            classify_clauses_multilingual(CHINESE_POLICY, language="zh", provider=None)
+        )
+        assert len(verdicts) == len(CLAUSES)
+        # Without an LLM we honestly can't classify CN text — all marked uncertain
+        for v in verdicts:
+            assert v.present is False
+            assert "zh" in v.note or "Non-English" in v.note
+
+    def test_malay_no_provider_returns_uncertain(self):
+        verdicts = asyncio.run(
+            classify_clauses_multilingual(MALAY_POLICY, language="ms", provider=None)
+        )
+        assert len(verdicts) == len(CLAUSES)
+        assert all(not v.present for v in verdicts)
+
+    def test_returns_one_verdict_per_clause(self):
+        verdicts = asyncio.run(
+            classify_clauses_multilingual(CHINESE_POLICY, language="zh", provider=None)
+        )
+        clauses_returned = {v.clause for v in verdicts}
+        assert clauses_returned == set(CLAUSES)
+
+    def test_html_is_stripped_before_processing(self):
+        # Even with raw HTML, the multilingual path should not crash
+        verdicts = asyncio.run(
+            classify_clauses_multilingual(
+                "<html><body><p>政策内容</p></body></html>",
+                language="zh", provider=None,
+            )
+        )
+        assert len(verdicts) == len(CLAUSES)

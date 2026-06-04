@@ -30,6 +30,7 @@ from app.services.nric_classifier import (
 from app.services.pdf_nric_scanner import scan_linked_pdfs
 from app.services.policy_clause_classifier import (
     classify_clauses,
+    classify_clauses_multilingual,
     harvest_clause_snippets,
     summarise as summarise_policy,
 )
@@ -717,11 +718,19 @@ async def _scan_site_metadata(url: str | None, company_name: str | None = None) 
     page_result["hosting"] = hosting_result
     page_result["ssl_grade"] = ssl_result
 
-    # ── Privacy policy §13 clause classifier (Tier 2) ────────────────────
+    # ── Privacy policy §13 clause classifier (Tier 2 + multilingual) ─────
     if policy_html_raw:
         try:
-            clause_snippets = harvest_clause_snippets(policy_html_raw)
-            verdicts = await classify_clauses(clause_snippets, provider=nric_provider)
+            # Dispatch on primary language: English uses the anchor-harvest path,
+            # CN/MS/TA go straight to the multilingual LLM classifier.
+            _lang = (primary_lang or "en").lower()
+            if _lang in {"en", "unknown"} or not _lang:
+                clause_snippets = harvest_clause_snippets(policy_html_raw)
+                verdicts = await classify_clauses(clause_snippets, provider=nric_provider)
+            else:
+                verdicts = await classify_clauses_multilingual(
+                    policy_html_raw, language=_lang, provider=nric_provider,
+                )
             page_result["policy_clauses"] = summarise_policy(verdicts)
         except Exception as e:
             logger.warning("Policy clause classification failed for %s: %s", url, e)
