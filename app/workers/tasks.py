@@ -8,7 +8,7 @@ from app.services.blockchain import BlockchainService
 from app.services.pdf_service import PDFService
 from app.services.storage import S3Service
 from app.services.email_service import EmailService
-from app.services.screenshot_service import capture_screenshot_base64
+from app.services.screenshot_service import capture_screenshot_base64, looks_like_image
 from app.core.config import settings
 from app.billing.enforcement import enforce_tier
 from app.services.audit_chain import append_audit_event
@@ -121,7 +121,14 @@ def _confirm_remediations(db, report: Report) -> None:
     db.commit()
 
 
-async def _capture_screenshot_with_timeout(url: str, timeout: int = 25) -> str | None:
+async def _capture_screenshot_with_timeout(url: str, timeout: int = 45) -> str | None:
+    """Run the screenshot_service chain off the event loop with a hard budget.
+
+    Default 45 s allows the Playwright path (~25 s nav + 3 s settle + render)
+    to actually complete on the first try. Previously this was 25 s, which is
+    LESS than the Playwright path's internal wait — so Playwright was always
+    killed and we always fell through to public providers that returned HTML.
+    """
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(capture_screenshot_base64, url), timeout=timeout
@@ -139,9 +146,25 @@ async def _fetch_thum_io_base64(url: str, timeout: int = 30) -> tuple[str | None
       2. Thum.io    — free tier
       3. mshots     — retried 3× with 4 s delay (first request queues the screenshot)
       4. Screenshot.guru — last resort
+
+    Every branch now magic-byte-validates the response before encoding, so a
+    provider returning an HTML error/marketing page is treated as a miss.
     """
     from urllib.parse import quote_plus
     _MIN = 8_000
+
+    def _accept(provider: str, body: bytes) -> str | None:
+        """Return base64 if body is a real image; else None and log why."""
+        if len(body) <= _MIN:
+            logger.warning(f"{provider} returned body of {len(body)} bytes (<{_MIN}) for {url}")
+            return None
+        if not looks_like_image(body):
+            head = body[:16].hex()
+            logger.warning(
+                f"{provider} returned non-image bytes for {url} (first16=0x{head}) — likely HTML; rejecting"
+            )
+            return None
+        return base64.b64encode(body).decode()
 
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
 
@@ -155,19 +178,24 @@ async def _fetch_thum_io_base64(url: str, timeout: int = 30) -> tuple[str | None
                     img_url = (data.get("data") or {}).get("screenshot", {}).get("url")
                     if img_url:
                         img_resp = await client.get(img_url)
-                        if img_resp.status_code == 200 and len(img_resp.content) > _MIN:
-                            logger.info(f"Screenshot via Microlink for {url}")
-                            return base64.b64encode(img_resp.content).decode(), None
+                        if img_resp.status_code == 200:
+                            encoded = _accept("Microlink", img_resp.content)
+                            if encoded:
+                                logger.info(f"Screenshot via Microlink for {url}")
+                                return encoded, None
         except Exception as e:
             logger.warning(f"Microlink failed for {url}: {e}")
 
         # 2. Thum.io
         try:
             resp = await client.get(f"https://image.thum.io/get/width/1400/{url}")
-            if resp.status_code == 200 and len(resp.content) > _MIN:
-                logger.info(f"Screenshot via Thum.io for {url}")
-                return base64.b64encode(resp.content).decode(), None
-            logger.warning(f"Thum.io status {resp.status_code} for {url}")
+            if resp.status_code == 200:
+                encoded = _accept("Thum.io", resp.content)
+                if encoded:
+                    logger.info(f"Screenshot via Thum.io for {url}")
+                    return encoded, None
+            else:
+                logger.warning(f"Thum.io status {resp.status_code} for {url}")
         except Exception as e:
             logger.warning(f"Thum.io error for {url}: {e}")
 
@@ -184,9 +212,11 @@ async def _fetch_thum_io_base64(url: str, timeout: int = 30) -> tuple[str | None
                         continue
                     logger.warning(f"mshots still placeholder after retries for {url}")
                     break
-                if resp.status_code == 200 and len(resp.content) > _MIN:
-                    logger.info(f"Screenshot via mshots (attempt {attempt+1}) for {url}")
-                    return base64.b64encode(resp.content).decode(), None
+                if resp.status_code == 200:
+                    encoded = _accept("mshots", resp.content)
+                    if encoded:
+                        logger.info(f"Screenshot via mshots (attempt {attempt+1}) for {url}")
+                        return encoded, None
                 break
             except Exception as e:
                 logger.warning(f"mshots attempt {attempt+1} error for {url}: {e}")
@@ -197,10 +227,13 @@ async def _fetch_thum_io_base64(url: str, timeout: int = 30) -> tuple[str | None
             resp = await client.get(
                 f"https://screenshot.guru/api?url={quote_plus(url)}&width=1400"
             )
-            if resp.status_code == 200 and len(resp.content) > _MIN:
-                logger.info(f"Screenshot via Screenshot.guru for {url}")
-                return base64.b64encode(resp.content).decode(), None
-            logger.warning(f"Screenshot.guru status {resp.status_code} for {url}")
+            if resp.status_code == 200:
+                encoded = _accept("Screenshot.guru", resp.content)
+                if encoded:
+                    logger.info(f"Screenshot via Screenshot.guru for {url}")
+                    return encoded, None
+            else:
+                logger.warning(f"Screenshot.guru status {resp.status_code} for {url}")
         except Exception as e:
             logger.warning(f"Screenshot.guru error for {url}: {e}")
 

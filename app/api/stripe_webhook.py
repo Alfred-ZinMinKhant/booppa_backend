@@ -89,7 +89,7 @@ BUNDLE_COMPONENTS = {
         "pdpa": True,
         "notarization_count": 1,
         "rfp": "rfp_complete",
-        "cover_sheet": True,   # triggers cover sheet generation with 300s delay
+        "cover_sheet": True,  # triggers cover sheet generation with 300s delay
     },
 }
 
@@ -99,44 +99,51 @@ BUNDLE_COMPONENTS = {
 # PREMIUM 1.3× → GOVERNMENT 1.5×, see scoring.py:92). The mapping is conservative
 # on purpose — enterprise_pro is the only plan that grants GOVERNMENT tier.
 _PLAN_TO_VERIFICATION_LEVEL = {
-    "vendor_active":            "STANDARD",
-    "pdpa_monitor":             "STANDARD",
-    "evaluate_suppliers":       "STANDARD",
-    "standard_suite":           "STANDARD",
-    "tender_intelligence":      "STANDARD",
-    "vendor_pro":               "STANDARD",
-    "enterprise":               "PREMIUM",
-    "pro_suite":                "PREMIUM",
+    "vendor_active": "STANDARD",
+    "pdpa_monitor": "STANDARD",
+    "evaluate_suppliers": "STANDARD",
+    "standard_suite": "STANDARD",
+    "tender_intelligence": "STANDARD",
+    "vendor_pro": "STANDARD",
+    "enterprise": "PREMIUM",
+    "pro_suite": "PREMIUM",
     "verify_supplier_evidence": "PREMIUM",
-    "compliance_evidence":      "PREMIUM",
-    "enterprise_pro":           "GOVERNMENT",
+    "compliance_evidence": "PREMIUM",
+    "enterprise_pro": "GOVERNMENT",
     # Buyer ladder — mirrors evaluate_suppliers / verify_supplier_evidence.
     # Note: buyer-side plans don't elevate the holder's own vendor verification
     # (most holders are buyers, not vendors) but the mapping is needed so
     # the score-lever code path is a no-op rather than a KeyError.
-    "buyer_starter":            "STANDARD",
-    "buyer_pro":                "STANDARD",
-    "buyer_enterprise":         "PREMIUM",
+    "buyer_starter": "STANDARD",
+    "buyer_pro": "STANDARD",
+    "buyer_enterprise": "PREMIUM",
 }
 _LEVEL_RANK = {"BASIC": 0, "STANDARD": 1, "PREMIUM": 2, "GOVERNMENT": 3}
 
 
-def _log_purchase_activity(db, vendor_id, activity_type: str, description: str, extra: dict | None = None) -> None:
+def _log_purchase_activity(
+    db, vendor_id, activity_type: str, description: str, extra: dict | None = None
+) -> None:
     """Record a row in ActivityLog so Engagement + Recency score components
     reflect paid actions (purchases, renewals, fulfillments)."""
     if not vendor_id:
         return
     try:
         from app.core.models_v6 import ActivityLog
-        db.add(ActivityLog(
-            user_id=vendor_id,
-            type=activity_type,
-            description=description[:500],
-            metadata_json=extra or {},
-        ))
+
+        db.add(
+            ActivityLog(
+                user_id=vendor_id,
+                type=activity_type,
+                description=description[:500],
+                metadata_json=extra or {},
+            )
+        )
         db.commit()
     except Exception as e:
-        logger.warning(f"[Activity] log insert failed for vendor={vendor_id} type={activity_type}: {e}")
+        logger.warning(
+            f"[Activity] log insert failed for vendor={vendor_id} type={activity_type}: {e}"
+        )
 
 
 def _apply_subscription_score_lever(db, vendor_id, plan: str) -> None:
@@ -147,6 +154,7 @@ def _apply_subscription_score_lever(db, vendor_id, plan: str) -> None:
         return
     try:
         from app.core.models_v6 import VerifyRecord as _VR, VerificationLevel as _VL
+
         vr = db.query(_VR).filter(_VR.vendor_id == vendor_id).first()
         if not vr:
             # Vendor hasn't completed vendor_proof yet — the lever will apply
@@ -170,9 +178,12 @@ def _apply_subscription_score_lever(db, vendor_id, plan: str) -> None:
         )
     try:
         from app.services.scoring import VendorScoreEngine
+
         VendorScoreEngine.update_vendor_score(db, vendor_id)
     except Exception as e:
-        logger.warning(f"[Subscription] Score recalc failed for vendor={vendor_id}: {e}")
+        logger.warning(
+            f"[Subscription] Score recalc failed for vendor={vendor_id}: {e}"
+        )
 
 
 def _revert_subscription_score_lever(db, vendor_id, remaining_plan: str | None) -> None:
@@ -189,9 +200,9 @@ def _revert_subscription_score_lever(db, vendor_id, remaining_plan: str | None) 
         if not vr:
             return
         depth_to_level = {
-            "STANDARD":   "STANDARD",
-            "DEEP":       "PREMIUM",
-            "CERTIFIED":  "GOVERNMENT",
+            "STANDARD": "STANDARD",
+            "DEEP": "PREMIUM",
+            "CERTIFIED": "GOVERNMENT",
             "ENTERPRISE": "GOVERNMENT",
         }
         depth_level = depth_to_level.get(
@@ -216,9 +227,12 @@ def _revert_subscription_score_lever(db, vendor_id, remaining_plan: str | None) 
         )
     try:
         from app.services.scoring import VendorScoreEngine
+
         VendorScoreEngine.update_vendor_score(db, vendor_id)
     except Exception as e:
-        logger.warning(f"[Subscription] Score recalc failed for vendor={vendor_id}: {e}")
+        logger.warning(
+            f"[Subscription] Score recalc failed for vendor={vendor_id}: {e}"
+        )
 
 
 async def _activate_subscription(
@@ -312,31 +326,40 @@ async def _activate_subscription(
                     f"[Subscription] Updated max_seats={new_cap} on {len(owned_orgs)} org(s) for {customer_email}"
                 )
         except Exception as seat_err:
-            logger.warning(f"[Subscription] Failed to refresh org seat caps: {seat_err}")
+            logger.warning(
+                f"[Subscription] Failed to refresh org seat caps: {seat_err}"
+            )
 
         # Upsert the Subscription table row so it's the source of truth for
         # multi-subscription support (a user can have vendor_active + pdpa_monitor).
         if stripe_subscription_id:
             try:
                 from app.core.models import Subscription as SubModel
-                existing = db.query(SubModel).filter(
-                    SubModel.stripe_subscription_id == stripe_subscription_id
-                ).first()
+
+                existing = (
+                    db.query(SubModel)
+                    .filter(SubModel.stripe_subscription_id == stripe_subscription_id)
+                    .first()
+                )
                 if existing:
                     existing.status = "active"
                     existing.product_type = product_type
                     existing.stripe_customer_id = stripe_customer_id
                 else:
-                    db.add(SubModel(
-                        user_id=user.id,
-                        stripe_subscription_id=stripe_subscription_id,
-                        stripe_customer_id=stripe_customer_id,
-                        product_type=product_type,
-                        status="active",
-                    ))
+                    db.add(
+                        SubModel(
+                            user_id=user.id,
+                            stripe_subscription_id=stripe_subscription_id,
+                            stripe_customer_id=stripe_customer_id,
+                            product_type=product_type,
+                            status="active",
+                        )
+                    )
                 db.commit()
             except Exception as sub_err:
-                logger.warning(f"[Subscription] Subscription table upsert failed: {sub_err}")
+                logger.warning(
+                    f"[Subscription] Subscription table upsert failed: {sub_err}"
+                )
 
         logger.info(
             f"[Subscription] Activated plan={new_plan} for user={customer_email}"
@@ -369,13 +392,12 @@ async def _activate_subscription(
             if new_plan == "pdpa_monitor":
                 try:
                     from app.core.models import Report
+
                     pdpa_report = (
                         db.query(Report)
                         .filter(
                             Report.owner_id == user.id,
-                            Report.framework.in_(
-                                ["pdpa_quick_scan", "pdpa_snapshot"]
-                            ),
+                            Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
                             Report.status == "completed",
                         )
                         .order_by(Report.completed_at.desc())
@@ -408,7 +430,9 @@ async def _activate_subscription(
                         </div>
                         """
                 except Exception as pdf_err:
-                    logger.warning(f"[Subscription] Could not fetch PDPA report for email: {pdf_err}")
+                    logger.warning(
+                        f"[Subscription] Could not fetch PDPA report for email: {pdf_err}"
+                    )
 
             try:
                 email_svc = EmailService()
@@ -445,6 +469,7 @@ async def _activate_subscription(
             if website and customer_email:
                 try:
                     from app.workers.tasks import pdpa_monitor_monthly_rescan_task
+
                     pdpa_monitor_monthly_rescan_task.delay(
                         str(user.id), customer_email, website
                     )
@@ -470,6 +495,7 @@ async def _activate_subscription(
                 )
                 try:
                     import asyncio as _asyncio
+
                     body_html = f"""<!DOCTYPE html><html><body style="font-family:-apple-system,Segoe UI,sans-serif;background:#f8fafc;padding:24px;">
                     <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:8px;padding:28px;border:1px solid #e2e8f0;">
                       <h2 style="margin:0 0 12px;color:#0f172a;">Welcome to Compliance Evidence — one more step</h2>
@@ -486,31 +512,44 @@ async def _activate_subscription(
                         Once saved, your first cycle will run automatically.
                       </p>
                     </div></body></html>"""
-                    _asyncio.run(EmailService().send_html_email(
-                        to_email=customer_email,
-                        subject="Compliance Evidence: add your website to start your first cycle",
-                        body_html=body_html,
-                    ))
+                    _asyncio.run(
+                        EmailService().send_html_email(
+                            to_email=customer_email,
+                            subject="Compliance Evidence: add your website to start your first cycle",
+                            body_html=body_html,
+                        )
+                    )
                 except Exception as email_exc:
-                    logger.warning(f"[Subscription] Could not send CE website-needed email: {email_exc}")
+                    logger.warning(
+                        f"[Subscription] Could not send CE website-needed email: {email_exc}"
+                    )
             else:
                 try:
                     from app.workers.tasks import fulfill_bundle_task
+
                     fulfill_bundle_task.delay(
                         product_type="compliance_evidence_pack",
                         session_id=stripe_subscription_id,
                         customer_email=customer_email,
-                        metadata={"company_name": getattr(user, "company", ""), "vendor_url": website},
+                        metadata={
+                            "company_name": getattr(user, "company", ""),
+                            "vendor_url": website,
+                        },
                         report_id=None,
                     )
-                    logger.info(f"[Subscription] Auto-fulfilled compliance_evidence_pack bundle for {customer_email}")
+                    logger.info(
+                        f"[Subscription] Auto-fulfilled compliance_evidence_pack bundle for {customer_email}"
+                    )
                 except Exception as e:
-                    logger.warning(f"[Subscription] Failed to fulfill compliance_evidence bundle: {e}")
+                    logger.warning(
+                        f"[Subscription] Failed to fulfill compliance_evidence bundle: {e}"
+                    )
         elif new_plan in ["standard_suite", "pro_suite"]:
             try:
                 from app.trm_workflow_service import initialise_trm_controls
                 from app.api.vendor_features import _get_or_create_org
                 from app.core.models_enterprise import TrmControl
+
                 org = _get_or_create_org(db, user)
                 # Idempotent — skip if controls already exist (e.g. renewal webhook)
                 existing = (
@@ -520,11 +559,17 @@ async def _activate_subscription(
                 )
                 if existing == 0:
                     initialise_trm_controls(str(org.id), db)
-                    logger.info(f"[Subscription] Initialised MAS TRM controls for {customer_email} ({new_plan})")
+                    logger.info(
+                        f"[Subscription] Initialised MAS TRM controls for {customer_email} ({new_plan})"
+                    )
                 else:
-                    logger.info(f"[Subscription] TRM controls already present for {customer_email} ({existing} rows)")
+                    logger.info(
+                        f"[Subscription] TRM controls already present for {customer_email} ({existing} rows)"
+                    )
             except Exception as e:
-                logger.warning(f"[Subscription] Failed to initialise MAS TRM controls: {e}")
+                logger.warning(
+                    f"[Subscription] Failed to initialise MAS TRM controls: {e}"
+                )
 
         # Record activation in ActivityLog so Engagement + Recency move.
         _log_purchase_activity(
@@ -746,7 +791,9 @@ async def _defer_rfp_to_intake(
 
     try:
         kit_label = (
-            "RFP Complete Kit" if rfp_product_type == "rfp_complete" else "RFP Express Kit"
+            "RFP Complete Kit"
+            if rfp_product_type == "rfp_complete"
+            else "RFP Express Kit"
         )
         intake_url = f"https://www.booppa.io/rfp-intake/{intake_id}"
         await EmailService().send_html_email(
@@ -776,7 +823,9 @@ async def _defer_rfp_to_intake(
             f"(intake_id={intake_id})"
         )
     except Exception as email_err:
-        logger.warning(f"[RFP-defer:{rfp_product_type}] Intake email failed: {email_err}")
+        logger.warning(
+            f"[RFP-defer:{rfp_product_type}] Intake email failed: {email_err}"
+        )
 
     return intake_id
 
@@ -826,12 +875,7 @@ async def _fulfill_standalone_no_report(
                     extra={"credits_intended": count},
                 )
                 return True
-            locked = (
-                db.query(User)
-                .filter(User.id == user.id)
-                .with_for_update()
-                .first()
-            )
+            locked = db.query(User).filter(User.id == user.id).with_for_update().first()
             current = getattr(locked, "notarization_credits", 0) or 0
             locked.notarization_credits = current + count
             db.commit()
@@ -866,13 +910,19 @@ async def _fulfill_standalone_no_report(
                     </div>
                     """,
                 )
-                logger.info(f"[Notarize:{product_type}] Sent credits-granted email to {customer_email}")
+                logger.info(
+                    f"[Notarize:{product_type}] Sent credits-granted email to {customer_email}"
+                )
             except Exception as email_err:
-                logger.warning(f"[Notarize:{product_type}] Credits email failed: {email_err}")
+                logger.warning(
+                    f"[Notarize:{product_type}] Credits email failed: {email_err}"
+                )
             return True
 
         # PDPA / Vendor Proof: create stub Report and queue the fulfillment task.
-        framework = "pdpa_quick_scan" if product_type in PDPA_PRODUCT_TYPES else "vendor_proof"
+        framework = (
+            "pdpa_quick_scan" if product_type in PDPA_PRODUCT_TYPES else "vendor_proof"
+        )
         if not website and framework == "pdpa_quick_scan":
             await _alert_payment_fulfillment_issue(
                 reason="PDPA Quick Scan paid but no website found on metadata or profile",
@@ -1148,9 +1198,13 @@ async def _fulfill_bundle(
                     </div>
                     """,
                 )
-                logger.info(f"[Bundle:{product_type}] Sent credits-granted email to {customer_email}")
+                logger.info(
+                    f"[Bundle:{product_type}] Sent credits-granted email to {customer_email}"
+                )
             except Exception as email_err:
-                logger.warning(f"[Bundle:{product_type}] Credits email failed: {email_err}")
+                logger.warning(
+                    f"[Bundle:{product_type}] Credits email failed: {email_err}"
+                )
 
         # Pending RFP intake — prompt the buyer to fill in the brief.
         if pending_intake_id and customer_email:
@@ -1202,7 +1256,6 @@ async def _fulfill_bundle(
                 f"[Bundle:{product_type}] Cover sheet deferred — waiting for user uploads "
                 f"(will fire on last credit redemption or via /bundle/cover-sheet/trigger)"
             )
-
 
     except Exception as e:
         logger.exception(f"[Bundle] Fulfillment error for {product_type}: {e}")
@@ -1580,6 +1633,7 @@ async def _fulfill_rfp_package(
                 ce_user = db.query(User).filter(User.email == vendor_email).first()
                 if ce_user:
                     from datetime import datetime as _dt, timezone as _tz
+
                     rfp_report = Report(
                         owner_id=ce_user.id,
                         framework="rfp_complete",
@@ -1673,11 +1727,16 @@ def _maybe_fire_cover_sheet(customer_email: str | None) -> None:
             db.commit()
             return
 
-        pdpa_done = db.query(Report).filter(
-            Report.owner_id == user.id,
-            Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
-            Report.status == "completed",
-        ).first() is not None
+        pdpa_done = (
+            db.query(Report)
+            .filter(
+                Report.owner_id == user.id,
+                Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
+                Report.status == "completed",
+            )
+            .first()
+            is not None
+        )
         rfp_done = bool(getattr(user, "compliance_evidence_rfp_ready", False))
         if not (pdpa_done and rfp_done):
             db.commit()
@@ -1691,6 +1750,7 @@ def _maybe_fire_cover_sheet(customer_email: str | None) -> None:
 
     try:
         from app.workers.tasks import fulfill_cover_sheet_task
+
         fulfill_cover_sheet_task.apply_async(
             kwargs={
                 "bundle_type": "compliance_evidence_pack",
@@ -1700,7 +1760,9 @@ def _maybe_fire_cover_sheet(customer_email: str | None) -> None:
             },
             countdown=10,
         )
-        logger.info(f"[CoverSheet] Auto-fired for {customer_email} (all components ready)")
+        logger.info(
+            f"[CoverSheet] Auto-fired for {customer_email} (all components ready)"
+        )
     except Exception as e:
         logger.warning(f"[CoverSheet] Auto-fire failed for {customer_email}: {e}")
 
@@ -2250,6 +2312,7 @@ def _rollback_webhook_idempotency(event_id: str | None) -> None:
         return
     try:
         from app.core.models import ProcessedWebhookEvent
+
         _db = SessionLocal()
         try:
             _db.query(ProcessedWebhookEvent).filter(
@@ -2258,7 +2321,9 @@ def _rollback_webhook_idempotency(event_id: str | None) -> None:
             _db.commit()
         finally:
             _db.close()
-        logger.warning(f"[Webhook] Rolled back idempotency row for {event_id} after handler failure")
+        logger.warning(
+            f"[Webhook] Rolled back idempotency row for {event_id} after handler failure"
+        )
     except Exception as e:
         logger.error(f"[Webhook] Idempotency rollback failed for {event_id}: {e}")
 
@@ -2278,12 +2343,16 @@ async def stripe_webhook(request: Request):
         raise
     except Exception as exc:
         _rollback_webhook_idempotency(event_id_holder.get("event_id"))
-        logger.exception(f"[Webhook] Unhandled handler error for {event_id_holder.get('event_id')}: {exc}")
+        logger.exception(
+            f"[Webhook] Unhandled handler error for {event_id_holder.get('event_id')}: {exc}"
+        )
         # Returning 500 lets Stripe retry; rollback above ensures the retry isn't skipped.
         raise HTTPException(status_code=500, detail="Webhook processing failed")
 
 
-async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str | None]):
+async def _stripe_webhook_impl(
+    request: Request, event_id_holder: dict[str, str | None]
+):
     """Handle Stripe webhooks. Verifies signature and processes checkout.session.completed events."""
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
@@ -2562,7 +2631,10 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                         customer_email=customer_email,
                         session_id=session.get("id"),
                         event_id=event_id,
-                        extra={"report_id": str(report_id), "metadata_keys": sorted(metadata.keys())},
+                        extra={
+                            "report_id": str(report_id),
+                            "metadata_keys": sorted(metadata.keys()),
+                        },
                     )
                 else:
                     from app.workers.tasks import fulfill_rfp_task
@@ -2709,7 +2781,10 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                                     from app.workers.tasks import (
                                         send_referral_reward_email_task,
                                     )
-                                    send_referral_reward_email_task.delay(referrer.email)
+
+                                    send_referral_reward_email_task.delay(
+                                        referrer.email
+                                    )
                             except Exception as ref_email_exc:
                                 logger.warning(
                                     f"[Referral] Referrer email failed: {ref_email_exc}"
@@ -2888,37 +2963,43 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                     if user:
                         # Mark the specific Subscription row as canceled
                         from app.core.models import Subscription as SubModel
+
                         if stripe_sub_id:
-                            sub_row = _db3.query(SubModel).filter(
-                                SubModel.stripe_subscription_id == stripe_sub_id
-                            ).first()
+                            sub_row = (
+                                _db3.query(SubModel)
+                                .filter(
+                                    SubModel.stripe_subscription_id == stripe_sub_id
+                                )
+                                .first()
+                            )
                             if sub_row:
                                 sub_row.status = "canceled"
+                                _db3.flush()
 
                         # Derive user.plan from remaining active subscriptions
                         _plan_map = {
                             "vendor_active_monthly": "vendor_active",
-                            "vendor_active_annual":  "vendor_active",
-                            "pdpa_monitor_monthly":  "pdpa_monitor",
-                            "pdpa_monitor_annual":   "pdpa_monitor",
-                            "enterprise_monthly":    "enterprise",
-                            "enterprise_pro_monthly":"enterprise_pro",
-                            "standard_suite_monthly":         "standard_suite",
-                            "pro_suite_monthly":              "pro_suite",
-                            "evaluate_suppliers_monthly":     "evaluate_suppliers",
-                            "verify_supplier_evidence_monthly":"verify_supplier_evidence",
-                            "compliance_evidence_monthly":    "compliance_evidence",
-                            "tender_intelligence_monthly":    "tender_intelligence",
-                            "tender_intelligence_annual":     "tender_intelligence",
-                            "vendor_pro_monthly":             "vendor_pro",
-                            "vendor_pro_annual":              "vendor_pro",
+                            "vendor_active_annual": "vendor_active",
+                            "pdpa_monitor_monthly": "pdpa_monitor",
+                            "pdpa_monitor_annual": "pdpa_monitor",
+                            "enterprise_monthly": "enterprise",
+                            "enterprise_pro_monthly": "enterprise_pro",
+                            "standard_suite_monthly": "standard_suite",
+                            "pro_suite_monthly": "pro_suite",
+                            "evaluate_suppliers_monthly": "evaluate_suppliers",
+                            "verify_supplier_evidence_monthly": "verify_supplier_evidence",
+                            "compliance_evidence_monthly": "compliance_evidence",
+                            "tender_intelligence_monthly": "tender_intelligence",
+                            "tender_intelligence_annual": "tender_intelligence",
+                            "vendor_pro_monthly": "vendor_pro",
+                            "vendor_pro_annual": "vendor_pro",
                             # Buyer ladder — monthly + annual share a plan family.
-                            "buyer_starter_monthly":          "buyer_starter",
-                            "buyer_starter_annual":           "buyer_starter",
-                            "buyer_pro_monthly":              "buyer_pro",
-                            "buyer_pro_annual":               "buyer_pro",
-                            "buyer_enterprise_monthly":       "buyer_enterprise",
-                            "buyer_enterprise_annual":        "buyer_enterprise",
+                            "buyer_starter_monthly": "buyer_starter",
+                            "buyer_starter_annual": "buyer_starter",
+                            "buyer_pro_monthly": "buyer_pro",
+                            "buyer_pro_annual": "buyer_pro",
+                            "buyer_enterprise_monthly": "buyer_enterprise",
+                            "buyer_enterprise_annual": "buyer_enterprise",
                         }
                         remaining = (
                             _db3.query(SubModel)
@@ -2960,9 +3041,13 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                             from app.core.models_enterprise import Organisation as _Org
 
                             new_cap = max_seats_for(user.plan)
-                            owned_orgs = _db3.query(_Org).filter(
-                                _Org.owner_user_id == user.id,
-                            ).all()
+                            owned_orgs = (
+                                _db3.query(_Org)
+                                .filter(
+                                    _Org.owner_user_id == user.id,
+                                )
+                                .all()
+                            )
                             for _org in owned_orgs:
                                 _org.max_seats = new_cap
                             if owned_orgs:
@@ -2984,12 +3069,16 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                         try:
                             from app.billing.enforcement import PRO_SUITE_PLAN_KEYS
                             from app.core.models_enterprise import (
-                                Organisation as _Org2, SsoConfig as _SsoCfg,
+                                Organisation as _Org2,
+                                SsoConfig as _SsoCfg,
                             )
+
                             if user.plan not in PRO_SUITE_PLAN_KEYS:
                                 org_ids = [
-                                    o.id for o in _db3.query(_Org2)
-                                    .filter(_Org2.owner_user_id == user.id).all()
+                                    o.id
+                                    for o in _db3.query(_Org2)
+                                    .filter(_Org2.owner_user_id == user.id)
+                                    .all()
                                 ]
                                 if org_ids:
                                     deactivated = (
@@ -2998,7 +3087,10 @@ async def _stripe_webhook_impl(request: Request, event_id_holder: dict[str, str 
                                             _SsoCfg.organisation_id.in_(org_ids),
                                             _SsoCfg.is_active == True,  # noqa: E712
                                         )
-                                        .update({"is_active": False}, synchronize_session=False)
+                                        .update(
+                                            {"is_active": False},
+                                            synchronize_session=False,
+                                        )
                                     )
                                     if deactivated:
                                         _db3.commit()
