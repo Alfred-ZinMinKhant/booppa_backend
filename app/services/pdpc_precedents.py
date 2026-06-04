@@ -39,49 +39,60 @@ from __future__ import annotations
 
 from typing import Optional
 
-
 # ── Seed data ─────────────────────────────────────────────────────────────────
 # Cases included here are widely reported in Singapore media and on the PDPC
 # decisions register. Compliance team should review and extend periodically.
 
 PRECEDENTS: dict[str, list[dict]] = {
-    # SingHealth + IHiS 2019 — the largest public PDPC penalty to date,
-    # for the SingHealth COVID-related cyberattack and breach. Both entities
-    # were fined under PDPA §24 Protection Obligation; aggregate ≈ S$1m.
-    # PDPC reference: https://www.pdpc.gov.sg/all-commissions-decisions/2019/01
-    # We attach this precedent to breach-notification and data-leakage keys.
+    # This bucket intentionally keeps only cases that were re-verified against
+    # live PDPC decision pages and their linked decision documents.
     "breach:pdpc_enforcement": [
         {
-            "vendor": "SingHealth / IHiS",
+            "vendor": "Orchard Turn Developments",
+            "year": 2017,
+            "fine_sgd": 15_000,
+            "section": "§24 Protection Obligation",
+            "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/enforcement-decisions/breach-of-protection-obligation-by-orchard-turn-developments",
+            "summary": "Mall membership data was exposed after inadequate server security and password controls.",
+        },
+        {
+            "vendor": "COURTS",
             "year": 2019,
-            "fine_sgd": 1_000_000,
+            "fine_sgd": 15_000,
             "section": "§24 Protection Obligation",
-            "url": "https://www.pdpc.gov.sg/all-commissions-decisions/2019/01/breach-of-the-protection-obligation-by-singapore-health-services-and-integrated-health-information-systems",
-            "summary": "Cyberattack on SingHealth patient database. Largest PDPC penalty on record.",
+            "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/enforcement-decisions/breach-of-the-protection-obligation-by-courts-2020-10",
+            "summary": "Customers' personal data was disclosed through an online portal because of inadequate security arrangements.",
         },
-    ],
-    # NRIC collection penalties commonly cited under §13 Consent and §18
-    # Purpose Limitation. We use these keys to anchor any NRIC-related finding.
-    "nric:collection": [
         {
-            "vendor": "K Box Entertainment Group",
-            "year": 2016,
-            "fine_sgd": 50_000,
+            "vendor": "SPH Magazines",
+            "year": 2020,
+            "fine_sgd": 26_000,
             "section": "§24 Protection Obligation",
-            "url": "https://www.pdpc.gov.sg/all-commissions-decisions/2016/04",
-            "summary": "Customer database including NRIC numbers leaked online.",
+            "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/enforcement-decisions/breach-of-the-protection-obligation-by-sph-magazines",
+            "summary": "Weak website security exposed HardwareZone forum member data to unauthorised access.",
         },
-    ],
-    "nric:leakage": [
         {
-            "vendor": "K Box Entertainment Group",
-            "year": 2016,
-            "fine_sgd": 50_000,
+            "vendor": "MyRepublic",
+            "year": 2022,
+            "fine_sgd": 60_000,
             "section": "§24 Protection Obligation",
-            "url": "https://www.pdpc.gov.sg/all-commissions-decisions/2016/04",
-            "summary": "Customer database including NRIC numbers leaked online.",
+            "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/enforcement-decisions/breach-of-the-protection-obligation-by-myrepublic",
+            "summary": "Threat actors accessed and exfiltrated subscriber data after security arrangements proved insufficient.",
+        },
+        {
+            "vendor": "RedMart",
+            "year": 2022,
+            "fine_sgd": 72_000,
+            "section": "§24 Protection Obligation",
+            "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/enforcement-decisions/breach-of-the-protection-obligation-by-redmart",
+            "summary": "Customer data was exposed because reasonable security arrangements were not in place.",
         },
     ],
+    # Legacy NRIC entries were removed because their old register URLs now
+    # redirect away from the original decisions. Re-add only after a live PDPC
+    # decision page and exact section / penalty can be re-verified.
+    "nric:collection": [],
+    "nric:leakage": [],
 }
 
 
