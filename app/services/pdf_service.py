@@ -67,6 +67,31 @@ SEVERITY_HEX = {
 # tracker firing, privacy policy completeness) carry double weight in the
 # overall score; remaining dimensions carry baseline weight. Any dimension
 # not listed here falls back to weight 1 via dict.get(name, 1).
+def _finding_key_from(f: dict) -> str | None:
+    """Derive a stable finding_key from a finding dict for precedent lookup.
+
+    Matches the slug logic in app/services/finding_keys.py so the PDF and the
+    web report agree on which precedent attaches to which finding.
+    """
+    import re as _re
+    check = (f.get("check_id") or f.get("type") or "").lower()
+    if not check:
+        return None
+    slug = _re.sub(r"[^\w]+", "_", check).strip("_")[:64]
+    if not slug:
+        return None
+
+    # Targeted aliases: when the AI-generated finding type is "nric_violation"
+    # or similar, route precedent lookup to nric:collection / nric:leakage —
+    # the canonical keys used by app.services.finding_keys.
+    if "nric" in slug or "fin_number" in slug:
+        return "nric:collection"
+    if "breach" in slug or "notification" in slug:
+        return "breach:pdpc_enforcement"
+
+    return f"free:{slug}"
+
+
 _DIMENSION_WEIGHTS: dict[str, int] = {
     "NRIC Exposure": 2,
     "Data Breach Notification (§26B-D)": 2,
@@ -1921,13 +1946,21 @@ class PDFService:
             s["FindHead"]
         )
 
+        # PDPC enforcement precedent (Tier 7) — only shown when on file
+        from app.services.pdpc_precedents import precedent_summary as _ps
+        _key = _finding_key_from(f)
+        _precedent_text = _ps(_key) if _key else None
+
         rows = []
-        for label, value in [
+        rows_src = [
             ("Violation",    f.get("description") or f.get("details") or ""),
             ("Legislation",  f.get("legislation_text") or "; ".join(f.get("legislation_references") or [])),
             ("Max Penalty",  f.get("max_penalty") or (f.get("penalty") or {}).get("amount") or "Up to S$1,000,000"),
             ("Evidence",     f.get("evidence") or "Automated scan detection"),
-        ]:
+        ]
+        if _precedent_text:
+            rows_src.append(("Precedent", _precedent_text))
+        for label, value in rows_src:
             # strip AI template noise from violation text
             clean_val = value
             if label == "Violation" and "\n" in clean_val:
@@ -1989,6 +2022,14 @@ class PDFService:
             items.append(Paragraph("<b>Recommended Tools / Libraries:</b>", s["Body"]))
             for tool in tools:
                 items.append(Paragraph(f"• {tool}", s["Bullet"]))
+
+        # PDPC enforcement precedent line — only shown when on file
+        from app.services.pdpc_precedents import precedent_summary as _ps
+        _key = _finding_key_from(f)
+        _precedent = _ps(_key) if _key else None
+        if _precedent:
+            items.append(Spacer(1, 4))
+            items.append(Paragraph(f"<b>Regulatory Precedent:</b> {_precedent}", s["Body"]))
 
         return items
 

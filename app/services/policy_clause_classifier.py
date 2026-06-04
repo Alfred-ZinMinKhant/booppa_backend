@@ -154,6 +154,91 @@ _CLASSIFIER_PROMPT = (
 )
 
 
+# Multilingual classifier — same JSON schema, but the input is the raw policy
+# text in any of Singapore's four official languages (English, Chinese, Malay,
+# Tamil). We rely entirely on the LLM here because the English-only regex
+# anchors in _CLAUSE_ANCHORS won't match Chinese/Malay/Tamil text. The model
+# is expected to handle the multilingual reasoning and still return English
+# JSON. Truncates input to avoid prompt-size blowups on long policies.
+_MULTILINGUAL_PROMPT = (
+    "You are auditing a Singapore privacy policy for PDPA Section 11/13/21/22/25/26 "
+    "compliance. The policy may be written in English, Chinese (zh), Malay (ms), or "
+    "Tamil (ta). Read the full text and decide whether each required clause is present. "
+    "Return ONLY a JSON object (in English) keyed by clause name:\n"
+    "  {\"purpose\": {\"present\": bool, \"confidence\": 0.0-1.0, \"note\": \"short reason in English\"}, "
+    "\"withdrawal\": {...}, \"dpo_contact\": {...}, \"retention\": {...}, "
+    "\"third_party\": {...}, \"data_subject_rights\": {...}}\n"
+    "Same rules as the English classifier: present=true only when the clause is actually "
+    "fulfilled, not just mentioned. A standalone DPO heading without contact details "
+    "does NOT satisfy 'dpo_contact'.\n"
+    "No commentary, no markdown."
+)
+
+# Cap on policy text length sent to the multilingual LLM call — keeps prompt
+# size and cost bounded for unusually long policies.
+_MAX_POLICY_CHARS = 18_000
+
+
+async def classify_clauses_multilingual(
+    policy_text: str,
+    language: str,
+    provider: Optional[DeepSeekProvider] = None,
+) -> list[ClauseVerdict]:
+    """Classify a non-English privacy policy by feeding the raw text directly
+    to the LLM with a multilingual prompt. Falls back to all-uncertain when
+    no provider/API key is configured (we don't carry CN/MS/TA regex anchors).
+    """
+    stripped = _strip_html(policy_text)[:_MAX_POLICY_CHARS]
+    if not stripped:
+        return [
+            ClauseVerdict(clause=c, present=False, confidence=0.6,
+                          evidence="", note="Empty policy text")
+            for c in CLAUSES
+        ]
+
+    if provider is None or not getattr(provider, "api_key", None):
+        return [
+            ClauseVerdict(clause=c, present=False, confidence=0.4,
+                          evidence="",
+                          note=f"Non-English ({language}) policy; no LLM available to classify")
+            for c in CLAUSES
+        ]
+
+    user_payload = {"language": language, "policy_text": stripped}
+    messages = [
+        {"role": "system", "content": _MULTILINGUAL_PROMPT},
+        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+    ]
+    raw = await provider.call_chat(messages)
+    parsed = _parse_classification(raw)
+
+    if not isinstance(parsed, dict):
+        logger.warning(
+            "Multilingual policy classifier: LLM returned non-dict for lang=%s; falling back to uncertain",
+            language,
+        )
+        return [
+            ClauseVerdict(clause=c, present=False, confidence=0.4,
+                          evidence="",
+                          note=f"Multilingual ({language}) LLM classification failed")
+            for c in CLAUSES
+        ]
+
+    out: list[ClauseVerdict] = []
+    for clause in CLAUSES:
+        entry = parsed.get(clause) or {}
+        present = bool(entry.get("present", False)) if isinstance(entry, dict) else False
+        confidence = float(entry.get("confidence", 0.5)) if isinstance(entry, dict) else 0.5
+        confidence = max(0.0, min(1.0, confidence))
+        note = (entry.get("note") or "")[:200] if isinstance(entry, dict) else ""
+        out.append(ClauseVerdict(
+            clause=clause, present=present, confidence=confidence,
+            evidence=f"[lang={language}] {stripped[:200]}",
+            note=note,
+        ))
+    return out
+
+
 async def classify_clauses(
     snippets_by_clause: dict[str, list[str]],
     provider: Optional[DeepSeekProvider] = None,

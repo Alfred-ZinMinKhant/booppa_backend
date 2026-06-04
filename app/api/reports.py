@@ -472,6 +472,21 @@ async def get_report_by_session(
                     if k in report.assessment_data:
                         scan_data[k] = report.assessment_data[k]
 
+            # PDPC precedents keyed by finding_key so the report viewer can
+            # render the same "Regulatory Precedent" line the PDF shows.
+            try:
+                from app.services.pdpc_precedents import PRECEDENTS as _PRECS
+                from app.services.pdpc_precedents import precedent_summary as _ps
+                scan_data["precedents"] = {
+                    key: {
+                        "summary": _ps(key),
+                        "cases": cases,
+                    }
+                    for key, cases in _PRECS.items()
+                }
+            except Exception:
+                scan_data["precedents"] = {}
+
             return {
                 "status": report.status,
                 "url": report.s3_url,
