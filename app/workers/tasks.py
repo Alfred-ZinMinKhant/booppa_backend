@@ -15,6 +15,26 @@ from app.services.audit_chain import append_audit_event
 from app.services.dependency_logger import log_dependency_event
 from app.services.verify_registry import register_verification
 from app.integrations.ai.adapter import ai_preview
+from app.services.ai_provider import DeepSeekProvider
+from app.services.evidence_enricher import (
+    fetch_hosting_signals,
+    fetch_pdpc_enforcement,
+    fetch_ssl_grade,
+)
+from app.services.nric_classifier import (
+    classify_candidates,
+    find_valid_nric_values,
+    harvest_candidates,
+    summarise as summarise_nric,
+)
+from app.services.pdf_nric_scanner import scan_linked_pdfs
+from app.services.policy_clause_classifier import (
+    classify_clauses,
+    harvest_clause_snippets,
+    summarise as summarise_policy,
+)
+from app.services.pdpa_dimension_snapshot import compute_dimension_snapshots
+from app.services.finding_keys import extract_finding_keys
 import asyncio
 import hashlib
 import json
@@ -40,6 +60,65 @@ def _set_assessment_values(report: Report, updates: dict) -> None:
         report.assessment_data = assessment
     except Exception as e:
         logger.warning(f"Failed to update assessment_data for {report.id}: {e}")
+
+
+def _record_dimension_snapshots(db, report: Report) -> None:
+    """Tier 4: persist one row per PDPA dimension to pdpa_dimension_history.
+
+    Called from process_report_workflow after the metadata scan completes.
+    Safe to call multiple times; each call writes a fresh batch with the same
+    captured_at timestamp clustering.
+    """
+    from app.core.models_v8 import PdpaDimensionHistory
+
+    snapshots = compute_dimension_snapshots(report.assessment_data)
+    if not snapshots:
+        return
+    for snap in snapshots:
+        db.add(PdpaDimensionHistory(
+            vendor_id=report.owner_id,
+            report_id=report.id,
+            framework=report.framework or "pdpa_quick_scan",
+            dimension_name=snap["dimension_name"],
+            status=snap["status"],
+            score=snap["score"],
+        ))
+    db.commit()
+
+
+def _confirm_remediations(db, report: Report) -> None:
+    """Tier 6: auto-confirm or regress any pending remediations for this vendor.
+
+    For every FindingRemediation in (pending|regressed) state for this vendor+
+    framework, check whether the corresponding finding_key still appears in
+    the current scan. If gone → confirmation_status='confirmed'. If still
+    present → 'regressed'. Idempotent — safe to call repeatedly.
+    """
+    from app.core.models_v8 import FindingRemediation
+
+    current_keys = extract_finding_keys(report.assessment_data)
+    pending = (
+        db.query(FindingRemediation)
+        .filter(
+            FindingRemediation.vendor_id == report.owner_id,
+            FindingRemediation.confirmation_status.in_(("pending", "regressed")),
+            FindingRemediation.status.in_(("fixed", "wontfix")),
+        )
+        .all()
+    )
+    if not pending:
+        return
+    now = datetime.now(timezone.utc)
+    for rem in pending:
+        if rem.finding_key in current_keys:
+            # Finding still appears — mark/keep as regressed
+            rem.confirmation_status = "regressed"
+        else:
+            rem.confirmation_status = "confirmed"
+            if not rem.confirmed_at:
+                rem.confirmed_at = now
+                rem.confirming_report_id = report.id
+    db.commit()
 
 
 async def _capture_screenshot_with_timeout(url: str, timeout: int = 25) -> str | None:
@@ -128,6 +207,43 @@ async def _fetch_thum_io_base64(url: str, timeout: int = 30) -> tuple[str | None
     return None, "all_providers_failed"
 
 
+_TRACKER_DOMAINS: tuple[tuple[str, str], ...] = (
+    # (substring, vendor label)
+    ("google-analytics.com", "Google Analytics"),
+    ("googletagmanager.com", "Google Tag Manager"),
+    ("doubleclick.net", "Google Ads / DoubleClick"),
+    ("googleadservices.com", "Google Ads"),
+    ("facebook.com/tr", "Meta Pixel"),
+    ("connect.facebook.net", "Meta Pixel"),
+    ("hotjar.com", "Hotjar"),
+    ("static.hotjar.com", "Hotjar"),
+    ("mixpanel.com", "Mixpanel"),
+    ("segment.io", "Segment"),
+    ("segment.com", "Segment"),
+    ("amplitude.com", "Amplitude"),
+    ("fullstory.com", "FullStory"),
+    ("clarity.ms", "Microsoft Clarity"),
+    ("adobe.com/b/ss", "Adobe Analytics"),
+    ("omtrdc.net", "Adobe Analytics"),
+    ("licdn.com", "LinkedIn Insight Tag"),
+    ("snap.licdn.com", "LinkedIn Insight Tag"),
+    ("tiktok.com/i18n/pixel", "TikTok Pixel"),
+    ("analytics.tiktok.com", "TikTok Pixel"),
+    ("ads-twitter.com", "X (Twitter) Pixel"),
+    ("static.ads-twitter.com", "X (Twitter) Pixel"),
+    ("bat.bing.com", "Microsoft Advertising / Bing UET"),
+)
+
+
+def _classify_tracker(request_url: str) -> str | None:
+    """Return the vendor label if the request URL matches a known tracker."""
+    url_lower = (request_url or "").lower()
+    for needle, label in _TRACKER_DOMAINS:
+        if needle in url_lower:
+            return label
+    return None
+
+
 async def _detect_cookie_banner(url: str | None) -> dict:
     if not url:
         return {}
@@ -150,6 +266,24 @@ async def _detect_cookie_banner(url: str | None) -> dict:
         async with async_playwright() as p:
             browser = await p.chromium.launch()
             page = await browser.new_page()
+
+            # Tier 3: capture network requests pre-consent. Because the scanner
+            # never clicks the banner, every tracker fired during page load is
+            # by definition pre-consent.
+            captured_requests: list[dict] = []
+
+            def _on_request(req):
+                try:
+                    captured_requests.append({
+                        "url": req.url,
+                        "method": req.method,
+                        "resource_type": req.resource_type,
+                    })
+                except Exception:
+                    pass
+
+            page.on("request", _on_request)
+
             await page.goto(url, timeout=45000, wait_until="networkidle")
             # Wait for splash screens / animated intros to finish (30s)
             # Many sites show loading animations with logos for 10-30s
@@ -171,9 +305,27 @@ async def _detect_cookie_banner(url: str | None) -> dict:
                     return style.display !== 'none' && style.visibility !== 'hidden';
                 });
             }""")
-            
+
             await browser.close()
-            
+
+            # Build tracker inventory from captured requests
+            tracker_hits: dict[str, list[str]] = {}
+            for req in captured_requests:
+                vendor = _classify_tracker(req["url"])
+                if vendor:
+                    tracker_hits.setdefault(vendor, []).append(req["url"])
+            tracker_summary = {
+                # All captured trackers are pre-consent because we never clicked
+                # the banner. Schema reserves post_consent for future work.
+                "pre_consent": [
+                    {"vendor": v, "sample_url": urls[0], "count": len(urls)}
+                    for v, urls in tracker_hits.items()
+                ],
+                "post_consent": [],
+                "inventory": sorted(tracker_hits.keys()),
+                "total_requests_captured": len(captured_requests),
+            }
+
             found = [k for k in indicators if k in html]
             if found or banner_visible:
                 return {
@@ -182,7 +334,15 @@ async def _detect_cookie_banner(url: str | None) -> dict:
                         "has_active_consent": True,
                         "detected_providers": found,
                         "rendered_detection": True,
-                    }
+                        "pre_consent_trackers": tracker_summary["inventory"],
+                    },
+                    "trackers": tracker_summary,
+                }
+            else:
+                # No banner found in DOM; still surface tracker inventory so
+                # downstream scoring can flag pre-consent firings.
+                return {
+                    "trackers": tracker_summary,
                 }
     except Exception as e:
         logger.warning(f"Playwright cookie detection failed, falling back to HTTP: {e}")
@@ -269,7 +429,7 @@ def _is_loading_page(html: str) -> bool:
     return False
 
 
-async def _scan_site_metadata(url: str | None) -> dict:
+async def _scan_site_metadata(url: str | None, company_name: str | None = None) -> dict:
     if not url:
         return {}
 
@@ -365,6 +525,37 @@ async def _scan_site_metadata(url: str | None) -> dict:
     html_lower = html.lower()
     combined_html = html_lower
 
+    # Tier 5: detect non-English primary language and fetch an English alternate
+    # when one is advertised via <html lang> + <link rel="alternate" hreflang="en">.
+    # Singapore sites with Chinese/Malay/Tamil primary content would otherwise
+    # false-fail our English keyword checks. The English HTML is appended to
+    # combined_html so downstream regex checks (DPO, DNC, NRIC, etc.) see it.
+    primary_lang = None
+    lang_match = re.search(r"<html[^>]*\blang=[\"']([a-zA-Z-]+)[\"']", html, re.IGNORECASE)
+    if lang_match:
+        primary_lang = lang_match.group(1).split("-")[0].lower()
+    page_result["primary_language"] = primary_lang or "unknown"
+
+    if primary_lang and primary_lang != "en":
+        alt_match = re.search(
+            r'<link[^>]+rel=[\"\']?alternate[\"\']?[^>]+hreflang=[\"\']?en[\"\']?[^>]+href=[\"\']([^\"\']+)[\"\']',
+            html, re.IGNORECASE,
+        ) or re.search(
+            r'<link[^>]+hreflang=[\"\']?en[\"\']?[^>]+href=[\"\']([^\"\']+)[\"\']',
+            html, re.IGNORECASE,
+        )
+        if alt_match:
+            try:
+                en_href = alt_match.group(1)
+                en_url = en_href if en_href.startswith("http") else urljoin(url, en_href)
+                async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                    en_resp = await client.get(en_url, headers=_BROWSER_UA_HEADERS)
+                if en_resp.status_code < 400:
+                    combined_html += "\n" + (en_resp.text or "").lower()
+                    page_result["english_alternate_fetched"] = en_url
+            except Exception as e:
+                logger.info("English alternate fetch failed for %s: %s", url, e)
+
     # Privacy policy detection
     privacy_link = None
     match = re.search(r'href=["\"]([^"\"]*privacy[^"\"]*)', html_lower)
@@ -376,6 +567,7 @@ async def _scan_site_metadata(url: str | None) -> dict:
     }
 
     # If privacy policy link is found, fetch it for deeper checks
+    policy_html_raw = ""  # original-case policy HTML for the clause classifier
     if privacy_link:
         try:
             privacy_url = (
@@ -388,7 +580,8 @@ async def _scan_site_metadata(url: str | None) -> dict:
                     privacy_url, headers=_BROWSER_UA_HEADERS
                 )
                 if resp.status_code < 400:
-                    combined_html += "\n" + (resp.text or "").lower()
+                    policy_html_raw = resp.text or ""
+                    combined_html += "\n" + policy_html_raw.lower()
         except Exception as e:
             page_result["privacy_policy_fetch_error"] = f"privacy_fetch:{str(e)[:200]}"
 
@@ -404,15 +597,44 @@ async def _scan_site_metadata(url: str | None) -> dict:
     mentions_dnc = "dnc" in combined_html or "do not call" in combined_html or "do-not-call" in combined_html
     page_result["dnc_mention"] = {"mentions_dnc": bool(mentions_dnc)}
 
-    # NRIC hints detection
-    nric_word = re.search(r"\bnric\b", combined_html)
-    fin_word = re.search(r"\bfin\b", combined_html)
-    fin_context = "fin number" in combined_html or "fin no" in combined_html
-    input_nric = re.search(r"name=\"[^\"]*(nric|fin)[^\"]*\"", combined_html)
-    collects_nric = bool(nric_word or (fin_word and fin_context) or input_nric)
-    page_result["collects_nric"] = bool(collects_nric)
-    if collects_nric:
-        page_result["nric_evidence"] = "NRIC/FIN keyword detected in page content"
+    # ── NRIC Exposure (classifier-driven) ────────────────────────────────
+    # 1) Harvest candidate snippets from the page HTML (original case for the
+    #    LLM, lowercased combined_html only used for cheap pre-screen).
+    nric_pre_hit = (
+        re.search(r"\bnric\b", combined_html)
+        or ("fin number" in combined_html)
+        or ("fin no" in combined_html)
+        or re.search(r"name=\"[^\"]*(nric|fin)[^\"]*\"", combined_html)
+    )
+    nric_candidates: list[dict] = []
+    pdf_findings: list[dict] = []
+    if nric_pre_hit or find_valid_nric_values(html):
+        nric_candidates.extend(harvest_candidates(html, source_url=url or ""))
+        # 2) Follow linked PDFs (bounded) and harvest snippets from those too.
+        try:
+            pdf_docs = await scan_linked_pdfs(html, base_url=url or "")
+            for doc in pdf_docs:
+                pdf_findings.append({"url": doc["url"], "chars": len(doc["text"])})
+                nric_candidates.extend(harvest_candidates(doc["text"], source_url=doc["url"]))
+        except Exception as e:
+            logger.info("PDF NRIC scan failed for %s: %s", url, e)
+
+    # 3) Classify with LLM (falls back to heuristics if no API key).
+    nric_provider = DeepSeekProvider(getattr(settings, "DEEPSEEK_API_KEY", None))
+    nric_evidences = await classify_candidates(nric_candidates, provider=nric_provider)
+    nric_summary = summarise_nric(nric_evidences)
+
+    page_result["nric"] = {
+        **nric_summary,
+        "pdfs_scanned": pdf_findings,
+    }
+    # Back-compat fields read by older PDF/score code paths
+    page_result["collects_nric"] = nric_summary["kind"] in {"collection", "leakage"}
+    if nric_summary["evidence_count"]:
+        first = nric_summary["items"][0]
+        page_result["nric_evidence"] = (
+            f"{first['kind']} — {first['snippet'][:160]} ({first['source_url']})"
+        )
 
     # Cookie banner detection from combined HTML
     cookie_indicators = [
@@ -437,6 +659,44 @@ async def _scan_site_metadata(url: str | None) -> dict:
         }
     elif "consent_mechanism" not in page_result:
         page_result["consent_mechanism"] = {"has_cookie_banner": False}
+
+    # ── External evidence enrichment (Tier 1) ─────────────────────────────
+    # These run in parallel; each enricher has internal error handling and
+    # returns a safe default on failure, so we don't need extra try/except.
+    enrichment_url = url or ""
+    pdpc_task = (
+        fetch_pdpc_enforcement(company_name) if company_name
+        else asyncio.sleep(0, result={"checked": False, "found": False, "cases": []})
+    )
+    hosting_task = fetch_hosting_signals(enrichment_url)
+    ssl_task = fetch_ssl_grade(enrichment_url)
+    try:
+        pdpc_result, hosting_result, ssl_result = await asyncio.gather(
+            pdpc_task, hosting_task, ssl_task, return_exceptions=False,
+        )
+    except Exception as e:
+        logger.warning("Evidence enrichment failed for %s: %s", url, e)
+        pdpc_result = {"checked": False, "found": False, "cases": []}
+        hosting_result = {"checked": False}
+        ssl_result = {"checked": False}
+
+    page_result["pdpc_enforcement"] = pdpc_result
+    page_result["hosting"] = hosting_result
+    page_result["ssl_grade"] = ssl_result
+
+    # ── Privacy policy §13 clause classifier (Tier 2) ────────────────────
+    if policy_html_raw:
+        try:
+            clause_snippets = harvest_clause_snippets(policy_html_raw)
+            verdicts = await classify_clauses(clause_snippets, provider=nric_provider)
+            page_result["policy_clauses"] = summarise_policy(verdicts)
+        except Exception as e:
+            logger.warning("Policy clause classification failed for %s: %s", url, e)
+            page_result["policy_clauses"] = {
+                "score": 0, "status": "Non-Compliant",
+                "present_count": 0, "total": 6, "missing": [], "items": [],
+                "error": str(e)[:200],
+            }
 
     return {"security_headers": headers_result, **page_result}
 
@@ -632,12 +892,27 @@ async def process_report_workflow(report_id: str) -> dict:
             resolved_url = None
             if isinstance(report.assessment_data, dict):
                 resolved_url = report.assessment_data.get("resolved_url") or report.assessment_data.get("url")
-            metadata_result = await _scan_site_metadata(resolved_url)
+            metadata_result = await _scan_site_metadata(resolved_url, company_name=report.company_name)
             if metadata_result:
                 _set_assessment_values(report, metadata_result)
                 db.commit()
         except Exception as e:
             logger.warning(f"Metadata scan failed for {report_id}: {e}")
+
+        # Tier 4: persist per-dimension snapshots for drift detection.
+        # Idempotent: if scan data is incomplete we just write fewer rows.
+        try:
+            _record_dimension_snapshots(db, report)
+        except Exception as e:
+            logger.warning(f"Dimension snapshot persistence failed for {report_id}: {e}")
+            db.rollback()
+
+        # Tier 6: auto-confirm any pending user-marked remediations.
+        try:
+            _confirm_remediations(db, report)
+        except Exception as e:
+            logger.warning(f"Remediation auto-confirmation failed for {report_id}: {e}")
+            db.rollback()
 
         # ── Gate: abort findings if site was inaccessible ─────────────────
         # If the scan could not reach the site (403, loading screen, network
@@ -1206,9 +1481,39 @@ async def process_report_workflow(report_id: str) -> dict:
                 "security_headers", "consent_mechanism", "privacy_policy",
                 "dpo_compliance", "dnc_mention", "nric_evidence",
                 "http_status", "site_accessible",
+                # Tier 1-5 keys consumed by the upgraded score table:
+                "nric", "policy_clauses", "pdpc_enforcement", "hosting",
+                "trackers", "ssl_grade", "primary_language",
             ):
                 if _scan_key in report.assessment_data:
                     pdf_data[_scan_key] = report.assessment_data[_scan_key]
+
+        # Tier 6: attach this user's remediation history so the PDF can show
+        # confirmed fixes and pending items. Best-effort — empty list on error.
+        try:
+            from app.core.models_v8 import FindingRemediation
+            from app.services.finding_keys import label_for_key
+            rem_rows = (
+                db.query(FindingRemediation)
+                .filter(FindingRemediation.vendor_id == report.owner_id)
+                .order_by(FindingRemediation.marked_at.desc())
+                .limit(20)
+                .all()
+            )
+            pdf_data["remediations"] = [
+                {
+                    "finding_key": r.finding_key,
+                    "label": label_for_key(r.finding_key),
+                    "status": r.status,
+                    "confirmation_status": r.confirmation_status,
+                    "marked_at": r.marked_at.isoformat() if r.marked_at else None,
+                    "confirmed_at": r.confirmed_at.isoformat() if r.confirmed_at else None,
+                }
+                for r in rem_rows
+            ]
+        except Exception as e:
+            logger.warning(f"Remediation history load failed for {report_id}: {e}")
+            pdf_data["remediations"] = []
 
         # Ensure a site screenshot is present for every PDF. Prefer existing data, otherwise capture.
         if not pdf_data.get("site_screenshot"):
@@ -2261,7 +2566,74 @@ def check_compliance_drift_task(self, vendor_id: str, vendor_email: str, framewo
         cur = result["current_score"]
         delta_pct = result["delta_pct"]
         severity = result["severity"]
+        dim_flips = result.get("dimension_flips") or []
         color = "#dc2626" if severity == "CRITICAL" else "#d97706"
+
+        # Tier 6: pull confirmed remediations since the previous report so we
+        # can credit the user's work in the same email.
+        confirmed_rems: list = []
+        try:
+            from app.core.models_v8 import FindingRemediation
+            from app.services.finding_keys import label_for_key as _label_for_key
+            from app.core.models import Report as _Report
+            prev_report = (
+                db.query(_Report)
+                .filter(
+                    _Report.owner_id == vendor_id,
+                    _Report.framework == framework,
+                    _Report.status == "completed",
+                )
+                .order_by(_Report.created_at.desc())
+                .offset(1).limit(1).first()
+            )
+            since = prev_report.completed_at or prev_report.created_at if prev_report else None
+            q = db.query(FindingRemediation).filter(
+                FindingRemediation.vendor_id == vendor_id,
+                FindingRemediation.confirmation_status == "confirmed",
+            )
+            if since:
+                q = q.filter(FindingRemediation.confirmed_at >= since)
+            confirmed_rems = [
+                {"label": _label_for_key(r.finding_key), "key": r.finding_key}
+                for r in q.order_by(FindingRemediation.confirmed_at.desc()).limit(8).all()
+            ]
+        except Exception as rem_exc:
+            logger.warning("[ComplianceDrift] Could not load confirmed remediations: %s", rem_exc)
+
+        # Tier 6: improvements block — credit confirmed remediations
+        if confirmed_rems:
+            improvements_rows = "".join(
+                f'<tr><td style="padding:4px 0;color:#065f46;">✓ {r["label"]}</td></tr>'
+                for r in confirmed_rems
+            )
+            improvements_block = f"""
+          <h2 style="margin:24px 0 8px;font-size:14px;color:#065f46;">Improvements since your last scan</h2>
+          <table style="width:100%;border-collapse:collapse;margin:8px 0 16px;font-size:13px;">
+            {improvements_rows}
+          </table>"""
+        else:
+            improvements_block = ""
+
+        # Tier 4: per-dimension flip block. Empty string when no flips so
+        # the email layout collapses cleanly for score-only drift events.
+        if dim_flips:
+            flip_rows = "".join(
+                f'<tr><td style="padding:6px 0;color:#0f172a;">{f["dimension_name"]}</td>'
+                f'<td style="padding:6px 0;text-align:right;color:#64748b;">{f["previous_status"]}</td>'
+                f'<td style="padding:6px 0;text-align:right;font-weight:bold;color:{color};">→ {f["current_status"]}</td>'
+                f'</tr>'
+                for f in dim_flips
+            )
+            dim_block = f"""
+          <h2 style="margin:24px 0 8px;font-size:14px;color:#0f172a;">Dimensions that regressed</h2>
+          <table style="width:100%;border-collapse:collapse;margin:8px 0 16px;font-size:13px;">
+            <tr><th style="text-align:left;padding:6px 0;color:#64748b;font-weight:normal;">Dimension</th>
+                <th style="text-align:right;padding:6px 0;color:#64748b;font-weight:normal;">Was</th>
+                <th style="text-align:right;padding:6px 0;color:#64748b;font-weight:normal;">Now</th></tr>
+            {flip_rows}
+          </table>"""
+        else:
+            dim_block = ""
 
         body_html = f"""<html><body style="font-family:Arial;max-width:600px;margin:0 auto;color:#0f172a;">
         <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
@@ -2276,7 +2648,7 @@ def check_compliance_drift_task(self, vendor_id: str, vendor_email: str, framewo
                 <td style="padding:8px 0;text-align:right;font-weight:bold;color:{color};">{cur:.1f}</td></tr>
             <tr><td style="padding:8px 0;color:#64748b;">Change</td>
                 <td style="padding:8px 0;text-align:right;font-weight:bold;color:{color};">+{delta_pct:.1f}%</td></tr>
-          </table>
+          </table>{improvements_block}{dim_block}
           <p style="font-size:14px;color:#475569;">
             Higher risk scores indicate degraded PDPA posture. Review the latest report
             and address the highlighted findings to restore your compliance baseline.

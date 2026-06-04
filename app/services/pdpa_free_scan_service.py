@@ -322,17 +322,17 @@ def _check_body(html: str) -> list[dict]:
             ),
         })
 
-    # NRIC collection detection
+    # NRIC Exposure — always emit a finding so every PDPA report covers this dimension
     nric_patterns = [
         r'nric', r'national registration', r'fin number', r'identity.?card.?number',
     ]
     has_nric_field = any(re.search(p, html_lower) for p in nric_patterns)
     if has_nric_field:
         findings.append({
-            "check_id": "nric_collection",
-            "title": "Possible NRIC/FIN collection detected",
+            "check_id": "nric_exposure",
+            "title": "NRIC Exposure detected",
             "severity": "CRITICAL",
-            "category": "NRIC Advisory",
+            "category": "NRIC Exposure",
             "description": (
                 "References to NRIC or FIN number collection were found on the website. "
                 "Under the PDPA NRIC Advisory, organisations must not collect, use, or disclose "
@@ -341,6 +341,19 @@ def _check_body(html: str) -> list[dict]:
             ),
             "legislation": "PDPA Advisory Guidelines on NRIC Numbers (1 Sep 2019)",
             "action": "Review all NRIC/FIN collection points and remove unless legally required.",
+        })
+    else:
+        findings.append({
+            "check_id": "nric_exposure",
+            "title": "No NRIC Exposure detected",
+            "severity": "INFO",
+            "category": "NRIC Exposure",
+            "description": (
+                "No NRIC/FIN collection points were detected on publicly accessible pages. "
+                "This dimension is always assessed in PDPA reports per the PDPC NRIC Advisory."
+            ),
+            "legislation": "PDPA Advisory Guidelines on NRIC Numbers (1 Sep 2019)",
+            "action": "Continue periodic re-scans; verify no NRIC collection is introduced in new forms.",
         })
 
     return findings
@@ -478,18 +491,21 @@ def _build_response(website_url: str, findings: list[dict], score: int) -> dict[
     else:
         risk_level = "Low Risk"
 
-    # First finding is free, rest are locked
-    free_finding = findings[0] if findings else None
+    # INFO-severity entries are dimension placeholders (e.g., "no NRIC exposure"),
+    # not issues — exclude them from the violation count and the locked/free split.
+    issue_findings = [f for f in findings if f.get("severity") != "INFO"]
+
+    free_finding = issue_findings[0] if issue_findings else None
     locked_findings = [
         {"severity": f["severity"], "category": f["category"], "title": f["title"]}
-        for f in findings[1:]
+        for f in issue_findings[1:]
     ]
 
     return {
         "website_url": website_url,
         "score": score,
         "risk_level": risk_level,
-        "total_findings": len(findings),
+        "total_findings": len(issue_findings),
         "free_finding": free_finding,
         "locked_findings": locked_findings,
         "unlock_cta": {

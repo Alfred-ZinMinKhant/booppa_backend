@@ -134,6 +134,10 @@ router.include_router(
     dashboard_alerts_router, prefix="/vendor", tags=["vendor-dashboard-alerts"]
 )
 router.include_router(subscription_families_router, prefix="/v1", tags=["billing"])
+# PDPA Remediation Tracking
+from .remediations import router as remediations_router
+
+router.include_router(remediations_router, prefix="/remediations", tags=["remediations"])
 # Resources/Guides CMS
 from .resources import router as resources_router
 
