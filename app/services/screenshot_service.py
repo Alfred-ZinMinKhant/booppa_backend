@@ -26,6 +26,13 @@ logger = logging.getLogger(__name__)
 
 _MIN_REAL_BYTES = 8_000   # anything smaller is likely a placeholder or error page
 
+# Playwright settle wait after networkidle. Previously 60_000ms which exceeded
+# every caller's outer timeout — meaning Playwright never actually completed and
+# we always fell through to public providers that return HTML masquerades. 3 s
+# is enough for typical splash animations on modern SPAs.
+_PLAYWRIGHT_SETTLE_MS = 3_000
+_PLAYWRIGHT_NAV_TIMEOUT_MS = 25_000
+
 
 def _is_placeholder(resp: httpx.Response) -> bool:
     """Return True if the response looks like a placeholder / error image."""
@@ -33,7 +40,43 @@ def _is_placeholder(resp: httpx.Response) -> bool:
     return "mshots/v1/default" in final or "mshots/v1/0" in final
 
 
-def capture_screenshot_bytes(url: str, timeout: int = 60) -> Optional[bytes]:
+def looks_like_image(b: Optional[bytes]) -> bool:
+    """Magic-byte sniff for PNG / JPEG / WebP / GIF.
+
+    Defends against providers that fall back to returning HTML (e.g. their own
+    marketing/error page) when they can't reach the target. Such bytes would
+    otherwise be base64-encoded and rendered inside <img src=data:image/png...>
+    in the report viewer, producing the "unstyled marketing page in the
+    screenshot slot" bug.
+    """
+    if not b or len(b) < 12:
+        return False
+    if b.startswith(b"\x89PNG\r\n\x1a\n"):
+        return True
+    if b[:3] == b"\xff\xd8\xff":  # JPEG
+        return True
+    if b[:4] == b"RIFF" and b[8:12] == b"WEBP":
+        return True
+    if b[:6] in (b"GIF87a", b"GIF89a"):
+        return True
+    return False
+
+
+def _accept(provider: str, url: str, body: bytes) -> Optional[bytes]:
+    """Return body if it's plausibly a real image; otherwise log and reject."""
+    if len(body) <= _MIN_REAL_BYTES:
+        logger.warning(f"{provider} returned {len(body)} bytes (<{_MIN_REAL_BYTES}) for {url}")
+        return None
+    if not looks_like_image(body):
+        head = body[:16].hex()
+        logger.warning(
+            f"{provider} returned non-image bytes for {url} (first16=0x{head}) — likely HTML; rejecting"
+        )
+        return None
+    return body
+
+
+def capture_screenshot_bytes(url: str, timeout: int = 45) -> Optional[bytes]:
     """Return PNG/JPEG bytes for a screenshot of `url`, or None if all providers fail."""
 
     # ── 1. Playwright ──────────────────────────────────────────────────────────
@@ -42,13 +85,15 @@ def capture_screenshot_bytes(url: str, timeout: int = 60) -> Optional[bytes]:
         with sync_playwright() as p:
             browser = p.chromium.launch()
             page = browser.new_page()
-            page.goto(url, timeout=timeout * 1000, wait_until="networkidle")
-            # Wait 60s for splash screens / animated intros to finish
-            page.wait_for_timeout(60000)
+            page.goto(url, timeout=_PLAYWRIGHT_NAV_TIMEOUT_MS, wait_until="networkidle")
+            # Brief settle wait so animated intros render their final frame.
+            page.wait_for_timeout(_PLAYWRIGHT_SETTLE_MS)
             img = page.screenshot(full_page=False)
             browser.close()
-            logger.info(f"Screenshot via Playwright for {url}")
-            return img
+            if looks_like_image(img):
+                logger.info(f"Screenshot via Playwright for {url}")
+                return img
+            logger.warning(f"Playwright returned non-image bytes for {url} — falling through")
     except Exception as e:
         logger.warning(f"Playwright screenshot failed for {url}: {e}")
 
@@ -63,9 +108,11 @@ def capture_screenshot_bytes(url: str, timeout: int = 60) -> Optional[bytes]:
                 try:
                     resp = client.post(f"{browserless_url}/screenshot",
                                        json=body, follow_redirects=True)
-                    if resp.status_code == 200 and len(resp.content) > _MIN_REAL_BYTES:
-                        logger.info(f"Screenshot via Browserless for {url}")
-                        return resp.content
+                    if resp.status_code == 200:
+                        accepted = _accept("Browserless", url, resp.content)
+                        if accepted:
+                            logger.info(f"Screenshot via Browserless for {url}")
+                            return accepted
                 except Exception:
                     pass
     except Exception as e:
@@ -75,7 +122,6 @@ def capture_screenshot_bytes(url: str, timeout: int = 60) -> Optional[bytes]:
     with httpx.Client(timeout=timeout, follow_redirects=True) as client:
 
         # ── 3. Microlink ───────────────────────────────────────────────────────
-        # Returns JSON with a CDN URL to the actual screenshot — real, immediate.
         try:
             api = f"https://api.microlink.io?url={quote_plus(url)}&screenshot=true&meta=false"
             resp = client.get(api)
@@ -85,24 +131,28 @@ def capture_screenshot_bytes(url: str, timeout: int = 60) -> Optional[bytes]:
                     img_url = (data.get("data") or {}).get("screenshot", {}).get("url")
                     if img_url:
                         img_resp = client.get(img_url)
-                        if img_resp.status_code == 200 and len(img_resp.content) > _MIN_REAL_BYTES:
-                            logger.info(f"Screenshot via Microlink for {url}")
-                            return img_resp.content
+                        if img_resp.status_code == 200:
+                            accepted = _accept("Microlink", url, img_resp.content)
+                            if accepted:
+                                logger.info(f"Screenshot via Microlink for {url}")
+                                return accepted
         except Exception as e:
             logger.warning(f"Microlink screenshot failed for {url}: {e}")
 
         # ── 4. Thum.io ────────────────────────────────────────────────────────
         try:
             resp = client.get(f"https://image.thum.io/get/width/1400/{url}")
-            if resp.status_code == 200 and len(resp.content) > _MIN_REAL_BYTES:
-                logger.info(f"Screenshot via Thum.io for {url}")
-                return resp.content
-            logger.warning(f"Thum.io failed for {url}: {resp.status_code}")
+            if resp.status_code == 200:
+                accepted = _accept("Thum.io", url, resp.content)
+                if accepted:
+                    logger.info(f"Screenshot via Thum.io for {url}")
+                    return accepted
+            else:
+                logger.warning(f"Thum.io failed for {url}: {resp.status_code}")
         except Exception as e:
             logger.warning(f"Thum.io error for {url}: {e}")
 
         # ── 5. mshots (with retry) ────────────────────────────────────────────
-        # First request queues the screenshot; subsequent requests return the real image.
         mshots = f"https://s.wordpress.com/mshots/v1/{quote_plus(url)}?w=1400"
         for attempt in range(4):
             try:
@@ -114,9 +164,11 @@ def capture_screenshot_bytes(url: str, timeout: int = 60) -> Optional[bytes]:
                         continue
                     logger.warning(f"mshots still placeholder after retries for {url}")
                     break
-                if resp.status_code == 200 and len(resp.content) > _MIN_REAL_BYTES:
-                    logger.info(f"Screenshot via mshots (attempt {attempt+1}) for {url}")
-                    return resp.content
+                if resp.status_code == 200:
+                    accepted = _accept("mshots", url, resp.content)
+                    if accepted:
+                        logger.info(f"Screenshot via mshots (attempt {attempt+1}) for {url}")
+                        return accepted
                 break
             except Exception as e:
                 logger.warning(f"mshots attempt {attempt+1} failed for {url}: {e}")
@@ -127,10 +179,13 @@ def capture_screenshot_bytes(url: str, timeout: int = 60) -> Optional[bytes]:
             resp = client.get(
                 f"https://screenshot.guru/api?url={quote_plus(url)}&width=1400"
             )
-            if resp.status_code == 200 and len(resp.content) > _MIN_REAL_BYTES:
-                logger.info(f"Screenshot via Screenshot.guru for {url}")
-                return resp.content
-            logger.warning(f"Screenshot.guru failed for {url}: {resp.status_code}")
+            if resp.status_code == 200:
+                accepted = _accept("Screenshot.guru", url, resp.content)
+                if accepted:
+                    logger.info(f"Screenshot via Screenshot.guru for {url}")
+                    return accepted
+            else:
+                logger.warning(f"Screenshot.guru failed for {url}: {resp.status_code}")
         except Exception as e:
             logger.warning(f"Screenshot.guru error for {url}: {e}")
 
