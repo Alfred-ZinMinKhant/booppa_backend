@@ -47,18 +47,36 @@ class TestSummary:
     def test_unknown_key_returns_none(self):
         assert precedent_summary("unknown:bogus") is None
 
-    def test_summary_includes_vendor_name(self):
+    def test_summary_includes_a_seeded_vendor_name(self):
+        # Don't pin to a specific vendor name — the compliance team curates
+        # the seed list independently. Assert that whichever vendor names
+        # ARE in the seed for this key actually appear in the summary.
         s = precedent_summary("breach:pdpc_enforcement")
         assert s is not None
-        # SingHealth is the seeded case for this key
-        assert "SingHealth" in s
+        seeded_vendors = [
+            c["vendor"] for c in PRECEDENTS["breach:pdpc_enforcement"][:2]
+            if c.get("vendor")
+        ]
+        assert seeded_vendors, "precondition: seed must have at least one named vendor"
+        assert any(v in s for v in seeded_vendors), (
+            f"none of {seeded_vendors} appeared in summary: {s}"
+        )
 
-    def test_summary_uses_singular_for_one_case(self):
-        # NRIC seed has exactly one case
-        s = precedent_summary("nric:collection")
+    def test_summary_uses_singular_for_one_case(self, monkeypatch):
+        # Inject a synthetic single-entry bucket so this test is decoupled
+        # from the real seed list (which gets re-curated periodically).
+        monkeypatch.setitem(PRECEDENTS, "test:single", [
+            {
+                "vendor": "Test Co", "year": 2020, "fine_sgd": 10_000,
+                "section": "§24", "url": "https://www.pdpc.gov.sg/test",
+                "summary": "synthetic",
+            },
+        ])
+        s = precedent_summary("test:single")
         assert s is not None
         assert "1 organisation" in s
-        assert "organisations" not in s.replace("1 organisation", "")
+        # Make sure we used "organisation" (singular), not "organisations"
+        assert "organisations" not in s
 
     def test_max_items_limits_cases_shown(self):
         # When max_items=0, no case names should appear
@@ -106,14 +124,39 @@ class TestSeedDataShape:
 
 
 class TestSummaryFormatting:
-    def test_million_threshold_rendered_with_decimal(self):
-        # SingHealth seed: S$1,000,000 — should render as "S$1.0M"
-        s = precedent_summary("breach:pdpc_enforcement")
+    """Formatter tests use monkeypatched buckets so they're decoupled from
+    whatever the real seed list happens to total at any given time."""
+
+    def test_million_threshold_rendered_with_decimal(self, monkeypatch):
+        monkeypatch.setitem(PRECEDENTS, "test:million", [
+            {
+                "vendor": "Big Co", "year": 2019, "fine_sgd": 1_000_000,
+                "section": "§24", "url": "https://www.pdpc.gov.sg/test",
+                "summary": "synthetic",
+            },
+        ])
+        s = precedent_summary("test:million")
         assert s is not None
         assert "S$1.0M" in s
 
-    def test_thousands_rendered_with_k_suffix(self):
-        # K Box seed: S$50,000 — should render as "S$50k"
-        s = precedent_summary("nric:collection")
+    def test_thousands_rendered_with_k_suffix(self, monkeypatch):
+        monkeypatch.setitem(PRECEDENTS, "test:thousands", [
+            {
+                "vendor": "Mid Co", "year": 2020, "fine_sgd": 50_000,
+                "section": "§24", "url": "https://www.pdpc.gov.sg/test",
+                "summary": "synthetic",
+            },
+        ])
+        s = precedent_summary("test:thousands")
         assert s is not None
         assert "S$50k" in s
+
+    def test_real_seed_total_uses_k_suffix(self):
+        """Sanity-check against the real seed: aggregate is in 'k' range
+        and the suffix is correct."""
+        total = sum(c["fine_sgd"] for c in PRECEDENTS.get("breach:pdpc_enforcement", []))
+        if not (1_000 <= total < 1_000_000):
+            pytest.skip(f"seed total S${total} not in k-range; revisit when corpus grows")
+        s = precedent_summary("breach:pdpc_enforcement")
+        assert s is not None
+        assert "k under similar facts" in s
