@@ -457,6 +457,21 @@ async def get_report_by_session(
 
         if not needs_paid_output and (report.s3_url or structured_report):
             verify_payload = _build_verify_payload(report)
+            # Pass through the Tier 1-5 scan signals so the web report viewer
+            # can render the same dimension list the PDF does. Filters to a
+            # whitelist of safe, frontend-relevant keys to avoid leaking
+            # internal worker plumbing.
+            scan_data = {}
+            if isinstance(report.assessment_data, dict):
+                for k in (
+                    "nric", "policy_clauses", "pdpc_enforcement", "hosting",
+                    "trackers", "consent_mechanism", "privacy_policy",
+                    "dpo_compliance", "dnc_mention", "security_headers",
+                    "ssl_grade", "primary_language",
+                ):
+                    if k in report.assessment_data:
+                        scan_data[k] = report.assessment_data[k]
+
             return {
                 "status": report.status,
                 "url": report.s3_url,
@@ -481,6 +496,7 @@ async def get_report_by_session(
                 "screenshot_error": screenshot_error,
                 "screenshot_url": screenshot_url,
                 "workflow": workflow_flags,
+                "scan_data": scan_data,
             }
         else:
             # Polling endpoint should NOT trigger workflow.
