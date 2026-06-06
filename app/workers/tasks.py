@@ -2076,22 +2076,23 @@ def fulfill_cover_sheet_task(
                         except (TypeError, ValueError):
                             pdpa_score = "—"
                     findings = structured.get("detailed_findings") or pdpa_ad.get("detailed_findings") or []
-                    sev_counts = {"High": 0, "Medium": 0, "Low": 0}
-                    top_findings: list[str] = []
-                    for f in findings[:20]:
+                    sev_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+                    for f in findings:
                         sev = (f.get("severity") or "").title()
                         if sev in sev_counts:
                             sev_counts[sev] += 1
-                        if len(top_findings) < 3 and (f.get("title") or f.get("category")):
-                            top_findings.append(f.get("title") or f.get("category"))
                     pdpa_details = {
                         "website_url": pdpa_ad.get("website_url") or pdpa_report.company_website or "—",
                         "risk_level": pdpa_ad.get("risk_level") or structured.get("risk_level") or "—",
                         "total_findings": len(findings),
                         "severity_counts": sev_counts,
-                        "top_findings": top_findings,
-                        "executive_summary": (structured.get("executive_summary") or pdpa_report.ai_narrative or "")[:600],
-                        "detected_laws": (pdpa_ad.get("detected_laws") or [])[:6],
+                        # Full findings list — cover sheet renders each with
+                        # severity, description, legislation, recommendation.
+                        # No truncation here: the cover sheet is the customer's
+                        # full evidence record, not a teaser.
+                        "findings": findings,
+                        "executive_summary": structured.get("executive_summary") or pdpa_report.ai_narrative or "",
+                        "detected_laws": pdpa_ad.get("detected_laws") or [],
                         "scanned_at": pdpa_report.completed_at.isoformat() if pdpa_report.completed_at else None,
                     }
                 rfp_report = (
@@ -2107,13 +2108,17 @@ def fulfill_cover_sheet_task(
                     rfp_details = {
                         "product_type": rfp_ad.get("product_type") or "rfp_complete",
                         "qa_count": rfp_ad.get("qa_count"),
+                        # Full Q&A list embedded in the cover sheet — see the
+                        # webhook persistence change that started storing the
+                        # full list (not just qa_count) on the Report row.
+                        "qa_answers": rfp_ad.get("qa_answers") or [],
                         "answer_source": rfp_ad.get("answer_source"),
                         "generated_at": rfp_ad.get("generated_at") or (
                             rfp_report.completed_at.isoformat() if rfp_report.completed_at else None
                         ),
                         "download_url": rfp_ad.get("download_url"),
                         "discrepancies": rfp_ad.get("discrepancies") or [],
-                        "executive_summary": (rfp_ad.get("executive_summary") or rfp_report.ai_narrative or "")[:600],
+                        "executive_summary": rfp_ad.get("executive_summary") or rfp_report.ai_narrative or "",
                     }
                 else:
                     # Backfill: some RFP completions predate the unconditional

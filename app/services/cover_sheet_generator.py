@@ -27,8 +27,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import (
-    BaseDocTemplate, Frame, HRFlowable, PageTemplate,
-    Paragraph, Spacer, Table, TableStyle,
+    BaseDocTemplate, Frame, HRFlowable, Image, KeepTogether, PageBreak,
+    PageTemplate, Paragraph, Spacer, Table, TableStyle,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,11 +52,14 @@ for _c in _LOGO_CANDIDATES:
 # Bumped whenever the visible structure of the cover sheet changes (sections,
 # branding, copy). Stored on the Report row so the UI can detect customers
 # holding an older PDF and offer a free regenerate.
-COVER_SHEET_SCHEMA_VERSION = 2
+# v3: prominent body logo on cover page; full PDPA findings list (not top-3);
+# full RFP Q&A list embedded (not just count + summary).
+COVER_SHEET_SCHEMA_VERSION = 3
 
 PAGE_W, PAGE_H = A4
 MARGIN = 0.75 * inch
-HEADER_H = 0.55 * inch
+# Header tall enough to fit the Booppa logo at a legible size on the navy band.
+HEADER_H = 0.7 * inch
 FOOTER_H = 0.45 * inch
 
 NAVY    = colors.HexColor("#0f172a")
@@ -72,7 +75,11 @@ def _draw_page(canvas, doc):
     canvas.setFillColor(NAVY)
     canvas.rect(0, PAGE_H - HEADER_H, PAGE_W, HEADER_H, fill=1, stroke=0)
 
-    logo_h = 0.30 * inch
+    # The logo is ~423×144 px → aspect ~2.94. ReportLab's drawImage with only
+    # `height` and preserveAspectRatio is unreliable on some builds (silently
+    # skips). Compute the matching width explicitly so the logo always renders.
+    logo_h = 0.48 * inch
+    logo_w = logo_h * 2.94
     logo_y = PAGE_H - HEADER_H + (HEADER_H - logo_h) / 2
     logo_drawn = False
     if _LOGO_PATH:
@@ -81,6 +88,7 @@ def _draw_page(canvas, doc):
                 _LOGO_PATH,
                 MARGIN,
                 logo_y,
+                width=logo_w,
                 height=logo_h,
                 preserveAspectRatio=True,
                 mask="auto",
@@ -90,16 +98,15 @@ def _draw_page(canvas, doc):
             logo_drawn = False
     if not logo_drawn:
         canvas.setFillColor(EMERALD)
-        canvas.setFont("Helvetica-Bold", 8)
-        canvas.drawString(MARGIN, PAGE_H - HEADER_H + 0.18 * inch, "BOOPPA")
+        canvas.setFont("Helvetica-Bold", 10)
+        canvas.drawString(MARGIN, PAGE_H - HEADER_H + 0.26 * inch, "BOOPPA")
 
-    canvas.setFillColor(WHITE)
-    canvas.setFont("Helvetica", 8)
-    canvas.drawString(MARGIN + 0.85 * inch, PAGE_H - HEADER_H + 0.18 * inch, "Compliance Evidence Pack")
-
+    # Right side: pack label. Drop the centre "Compliance Evidence Pack"
+    # caption — the logo + right label is enough and was overlapping the
+    # logo at the old size.
     canvas.setFillColor(EMERALD)
     canvas.setFont("Helvetica-Bold", 7.5)
-    canvas.drawRightString(PAGE_W - MARGIN, PAGE_H - HEADER_H + 0.18 * inch, "COVER SHEET")
+    canvas.drawRightString(PAGE_W - MARGIN, PAGE_H - HEADER_H + 0.26 * inch, "COMPLIANCE EVIDENCE PACK · COVER SHEET")
 
     canvas.setStrokeColor(BORDER)
     canvas.setLineWidth(0.5)
@@ -111,12 +118,21 @@ def _draw_page(canvas, doc):
     canvas.restoreState()
 
 
-def _section(title: str, styles) -> list:
-    return [
-        Spacer(1, 0.15 * inch),
-        Paragraph(f'<font color="#10b981">■</font>  <b>{title}</b>', styles["h2"]),
-        HRFlowable(width="100%", thickness=0.5, color=BORDER, spaceAfter=6),
-    ]
+def _section(title: str, styles, *, page_break: bool = False) -> list:
+    """Section header. Pass `page_break=True` to start the section on a fresh
+    page (used between heavy variable-length sections so they don't collide).
+    The HR is wrapped in a KeepTogether with the next flowable via ReportLab's
+    keepWithNext on the h2 style — set globally below so the title never
+    widows at the end of a page on its own.
+    """
+    out: list = []
+    if page_break:
+        out.append(PageBreak())
+    else:
+        out.append(Spacer(1, 0.15 * inch))
+    out.append(Paragraph(f'<font color="#10b981">■</font>  <b>{title}</b>', styles["h2"]))
+    out.append(HRFlowable(width="100%", thickness=0.5, color=BORDER, spaceAfter=6))
+    return out
 
 
 def _kv_table(rows: list[tuple[str, str]]) -> Table:
@@ -141,10 +157,155 @@ _RAW_STYLES = getSampleStyleSheet()
 _STYLES: Dict[str, ParagraphStyle] = {
     "Normal": ParagraphStyle("cs_normal", fontSize=8, leading=12, textColor=colors.HexColor("#334155")),
     "h1": ParagraphStyle("cs_h1", fontSize=18, leading=22, textColor=NAVY, fontName="Helvetica-Bold"),
-    "h2": ParagraphStyle("cs_h2", fontSize=10, leading=14, textColor=NAVY, fontName="Helvetica-Bold", spaceBefore=4),
+    # keepWithNext=True so a section title can't widow at the bottom of a page
+    # without at least one line of its content tagging along.
+    "h2": ParagraphStyle("cs_h2", fontSize=10, leading=14, textColor=NAVY, fontName="Helvetica-Bold", spaceBefore=4, keepWithNext=1),
     "small": ParagraphStyle("cs_small", fontSize=7, leading=10, textColor=SLATE),
     "caption": ParagraphStyle("cs_caption", fontSize=9, leading=13, textColor=colors.HexColor("#334155")),
 }
+
+_SEVERITY_COLORS = {
+    "CRITICAL": colors.HexColor("#7f1d1d"),
+    "HIGH":     colors.HexColor("#dc2626"),
+    "MEDIUM":   colors.HexColor("#f59e0b"),
+    "LOW":      colors.HexColor("#10b981"),
+    "INFO":     SLATE,
+}
+
+
+def _pdpa_finding_block(idx: int, f: dict):
+    """Render a single PDPA finding as a bordered card: title + severity badge,
+    description, legislation, evidence, recommendation. Uses KeepTogether so
+    findings don't split across pages mid-card when possible.
+    """
+    sev = (f.get("severity") or "MEDIUM").upper()
+    sev_color = _SEVERITY_COLORS.get(sev, SLATE)
+    title = _xml_escape(
+        f.get("title") or (f.get("type") or f.get("check_id") or "Finding").replace("_", " ").title()
+    )
+    description = _xml_escape(f.get("description") or f.get("details") or "—")
+    legislation = _xml_escape(
+        f.get("legislation_text")
+        or "; ".join(f.get("legislation_references") or [])
+        or "—"
+    )
+    evidence = _xml_escape(f.get("evidence") or "Automated scan detection")
+    recommendation = _xml_escape(f.get("recommendation") or f.get("remediation") or "—")
+
+    header_style = ParagraphStyle(
+        "find_title", fontSize=9, leading=12, textColor=NAVY, fontName="Helvetica-Bold"
+    )
+    sev_style = ParagraphStyle(
+        "find_sev", fontSize=7, leading=9, textColor=WHITE, fontName="Helvetica-Bold",
+        alignment=1, backColor=sev_color, borderPadding=2,
+    )
+    body_label = ParagraphStyle(
+        "find_label", fontSize=7, leading=9, textColor=SLATE, fontName="Helvetica-Bold"
+    )
+    body_text = ParagraphStyle(
+        "find_text", fontSize=8, leading=11, textColor=colors.HexColor("#334155")
+    )
+
+    header = Table(
+        [[
+            Paragraph(f"{idx}. {title}", header_style),
+            Paragraph(sev, sev_style),
+        ]],
+        colWidths=[5.5 * inch, 0.8 * inch],
+    )
+    header.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BACKGROUND", (1, 0), (1, 0), sev_color),
+        ("TEXTCOLOR", (1, 0), (1, 0), WHITE),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+
+    rows = [
+        [Paragraph("Description", body_label),    Paragraph(description, body_text)],
+        [Paragraph("Legislation", body_label),    Paragraph(legislation, body_text)],
+        [Paragraph("Evidence", body_label),       Paragraph(evidence, body_text)],
+        [Paragraph("Recommendation", body_label), Paragraph(recommendation, body_text)],
+    ]
+    body = Table(rows, colWidths=[1.0 * inch, 5.3 * inch])
+    body.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [WHITE, LIGHT]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LINEBEFORE", (0, 0), (0, -1), 2, sev_color),
+    ]))
+
+    return KeepTogether([header, body])
+
+
+def _xml_escape(s: str) -> str:
+    """Escape user-supplied text so ReportLab's Paragraph mini-XML doesn't
+    misinterpret `&`, `<`, `>` (e.g. "Q&A" → entity-start, breaks rendering).
+    """
+    return (
+        (s or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _rfp_qa_block(idx: int, qa: dict):
+    """Render a single RFP Q&A entry: question, answer, confidence badge."""
+    question = _xml_escape(qa.get("question") or "—")
+    answer = _xml_escape(qa.get("answer") or "—")
+    confidence = (qa.get("confidence") or "generated").lower()
+    badge_color = EMERALD if confidence == "fact" else SLATE
+    badge_text = "FACT-BACKED" if confidence == "fact" else "AI-GENERATED"
+
+    q_style = ParagraphStyle(
+        "qa_q", fontSize=8.5, leading=11, textColor=NAVY, fontName="Helvetica-Bold"
+    )
+    a_style = ParagraphStyle(
+        "qa_a", fontSize=8, leading=11, textColor=colors.HexColor("#334155")
+    )
+    badge_style = ParagraphStyle(
+        "qa_badge", fontSize=6.5, leading=8, textColor=WHITE,
+        fontName="Helvetica-Bold", alignment=1,
+    )
+
+    header = Table(
+        [[
+            Paragraph(f"Q{idx}. {question}", q_style),
+            Paragraph(badge_text, badge_style),
+        ]],
+        colWidths=[5.4 * inch, 0.9 * inch],
+    )
+    header.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BACKGROUND", (1, 0), (1, 0), badge_color),
+        ("TEXTCOLOR", (1, 0), (1, 0), WHITE),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+
+    body = Table(
+        [[Paragraph(answer, a_style)]],
+        colWidths=[6.3 * inch],
+    )
+    body.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BACKGROUND", (0, 0), (-1, -1), LIGHT),
+        ("LINEBEFORE", (0, 0), (0, 0), 2, badge_color),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+
+    return KeepTogether([header, body])
 
 
 def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
@@ -178,7 +339,16 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     bundle_type = data.get("bundle_type", "compliance_evidence_pack")
 
     # ── Section 1: Cover ──────────────────────────────────────────────────────
-    story.append(Spacer(1, 0.1 * inch))
+    # The header bar logo is small and sits on navy — easy to miss. Drop a
+    # prominent body logo on the cover page itself so the report is visibly
+    # branded the moment the reader opens it.
+    if _LOGO_PATH:
+        try:
+            story.append(Spacer(1, 0.05 * inch))
+            story.append(Image(_LOGO_PATH, width=2.4 * inch, height=0.82 * inch, kind="proportional"))
+            story.append(Spacer(1, 0.12 * inch))
+        except Exception as e:
+            logger.warning(f"[CoverSheet] Body logo render failed: {e}")
     story.append(Paragraph(f"Compliance Evidence Pack", _STYLES["h1"]))
     story.append(Paragraph(f"Summary Cover Sheet — {company}", _STYLES["caption"]))
     story.append(Spacer(1, 0.12 * inch))
@@ -243,7 +413,7 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     story.append(_kv_table(components))
 
     # ── Section 3: PDPA Status ─────────────────────────────────────────────────
-    story += _section("PDPA Compliance Status", _STYLES)
+    story += _section("PDPA Compliance Status", _STYLES, page_break=True)
     pdpa_score_v = data.get("pdpa_score")
     score_str = f"{pdpa_score_v} / 100" if isinstance(pdpa_score_v, int) else "Pending — scan still running"
     pdpa_d = data.get("pdpa_details") or {}
@@ -264,22 +434,28 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     ]
     story.append(_kv_table(pdpa_rows))
 
-    top_findings = pdpa_d.get("top_findings") or []
-    if top_findings:
-        story.append(Spacer(1, 0.06 * inch))
-        story.append(Paragraph("<b>Top Findings</b>", _STYLES["caption"]))
-        for f in top_findings:
-            story.append(Paragraph(f"• {f}", _STYLES["caption"]))
-            story.append(Spacer(1, 2))
-
     exec_sum = pdpa_d.get("executive_summary")
     if exec_sum:
         story.append(Spacer(1, 0.05 * inch))
         story.append(Paragraph("<b>Executive Summary</b>", _STYLES["caption"]))
         story.append(Paragraph(exec_sum, _STYLES["caption"]))
 
+    # Full findings list — one card per finding with severity, description,
+    # legislation and remediation. No truncation: this PDF is the customer's
+    # complete evidence record.
+    findings_full = pdpa_d.get("findings") or []
+    if findings_full:
+        story.append(Spacer(1, 0.1 * inch))
+        story.append(Paragraph(
+            f"<b>Detailed Findings ({len(findings_full)})</b>", _STYLES["caption"]
+        ))
+        story.append(Spacer(1, 0.04 * inch))
+        for idx, f in enumerate(findings_full, 1):
+            story.append(_pdpa_finding_block(idx, f))
+            story.append(Spacer(1, 0.06 * inch))
+
     # ── Section 4: RFP Complete Summary ───────────────────────────────────────
-    story += _section("RFP Complete Summary", _STYLES)
+    story += _section("RFP Complete Summary", _STYLES, page_break=True)
     rfp_d = data.get("rfp_details") or {}
     generated_at = rfp_d.get("generated_at") or "—"
     if isinstance(generated_at, str) and "T" in generated_at:
@@ -292,7 +468,8 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     rfp_rows = [
         ("Status", data.get("rfp_status", "Pending")),
         ("Product", str(rfp_d.get("product_type") or "rfp_complete").replace("_", " ").title()),
-        ("Q&A Coverage", qa_str),
+        # `&` must be the XML entity in Paragraph text or ReportLab mangles it.
+        ("Q&amp;A Coverage", qa_str),
         ("Answer Source", answer_source),
         ("Generated", generated_at),
         ("Bid Kit Download", download_str),
@@ -314,8 +491,22 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
         story.append(Paragraph("<b>Executive Summary</b>", _STYLES["caption"]))
         story.append(Paragraph(rfp_exec, _STYLES["caption"]))
 
+    # Full Q&A — every answer the kit generated, with confidence labels.
+    # Procurement officers can verify the buyer's bid claims against this list
+    # without leaving the cover sheet.
+    qa_answers = rfp_d.get("qa_answers") or []
+    if qa_answers:
+        story.append(Spacer(1, 0.1 * inch))
+        story.append(Paragraph(
+            f"<b>RFP Q&amp;A ({len(qa_answers)})</b>", _STYLES["caption"]
+        ))
+        story.append(Spacer(1, 0.04 * inch))
+        for idx, qa in enumerate(qa_answers, 1):
+            story.append(_rfp_qa_block(idx, qa))
+            story.append(Spacer(1, 0.05 * inch))
+
     # ── Section 5: Blockchain Evidence Trail ──────────────────────────────────
-    story += _section("Blockchain Evidence Trail", _STYLES)
+    story += _section("Blockchain Evidence Trail", _STYLES, page_break=True)
     from app.core.config import settings
     network = data.get("network", settings.POLYGON_NETWORK_NAME)
     explorer = settings.POLYGON_EXPLORER_URL.rstrip("/")
@@ -412,7 +603,7 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
         story.append(trm_table)
 
     # ── Section 7: Risk Overview ───────────────────────────────────────────────
-    story += _section("Risk Overview", _STYLES)
+    story += _section("Risk Overview", _STYLES, page_break=True)
     story.append(Paragraph(
         "This pack represents a snapshot assessment. Booppa's automated scans "
         "cover PDPA obligations and vendor credibility signals. "
