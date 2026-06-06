@@ -109,6 +109,16 @@ celery_app.conf.update(
             "task": "run_compliance_evidence_monthly_refresh",
             "schedule": crontab(day_of_month=1, hour=4, minute=0),
         },
+        # Compliance Evidence Monthly: nudge subscribers to confirm their intake
+        # facts ~6 days BEFORE the regen fires on the 1st. The verification
+        # badges on every monthly Cover Sheet only stay defensible if the
+        # underlying intake (DPO contact, ISO cert, BCP test date, hosting
+        # region, etc.) is current. Form pre-fills from last month's answers
+        # so the median confirmation takes ~30 seconds.
+        "compliance-evidence-monthly-intake-refresh-email": {
+            "task": "send_monthly_intake_refresh_task",
+            "schedule": crontab(day_of_month=25, hour=2, minute=0),
+        },
         # Weekly intelligence brief — all vendors with completed reports.
         # Monday 00:00 UTC = 08:00 SGT, fires before the score digest.
         "weekly-intelligence-brief": {

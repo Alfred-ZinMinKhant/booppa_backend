@@ -4064,3 +4064,174 @@ def recompute_all_vendor_percentiles():
         db.close()
 
     logger.info("[RecomputePercentiles] ok=%d failed=%d", ok, failed)
+
+
+# ── Monthly intake refresh for compliance_evidence_monthly subscribers ──────
+@celery_app.task(bind=True, max_retries=2, name="send_monthly_intake_refresh_task")
+def send_monthly_intake_refresh_task(self):
+    """Monthly: nudge compliance_evidence_monthly subscribers to confirm their
+    intake before the next regen cycle. Without this, monthly Cover Sheets get
+    anchored on-chain with stale intake facts (e.g. a DPO who's left, an ISO
+    cert that's expired) and the per-answer 'verified' badges lose their
+    defensibility.
+
+    For each active subscriber we:
+      1. Create a fresh PendingRfpIntake row (status='pending', tagged with
+         bundle_source='compliance_evidence_monthly_refresh') so the existing
+         /rfp-intake/{id} flow handles it identically to a new purchase.
+      2. Pre-seed the rfp_intake:{session_id} cache with the buyer's last
+         confirmed intake — the existing form pre-fill picks it up so most
+         buyers just review + click Submit (30 seconds).
+      3. Email a single-click link to /rfp-intake/{new_id}.
+
+    Skip subscribers who already have a pending row younger than 14 days —
+    avoids duplicate nudges if last month's email is still unanswered.
+    """
+    import uuid as _uuid
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    from app.core.db import SessionLocal as _SL
+    from app.core.models import User, Report
+    from app.core.models_v12 import PendingRfpIntake
+    from app.core.cache import cache as _cache
+    from app.services.email_service import EmailService
+
+    db = _SL()
+    sent = 0
+    skipped = 0
+    failed = 0
+    try:
+        subs = db.query(User).filter(User.subscription_tier == "compliance_evidence").all()
+        cutoff = _dt.utcnow() - _td(days=14)
+        for user in subs:
+            try:
+                # Skip if there's already an outstanding pending intake — last
+                # month's email is presumably still unread.
+                outstanding = (
+                    db.query(PendingRfpIntake)
+                    .filter(
+                        PendingRfpIntake.user_id == user.id,
+                        PendingRfpIntake.status == "pending",
+                        PendingRfpIntake.created_at >= cutoff,
+                    )
+                    .first()
+                )
+                if outstanding:
+                    skipped += 1
+                    continue
+
+                # Pull last submitted intake's persisted data from the most
+                # recent rfp_complete Report row. If none, we still create the
+                # intake row — the form will start blank.
+                last_report = (
+                    db.query(Report)
+                    .filter(Report.owner_id == user.id, Report.framework == "rfp_complete")
+                    .order_by(Report.created_at.desc())
+                    .first()
+                )
+                last_intake_data: dict = {}
+                last_rfp_description: str = ""
+                if last_report and isinstance(last_report.assessment_data, dict):
+                    last_intake_data = last_report.assessment_data.get("intake_data") or {}
+                    last_rfp_description = last_report.assessment_data.get("intake_rfp_description") or ""
+
+                # Create a fresh PendingRfpIntake. Synthetic session_id since
+                # this isn't tied to a Stripe checkout. Prefix marks the origin
+                # so audit queries can trace these back to the monthly nudge.
+                session_id = f"refresh_{user.id}_{_dt.utcnow().strftime('%Y%m')}_{_uuid.uuid4().hex[:8]}"
+                row = PendingRfpIntake(
+                    user_id=user.id,
+                    session_id=session_id,
+                    rfp_product_type="rfp_complete",
+                    bundle_source="compliance_evidence_monthly_refresh",
+                    vendor_url=(getattr(user, "website", "") or "") or last_report.company_website if last_report else None,
+                    company_name=(getattr(user, "company", "") or "") or (last_report.company_name if last_report else None),
+                    status="pending",
+                )
+                db.add(row)
+                db.commit()
+                intake_id = str(row.id)
+
+                # Pre-seed the rfp_intake cache so the /rfp-intake/{id} form
+                # picks up last month's answers via its existing prefill path.
+                # 30-day TTL so the link works even if the buyer reads the email
+                # late. The buyer's edits become the new authoritative source
+                # on submit; this cache is just the pre-fill hint.
+                if last_intake_data or last_rfp_description:
+                    try:
+                        _cache.set(
+                            _cache.cache_key(f"rfp_intake:{session_id}"),
+                            {
+                                "rfp_description": last_rfp_description,
+                                "intake_data": last_intake_data,
+                            },
+                            ttl=60 * 60 * 24 * 30,  # 30 days
+                        )
+                    except Exception as cache_err:
+                        logger.warning(
+                            "[MonthlyIntakeRefresh] cache prefill failed for %s: %s",
+                            user.email, cache_err,
+                        )
+
+                # Send the confirmation email. Single CTA — the form lives at
+                # /rfp-intake/{id}, which the buyer already used at signup.
+                intake_url = f"https://www.booppa.io/rfp-intake/{intake_id}"
+                body_html = f"""
+                <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;color:#0f172a;">
+                  <h2 style="color:#0f172a;margin:0 0 8px;">Confirm your intake for this month's evidence pack</h2>
+                  <p style="color:#475569;margin:0 0 16px;line-height:1.5;">
+                    Your <strong>Compliance Evidence</strong> subscription regenerates your blockchain-anchored
+                    Cover Sheet at the start of every month. Before we anchor this month's pack,
+                    take 30 seconds to confirm your facts are still current.
+                  </p>
+                  <p style="color:#475569;margin:0 0 16px;line-height:1.5;">
+                    We've pre-filled your last confirmed answers — review each one, edit anything that
+                    changed (new DPO contact, updated ISO cert, refreshed BCP test date, etc.), and submit.
+                    Anything left unchanged carries forward.
+                  </p>
+                  <div style="text-align:center;margin:24px 0;">
+                    <a href="{intake_url}"
+                       style="display:inline-block;background:#0ea5e9;color:#fff;padding:12px 24px;
+                              border-radius:8px;text-decoration:none;font-weight:bold;">
+                      Confirm my intake (30 sec)
+                    </a>
+                  </div>
+                  <p style="color:#64748b;font-size:13px;line-height:1.5;margin:24px 0 0;">
+                    Why this matters: each answer in your kit is labelled with its verification source
+                    (Intake / Website / ACRA / SSL Labs / GeBIZ). Stale intake = stale "verified" badges.
+                    Keeping this confirmation current is what makes the kit defensible if a procurement
+                    evaluator asks how a specific claim was verified.
+                  </p>
+                  <p style="color:#94a3b8;font-size:12px;margin:32px 0 0;">
+                    Subscription managed at booppa.io/vendor/subscription.
+                  </p>
+                </div>
+                """
+                ok = asyncio.run(EmailService().send_html_email(
+                    to_email=user.email,
+                    subject="Confirm your monthly Compliance Evidence intake",
+                    body_html=body_html,
+                ))
+                if ok:
+                    sent += 1
+                    logger.info(
+                        "[MonthlyIntakeRefresh] sent to %s intake_id=%s prefill=%s",
+                        user.email, intake_id, bool(last_intake_data or last_rfp_description),
+                    )
+                else:
+                    failed += 1
+                    logger.error(
+                        "[MonthlyIntakeRefresh] email provider rejected for %s intake_id=%s",
+                        user.email, intake_id,
+                    )
+            except Exception as per_user_err:
+                failed += 1
+                db.rollback()
+                logger.warning(
+                    "[MonthlyIntakeRefresh] failed for %s: %s",
+                    getattr(user, "email", "?"), per_user_err,
+                )
+    finally:
+        db.close()
+    logger.info(
+        "[MonthlyIntakeRefresh] complete · sent=%d skipped=%d failed=%d", sent, skipped, failed
+    )
