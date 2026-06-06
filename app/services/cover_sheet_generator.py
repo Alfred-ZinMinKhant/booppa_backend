@@ -53,8 +53,11 @@ for _c in _LOGO_CANDIDATES:
 # branding, copy). Stored on the Report row so the UI can detect customers
 # holding an older PDF and offer a free regenerate.
 # v3: prominent body logo on cover page; full PDPA findings list (not top-3);
-# full RFP Q&A list embedded (not just count + summary).
-COVER_SHEET_SCHEMA_VERSION = 3
+#     full RFP Q&A list embedded (not just count + summary).
+# v4: RFP Q&A blocks now show the per-answer verification source (intake /
+#     website / ACRA / SSL / GeBIZ / intake+website / etc.) instead of the
+#     binary fact-backed/AI-generated badge; evidence line under each answer.
+COVER_SHEET_SCHEMA_VERSION = 4
 
 PAGE_W, PAGE_H = A4
 MARGIN = 0.75 * inch
@@ -255,13 +258,44 @@ def _xml_escape(s: str) -> str:
     )
 
 
+# Verification source → label + colour. Mirrors SOURCE_BADGE on the web result
+# page so the buyer + procurement evaluator see the same attribution wherever
+# the kit is viewed. Procurement officers reading the Cover Sheet (the
+# audit-grade, blockchain-anchored doc) get the same per-answer evidence the
+# buyer saw online — that's what makes the kit defensible end-to-end.
+_BADGE_TEAL    = colors.HexColor("#0d9488")
+_BADGE_BLUE    = colors.HexColor("#0284c7")
+_BADGE_AMBER   = colors.HexColor("#d97706")
+_VERIFICATION_BADGES: dict[str, tuple[str, "colors.Color"]] = {
+    "intake":           ("FROM YOUR INTAKE",          EMERALD),
+    "website":          ("VERIFIED ON YOUR WEBSITE",  _BADGE_TEAL),
+    "intake+website":   ("INTAKE + WEBSITE",          EMERALD),
+    "intake+external":  ("INTAKE + PUBLIC RECORDS",   EMERALD),
+    "acra":             ("ACRA VERIFIED",             _BADGE_BLUE),
+    "ssl":              ("SSL LABS VERIFIED",         _BADGE_BLUE),
+    "gebiz":            ("GEBIZ SUPPLIER",            _BADGE_BLUE),
+    "pdpc":             ("PDPC REGISTER CHECKED",     _BADGE_BLUE),
+    "external":         ("EXTERNAL EVIDENCE",         _BADGE_BLUE),
+    "ai_drafted":       ("AI DRAFT — REVIEW",         _BADGE_AMBER),
+}
+
+
 def _rfp_qa_block(idx: int, qa: dict):
-    """Render a single RFP Q&A entry: question, answer, confidence badge."""
+    """Render a single RFP Q&A entry: question, answer, verification-source
+    badge, and the evidence line that justifies the badge.
+    """
     question = _xml_escape(qa.get("question") or "—")
     answer = _xml_escape(qa.get("answer") or "—")
-    confidence = (qa.get("confidence") or "generated").lower()
-    badge_color = EMERALD if confidence == "fact" else SLATE
-    badge_text = "FACT-BACKED" if confidence == "fact" else "AI-GENERATED"
+
+    # Prefer the new structured verification field. Fall back to the legacy
+    # `confidence` field for backward compatibility with kits generated
+    # before v4 (existing Cover Sheets that get re-rendered).
+    verification = qa.get("verification") if isinstance(qa.get("verification"), dict) else {}
+    source = verification.get("source") or (
+        "intake" if (qa.get("confidence") or "").lower() == "fact" else "ai_drafted"
+    )
+    evidence_list = verification.get("evidence") or []
+    badge_text, badge_color = _VERIFICATION_BADGES.get(source, _VERIFICATION_BADGES["ai_drafted"])
 
     q_style = ParagraphStyle(
         "qa_q", fontSize=8.5, leading=11, textColor=NAVY, fontName="Helvetica-Bold"
@@ -269,17 +303,23 @@ def _rfp_qa_block(idx: int, qa: dict):
     a_style = ParagraphStyle(
         "qa_a", fontSize=8, leading=11, textColor=colors.HexColor("#334155")
     )
+    evidence_style = ParagraphStyle(
+        "qa_ev", fontSize=7, leading=9, textColor=SLATE,
+        fontName="Helvetica-Oblique", leftIndent=4,
+    )
     badge_style = ParagraphStyle(
-        "qa_badge", fontSize=6.5, leading=8, textColor=WHITE,
+        "qa_badge", fontSize=6, leading=8, textColor=WHITE,
         fontName="Helvetica-Bold", alignment=1,
     )
 
+    # Badge wider than before because "INTAKE + PUBLIC RECORDS" / similar
+    # combined labels don't fit in 0.9 inch.
     header = Table(
         [[
             Paragraph(f"Q{idx}. {question}", q_style),
             Paragraph(badge_text, badge_style),
         ]],
-        colWidths=[5.4 * inch, 0.9 * inch],
+        colWidths=[4.7 * inch, 1.6 * inch],
     )
     header.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -291,14 +331,16 @@ def _rfp_qa_block(idx: int, qa: dict):
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]))
 
-    body = Table(
-        [[Paragraph(answer, a_style)]],
-        colWidths=[6.3 * inch],
-    )
+    # Body holds the answer + (when present) the evidence line directly under it.
+    body_rows = [[Paragraph(answer, a_style)]]
+    if evidence_list:
+        ev_text = "Evidence: " + " · ".join(_xml_escape(e) for e in evidence_list[:4])
+        body_rows.append([Paragraph(ev_text, evidence_style)])
+    body = Table(body_rows, colWidths=[6.3 * inch])
     body.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("BACKGROUND", (0, 0), (-1, -1), LIGHT),
-        ("LINEBEFORE", (0, 0), (0, 0), 2, badge_color),
+        ("LINEBEFORE", (0, 0), (0, -1), 2, badge_color),
         ("LEFTPADDING", (0, 0), (-1, -1), 6),
         ("RIGHTPADDING", (0, 0), (-1, -1), 6),
         ("TOPPADDING", (0, 0), (-1, -1), 4),
