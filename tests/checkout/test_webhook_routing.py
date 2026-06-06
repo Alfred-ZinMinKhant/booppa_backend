@@ -56,13 +56,19 @@ def test_bundle_webhook_queues_fulfill_bundle_task(
     [c for c in ONE_TIME if c.product_type in ("rfp_express", "rfp_complete")],
     ids=lambda c: c.product_type,
 )
-def test_rfp_webhook_with_brief_queues_rfp_task(
+def test_rfp_webhook_with_brief_still_defers_to_intake(
     case, client, post_webhook, stripe_session_factory, mocker
 ):
-    """RFP SKUs with an `rfp_description` go straight to fulfill_rfp_task."""
+    """Policy change 2026-06: even when checkout pre-collected an
+    `rfp_description`, the webhook ALWAYS defers to /rfp-intake. The buyer
+    re-confirms facts on the brief form before fulfill_rfp_task is queued —
+    that way they own the inputs we anchor on-chain.
+    """
     fake_task = MagicMock()
     fake_task.delay = MagicMock()
     mocker.patch("app.workers.tasks.fulfill_rfp_task", fake_task)
+    fake_defer = AsyncMock(return_value=None)
+    mocker.patch("app.api.stripe_webhook._defer_rfp_to_intake", fake_defer)
 
     session = stripe_session_factory(
         case.product_type,
@@ -71,10 +77,11 @@ def test_rfp_webhook_with_brief_queues_rfp_task(
     resp = post_webhook(wrap_event(session))
 
     assert resp.status_code == 200
-    fake_task.delay.assert_called_once()
-    kwargs = fake_task.delay.call_args.kwargs
-    assert kwargs["product_type"] == case.product_type
-    assert kwargs["vendor_url"] == "https://example.test"
+    # Defer was called — even though metadata had rfp_description.
+    fake_defer.assert_awaited_once()
+    # And fulfill_rfp_task was NOT queued at webhook time. It gets queued by
+    # /api/rfp-intake/{id}/submit after the buyer confirms.
+    fake_task.delay.assert_not_called()
 
 
 @pytest.mark.parametrize(
