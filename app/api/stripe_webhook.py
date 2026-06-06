@@ -301,9 +301,11 @@ async def _activate_subscription(
 
             _now = datetime.now(_tz.utc)
             user.subscription_started_at = _now
-            # Anniversary cap at 28: every month has at least 28 days so the
-            # daily cron filter will always find this subscriber once per cycle.
-            user.subscription_anniversary_day = min(_now.day, 28)
+            # Stored uncapped (1-31). The daily cron filter matches:
+            #   • anniversary == today.day on a regular day, OR
+            #   • anniversary >= today.day on the last day of a short month
+            # so a Jan-31 subscriber gets their cycle on Feb 28, Apr 30, etc.
+            user.subscription_anniversary_day = _now.day
         except Exception:
             pass
         if stripe_subscription_id:
