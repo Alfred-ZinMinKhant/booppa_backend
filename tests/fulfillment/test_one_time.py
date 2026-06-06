@@ -32,11 +32,19 @@ def test_one_time_standalone_handler_called(
     assert kwargs["customer_email"] == session["customer_email"]
 
 
-def test_rfp_express_with_brief_queues_fulfill_rfp(
+def test_rfp_express_with_brief_still_defers(
     client, post_webhook, stripe_session_factory, mocker
 ):
+    """Policy change 2026-06: every RFP webhook defers to /rfp-intake, even
+    when checkout collected an rfp_description. fulfill_rfp_task gets queued
+    by /api/rfp-intake/{id}/submit, not by the Stripe webhook.
+    """
     fake_task = mocker.patch("app.workers.tasks.fulfill_rfp_task")
     fake_task.delay = mocker.MagicMock()
+    fake_defer = mocker.patch(
+        "app.api.stripe_webhook._defer_rfp_to_intake",
+        new=mocker.AsyncMock(return_value=None),
+    )
 
     session = stripe_session_factory(
         "rfp_express",
@@ -44,10 +52,10 @@ def test_rfp_express_with_brief_queues_fulfill_rfp(
     )
     resp = post_webhook(wrap_event(session))
     assert resp.status_code == 200
-    fake_task.delay.assert_called_once()
-    kwargs = fake_task.delay.call_args.kwargs
-    assert kwargs["product_type"] == "rfp_express"
-    assert kwargs["rfp_description"] == "Cloud migration for SG retail"
+    # Defer was called even though rfp_description was in metadata.
+    fake_defer.assert_awaited_once()
+    # And the worker was NOT queued at webhook time.
+    fake_task.delay.assert_not_called()
 
 
 def test_rfp_complete_without_brief_defers(
