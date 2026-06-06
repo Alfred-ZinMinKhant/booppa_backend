@@ -1686,6 +1686,12 @@ async def _fulfill_rfp_package(
                             "data_sources": result.get("data_sources") or {},
                             "generated_at": result.get("generated_at"),
                             "polygonscan_url": result.get("polygonscan_url"),
+                            # Persist the buyer's confirmed inputs so monthly
+                            # refresh emails (compliance_evidence_monthly) can
+                            # pre-fill /rfp-intake/{new_id} with last month's
+                            # answers — 30-second re-confirm instead of full re-entry.
+                            "intake_rfp_description": rfp_description or "",
+                            "intake_data": intake_data or {},
                         },
                         status="completed",
                         tx_hash=result.get("tx_hash"),
