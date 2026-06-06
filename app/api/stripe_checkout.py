@@ -48,10 +48,11 @@ MODE_MAP = {
     "pdpa_monitor_monthly": "subscription",
     "pdpa_monitor_annual": "subscription",
     "compliance_evidence_monthly": "subscription",
-    "evaluate_suppliers_monthly": "subscription",
-    "verify_supplier_evidence_monthly": "subscription",
-    "enterprise_monthly": "subscription",
-    "enterprise_pro_monthly": "subscription",
+    # `enterprise_monthly`, `enterprise_pro_monthly`, `evaluate_suppliers_monthly`,
+    # and `verify_supplier_evidence_monthly` are retired — no longer listed on any
+    # pricing tile. Downstream maps (webhook entitlement, billing enforcement,
+    # score bonuses) still resolve them so existing subscribers keep working;
+    # removing them here just prevents NEW checkouts.
     "standard_suite_monthly": "subscription",
     "pro_suite_monthly": "subscription",
     "tender_intelligence_monthly": "subscription",
@@ -74,9 +75,10 @@ MODE_MAP = {
 # (incl. enterprise vendors) can buy them. Only the explicit supplier-evaluation
 # SKUs are gated to procurement accounts.
 PROCUREMENT_PRODUCTS = {
-    "enterprise_monthly", "enterprise_pro_monthly",
-    "evaluate_suppliers_monthly", "verify_supplier_evidence_monthly",
-    # New buyer ladder — same gating: vendors cannot buy buyer-side plans.
+    # Buyer ladder — vendors cannot buy buyer-side plans.
+    # (Retired enterprise_monthly / enterprise_pro_monthly / evaluate_suppliers_monthly
+    # / verify_supplier_evidence_monthly are no longer in MODE_MAP, so the
+    # gate doesn't need to list them.)
     "buyer_starter_monthly", "buyer_starter_annual",
     "buyer_pro_monthly", "buyer_pro_annual",
     "buyer_enterprise_monthly", "buyer_enterprise_annual",
@@ -154,6 +156,8 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         "pdpa_monitor_monthly": "pdpa_monitor",
         "pdpa_monitor_annual": "pdpa_monitor",
         "compliance_evidence_monthly": "compliance_evidence",
+        # Retired plans kept in the map so we still recognise their tier when
+        # an existing subscriber upgrades/downgrades through Stripe portal.
         "evaluate_suppliers_monthly": "evaluate_suppliers",
         "verify_supplier_evidence_monthly": "verify_supplier_evidence",
         "enterprise_monthly": "enterprise",
@@ -476,8 +480,6 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         elif _pt in ("vendor_active_monthly", "vendor_active_annual"):
             cancel_path = "pricing"
         elif _pt in ("pdpa_monitor_monthly", "pdpa_monitor_annual"):
-            cancel_path = "pricing"
-        elif _pt in ("enterprise_monthly", "enterprise_pro_monthly"):
             cancel_path = "pricing"
         else:
             cancel_path = "pricing"
