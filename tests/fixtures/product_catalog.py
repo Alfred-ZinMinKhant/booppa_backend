@@ -119,9 +119,12 @@ SUBSCRIPTIONS: list[ProductCase] = [
     for p in [
         "vendor_active_monthly", "vendor_active_annual",
         "pdpa_monitor_monthly", "pdpa_monitor_annual",
-        "enterprise_monthly", "enterprise_pro_monthly",
+        # Retired 2026-06: enterprise_monthly, enterprise_pro_monthly,
+        # evaluate_suppliers_monthly, verify_supplier_evidence_monthly
+        # were removed from MODE_MAP. Downstream maps still resolve them
+        # for the lifecycle of existing subscribers, but no checkout test
+        # should attempt to create new sessions for them.
         "standard_suite_monthly", "pro_suite_monthly",
-        "evaluate_suppliers_monthly", "verify_supplier_evidence_monthly",
         "compliance_evidence_monthly",
         "tender_intelligence_monthly", "tender_intelligence_annual",
         "vendor_pro_monthly", "vendor_pro_annual",

@@ -162,8 +162,17 @@ class RFPExpressBuilder:
             ws_data=ws_data,
         )
 
+        # 2b. Post-AI validation pass — catch AI hallucinations against intake.
+        # LLMs over-confidently fill in DPO names, ISO certifications, hosting
+        # regions, etc. even when the intake declared otherwise. We surface
+        # these on the result page so the buyer fixes them before submitting.
+        # Merged into the consistency-check discrepancies below so they land in
+        # the PDF warnings + frontend `discrepancies` array exactly once.
+        ai_discrepancies = self._validate_answers_against_intake(qa_answers, intake)
+
         # Consistency check — intake vs external evidence
         discrepancies = check_consistency(intake, website_text, pdpc_result, domain_rep)
+        discrepancies = (discrepancies or []) + ai_discrepancies
         if discrepancies:
             self.warnings.extend([f"[Discrepancy] {d}" for d in discrepancies])
 
@@ -574,31 +583,114 @@ class RFPExpressBuilder:
         self.used_template = True
         return self._template_qa(ctx, questions)
 
-    # Audit fix A: per-answer prefix so evaluators know answers are templated
-    _TEMPLATE_PREFIX = "[Standard template — review before submission] "
+    # Audit fix A: per-answer prefix so evaluators know answers are templated.
+    # Audit fix B (2026): template answers no longer assert specific facts the
+    # buyer may not actually meet (e.g. "AES-256", "Singapore residency",
+    # "RTO of 4 hours") — these turned a "starter draft" into a perjury risk
+    # if a rushed buyer submitted unread to a GeBIZ tender. Specifics are now
+    # `___ [FILL IN] ___` placeholders the buyer MUST replace before submitting.
+    _TEMPLATE_PREFIX = "[Standard template — review and replace [FILL IN] fields before submission] "
+    _FI = "___ [FILL IN] ___"
 
     def _template_qa(self, ctx: Dict, questions: list) -> Dict[str, str]:
         name = ctx["company_name"]
         url  = ctx["vendor_url"]
         p    = self._TEMPLATE_PREFIX
+        fi   = self._FI
         all_answers = {
-            "data_policy":          f"{p}{name} maintains a PDPA-compliant Personal Data Protection Policy, accessible at {url}. All personal data is collected with consent and retained only for its stated purpose.",
-            "dpo_appointed":        f"{p}{name} has appointed a Data Protection Officer (DPO) responsible for overseeing data protection compliance and serving as the point of contact for data-related inquiries.",
-            "security_measures":    f"{p}{name} implements encryption at rest and in transit, role-based access controls, multi-factor authentication for privileged accounts, and conducts quarterly security reviews.",
-            "breach_history":       f"{p}No data breaches have occurred to the knowledge of management of {name}. No external security incidents have been publicly reported against the company's domains.",
-            "third_party":          f"{p}{name} conducts due diligence assessments on all third-party vendors and requires Data Processing Agreements (DPAs) before any personal data is shared with sub-processors.",
-            "iso_certifications":   f"{p}{name} is currently pursuing ISO 27001 certification and maintains internal controls aligned with the standard. SOC 2 readiness assessment is planned for the next financial year.",
-            "business_continuity":  f"{p}{name} maintains a Business Continuity Plan (BCP) and Disaster Recovery (DR) plan, reviewed annually. Critical systems have RTO of 4 hours and RPO of 24 hours.",
-            "staff_training":       f"{p}{name} conducts mandatory annual data protection and cybersecurity awareness training for all staff. New hires complete training within the first 30 days of employment.",
-            "access_controls":      f"{p}{name} enforces role-based access control (RBAC) with least-privilege principles. Privileged access is subject to MFA, quarterly reviews, and immediate revocation upon role change.",
-            "vulnerability_mgmt":   f"{p}{name} applies security patches within 30 days of release for critical vulnerabilities. Monthly vulnerability scans are conducted and remediation tracked to closure.",
-            "encryption_standards": f"{p}{name} uses AES-256 for data at rest and TLS 1.2+ for data in transit. Encryption keys are managed through a dedicated key management process with annual rotation.",
-            "audit_logging":        f"{p}{name} retains audit logs for a minimum of 12 months. Logs are centralised, monitored for anomalies, and protected from tampering.",
-            "incident_response":    f"{p}{name} maintains a documented Incident Response Plan with defined escalation paths. The DPO is notified within 24 hours of a suspected breach; PDPC notification is made within 3 business days if required.",
-            "data_residency":       f"{p}{name} stores all personal data on servers located in Singapore. Any cross-border transfers are governed by contractual clauses consistent with PDPA's Third Schedule requirements.",
-            "subcontracting":       f"{p}{name} does not offshore personal data processing. Any subcontracting engagements require prior written approval and binding data processing agreements.",
+            "data_policy":          f"{p}{name} maintains a PDPA-compliant Personal Data Protection Policy, accessible at {url}. Personal data is collected with consent and retained only for its stated purpose.",
+            "dpo_appointed":        f"{p}DPO appointment status: {fi} (Yes/No/In progress). If appointed, name: {fi}, email: {fi}, PDPC registration: {fi}.",
+            "security_measures":    f"{p}{name} implements technical and organisational security controls including {fi} (e.g. access controls, encryption in transit, staff training). See encryption_standards and access_controls for specifics.",
+            "breach_history":       f"{p}Breach history (last 24 months): {fi} (None / Yes — describe). Any PDPC-notifiable incidents must be disclosed here.",
+            "third_party":          f"{p}{name} requires Data Processing Agreements (DPAs) before sharing personal data with sub-processors. Key processors in scope: {fi}.",
+            "iso_certifications":   f"{p}ISO 27001 status: {fi} (Certified / Pursuing / None). If certified, certificate number: {fi}, expiry: {fi}. SOC 2 status: {fi}.",
+            "business_continuity":  f"{p}{name} maintains a BCP/DR plan. Last tested: {fi}. RTO target: {fi}. RPO target: {fi}.",
+            "staff_training":       f"{p}Security awareness training frequency: {fi} (e.g. annual, quarterly). New-hire training window: {fi}.",
+            "access_controls":      f"{p}{name} enforces role-based access control with least-privilege principles. Privileged access review cadence: {fi}. MFA on privileged accounts: {fi} (Yes/No).",
+            "vulnerability_mgmt":   f"{p}Patch SLA for critical vulnerabilities: {fi}. Vulnerability scan cadence: {fi}.",
+            "encryption_standards": f"{p}Encryption at rest: {fi} (e.g. AES-256). Encryption in transit: {fi} (e.g. TLS 1.2+). Key management process: {fi}.",
+            "audit_logging":        f"{p}Audit log retention period: {fi} months. Log monitoring/anomaly detection: {fi} (describe).",
+            "incident_response":    f"{p}{name} maintains an Incident Response Plan. Internal notification window: {fi}. PDPC notification is made within 3 business days if the incident is PDPC-notifiable.",
+            "data_residency":       f"{p}Primary data hosting region: {fi}. Cloud provider: {fi}. Cross-border transfers (if any) are governed by contractual clauses consistent with PDPA's Third Schedule.",
+            "subcontracting":       f"{p}Subcontracting / offshoring of personal data processing: {fi} (None / Yes — list arrangements). Any engagements require prior written approval and binding DPAs.",
         }
         return {k: all_answers[k] for k in questions if k in all_answers}
+
+    def _validate_answers_against_intake(self, qa_answers: Dict[str, str], intake: dict) -> list[str]:
+        """Cross-check AI-generated answers against buyer-supplied intake facts.
+
+        LLMs sometimes invent specifics ("DPO is Mary Tan", "ISO 27001 certified",
+        "data hosted in Singapore") even when the intake says otherwise. This
+        catches the most common mismatches so the buyer can fix them before
+        submitting to a tender — submitting AI-fabricated claims to GeBIZ is a
+        legal/reputational risk.
+
+        Returns a list of human-readable discrepancy strings (may be empty).
+        """
+        if not isinstance(qa_answers, dict) or not isinstance(intake, dict):
+            return []
+
+        out: list[str] = []
+        import re
+
+        def lower(key: str) -> str:
+            v = qa_answers.get(key)
+            return v.lower() if isinstance(v, str) else ""
+
+        # ── DPO ─────────────────────────────────────────────────────────────
+        dpo_state = (intake.get("dpo_appointed") or "").lower()
+        dpo_ans = lower("dpo_appointed")
+        if dpo_state == "no" and dpo_ans:
+            # Buyer declared no DPO, but answer claims one exists.
+            if re.search(r"\b(has appointed|appointed a|dpo is|our dpo|the dpo)\b", dpo_ans) \
+               and not re.search(r"\b(no dpo|has not appointed|not yet appointed|in progress|to be appointed)\b", dpo_ans):
+                out.append(
+                    "Intake declares no DPO appointed, but the dpo_appointed answer reads as if one exists. "
+                    "Edit the answer to match the intake before submission."
+                )
+
+        # ── ISO 27001 ───────────────────────────────────────────────────────
+        iso_state = (intake.get("iso_status") or "").lower()
+        iso_ans = lower("iso_certifications")
+        if iso_state in {"none", "pursuing", "in_progress", "unknown", ""} and iso_ans:
+            if re.search(r"\bis (iso[\s-]?27001\s)?certified\b|\bholds (an? )?iso[\s-]?27001 certification\b|\biso[\s-]?27001 certified\b", iso_ans):
+                out.append(
+                    f"Intake declares ISO 27001 status as '{iso_state or 'unknown'}', but the answer asserts "
+                    f"the company is certified. Correct the answer to match the intake."
+                )
+        if iso_state == "certified" and not intake.get("iso_cert_number"):
+            out.append(
+                "ISO 27001 declared certified in intake but no certificate number supplied — evaluators cannot verify. "
+                "Add iso_cert_number to the intake or remove the certified claim."
+            )
+
+        # ── Breach history ──────────────────────────────────────────────────
+        breach_state = (intake.get("breach_history") or "").lower()
+        breach_ans = lower("breach_history")
+        if breach_state in {"one", "multiple"} and breach_ans:
+            if re.search(r"\bno (data )?breach(es)?\b|\bno security incidents?\b|\bnever experienced\b", breach_ans):
+                out.append(
+                    f"Intake declares {breach_state} breach(es) in the last 24 months, but the answer says none. "
+                    "PDPC-notifiable breaches MUST be disclosed in tender responses."
+                )
+
+        # ── Data hosting region ────────────────────────────────────────────
+        hosting = (intake.get("data_hosting") or "").lower()
+        residency_ans = lower("data_residency")
+        if hosting == "global" and residency_ans:
+            if re.search(r"\b(all|only|exclusively).{0,30}\b(singapore|sg)\b", residency_ans):
+                out.append(
+                    "Intake declares global data hosting, but the data_residency answer claims Singapore-only. "
+                    "Edit to disclose actual cross-border hosting."
+                )
+        if hosting in {"apac", "global"} and residency_ans:
+            if re.search(r"\bdoes not (offshore|cross[- ]border transfer)\b", residency_ans):
+                out.append(
+                    f"Intake declares data_hosting='{hosting}' (non-SG), but the answer says no cross-border transfer. "
+                    "Reconcile before submission."
+                )
+
+        return out
 
     # ── Step 2.5: blockchain anchor ───────────────────────────────────────────
 
@@ -642,6 +734,28 @@ class RFPExpressBuilder:
             from app.core.config import settings
             pdf = PDFService()
             verify_base = settings.VERIFY_BASE_URL.rstrip("/")
+
+            # Pre-flight review checklist — one line per answer with an initials
+            # slot. Forces the buyer to manually acknowledge each answer before
+            # submission instead of paste-and-pray. Lives at the top of the Q&A
+            # section so it's the first thing the reader hits.
+            checklist_lines = [
+                f"  [  ]  {self._q_label(k)} — reviewed, accurate, no [FILL IN] left.    Initials: ______"
+                for k in qa_answers.keys()
+            ]
+            checklist = (
+                "PRE-FLIGHT REVIEW CHECKLIST\n"
+                "Tick each box and initial after you have read the corresponding answer, "
+                "confirmed it reflects your company's actual practice, and replaced any "
+                "[FILL IN] placeholders. Do NOT submit this document if any box is unticked.\n\n"
+                + "\n".join(checklist_lines)
+                + "\n\n  [  ]  All [FILL IN] placeholders have been replaced with real, accurate values.    Initials: ______"
+                + "\n  [  ]  I confirm the company has the capability to substantiate every claim above.    Initials: ______"
+                + "\n  [  ]  This document is being submitted alongside the proposal, pricing, and team sections."
+                + "    Initials: ______"
+                + "\n\nReviewer name: ______________________________    Date: __________    Signature: ______________________"
+                + "\n─────────────────────────────────────────────────────────────────────\n"
+            )
 
             qa_section = "\n\n".join(
                 f"Q: {self._q_label(k)}\nA: {v}"
@@ -740,6 +854,28 @@ class RFPExpressBuilder:
                 template_warning,
                 disc_lines,
             ]))
+            # Scope banner — kit covers PDPA + security only; buyer must add
+            # the rest of the bid (proposal, pricing, team) themselves. Without
+            # this, "Ready-to-submit bid kit" framing mis-sets expectations.
+            # Lives in ai_narrative (not summary) because PDFService renders
+            # ai_narrative as visible paragraphs in this product; summary feeds
+            # the structured cover and isn't shown verbatim.
+            scope_banner = (
+                "⚠ SCOPE NOTICE — READ BEFORE SUBMITTING\n"
+                "This document covers PDPA and information-security compliance answers only. "
+                "It is NOT a complete bid response. Before submitting to GeBIZ or any other "
+                "procurement portal, you must add your own:\n"
+                "  • Technical proposal\n"
+                "  • Pricing and commercial terms\n"
+                "  • Delivery timeline and milestones\n"
+                "  • Team and key personnel\n"
+                "  • Tender-specific requirements (references, case studies, certifications attached)\n"
+                "Review every answer below and replace any [FILL IN] placeholders before submission. "
+                "Booppa does not warrant the suitability of these answers for any particular tender; "
+                "the buyer remains responsible for the accuracy of submitted statements.\n"
+                "─────────────────────────────────────────────────────────────────────\n\n"
+            )
+
             report_data = {
                 "company_name": company_name,
                 "report_id":    self.report_id,
@@ -756,8 +892,11 @@ class RFPExpressBuilder:
                     f"{vendor_details}"
                 ),
                 "key_issues":   [],
-                # Use ai_narrative so PDFService renders as plain paragraphs (not structured mode)
-                "ai_narrative": qa_section,
+                # Use ai_narrative so PDFService renders as plain paragraphs
+                # (not structured mode). Order matters: scope banner → checklist
+                # → Q&A — reader hits the scope notice first, then the checklist
+                # they must initial, only then the actual answers.
+                "ai_narrative": scope_banner + checklist + "\n" + qa_section,
                 "audit_hash": self.report_id,
                 "verify_url": f"{verify_base}/verify/{self.report_id}",
                 "tx_hash": tx_hash,
