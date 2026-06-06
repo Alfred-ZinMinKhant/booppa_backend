@@ -62,11 +62,13 @@ celery_app.conf.update(
             "task": "send_gebiz_alert_newsletter",
             "schedule": crontab(day_of_week="monday", hour=7, minute=0),
         },
-        # Tender Intelligence subscribers: monthly digest on the 1st at 00:00 UTC
-        # (08:00 SGT). Summarises last 30d of awards by sector and procuring entity.
-        "send-tender-intelligence-digest-monthly": {
+        # Tender Intelligence subscribers: daily run at 00:00 UTC (08:00 SGT).
+        # The task itself filters to subscribers whose subscription_anniversary_day
+        # matches today's day-of-month, so each subscriber gets the digest on
+        # the same day they subscribed each month.
+        "send-tender-intelligence-digest-daily-anniversary": {
             "task": "send_tender_intelligence_digest",
-            "schedule": crontab(day_of_month=1, hour=0, minute=0),
+            "schedule": crontab(hour=0, minute=0),
         },
         # Vendor Pro subscribers: daily competitor-activity digest at 00:00 UTC
         # (08:00 SGT). Summarises last 24h of TenderCheckLookup activity on
@@ -87,10 +89,11 @@ celery_app.conf.update(
             "task": "send_weekly_vendor_scores",
             "schedule": crontab(day_of_week="monday", hour=8, minute=0),
         },
-        # Vendor Active: run monthly profile health checks on the 1st of each month at 06:00 UTC.
-        "vendor-active-monthly-health-checks": {
+        # Vendor Active: daily anniversary cron at 06:00 UTC. Task filters
+        # subscribers whose subscription_anniversary_day matches today.
+        "vendor-active-daily-anniversary-checks": {
             "task": "run_vendor_active_monthly_checks",
-            "schedule": crontab(day_of_month=1, hour=6, minute=0),
+            "schedule": crontab(hour=6, minute=0),
         },
         # Pre-seed notarization credit rows for active suite/enterprise subscribers
         # on the 1st of each month at 00:30 UTC. Lazy creation in notarize.py
@@ -99,25 +102,22 @@ celery_app.conf.update(
             "task": "reset_monthly_notarization_credits",
             "schedule": crontab(day_of_month=1, hour=0, minute=30),
         },
-        # PDPA Monitor: monthly re-scans on the 1st of each month at 03:00 UTC.
-        "pdpa-monitor-monthly-rescans": {
+        # PDPA Monitor: daily anniversary cron at 03:00 UTC.
+        "pdpa-monitor-daily-anniversary-rescans": {
             "task": "run_pdpa_monitor_monthly_rescans",
-            "schedule": crontab(day_of_month=1, hour=3, minute=0),
+            "schedule": crontab(hour=3, minute=0),
         },
-        # Compliance Evidence Monthly: monthly bundle fulfillment on the 1st of each month at 04:00 UTC.
-        "compliance-evidence-monthly-refresh": {
+        # Compliance Evidence Monthly: daily anniversary cron at 04:00 UTC.
+        "compliance-evidence-daily-anniversary-refresh": {
             "task": "run_compliance_evidence_monthly_refresh",
-            "schedule": crontab(day_of_month=1, hour=4, minute=0),
+            "schedule": crontab(hour=4, minute=0),
         },
-        # Compliance Evidence Monthly: nudge subscribers to confirm their intake
-        # facts ~6 days BEFORE the regen fires on the 1st. The verification
-        # badges on every monthly Cover Sheet only stay defensible if the
-        # underlying intake (DPO contact, ISO cert, BCP test date, hosting
-        # region, etc.) is current. Form pre-fills from last month's answers
-        # so the median confirmation takes ~30 seconds.
-        "compliance-evidence-monthly-intake-refresh-email": {
+        # Compliance Evidence Monthly: intake-confirmation nudge fires ~6 days
+        # before each subscriber's anniversary (task internally computes
+        # target_day = today + 6). Daily 02:00 UTC.
+        "compliance-evidence-daily-anniversary-intake-nudge": {
             "task": "send_monthly_intake_refresh_task",
-            "schedule": crontab(day_of_month=25, hour=2, minute=0),
+            "schedule": crontab(hour=2, minute=0),
         },
         # Weekly intelligence brief — all vendors with completed reports.
         # Monday 00:00 UTC = 08:00 SGT, fires before the score digest.

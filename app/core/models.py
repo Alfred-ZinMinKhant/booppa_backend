@@ -36,6 +36,11 @@ class User(Base):
     verified_at = Column(DateTime, nullable=True)
     subscription_tier = Column(String(50), nullable=True)
     subscription_started_at = Column(DateTime, nullable=True)
+    # Day of month (1-28) the buyer's monthly cycle should fire. Set at
+    # activation from `subscription_started_at.day` (capped at 28 to avoid
+    # Feb edge cases). Replaces calendar-1st delivery so every subscriber
+    # gets their cycle on the same day each month they actually subscribed.
+    subscription_anniversary_day = Column(Integer, nullable=True)
     stripe_customer_id = Column(String(255), nullable=True)
     stripe_subscription_id = Column(String(255), nullable=True)
     website = Column(String(500), nullable=True)

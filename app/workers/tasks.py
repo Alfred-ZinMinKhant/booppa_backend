@@ -2735,13 +2735,15 @@ def check_compliance_drift_task(self, vendor_id: str, vendor_email: str, framewo
 @celery_app.task(name="run_vendor_active_monthly_checks")
 def run_vendor_active_monthly_checks():
     """
-    Beat task: runs on the 1st of each month.
-    Finds all active Vendor Active subscribers and queues health checks.
+    Anniversary-day cron (runs daily; processes subscribers whose anniversary
+    day matches today's day-of-month). Replaces the calendar-1st delivery so
+    every subscriber gets their health check on the same day each month they
+    actually subscribed.
     """
     db = SessionLocal()
     try:
         from app.core.models import User, Subscription as SubModel
-        # Query Subscription table (source of truth) for active vendor_active subs
+        today_dom = min(datetime.now(timezone.utc).day, 28)
         active_subs = db.query(SubModel).filter(
             SubModel.product_type.in_([
                 "vendor_active_monthly", "vendor_active_annual", "vendor_active",
@@ -2751,11 +2753,19 @@ def run_vendor_active_monthly_checks():
             SubModel.status.in_(("active", "trialing")),
         ).all()
         user_ids = {s.user_id for s in active_subs if s.user_id}
-        subscribers = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
+        subscribers = (
+            db.query(User)
+            .filter(User.id.in_(user_ids), User.subscription_anniversary_day == today_dom)
+            .all()
+            if user_ids else []
+        )
         for user in subscribers:
             if user.email:
                 vendor_active_health_check_task.delay(str(user.id), user.email)
-        logger.info(f"Queued monthly health checks for {len(subscribers)} Vendor Active + Vendor Pro subscribers")
+        logger.info(
+            "[VendorActive] anniversary=%d queued %d health checks",
+            today_dom, len(subscribers),
+        )
     finally:
         db.close()
 
@@ -2763,24 +2773,35 @@ def run_vendor_active_monthly_checks():
 @celery_app.task(name="run_pdpa_monitor_monthly_rescans")
 def run_pdpa_monitor_monthly_rescans():
     """
-    Beat task: runs on the 1st of every month.
-    Finds all PDPA Monitor subscribers and queues re-scans.
+    Anniversary-day cron — same pattern as run_vendor_active_monthly_checks.
+    Runs daily; only processes PDPA Monitor subscribers whose anniversary day
+    matches today's day-of-month.
     """
     db = SessionLocal()
     try:
         from app.core.models import User, Subscription as SubModel
-        # Query Subscription table (source of truth) for active pdpa_monitor subs
+        today_dom = min(datetime.now(timezone.utc).day, 28)
         active_subs = db.query(SubModel).filter(
             SubModel.product_type.in_(["pdpa_monitor_monthly", "pdpa_monitor_annual", "pdpa_monitor"]),
             SubModel.status.in_(("active", "trialing")),
         ).all()
         user_ids = {s.user_id for s in active_subs if s.user_id}
-        subscribers = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
+        subscribers = (
+            db.query(User)
+            .filter(User.id.in_(user_ids), User.subscription_anniversary_day == today_dom)
+            .all()
+            if user_ids else []
+        )
+        queued = 0
         for user in subscribers:
             website = getattr(user, "website", "") or ""
             if user.email and website:
                 pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website)
-        logger.info(f"Queued monthly PDPA re-scans for {len(subscribers)} PDPA Monitor subscribers")
+                queued += 1
+        logger.info(
+            "[PdpaMonitor] anniversary=%d queued %d/%d rescans",
+            today_dom, queued, len(subscribers),
+        )
     finally:
         db.close()
 
@@ -2820,8 +2841,8 @@ def run_vendor_pro_quarterly_pdpa_rescans():
 @celery_app.task(name="run_compliance_evidence_monthly_refresh")
 def run_compliance_evidence_monthly_refresh():
     """
-    Beat task: runs on the 1st of every month.
-    Finds all Compliance Evidence subscribers and triggers their bundle fulfillment.
+    Anniversary-day cron — runs daily, processes Compliance Evidence subscribers
+    whose anniversary matches today's day-of-month.
 
     Reset semantics each cycle:
       - `signed_cover_sheet_uploaded` flipped back to False (last month's signed
@@ -2835,13 +2856,19 @@ def run_compliance_evidence_monthly_refresh():
     try:
         from app.core.models import User, Subscription as SubModel
         from app.workers.tasks import fulfill_bundle_task
+        today_dom = min(datetime.now(timezone.utc).day, 28)
 
         active_subs = db.query(SubModel).filter(
             SubModel.product_type.in_(["compliance_evidence_monthly", "compliance_evidence"]),
             SubModel.status.in_(("active", "trialing")),
         ).all()
         user_ids = {s.user_id for s in active_subs if s.user_id}
-        subscribers = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
+        subscribers = (
+            db.query(User)
+            .filter(User.id.in_(user_ids), User.subscription_anniversary_day == today_dom)
+            .all()
+            if user_ids else []
+        )
 
         eligible: list = []
         missing_website: list = []
@@ -3565,10 +3592,16 @@ def send_gebiz_alert_newsletter():
 
 
 @celery_app.task(name="send_tender_intelligence_digest")
-def send_tender_intelligence_digest():
+def send_tender_intelligence_digest(target_user_id: str | None = None):
     """
-    Monthly digest for Tender Intelligence subscribers — sector trend summary
-    over the past 30 days. Runs on the 1st of each month at 00:00 UTC.
+    Tender Intelligence digest — sector trend summary over the past 30 days.
+
+    Called two ways:
+      • From the daily anniversary cron with no args → sends to every active
+        subscriber whose anniversary day matches today.
+      • From `send_tender_intelligence_digest_for_user(user_id)` with
+        target_user_id set → sends to just that one user (for instant first-
+        cycle delivery on subscription activation).
 
     Only sends to users with an active subscription whose plan is in
     TENDER_INTELLIGENCE_PLAN_KEYS. Non-fatal — failures per recipient logged.
@@ -3715,17 +3748,24 @@ def send_tender_intelligence_digest():
         sector_rows = "".join(_row(k, v) for k, v in top_sectors)
         agency_rows = "".join(_row(k, v) for k, v in top_agencies)
 
-        subscribers = (
-            db.query(User)
-            .filter(
-                User.is_active == True,  # noqa: E712
-                func.lower(User.plan).in_([p.lower() for p in TENDER_INTELLIGENCE_PLAN_KEYS]),
-            )
-            .all()
+        sub_query = db.query(User).filter(
+            User.is_active == True,  # noqa: E712
+            func.lower(User.plan).in_([p.lower() for p in TENDER_INTELLIGENCE_PLAN_KEYS]),
         )
+        if target_user_id:
+            sub_query = sub_query.filter(User.id == target_user_id)
+        else:
+            # Anniversary-day filter for the daily cron path: only send to
+            # subscribers whose anniversary == today's day-of-month.
+            today_dom = min(datetime.now(timezone.utc).day, 28)
+            sub_query = sub_query.filter(User.subscription_anniversary_day == today_dom)
+        subscribers = sub_query.all()
 
         if not subscribers:
-            logger.info("[TenderIntelDigest] No active subscribers — skipping send")
+            logger.info(
+                "[TenderIntelDigest] No matching subscribers (target=%s) — skipping send",
+                target_user_id or "anniversary-cron",
+            )
             return
 
         email_svc = EmailService()
@@ -4100,7 +4140,19 @@ def send_monthly_intake_refresh_task(self):
     skipped = 0
     failed = 0
     try:
-        subs = db.query(User).filter(User.subscription_tier == "compliance_evidence").all()
+        # Anniversary-day cron: fire ~6 days before each subscriber's monthly
+        # cycle. Today's target_day = (today + 6) day-of-month, capped at 28.
+        target_day = ((_dt.utcnow() + _td(days=6)).day)
+        if target_day > 28:
+            target_day = 28
+        subs = (
+            db.query(User)
+            .filter(
+                User.subscription_tier == "compliance_evidence",
+                User.subscription_anniversary_day == target_day,
+            )
+            .all()
+        )
         cutoff = _dt.utcnow() - _td(days=14)
         for user in subs:
             try:
@@ -4235,3 +4287,133 @@ def send_monthly_intake_refresh_task(self):
     logger.info(
         "[MonthlyIntakeRefresh] complete · sent=%d skipped=%d failed=%d", sent, skipped, failed
     )
+
+
+# ── Per-user instant first-cycle delivery ────────────────────────────────────
+# Subscribers shouldn't wait up to 30 days for their first deliverable. These
+# wrappers fire the same logic each tier's monthly cron does, scoped to one
+# user. Called from stripe_webhook at subscription activation; also reused by
+# the anniversary-day cron filtering.
+
+def _load_user(user_id: str):
+    """Load a User row by id, returning None if not found. Shared helper for
+    the per-user task wrappers below."""
+    db = SessionLocal()
+    try:
+        from app.core.models import User as _U
+        return db.query(_U).filter(_U.id == user_id).first(), db
+    except Exception:
+        db.close()
+        return None, None
+
+
+@celery_app.task(bind=True, max_retries=2, name="run_vendor_active_check_for_user")
+def run_vendor_active_check_for_user(self, user_id: str):
+    """Per-user wrapper: queue Vendor Active's monthly health check."""
+    user, db = _load_user(user_id)
+    try:
+        if not user or not user.email:
+            logger.warning("[VendorActiveFirstCycle] no user/email for id=%s", user_id)
+            return
+        vendor_active_health_check_task.delay(str(user.id), user.email)
+    finally:
+        if db:
+            db.close()
+
+
+@celery_app.task(bind=True, max_retries=2, name="run_pdpa_monitor_cycle_for_user")
+def run_pdpa_monitor_cycle_for_user(self, user_id: str):
+    """Per-user wrapper: queue PDPA Monitor's monthly rescan."""
+    user, db = _load_user(user_id)
+    try:
+        if not user or not user.email:
+            logger.warning("[PdpaMonitorFirstCycle] no user/email for id=%s", user_id)
+            return
+        website = (getattr(user, "website", "") or "").strip()
+        if not website:
+            logger.warning(
+                "[PdpaMonitorFirstCycle] %s has no website — skipping initial scan, will run on next cycle after profile update",
+                user.email,
+            )
+            return
+        pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website)
+    finally:
+        if db:
+            db.close()
+
+
+@celery_app.task(bind=True, max_retries=2, name="run_vendor_pro_activation_for_user")
+def run_vendor_pro_activation_for_user(self, user_id: str):
+    """Per-user wrapper: Vendor Pro inherits Vendor Active's monthly health
+    check + an immediate first PDPA rescan (Vendor Pro's quarterly cycle
+    normally fires Jan/Apr/Jul/Oct; on activation we kick the first one now).
+    """
+    user, db = _load_user(user_id)
+    try:
+        if not user or not user.email:
+            logger.warning("[VendorProFirstCycle] no user/email for id=%s", user_id)
+            return
+        # Health check (same as Vendor Active)
+        vendor_active_health_check_task.delay(str(user.id), user.email)
+        # First PDPA rescan if a website is configured
+        website = (getattr(user, "website", "") or "").strip()
+        if website:
+            pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website)
+        else:
+            logger.warning(
+                "[VendorProFirstCycle] %s has no website — PDPA scan skipped; will fire after profile update",
+                user.email,
+            )
+    finally:
+        if db:
+            db.close()
+
+
+@celery_app.task(bind=True, max_retries=2, name="run_compliance_evidence_cycle_for_user")
+def run_compliance_evidence_cycle_for_user(self, user_id: str):
+    """Per-user wrapper: Compliance Evidence bundle regen for a single user."""
+    user, db = _load_user(user_id)
+    try:
+        if not user or not user.email:
+            logger.warning("[CEFirstCycle] no user/email for id=%s", user_id)
+            return
+        website = (getattr(user, "website", "") or "").strip()
+        if not website:
+            logger.warning(
+                "[CEFirstCycle] %s has no website — initial bundle deferred until profile update",
+                user.email,
+            )
+            return
+        # Reset cycle state same as the monthly refresh does
+        user.signed_cover_sheet_uploaded = False
+        user.compliance_evidence_credits = 1
+        user.pending_cover_sheet = True
+        db.commit()
+        fulfill_bundle_task.delay(
+            product_type="compliance_evidence_pack",
+            session_id=None,
+            customer_email=user.email,
+            metadata={
+                "company_name": getattr(user, "company", ""),
+                "vendor_url": website,
+                "subscription_cycle": True,
+            },
+            report_id=None,
+        )
+    finally:
+        if db:
+            db.close()
+
+
+@celery_app.task(bind=True, max_retries=2, name="send_tender_intelligence_digest_for_user")
+def send_tender_intelligence_digest_for_user(self, user_id: str):
+    """Per-user wrapper: send the Tender Intelligence digest immediately to one
+    subscriber. Delegates to the bulk task with `target_user_id` set so the
+    same code path handles aggregation + email; only one row gets sent.
+    """
+    try:
+        send_tender_intelligence_digest(target_user_id=user_id)
+    except Exception as e:
+        logger.warning(
+            "[TenderIntelFirstCycle] failed for user=%s: %s", user_id, e,
+        )
