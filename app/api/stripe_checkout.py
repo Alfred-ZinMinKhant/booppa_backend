@@ -545,13 +545,20 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         except Exception:
             pass  # never break checkout
 
-        if intake_data and hasattr(session, "id"):
+        # Cache pre-checkout intake (description + supplied facts) so the
+        # post-payment /rfp-intake/{id} form can pre-populate. Buyer still
+        # confirms/edits before final submission — cache is a UX nicety, not
+        # the source of truth for what gets anchored.
+        if hasattr(session, "id") and (intake_data or rfp_description):
             from app.core.cache import cache as cache_mod
 
             cache_mod.set(
                 cache_mod.cache_key(f"rfp_intake:{session.id}"),
-                intake_data,
-                ttl=86400,  # 24 hours
+                {
+                    "rfp_description": rfp_description or "",
+                    "intake_data": intake_data or {},
+                },
+                ttl=86400,  # 24 hours — well within the brief-completion window
             )
 
         return JSONResponse({"url": session.url})
@@ -693,26 +700,23 @@ async def checkout_verify(session_id: str | None = None):
             "rfp_accelerator", "enterprise_bid_kit", "compliance_evidence_pack",
         }
         # `pending_rfp_intake_id` → there's an outstanding brief; show the CTA.
-        # `brief_satisfied` → we have positive evidence the brief is taken care of
-        # (kit already in result cache, brief collected at checkout via
-        # rfp_description metadata, or a submitted PendingRfpIntake exists).
-        # The frontend only shows "Generating…" when brief_satisfied is True;
-        # otherwise it must surface the brief CTA so we never claim work is in
-        # progress that can't actually be in progress.
+        # `brief_satisfied` → positive evidence the brief is taken care of
+        # (kit already in result cache, or a submitted PendingRfpIntake exists).
+        # The frontend only transitions to "Generating…" when brief_satisfied
+        # is True. The webhook now ALWAYS defers RFP fulfillment to /rfp-intake,
+        # so checkout-time rfp_description metadata no longer counts as
+        # satisfaction — the buyer must complete the brief on the intake page.
         pending_rfp_intake_id = None
         brief_satisfied = not requires_brief
         if requires_brief and succeeded:
-            # (a) Brief collected at checkout — fulfill_rfp_task was queued.
-            if isinstance(metadata, dict) and (metadata.get("rfp_description") or "").strip():
-                brief_satisfied = True
-            # (b) Kit already cached → generation is genuinely in flight or done.
-            if not brief_satisfied:
-                try:
-                    from app.core.cache import cache as _cache
-                    if _cache.get(_cache.cache_key(f"rfp_result:{session_id}")):
-                        brief_satisfied = True
-                except Exception as e:
-                    logger.warning("[checkout/verify] rfp_result cache probe failed: %s", e)
+            # Kit already cached → buyer already submitted the brief in an
+            # earlier session and we're polling for the completed kit.
+            try:
+                from app.core.cache import cache as _cache
+                if _cache.get(_cache.cache_key(f"rfp_result:{session_id}")):
+                    brief_satisfied = True
+            except Exception as e:
+                logger.warning("[checkout/verify] rfp_result cache probe failed: %s", e)
             # (c) PendingRfpIntake lookup by buyer email. Lazily create a row
             # when the webhook either lost the race or silently failed — better
             # to give the buyer a working brief link than to spin forever.

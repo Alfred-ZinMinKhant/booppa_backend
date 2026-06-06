@@ -2507,59 +2507,21 @@ async def _stripe_webhook_impl(
 
             # RFP products are self-contained — no pre-existing Report record required
             if product_type in RFP_PRODUCT_TYPES:
+                # Workflow rule: every RFP purchase MUST go through the brief
+                # intake before the kit is generated. We never queue
+                # fulfill_rfp_task at webhook time anymore, even when checkout
+                # collected an rfp_description — the buyer re-confirms the
+                # facts on /rfp-intake/{id} so they own the inputs we anchor.
                 vendor_url = metadata.get("vendor_url", "")
                 company_name = metadata.get("company_name", "")
-                rfp_description = (metadata.get("rfp_description") or "").strip()
-                # No brief on file → defer to /rfp-intake (e.g. one-click /pricing buy).
-                if not rfp_description:
-                    await _defer_rfp_to_intake(
-                        rfp_product_type=product_type,
-                        bundle_source=product_type,
-                        customer_email=customer_email,
-                        vendor_url=vendor_url or None,
-                        company_name=company_name or None,
-                        session_id=session.get("id"),
-                    )
-                    return {"received": True}
-                if vendor_url and company_name:
-                    vendor_id = (
-                        metadata.get("vendor_id") or customer_email or "anonymous"
-                    )
-                    session_id = session.get("id")
-                    intake_dict = None
-                    if metadata.get("has_intake") == "1" and session_id:
-                        from app.core.cache import cache as cache_mod
-
-                        cached_intake = cache_mod.get(
-                            cache_mod.cache_key(f"rfp_intake:{session_id}")
-                        )
-                        if isinstance(cached_intake, dict):
-                            intake_dict = cached_intake
-                    from app.workers.tasks import fulfill_rfp_task
-
-                    fulfill_rfp_task.delay(
-                        product_type=product_type,
-                        vendor_id=vendor_id,
-                        vendor_email=customer_email or "",
-                        vendor_url=vendor_url,
-                        company_name=company_name,
-                        rfp_description=rfp_description,
-                        session_id=session.get("id"),
-                        intake_data=intake_dict,
-                    )
-                    logger.info(
-                        f"Queued RFP {product_type} fulfillment (no report_id) "
-                        f"vendor={vendor_id} url={vendor_url}"
-                    )
-                else:
-                    await _alert_payment_fulfillment_issue(
-                        reason="RFP fulfillment skipped: missing vendor_url or company_name (had description)",
-                        product_type=product_type,
-                        customer_email=customer_email,
-                        session_id=session.get("id"),
-                        event_id=event_id,
-                        extra={"metadata_keys": sorted(metadata.keys())},
-                    )
+                await _defer_rfp_to_intake(
+                    rfp_product_type=product_type,
+                    bundle_source=product_type,
+                    customer_email=customer_email,
+                    vendor_url=vendor_url or None,
+                    company_name=company_name or None,
+                    session_id=session.get("id"),
+                )
                 return {"received": True}
 
             # Standalone /pricing purchases that don't carry a pre-existing report_id:
