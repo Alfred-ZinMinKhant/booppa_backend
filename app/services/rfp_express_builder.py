@@ -176,8 +176,19 @@ class RFPExpressBuilder:
         if discrepancies:
             self.warnings.extend([f"[Discrepancy] {d}" for d in discrepancies])
 
-        # Tag which answers are grounded in real facts vs AI-assumed
-        fact_backed_keys = self._fact_backed_keys(intake, vendor_ctx, ssl_result, domain_rep, acra_live)
+        # Extract structured signals from the scraped website. Powers two
+        # things: (a) AI prompt — verified facts the LLM can name without
+        # tripping anti-fabrication rules; (b) per-answer verification source
+        # so the result page can show "Verified on your website" instead of
+        # the generic "AI-generated" label.
+        from app.services.evidence_enricher import extract_website_signals
+        website_signals = extract_website_signals(website_text)
+
+        # Compute per-answer verification — {source, evidence} dict per Q key
+        verification_map = self._compute_verification(
+            intake=intake, vendor_ctx=vendor_ctx, website_signals=website_signals,
+            ssl_result=ssl_result, domain_rep=domain_rep, acra_live=acra_live,
+        )
 
         # 2.5. Anchor report ID to blockchain
         tx_hash = await self._anchor_to_blockchain()
@@ -186,7 +197,7 @@ class RFPExpressBuilder:
         pdf_bytes = self._build_pdf(
             company_name, vendor_url, qa_answers, vendor_ctx, tx_hash, product_type,
             acra_live=acra_live, pdpc_result=pdpc_result, discrepancies=discrepancies,
-            intake=intake,
+            intake=intake, verification_map=verification_map,
         )
 
         # 4. Upload to S3
@@ -212,15 +223,18 @@ class RFPExpressBuilder:
         explorer_base = settings.POLYGON_EXPLORER_URL.rstrip("/")
 
         is_complete = product_type == "rfp_complete"
-        # Build labelled Q&A for frontend display, with confidence tagging
-        qa_display = [
-            {
+        # Build labelled Q&A for frontend display, with verification source +
+        # evidence per answer. `confidence` is derived from source for back-compat
+        # ("fact" when intake/external/website verified, "generated" otherwise).
+        qa_display = []
+        for k, v in qa_answers.items():
+            vinfo = verification_map.get(k) or {"source": "ai_drafted", "evidence": []}
+            qa_display.append({
                 "question": self._q_label(k),
                 "answer": v,
-                "confidence": "fact" if k in fact_backed_keys else "generated",
-            }
-            for k, v in qa_answers.items()
-        ]
+                "confidence": "fact" if vinfo["source"] != "ai_drafted" else "generated",
+                "verification": vinfo,
+            })
 
         return {
             "success":        True,
@@ -555,6 +569,63 @@ class RFPExpressBuilder:
                 external_section = "Verified external data:\n" + "\n".join(external_facts)
                 facts_section = "\n\n".join(filter(None, [facts_section, external_section]))
 
+            # Verified from the buyer's own website / privacy policy. These are
+            # safe for the LLM to name in answers because they're already
+            # public — saying "ISO 27001 certified" matches what the buyer's
+            # customers can already see. Without this section, the
+            # anti-fabrication prompt blocks the LLM from using these even
+            # when they're true and publicly stated.
+            try:
+                from app.services.evidence_enricher import extract_website_signals as _ews
+                ws_signals = _ews(website_text)
+            except Exception:
+                ws_signals = {"available": False}
+
+            verified_site_facts: list[str] = []
+            if ws_signals.get("iso_27001_mentioned"):
+                yr = ws_signals.get("iso_27001_year")
+                verified_site_facts.append(f"- ISO 27001{':' + yr if yr else ''} certification is publicly referenced on the company's own website")
+            if ws_signals.get("iso_27017_mentioned"):
+                verified_site_facts.append("- ISO 27017 referenced on the company's website")
+            if ws_signals.get("iso_27018_mentioned"):
+                verified_site_facts.append("- ISO 27018 referenced on the company's website")
+            if ws_signals.get("iso_27701_mentioned"):
+                verified_site_facts.append("- ISO 27701 referenced on the company's website")
+            if ws_signals.get("soc_2_mentioned"):
+                verified_site_facts.append("- SOC 2 referenced on the company's website")
+            if ws_signals.get("pci_dss_mentioned"):
+                verified_site_facts.append("- PCI DSS referenced on the company's website")
+            if ws_signals.get("aes_mentioned"):
+                verified_site_facts.append("- Encryption with AES is referenced on the company's website")
+            if ws_signals.get("tls_mentioned"):
+                verified_site_facts.append("- TLS is referenced on the company's website")
+            if ws_signals.get("singapore_residency_mentioned"):
+                verified_site_facts.append("- Singapore data residency is referenced on the company's website")
+            if ws_signals.get("non_sg_regions_mentioned"):
+                verified_site_facts.append(
+                    f"- Non-Singapore regions referenced on the company's website: {', '.join(ws_signals['non_sg_regions_mentioned'])}"
+                )
+            for provider_key, label in [("aws_mentioned", "AWS"), ("azure_mentioned", "Azure"),
+                                         ("gcp_mentioned", "GCP"), ("oci_mentioned", "Oracle Cloud")]:
+                if ws_signals.get(provider_key):
+                    verified_site_facts.append(f"- {label} referenced as a cloud provider on the company's website")
+            if ws_signals.get("dpa_mentioned"):
+                verified_site_facts.append("- Data Processing Agreement language is referenced on the company's website")
+            if ws_signals.get("subprocessors_mentioned"):
+                verified_site_facts.append("- Sub-processor policy referenced on the company's website")
+            if ws_signals.get("breach_policy_mentioned"):
+                verified_site_facts.append("- Breach/incident response policy referenced on the company's website")
+            if ws_signals.get("retention_policy_mentioned"):
+                verified_site_facts.append("- Data retention policy referenced on the company's website")
+
+            if verified_site_facts:
+                verified_section = (
+                    "Verified from the company's own published website "
+                    "(safe to name in answers — these are already public):\n"
+                    + "\n".join(verified_site_facts)
+                )
+                facts_section = "\n\n".join(filter(None, [facts_section, verified_section]))
+
             context_block = "\n\n".join(filter(None, [facts_section, website_section]))
 
             # Anti-fabrication prompt. Buyers were getting answers full of
@@ -869,6 +940,7 @@ class RFPExpressBuilder:
         pdpc_result: Dict | None = None,
         discrepancies: list | None = None,
         intake: dict | None = None,
+        verification_map: Dict[str, Dict[str, Any]] | None = None,
     ) -> bytes:
         try:
             from app.services.pdf_service import PDFService
@@ -898,8 +970,32 @@ class RFPExpressBuilder:
                 + "\n─────────────────────────────────────────────────────────────────────\n"
             )
 
+            # Verification label per answer — mirrors the web result page.
+            # Buyers reading the PDF see the same source attribution.
+            _SOURCE_LABEL = {
+                "intake":           "From your intake",
+                "website":          "Verified on your website",
+                "intake+website":   "Intake + website verified",
+                "intake+external":  "Intake + public records",
+                "acra":             "ACRA verified",
+                "ssl":              "SSL Labs verified",
+                "gebiz":            "GeBIZ supplier verified",
+                "pdpc":             "PDPC register checked",
+                "external":         "External evidence verified",
+                "ai_drafted":       "AI draft — review before submission",
+            }
+            verification_map = verification_map or {}
+
+            def _verif_line(key: str) -> str:
+                vinfo = verification_map.get(key) or {"source": "ai_drafted", "evidence": []}
+                src = vinfo.get("source") or "ai_drafted"
+                label = _SOURCE_LABEL.get(src, src)
+                ev = vinfo.get("evidence") or []
+                ev_part = (" · Evidence: " + " · ".join(ev[:3])) if ev else ""
+                return f"[Verification: {label}{ev_part}]"
+
             qa_section = "\n\n".join(
-                f"Q: {self._q_label(k)}\nA: {v}"
+                f"Q: {self._q_label(k)}\nA: {v}\n{_verif_line(k)}"
                 for k, v in qa_answers.items()
             )
 
@@ -1050,6 +1146,183 @@ class RFPExpressBuilder:
 
     def _q_label(self, key: str) -> str:
         return QUESTION_LABELS.get(key, key.replace("_", " ").title())
+
+    def _compute_verification(
+        self,
+        intake: dict,
+        vendor_ctx: dict,
+        website_signals: Dict[str, Any],
+        ssl_result: Dict | None = None,
+        domain_rep: Dict | None = None,
+        acra_live: Dict | None = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Compute {key: {source, evidence}} for each RFP question.
+
+        Source values used by the frontend to pick a badge label:
+          • 'intake'          → "From your intake"
+          • 'website'         → "Verified on your website"
+          • 'acra' / 'gebiz'  → "ACRA verified" / "GeBIZ supplier"
+          • 'ssl'             → "SSL Labs grade X"
+          • 'intake+website'  → highest trust — buyer + their published site agree
+          • 'intake+external' → buyer claim + ACRA/GeBIZ/etc.
+          • 'ai_drafted'      → no backing evidence (amber "AI draft" badge)
+
+        Each value carries an `evidence` list — human-readable strings the
+        result page surfaces on hover and the PDF prints under the answer.
+        Priority chain: if a question has multiple sources, the strongest
+        wins; intake+website is the highest combo.
+        """
+        intake = intake or {}
+        ws = website_signals or {}
+        ctx = vendor_ctx or {}
+        _empty = (None, "unknown", "")
+
+        out: Dict[str, Dict[str, Any]] = {}
+
+        def attach(key: str, src: str, evidence: str) -> None:
+            cur = out.get(key)
+            if not cur:
+                out[key] = {"source": src, "evidence": [evidence]}
+                return
+            cur["evidence"].append(evidence)
+            # Merge sources: prefer combined labels when intake meets an
+            # external/website source.
+            existing = cur["source"]
+            if src == existing:
+                return
+            paired = {existing, src}
+            if "intake" in paired and "website" in paired:
+                cur["source"] = "intake+website"
+            elif "intake" in paired and src in {"acra", "ssl", "gebiz", "pdpc", "external"}:
+                cur["source"] = "intake+external"
+            elif existing in {"acra", "ssl", "gebiz", "pdpc"} and src in {"acra", "ssl", "gebiz", "pdpc"}:
+                cur["source"] = "external"
+            # else keep the stronger of (intake > website > external)
+
+        # ── data_policy ─────────────────────────────────────────────────────
+        if ctx.get("uen") or intake.get("uen"):
+            attach("data_policy", "intake", f"Company UEN provided ({ctx.get('uen') or intake.get('uen')})")
+        if acra_live and acra_live.get("found"):
+            attach("data_policy", "acra", f"ACRA verified · {acra_live.get('registered_name') or 'live entity'}")
+        if ws.get("pdpa_mentioned"):
+            attach("data_policy", "website", "PDPA referenced on your website")
+        if ctx.get("privacy_policy_url"):
+            attach("data_policy", "website", f"Privacy policy published at {ctx['privacy_policy_url']}")
+
+        # ── dpo_appointed ──────────────────────────────────────────────────
+        if intake.get("dpo_appointed") not in _empty:
+            attach("dpo_appointed", "intake", f"Intake: dpo_appointed={intake['dpo_appointed']}")
+        if intake.get("dpo_name") not in _empty or intake.get("dpo_email") not in _empty:
+            attach("dpo_appointed", "intake",
+                   f"DPO contact supplied: {intake.get('dpo_name') or ''} {intake.get('dpo_email') or ''}".strip())
+        if ws.get("dpo_mentioned"):
+            attach("dpo_appointed", "website", "DPO referenced on your website")
+
+        # ── security_measures ──────────────────────────────────────────────
+        if ssl_result and ssl_result.get("grade"):
+            attach("security_measures", "ssl", f"SSL Labs grade {ssl_result['grade']}")
+        if ws.get("encryption_generic") or ws.get("aes_mentioned") or ws.get("tls_mentioned"):
+            terms = []
+            if ws.get("aes_mentioned"): terms.append("AES")
+            if ws.get("tls_mentioned"): terms.append("TLS")
+            if not terms: terms.append("encryption")
+            attach("security_measures", "website", f"Security language on your website: {', '.join(terms)}")
+        if ws.get("iso_27001_mentioned"):
+            attach("security_measures", "website", "ISO 27001 referenced on your website")
+
+        # ── breach_history ─────────────────────────────────────────────────
+        if intake.get("breach_history") not in _empty:
+            attach("breach_history", "intake", f"Intake: breach_history={intake['breach_history']}")
+        if domain_rep and domain_rep.get("checked"):
+            flagged = domain_rep.get("flagged")
+            attach("breach_history", "external",
+                   "VirusTotal: domain clean" if not flagged else f"VirusTotal: flagged by {domain_rep.get('malicious_votes', 0)} vendor(s)")
+        # No PDPC enforcement check is positive evidence for a no-breach claim
+        # only when we have a clean result, not an absence of data.
+
+        # ── third_party ────────────────────────────────────────────────────
+        if intake.get("key_processors") not in _empty:
+            attach("third_party", "intake", f"Key processors listed: {intake['key_processors']}")
+        if ws.get("subprocessors_mentioned"):
+            attach("third_party", "website", "Sub-processors referenced on your website / policy")
+        if ws.get("dpa_mentioned"):
+            attach("third_party", "website", "Data Processing Agreement referenced on your website")
+
+        # ── iso_certifications ─────────────────────────────────────────────
+        if intake.get("iso_status") not in _empty:
+            attach("iso_certifications", "intake", f"Intake: iso_status={intake['iso_status']}")
+        if intake.get("iso_cert_number") not in _empty:
+            attach("iso_certifications", "intake",
+                   f"ISO cert {intake['iso_cert_number']}" +
+                   (f" (exp {intake['iso_cert_expiry']})" if intake.get("iso_cert_expiry") else ""))
+        if ws.get("iso_27001_mentioned"):
+            year = ws.get("iso_27001_year")
+            attach("iso_certifications", "website",
+                   f"ISO 27001{':' + year if year else ''} referenced on your website")
+        if ws.get("soc_2_mentioned"):
+            attach("iso_certifications", "website", "SOC 2 referenced on your website")
+        if ws.get("iso_27701_mentioned"):
+            attach("iso_certifications", "website", "ISO 27701 referenced on your website")
+
+        # ── business_continuity ────────────────────────────────────────────
+        if intake.get("bcp_last_tested") not in _empty:
+            attach("business_continuity", "intake", f"BCP last tested: {intake['bcp_last_tested']}")
+
+        # ── staff_training ─────────────────────────────────────────────────
+        if intake.get("training_frequency") not in _empty:
+            attach("staff_training", "intake", f"Training frequency: {intake['training_frequency']}")
+
+        # ── access_controls — generally no direct evidence; skip unless intake supplied
+
+        # ── vulnerability_mgmt — same; intake-only when present
+        # ── encryption_standards ───────────────────────────────────────────
+        if ssl_result and ssl_result.get("grade"):
+            attach("encryption_standards", "ssl", f"SSL Labs grade {ssl_result['grade']}")
+        if ws.get("aes_mentioned") or ws.get("tls_mentioned"):
+            terms = []
+            if ws.get("aes_mentioned"): terms.append("AES")
+            if ws.get("tls_mentioned"): terms.append("TLS")
+            attach("encryption_standards", "website",
+                   f"{', '.join(terms)} mentioned on your website")
+
+        # ── audit_logging — intake-only
+
+        # ── incident_response ──────────────────────────────────────────────
+        if ws.get("breach_policy_mentioned"):
+            attach("incident_response", "website", "Incident response / breach policy referenced on your website")
+
+        # ── data_residency ─────────────────────────────────────────────────
+        if intake.get("data_hosting") not in _empty:
+            attach("data_residency", "intake", f"Intake hosting: {intake['data_hosting']}")
+        if intake.get("primary_cloud") not in _empty:
+            attach("data_residency", "intake", f"Primary cloud: {intake['primary_cloud']}")
+        if ws.get("singapore_residency_mentioned"):
+            attach("data_residency", "website", "Singapore data residency referenced on your website")
+        clouds = []
+        if ws.get("aws_mentioned"): clouds.append("AWS")
+        if ws.get("azure_mentioned"): clouds.append("Azure")
+        if ws.get("gcp_mentioned"): clouds.append("GCP")
+        if clouds:
+            attach("data_residency", "website", f"Cloud provider(s) named on your website: {', '.join(clouds)}")
+        # Hosting header inference is also evidence
+        if ctx.get("inferred_hosting_provider"):
+            region = f" ({ctx['inferred_hosting_region']})" if ctx.get("inferred_hosting_region") else ""
+            attach("data_residency", "external",
+                   f"HTTP headers infer hosting: {ctx['inferred_hosting_provider']}{region}")
+
+        # ── subcontracting ─────────────────────────────────────────────────
+        if intake.get("key_processors") not in _empty:
+            attach("subcontracting", "intake", f"Processors listed: {intake['key_processors']}")
+        if acra_live and acra_live.get("found"):
+            attach("subcontracting", "acra", "Entity verified on ACRA")
+        if ctx.get("gebiz_supplier"):
+            count = ctx.get("gebiz_contracts_count") or 0
+            attach("subcontracting", "gebiz",
+                   f"GeBIZ registered supplier · {count} prior government contract(s)" if count else "GeBIZ registered supplier")
+        if ws.get("subprocessors_mentioned"):
+            attach("subcontracting", "website", "Sub-processors policy referenced on your website")
+
+        return out
 
     def _fact_backed_keys(self, intake: dict, ctx: dict,
                           ssl_result: Dict | None = None,

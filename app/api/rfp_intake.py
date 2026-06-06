@@ -120,7 +120,18 @@ def submit_intake(
 ):
     """Submit the RFP brief and queue fulfill_rfp_task.
 
-    Body: { rfp_description: str (required), intake_data?: dict, sector?: str }
+    Body: {
+      rfp_description: str (required),
+      vendor_url: str (required if not on row or user profile),
+      company_name: str (required if not on row or user profile),
+      intake_data?: dict,
+      sector?: str,
+    }
+
+    vendor_url is mandatory because the kit generator scrapes it for
+    ISO/SOC mentions, encryption language, sub-processor lists, and other
+    signals that make answers fact-backed. Without it the kit can only
+    label answers AI-drafted.
     """
     user = _resolve_user(token, db)
     row = (
@@ -140,9 +151,32 @@ def submit_intake(
     intake_data = body.get("intake_data") if isinstance(body.get("intake_data"), dict) else None
     sector = body.get("sector")
 
-    vendor_url = row.vendor_url or (getattr(user, "website", "") or "")
-    company_name = row.company_name or (getattr(user, "company", "") or "")
+    # Buyer-supplied vendor_url / company_name take precedence (they may have
+    # changed since the row was created). Fall back to the row, then to the
+    # User profile. If we still have nothing, refuse — we can't generate a
+    # verified kit without a website to scan.
+    vendor_url = (
+        (body.get("vendor_url") or "").strip()
+        or row.vendor_url
+        or (getattr(user, "website", "") or "")
+    ).strip()
+    company_name = (
+        (body.get("company_name") or "").strip()
+        or row.company_name
+        or (getattr(user, "company", "") or "")
+    ).strip()
+    if not vendor_url:
+        raise HTTPException(
+            status_code=422,
+            detail="vendor_url is required — we need your public website to verify your compliance claims.",
+        )
+    if not company_name:
+        raise HTTPException(status_code=422, detail="company_name is required.")
 
+    # Persist on the row so the worker reads the latest values (the row's
+    # original fields may be stale if the buyer changed them in the form).
+    row.vendor_url = vendor_url
+    row.company_name = company_name
     row.status = "submitted"
     row.submitted_at = datetime.utcnow()
     db.commit()
