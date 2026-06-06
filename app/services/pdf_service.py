@@ -326,7 +326,12 @@ class PDFService:
     # ── Layout helpers ─────────────────────────────────────────────────────────
 
     def _section_header(self, title: str):
-        """Emerald left-bar + label on light background."""
+        """Emerald left-bar + label on light background.
+
+        `keepWithNext` is set on the returned Table so ReportLab refuses to
+        leave the title at the bottom of a page on its own — the next flowable
+        rides along, which fixes orphan-header glitches in the audit report.
+        """
         cell = Paragraph(title.upper(), self._s["SecHead"])
         t = Table([[cell]], colWidths=[CONTENT_W])
         t.setStyle(
@@ -342,6 +347,7 @@ class PDFService:
                 ]
             )
         )
+        t.keepWithNext = 1
         return t
 
     def _meta_table(self, rows: list[tuple[str, str]]) -> Table:
@@ -1572,6 +1578,11 @@ class PDFService:
                 story.extend(self._assessment_conducted_by_section(report_data))
 
                 # ── Section 7: Blockchain Evidence Anchoring (Changes 3 & 4) ──
+                # Explicit break: the blockchain section is a distinct
+                # evidentiary block — verify links, hash table, anchoring
+                # explainer — and reads better on a fresh page than wedged
+                # under the short "Assessment Conducted By" block.
+                story.append(_PageBreak())
                 story.append(self._section_header("7. Blockchain Evidence Anchoring"))
                 story.append(Spacer(1, 6))
                 if findings:
@@ -1635,6 +1646,10 @@ class PDFService:
                 story.append(Spacer(1, 0.1 * inch))
 
                 # ── Section 10: Legal References ───────────────────────────────
+                # Explicit break: legal refs close out the report; keep them on
+                # their own page so they don't get split off a multi-line
+                # timeline table above.
+                story.append(_PageBreak())
                 story.append(self._section_header("10. Legal References"))
                 story.append(Spacer(1, 6))
                 refs = (structured.get("legal_references") or []) or self._default_legal_references(findings)
