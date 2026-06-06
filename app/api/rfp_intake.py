@@ -84,6 +84,10 @@ def get_intake(
         "vendor_url": row.vendor_url,
         "company_name": row.company_name,
         "status": row.status,
+        # session_id lets the intake page route back to /rfp-acceleration/result
+        # after submit so the buyer sees the kit polling/result, not just a
+        # "go to dashboard" dead end.
+        "session_id": row.session_id,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "submitted_at": row.submitted_at.isoformat() if row.submitted_at else None,
     }
@@ -147,4 +151,8 @@ def submit_intake(
         except Exception:
             pass
 
-    return {"status": "queued", "intake_id": str(row.id)}
+    return {
+        "status": "queued",
+        "intake_id": str(row.id),
+        "session_id": row.session_id,
+    }

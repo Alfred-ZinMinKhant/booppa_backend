@@ -723,27 +723,47 @@ async def checkout_verify(session_id: str | None = None):
                     try:
                         _user = _db.query(_U).filter(_U.email == customer_email).first()
                         if _user:
-                            _intake = (
+                            # Priority 1: a row tied to THIS session. Authoritative
+                            # for the current purchase even if the user has older
+                            # submitted intakes from prior cycles (subscribers).
+                            session_intake = (
                                 _db.query(PendingRfpIntake)
-                                .filter(PendingRfpIntake.user_id == _user.id)
+                                .filter(
+                                    PendingRfpIntake.user_id == _user.id,
+                                    PendingRfpIntake.session_id == session_id,
+                                )
                                 .order_by(PendingRfpIntake.created_at.desc())
                                 .first()
                             )
-                            if _intake and _intake.status == "submitted":
+                            # Priority 2: the latest PENDING row for the user.
+                            # We had a bug where "latest regardless of status"
+                            # let an older 'submitted' row from a prior cycle
+                            # override the current pending one — keep them in
+                            # separate queries so each state has a clear winner.
+                            latest_pending = session_intake if (session_intake and session_intake.status == "pending") else (
+                                _db.query(PendingRfpIntake)
+                                .filter(
+                                    PendingRfpIntake.user_id == _user.id,
+                                    PendingRfpIntake.status == "pending",
+                                )
+                                .order_by(PendingRfpIntake.created_at.desc())
+                                .first()
+                            )
+                            if latest_pending:
+                                pending_rfp_intake_id = str(latest_pending.id)
+                            elif session_intake and session_intake.status == "submitted":
+                                # This exact session's brief was already filed.
                                 brief_satisfied = True
-                            elif _intake and _intake.status == "pending":
-                                pending_rfp_intake_id = str(_intake.id)
-                            elif not _intake and not brief_satisfied and product_type_resolved in {"rfp_complete", "rfp_express"}:
+                            elif not brief_satisfied and product_type_resolved in {"rfp_complete", "rfp_express"}:
                                 # Webhook race / failure recovery: create the row
                                 # ourselves so the buyer has a brief link to follow.
-                                rfp_pt = product_type_resolved
                                 resolved_url = (metadata or {}).get("vendor_url") or (getattr(_user, "website", "") or "") or None
                                 resolved_company = (metadata or {}).get("company_name") or (getattr(_user, "company", "") or "") or None
                                 _new = PendingRfpIntake(
                                     user_id=_user.id,
                                     session_id=session_id,
-                                    rfp_product_type=rfp_pt,
-                                    bundle_source=rfp_pt,
+                                    rfp_product_type=product_type_resolved,
+                                    bundle_source=product_type_resolved,
                                     vendor_url=resolved_url,
                                     company_name=resolved_company,
                                     status="pending",
@@ -756,6 +776,15 @@ async def checkout_verify(session_id: str | None = None):
                                     "[checkout/verify] Recovered missing PendingRfpIntake for %s session=%s id=%s",
                                     customer_email, session_id, pending_rfp_intake_id,
                                 )
+                            logger.info(
+                                "[checkout/verify] resolved email=%s session=%s pending_id=%s brief_satisfied=%s",
+                                customer_email, session_id, pending_rfp_intake_id, brief_satisfied,
+                            )
+                        else:
+                            logger.warning(
+                                "[checkout/verify] No User row for customer_email=%s session=%s — verify will not find intake",
+                                customer_email, session_id,
+                            )
                     finally:
                         _db.close()
                 except Exception as e:
@@ -785,7 +814,11 @@ async def checkout_verify(session_id: str | None = None):
                 "requires_brief": requires_brief,
                 "brief_satisfied": brief_satisfied,
                 "pending_rfp_intake_id": pending_rfp_intake_id,
-            }
+            },
+            # The pending-intake state flips as the webhook fires. Any
+            # intermediate cache would serve a stale "no intake" response
+            # past that race and the result page would sit on "Generating".
+            headers={"Cache-Control": "no-store, max-age=0"},
         )
     except stripe.error.InvalidRequestError as e:
         logger.exception("Stripe API error during session retrieve")
