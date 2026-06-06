@@ -685,11 +685,29 @@ async def checkout_verify(session_id: str | None = None):
         ):
             succeeded = True
 
-        product_type_resolved = (
-            (metadata or {}).get("product_type")
-            if isinstance(metadata, dict)
-            else None
-        )
+        # Robust metadata read — Stripe SDK returns metadata as a `StripeObject`
+        # (dict-like but NOT `isinstance(dict)`), so a plain isinstance gate
+        # silently dropped product_type and broke the brief CTA. Try both
+        # access patterns so we work whether the SDK returns dict or StripeObject.
+        def _meta_get(key: str) -> str | None:
+            if metadata is None:
+                return None
+            try:
+                if hasattr(metadata, "get"):
+                    v = metadata.get(key)
+                    if v is not None:
+                        return v
+            except Exception:
+                pass
+            try:
+                v = getattr(metadata, key, None)
+                if v is not None:
+                    return v
+            except Exception:
+                pass
+            return None
+
+        product_type_resolved = _meta_get("product_type")
 
         # RFP-bearing purchases defer kit generation until the buyer submits a
         # brief. The post-checkout page needs to know whether to show the
@@ -699,27 +717,28 @@ async def checkout_verify(session_id: str | None = None):
             "rfp_complete", "rfp_express",
             "rfp_accelerator", "enterprise_bid_kit", "compliance_evidence_pack",
         }
-        # `pending_rfp_intake_id` → there's an outstanding brief; show the CTA.
-        # `brief_satisfied` → positive evidence the brief is taken care of
-        # (kit already in result cache, or a submitted PendingRfpIntake exists).
-        # The frontend only transitions to "Generating…" when brief_satisfied
-        # is True. The webhook now ALWAYS defers RFP fulfillment to /rfp-intake,
-        # so checkout-time rfp_description metadata no longer counts as
-        # satisfaction — the buyer must complete the brief on the intake page.
         pending_rfp_intake_id = None
+        # `brief_satisfied` starts True for non-RFP products; gets cleared if
+        # we discover a pending intake row for this session below. The intake
+        # lookup runs unconditionally so a broken/missing product_type in
+        # Stripe metadata cannot accidentally hide the brief CTA.
         brief_satisfied = not requires_brief
-        if requires_brief and succeeded:
-            # Kit already cached → buyer already submitted the brief in an
-            # earlier session and we're polling for the completed kit.
+
+        if succeeded:
+            # Cache hit → kit generation is in flight or done. This only
+            # happens after the buyer submitted the brief.
             try:
                 from app.core.cache import cache as _cache
                 if _cache.get(_cache.cache_key(f"rfp_result:{session_id}")):
                     brief_satisfied = True
             except Exception as e:
                 logger.warning("[checkout/verify] rfp_result cache probe failed: %s", e)
-            # (c) PendingRfpIntake lookup by buyer email. Lazily create a row
-            # when the webhook either lost the race or silently failed — better
-            # to give the buyer a working brief link than to spin forever.
+
+            # Always look up PendingRfpIntake by session_id. If we find a
+            # pending row, surface it regardless of what product_type metadata
+            # said — the row's existence is positive proof the webhook flagged
+            # this purchase for an intake step. Same shape works for both the
+            # metadata-intact path AND the metadata-stripped fallback.
             if customer_email:
                 try:
                     from app.core.db import SessionLocal
@@ -729,9 +748,8 @@ async def checkout_verify(session_id: str | None = None):
                     try:
                         _user = _db.query(_U).filter(_U.email == customer_email).first()
                         if _user:
-                            # Priority 1: a row tied to THIS session. Authoritative
-                            # for the current purchase even if the user has older
-                            # submitted intakes from prior cycles (subscribers).
+                            # Priority 1: a row tied to THIS session — authoritative
+                            # for the current purchase, never overridden by prior cycles.
                             session_intake = (
                                 _db.query(PendingRfpIntake)
                                 .filter(
@@ -741,30 +759,22 @@ async def checkout_verify(session_id: str | None = None):
                                 .order_by(PendingRfpIntake.created_at.desc())
                                 .first()
                             )
-                            # Priority 2: the latest PENDING row for the user.
-                            # We had a bug where "latest regardless of status"
-                            # let an older 'submitted' row from a prior cycle
-                            # override the current pending one — keep them in
-                            # separate queries so each state has a clear winner.
-                            latest_pending = session_intake if (session_intake and session_intake.status == "pending") else (
-                                _db.query(PendingRfpIntake)
-                                .filter(
-                                    PendingRfpIntake.user_id == _user.id,
-                                    PendingRfpIntake.status == "pending",
-                                )
-                                .order_by(PendingRfpIntake.created_at.desc())
-                                .first()
-                            )
-                            if latest_pending:
-                                pending_rfp_intake_id = str(latest_pending.id)
+                            if session_intake and session_intake.status == "pending":
+                                # Brief still owed for THIS purchase — show CTA.
+                                pending_rfp_intake_id = str(session_intake.id)
+                                brief_satisfied = False
+                                # Backfill requires_brief so frontend logic is consistent
+                                # when Stripe stripped product_type from metadata.
+                                requires_brief = True
                             elif session_intake and session_intake.status == "submitted":
-                                # This exact session's brief was already filed.
+                                # Brief already filed for THIS session.
                                 brief_satisfied = True
-                            elif not brief_satisfied and product_type_resolved in {"rfp_complete", "rfp_express"}:
-                                # Webhook race / failure recovery: create the row
-                                # ourselves so the buyer has a brief link to follow.
-                                resolved_url = (metadata or {}).get("vendor_url") or (getattr(_user, "website", "") or "") or None
-                                resolved_company = (metadata or {}).get("company_name") or (getattr(_user, "company", "") or "") or None
+                                requires_brief = True
+                            elif requires_brief and product_type_resolved in {"rfp_complete", "rfp_express"}:
+                                # No session row yet — webhook race or failure.
+                                # Lazy-create so the buyer has a brief link to follow.
+                                resolved_url = _meta_get("vendor_url") or (getattr(_user, "website", "") or "") or None
+                                resolved_company = _meta_get("company_name") or (getattr(_user, "company", "") or "") or None
                                 _new = PendingRfpIntake(
                                     user_id=_user.id,
                                     session_id=session_id,
@@ -777,14 +787,16 @@ async def checkout_verify(session_id: str | None = None):
                                 _db.add(_new)
                                 _db.flush()
                                 pending_rfp_intake_id = str(_new.id)
+                                brief_satisfied = False
                                 _db.commit()
                                 logger.warning(
                                     "[checkout/verify] Recovered missing PendingRfpIntake for %s session=%s id=%s",
                                     customer_email, session_id, pending_rfp_intake_id,
                                 )
                             logger.info(
-                                "[checkout/verify] resolved email=%s session=%s pending_id=%s brief_satisfied=%s",
-                                customer_email, session_id, pending_rfp_intake_id, brief_satisfied,
+                                "[checkout/verify] resolved email=%s session=%s product=%s requires_brief=%s pending_id=%s brief_satisfied=%s",
+                                customer_email, session_id, product_type_resolved,
+                                requires_brief, pending_rfp_intake_id, brief_satisfied,
                             )
                         else:
                             logger.warning(
@@ -806,12 +818,7 @@ async def checkout_verify(session_id: str | None = None):
                     else getattr(session, "id", None)
                 ),
                 "product_type": product_type_resolved,
-                "report_id": (
-                    (metadata or {}).get("report_id")
-                    if isinstance(metadata, dict)
-                    else None
-                )
-                or (
+                "report_id": _meta_get("report_id") or (
                     session.get("client_reference_id")
                     if hasattr(session, "get")
                     else getattr(session, "client_reference_id", None)
