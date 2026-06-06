@@ -557,14 +557,46 @@ class RFPExpressBuilder:
 
             context_block = "\n\n".join(filter(None, [facts_section, website_section]))
 
+            # Anti-fabrication prompt. Buyers were getting answers full of
+            # specifics the LLM invented — "ISO 27001:2022 certified", "AES-256",
+            # "99.99% uptime", "patched within 24 hours", "data in Singapore on
+            # AWS and Azure". If submitted unread to a GeBIZ tender, those are
+            # false statements in a government procurement context. Three rules:
+            #   1. Anchor every specific to a known fact (intake / website /
+            #      external data). No fact → no specific.
+            #   2. When a fact is missing, write a "[Verify: ...]" placeholder.
+            #      The buyer fills it in. The reviewer SEES the placeholder.
+            #   3. Answer the EXACT question asked (matters for windows like
+            #      "24 months" — the AI was answering "36 months" on intake-empty
+            #      runs because nothing constrained it).
             prompt = (
-                f"You are generating RFP compliance answers for {ctx['company_name']}"
+                f"You are drafting RFP compliance answers for {ctx['company_name']}"
                 f"{sector_hint} (website: {ctx['vendor_url']}).{rfp_hint}\n\n"
                 + (f"{context_block}\n\n" if context_block else "")
-                + f"Write concise, professional answers for a Singapore government procurement RFP. "
-                f"Each answer should be 1-3 sentences. Where specific facts above contradict a generic "
-                f"assumption, use the facts. Return ONLY a JSON object with these keys:\n"
-                f"{keys_list}."
+                + "Write concise, professional answers for a Singapore government procurement RFP. "
+                "Each answer must be 1-3 sentences.\n\n"
+                "ABSOLUTE RULES — do not break these even if the answer reads less polished:\n\n"
+                "1. NEVER invent specifics. Do not name any of the following unless the exact value "
+                "appears in the facts above:\n"
+                "   • Certifications or standards (e.g. ISO 27001, ISO 27701, SOC 2 — including versions/years)\n"
+                "   • Encryption algorithms or protocols (e.g. AES-256, TLS 1.2/1.3, RSA-2048)\n"
+                "   • Specific timeframes (e.g. '24 hours', 'within 7 days', 'weekly', 'quarterly')\n"
+                "   • Uptime SLAs or percentages (e.g. '99.99%')\n"
+                "   • Cloud providers, regions, or vendor names (e.g. AWS, Azure, GCP, Singapore region)\n"
+                "   • Specific personnel names, contact emails, or DPO names\n"
+                "   • Retention periods, audit log durations, or breach-notification windows\n"
+                "2. When a specific would normally go but the fact is missing, write a bracketed "
+                "placeholder the buyer must fill in: '[Verify: encryption standard]', "
+                "'[Verify: ISO 27001 cert number and expiry]', '[Verify: BCP last test date]', "
+                "'[Verify: SLA target]'. The placeholder is REQUIRED, not optional.\n"
+                "3. Answer the EXACT question asked. If the question asks about '24 months', do NOT "
+                "expand the window to 36 months. If the question asks 'Yes/No', begin with Yes or No.\n"
+                "4. Do NOT cite legal obligations with specific numbers unless they are correct under "
+                "Singapore PDPA. Breach notification to PDPC is 'within 3 calendar days' (PDPA §26D) — "
+                "do NOT write '1 hour' or 'immediately'. The recipient is PDPC, not 'the government'.\n"
+                "5. Do NOT speculate about technical architecture details (blockchain nodes, smart "
+                "contract audits, threat monitoring) unless they appear verbatim in the facts above.\n\n"
+                f"Return ONLY a JSON object with these exact keys:\n{keys_list}."
             )
 
             response = await ai._call_deepseek([{"role": "user", "content": prompt}])
@@ -619,11 +651,17 @@ class RFPExpressBuilder:
     def _validate_answers_against_intake(self, qa_answers: Dict[str, str], intake: dict) -> list[str]:
         """Cross-check AI-generated answers against buyer-supplied intake facts.
 
-        LLMs sometimes invent specifics ("DPO is Mary Tan", "ISO 27001 certified",
-        "data hosted in Singapore") even when the intake says otherwise. This
-        catches the most common mismatches so the buyer can fix them before
-        submitting to a tender — submitting AI-fabricated claims to GeBIZ is a
-        legal/reputational risk.
+        Two failure modes covered:
+          (a) Contradiction — intake says X, answer says NOT X (e.g. intake
+              dpo_appointed='no' but answer asserts a DPO exists).
+          (b) Fabrication — intake has no value for X, but answer asserts a
+              specific value anyway (e.g. intake silent on ISO 27001, answer
+              claims "ISO 27001:2022 certified"). Submitting fabricated
+              specifics to a GeBIZ tender is a legal risk under the Government
+              Procurement Act.
+
+        The original prompt is the first defence (see _generate_qa). This is the
+        belt-and-suspenders pass that catches what the LLM lets through.
 
         Returns a list of human-readable discrepancy strings (may be empty).
         """
@@ -688,6 +726,109 @@ class RFPExpressBuilder:
                 out.append(
                     f"Intake declares data_hosting='{hosting}' (non-SG), but the answer says no cross-border transfer. "
                     "Reconcile before submission."
+                )
+
+        # ── Fabricated specifics (fires when intake has no backing fact) ────
+        # These patterns catch the LLM inventing certifications, encryption
+        # standards, uptime SLAs, timeframes, cloud providers etc. when the
+        # intake didn't supply them. We *don't* flag if the buyer actually
+        # supplied a corresponding fact — they earned the right to that claim.
+
+        def claims(key: str, pattern: str) -> bool:
+            v = qa_answers.get(key)
+            return bool(isinstance(v, str) and re.search(pattern, v, re.IGNORECASE))
+
+        # ISO / SOC 2 / equivalent — flag specific certs/years when intake silent
+        if iso_state in {"", "unknown", "none", "pursuing", "in_progress"}:
+            for key in ("iso_certifications", "security_measures", "data_policy"):
+                if claims(key, r"\biso[\s-]?2700[17](?::\s?\d{4})?\b|\bsoc[\s-]?2\b|\biso[\s-]?9001\b"):
+                    out.append(
+                        f"The '{key}' answer names a specific certification (ISO 27001 / SOC 2 / similar) but "
+                        "the intake did not confirm any. Remove the certification claim or supply the "
+                        "intake.iso_status + iso_cert_number to back it up."
+                    )
+                    break
+
+        # Encryption algorithms — flag AES-N / TLS X.Y / RSA-N when intake silent
+        if not (intake.get("encryption_standards_known") or intake.get("encryption_at_rest") or intake.get("encryption_in_transit")):
+            for key in ("encryption_standards", "security_measures", "access_controls"):
+                if claims(key, r"\baes[-\s]?(?:128|192|256)\b|\btls\s?1\.\d\b|\brsa[-\s]?\d{3,4}\b"):
+                    out.append(
+                        f"The '{key}' answer names a specific encryption standard (AES-N / TLS X.Y / RSA-N) "
+                        "but the intake did not declare one. Confirm the actual standard used or replace "
+                        "the specific with a [Verify: encryption standard] placeholder."
+                    )
+                    break
+
+        # Uptime SLAs — flag 99.9...% when intake silent
+        if not intake.get("uptime_sla"):
+            for key in ("business_continuity", "security_measures", "incident_response"):
+                if claims(key, r"\b99\.9{1,3}\s?%|\bfive[- ]nines?\b|\bfour[- ]nines?\b"):
+                    out.append(
+                        f"The '{key}' answer commits to a specific uptime SLA (99.9...% / five-nines) "
+                        "but the intake did not declare one. Remove the percentage or supply the "
+                        "actual SLA via intake."
+                    )
+                    break
+
+        # Specific timeframes/cadences — flag "weekly / daily / monthly / N hours / N days"
+        # in answers that should be backed by intake but weren't supplied.
+        cadence_pat = r"\b(?:weekly|daily|monthly|quarterly|semi[- ]annually|annually|bi[- ]monthly)\b|\bwithin\s+\d+\s+(?:minute|hour|day|week|month)s?\b|\bevery\s+\d+\s+(?:minute|hour|day|week|month)s?\b"
+        if not intake.get("training_frequency") and claims("staff_training", cadence_pat):
+            out.append(
+                "The 'staff_training' answer commits to a specific cadence but the intake did not "
+                "declare one. Edit to your actual training schedule or replace with a [Verify: cadence] placeholder."
+            )
+        if not intake.get("bcp_last_tested") and claims("business_continuity", r"\btested\s+(?:weekly|daily|monthly|quarterly|semi[- ]annually|annually)\b"):
+            out.append(
+                "The 'business_continuity' answer commits to a BCP test cadence but the intake did "
+                "not declare when the BCP was last tested. Confirm the actual cadence or use a placeholder."
+            )
+        # Vulnerability management — patch-SLA and scan-cadence specifics
+        if claims("vulnerability_mgmt", r"\bpatched?\s+within\s+\d+\s+(?:hour|day)s?\b|\b(?:weekly|daily|monthly|quarterly)\s+(?:vulnerability scans?|penetration tests?)\b|\bwithin\s+\d+\s+(?:hour|day)s?\s+of\b"):
+            out.append(
+                "The 'vulnerability_mgmt' answer names a specific patch SLA or scan cadence. "
+                "Confirm against your actual policy or replace with [Verify: patch SLA] / "
+                "[Verify: scan cadence] placeholders."
+            )
+        # Audit log retention — flag specific N-year / N-month retention
+        if claims("audit_logging", r"\bretain(?:ed)?\s+(?:for\s+)?(?:a\s+minimum\s+of\s+)?\d+\s+(?:months?|years?)\b|\b\d+[- ](?:month|year)\s+retention\b"):
+            out.append(
+                "The 'audit_logging' answer commits to a specific log retention period. "
+                "Confirm against policy or replace with [Verify: retention period]."
+            )
+        # Breach-window mismatch in the answer itself (e.g. AI answered "36 months"
+        # when the question asks about 24 months).
+        if claims("breach_history", r"\bpast\s+(?:3[6-9]|[4-9]\d|\d{3,})\s+months?\b|\b(?:3|4|5)\s+years?\b"):
+            out.append(
+                "The 'breach_history' answer references a window longer than the 24 months the "
+                "question asks about. Re-answer for the 24-month window only."
+            )
+
+        # Cloud providers — flag AWS / Azure / GCP / OCI when intake silent
+        if not intake.get("primary_cloud"):
+            for key in ("data_residency", "security_measures", "encryption_standards"):
+                if claims(key, r"\baws\b|\bamazon web services\b|\bazure\b|\bmicrosoft azure\b|\bgcp\b|\bgoogle cloud\b|\boracle cloud\b|\boci\b"):
+                    out.append(
+                        f"The '{key}' answer names a specific cloud provider (AWS/Azure/GCP/etc.) but "
+                        "the intake did not declare one. Confirm the actual provider or use a placeholder."
+                    )
+                    break
+
+        # PDPC breach-notification window — must be 3 calendar days (PDPA §26D),
+        # NOT "1 hour" / "immediately" / "24 hours" / "to the government".
+        ir_ans = lower("incident_response")
+        if ir_ans:
+            if re.search(r"\bwithin\s+1\s+hour\b|\bwithin\s+24\s+hours?\b|\bimmediately\s+(?:notify|inform)\b", ir_ans):
+                out.append(
+                    "The 'incident_response' answer commits to a breach-notification window that does "
+                    "not match PDPA §26D (3 calendar days for notifiable breaches). Correct the window."
+                )
+            if re.search(r"\bnotify(?:ing)?\s+the\s+government\b|\binform(?:ing)?\s+the\s+government\b", ir_ans):
+                out.append(
+                    "The 'incident_response' answer says breaches are notified to 'the government'. "
+                    "Under PDPA §26D, notification is to the PDPC (Personal Data Protection Commission), "
+                    "not 'the government'. Correct the recipient."
                 )
 
         return out

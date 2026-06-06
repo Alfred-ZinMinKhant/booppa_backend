@@ -77,6 +77,23 @@ def get_intake(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Intake not found")
+    # If the buyer used the pre-purchase /rfp-acceleration form, their
+    # description + supplied facts were cached at session_id. Surface them as
+    # `prefill` so the intake form can seed its inputs. Cache is best-effort:
+    # missing/expired entries just yield an empty prefill, form starts blank.
+    prefill: dict = {}
+    if row.session_id:
+        try:
+            from app.core.cache import cache as cache_mod
+            cached = cache_mod.get(cache_mod.cache_key(f"rfp_intake:{row.session_id}"))
+            if isinstance(cached, dict):
+                prefill = {
+                    "rfp_description": cached.get("rfp_description") or "",
+                    "intake_data": cached.get("intake_data") if isinstance(cached.get("intake_data"), dict) else {},
+                }
+        except Exception:
+            pass  # cache miss / serialization issue — fall back to empty form
+
     return {
         "id": str(row.id),
         "rfp_product_type": row.rfp_product_type,
@@ -88,6 +105,7 @@ def get_intake(
         # after submit so the buyer sees the kit polling/result, not just a
         # "go to dashboard" dead end.
         "session_id": row.session_id,
+        "prefill": prefill,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "submitted_at": row.submitted_at.isoformat() if row.submitted_at else None,
     }
