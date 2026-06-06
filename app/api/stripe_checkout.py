@@ -213,7 +213,7 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
                             if has_active:
                                 raise HTTPException(
                                     status_code=409,
-                                    detail=f"You already have an active {expected_plan.replace('_', ' ').title()} subscription. Manage it from your dashboard.",
+                                    detail=f"You already have an active {expected_plan.replace('_', ' ').title()} subscription. Manage it from your subscription page.",
                                 )
                             # If Stripe shows no active subscriptions, allow checkout to continue and let webhook reconcile
                     except HTTPException:
@@ -222,7 +222,7 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
                         # If Stripe check fails, fall back to local block to be conservative
                         raise HTTPException(
                             status_code=409,
-                            detail=f"You already have an active {expected_plan.replace('_', ' ').title()} subscription. Manage it from your dashboard.",
+                            detail=f"You already have an active {expected_plan.replace('_', ' ').title()} subscription. Manage it from your subscription page.",
                         )
                 else:
                     # No local Subscription row — but the webhook may have failed
@@ -255,7 +255,7 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
                                     if price_id and price_id in expected_prices:
                                         raise HTTPException(
                                             status_code=409,
-                                            detail=f"You already have an active {expected_plan.replace('_', ' ').title()} subscription. Manage it from your dashboard.",
+                                            detail=f"You already have an active {expected_plan.replace('_', ' ').title()} subscription. Manage it from your subscription page.",
                                         )
                     except HTTPException:
                         raise
