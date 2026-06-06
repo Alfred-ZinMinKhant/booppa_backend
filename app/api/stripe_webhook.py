@@ -796,7 +796,7 @@ async def _defer_rfp_to_intake(
             else "RFP Express Kit"
         )
         intake_url = f"https://www.booppa.io/rfp-intake/{intake_id}"
-        await EmailService().send_html_email(
+        sent = await EmailService().send_html_email(
             to_email=customer_email,
             subject=f"One more step: complete your {kit_label} brief",
             body_html=f"""
@@ -818,10 +818,28 @@ async def _defer_rfp_to_intake(
             </div>
             """,
         )
-        logger.info(
-            f"[RFP-defer:{rfp_product_type}] Sent intake email to {customer_email} "
-            f"(intake_id={intake_id})"
-        )
+        # send_html_email returns False on Resend/SES rejection without
+        # raising — the buyer would never see the brief link and the page
+        # would sit on "Confirming purchase…". Surface it via the standard
+        # fulfillment alert so it isn't silently lost.
+        if not sent:
+            logger.error(
+                f"[RFP-defer:{rfp_product_type}] Intake email rejected by provider "
+                f"for {customer_email} (intake_id={intake_id})"
+            )
+            await _alert_payment_fulfillment_issue(
+                reason="Intake email rejected by email provider",
+                product_type=rfp_product_type,
+                customer_email=customer_email,
+                session_id=session_id,
+                extra={"intake_id": intake_id, "bundle_source": bundle_source},
+                notify_customer=False,
+            )
+        else:
+            logger.info(
+                f"[RFP-defer:{rfp_product_type}] Sent intake email to {customer_email} "
+                f"(intake_id={intake_id})"
+            )
     except Exception as email_err:
         logger.warning(
             f"[RFP-defer:{rfp_product_type}] Intake email failed: {email_err}"
@@ -1215,7 +1233,7 @@ async def _fulfill_bundle(
                     else "RFP Express Kit"
                 )
                 intake_url = f"https://www.booppa.io/rfp-intake/{pending_intake_id}"
-                await EmailService().send_html_email(
+                sent = await EmailService().send_html_email(
                     to_email=customer_email,
                     subject=f"One more step: complete your {kit_label} brief",
                     body_html=f"""
@@ -1238,10 +1256,24 @@ async def _fulfill_bundle(
                     </div>
                     """,
                 )
-                logger.info(
-                    f"[Bundle:{product_type}] Sent RFP-intake email to {customer_email} "
-                    f"(intake_id={pending_intake_id})"
-                )
+                if not sent:
+                    logger.error(
+                        f"[Bundle:{product_type}] RFP-intake email rejected by provider "
+                        f"for {customer_email} (intake_id={pending_intake_id})"
+                    )
+                    await _alert_payment_fulfillment_issue(
+                        reason="Bundle RFP-intake email rejected by email provider",
+                        product_type=product_type,
+                        customer_email=customer_email,
+                        session_id=session_id,
+                        extra={"intake_id": pending_intake_id},
+                        notify_customer=False,
+                    )
+                else:
+                    logger.info(
+                        f"[Bundle:{product_type}] Sent RFP-intake email to {customer_email} "
+                        f"(intake_id={pending_intake_id})"
+                    )
             except Exception as email_err:
                 logger.warning(
                     f"[Bundle:{product_type}] RFP-intake email failed: {email_err}"

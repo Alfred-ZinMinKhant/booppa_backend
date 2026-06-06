@@ -690,31 +690,76 @@ async def checkout_verify(session_id: str | None = None):
             "rfp_complete", "rfp_express",
             "rfp_accelerator", "enterprise_bid_kit", "compliance_evidence_pack",
         }
+        # `pending_rfp_intake_id` → there's an outstanding brief; show the CTA.
+        # `brief_satisfied` → we have positive evidence the brief is taken care of
+        # (kit already in result cache, brief collected at checkout via
+        # rfp_description metadata, or a submitted PendingRfpIntake exists).
+        # The frontend only shows "Generating…" when brief_satisfied is True;
+        # otherwise it must surface the brief CTA so we never claim work is in
+        # progress that can't actually be in progress.
         pending_rfp_intake_id = None
-        if requires_brief and customer_email and succeeded:
-            try:
-                from app.core.db import SessionLocal
-                from app.core.models import User as _U
-                from app.core.models_v12 import PendingRfpIntake
-                _db = SessionLocal()
+        brief_satisfied = not requires_brief
+        if requires_brief and succeeded:
+            # (a) Brief collected at checkout — fulfill_rfp_task was queued.
+            if isinstance(metadata, dict) and (metadata.get("rfp_description") or "").strip():
+                brief_satisfied = True
+            # (b) Kit already cached → generation is genuinely in flight or done.
+            if not brief_satisfied:
                 try:
-                    _user = _db.query(_U).filter(_U.email == customer_email).first()
-                    if _user:
-                        _intake = (
-                            _db.query(PendingRfpIntake)
-                            .filter(
-                                PendingRfpIntake.user_id == _user.id,
-                                PendingRfpIntake.status == "pending",
+                    from app.core.cache import cache as _cache
+                    if _cache.get(_cache.cache_key(f"rfp_result:{session_id}")):
+                        brief_satisfied = True
+                except Exception as e:
+                    logger.warning("[checkout/verify] rfp_result cache probe failed: %s", e)
+            # (c) PendingRfpIntake lookup by buyer email. Lazily create a row
+            # when the webhook either lost the race or silently failed — better
+            # to give the buyer a working brief link than to spin forever.
+            if customer_email:
+                try:
+                    from app.core.db import SessionLocal
+                    from app.core.models import User as _U
+                    from app.core.models_v12 import PendingRfpIntake
+                    _db = SessionLocal()
+                    try:
+                        _user = _db.query(_U).filter(_U.email == customer_email).first()
+                        if _user:
+                            _intake = (
+                                _db.query(PendingRfpIntake)
+                                .filter(PendingRfpIntake.user_id == _user.id)
+                                .order_by(PendingRfpIntake.created_at.desc())
+                                .first()
                             )
-                            .order_by(PendingRfpIntake.created_at.desc())
-                            .first()
-                        )
-                        if _intake:
-                            pending_rfp_intake_id = str(_intake.id)
-                finally:
-                    _db.close()
-            except Exception as e:
-                logger.warning("[checkout/verify] PendingRfpIntake lookup failed: %s", e)
+                            if _intake and _intake.status == "submitted":
+                                brief_satisfied = True
+                            elif _intake and _intake.status == "pending":
+                                pending_rfp_intake_id = str(_intake.id)
+                            elif not _intake and not brief_satisfied and product_type_resolved in {"rfp_complete", "rfp_express"}:
+                                # Webhook race / failure recovery: create the row
+                                # ourselves so the buyer has a brief link to follow.
+                                rfp_pt = product_type_resolved
+                                resolved_url = (metadata or {}).get("vendor_url") or (getattr(_user, "website", "") or "") or None
+                                resolved_company = (metadata or {}).get("company_name") or (getattr(_user, "company", "") or "") or None
+                                _new = PendingRfpIntake(
+                                    user_id=_user.id,
+                                    session_id=session_id,
+                                    rfp_product_type=rfp_pt,
+                                    bundle_source=rfp_pt,
+                                    vendor_url=resolved_url,
+                                    company_name=resolved_company,
+                                    status="pending",
+                                )
+                                _db.add(_new)
+                                _db.flush()
+                                pending_rfp_intake_id = str(_new.id)
+                                _db.commit()
+                                logger.warning(
+                                    "[checkout/verify] Recovered missing PendingRfpIntake for %s session=%s id=%s",
+                                    customer_email, session_id, pending_rfp_intake_id,
+                                )
+                    finally:
+                        _db.close()
+                except Exception as e:
+                    logger.warning("[checkout/verify] PendingRfpIntake lookup/recover failed: %s", e)
 
         return JSONResponse(
             {
@@ -738,6 +783,7 @@ async def checkout_verify(session_id: str | None = None):
                 ),
                 "customer_email": customer_email,
                 "requires_brief": requires_brief,
+                "brief_satisfied": brief_satisfied,
                 "pending_rfp_intake_id": pending_rfp_intake_id,
             }
         )

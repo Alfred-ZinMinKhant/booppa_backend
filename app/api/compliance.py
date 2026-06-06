@@ -279,6 +279,26 @@ async def cover_sheet_status(email: str):
                 "file_name": s_ad.get("original_filename"),
             }
 
+        # Surface any unsubmitted RFP brief so the cover-sheet page can show the
+        # buyer a clear CTA instead of spinning on "Generating…" — the kit can't
+        # actually be generated until they submit the brief.
+        rfp_brief_intake_id = None
+        try:
+            from app.core.models_v12 import PendingRfpIntake
+            pending_intake = (
+                db.query(PendingRfpIntake)
+                .filter(
+                    PendingRfpIntake.user_id == user.id,
+                    PendingRfpIntake.status == "pending",
+                )
+                .order_by(PendingRfpIntake.created_at.desc())
+                .first()
+            )
+            if pending_intake:
+                rfp_brief_intake_id = str(pending_intake.id)
+        except Exception as e:
+            logger.warning(f"[ComplianceStatus] PendingRfpIntake lookup failed: {e}")
+
         website = (getattr(user, "website", "") or "").strip()
         return {
             "credits": getattr(user, "compliance_evidence_credits", 0) or 0,
@@ -287,6 +307,7 @@ async def cover_sheet_status(email: str):
             "vendor_url_missing": not bool(website),
             "pdpa": pdpa_payload,
             "rfp": rfp_payload,
+            "rfp_brief_intake_id": rfp_brief_intake_id,
             "cover_sheet": cs_payload,
             "signed": signed_payload,
         }
