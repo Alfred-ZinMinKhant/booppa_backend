@@ -416,6 +416,119 @@ def check_consistency(
     return discrepancies
 
 
+def extract_website_signals(website_text: str, privacy_policy_text: Optional[str] = None) -> Dict[str, Any]:
+    """Extract structured compliance signals from the buyer's website + privacy
+    policy text. Powers two things:
+
+    1. AI prompt — these signals become "Verified from website:" facts so the
+       LLM can confidently name what's published instead of inventing.
+    2. Per-answer verification source attribution on the result page + PDF.
+
+    Returns dict with: iso_27001 / soc_2 / encryption / aws / azure / gcp /
+    singapore_residency / dpa / sub_processors flags, plus any extracted year
+    or specific terms. All checks are case-insensitive and forgiving on
+    spacing/hyphenation since vendor sites vary.
+    """
+    import re as _re
+
+    blob = ((website_text or "") + "\n" + (privacy_policy_text or "")).lower()
+    if not blob.strip():
+        return {"available": False}
+
+    def has(pattern: str) -> bool:
+        return bool(_re.search(pattern, blob, _re.IGNORECASE))
+
+    def extract(pattern: str) -> str | None:
+        m = _re.search(pattern, blob, _re.IGNORECASE)
+        return m.group(1) if m else None
+
+    # ── Certifications ──────────────────────────────────────────────────────
+    iso27001 = has(r"\biso[\s\-/]?2[\s\-/]?7[\s\-/]?0[\s\-/]?0[\s\-/]?1\b")
+    iso27001_year = extract(r"iso[\s\-/]?27001[\s:/-]*(\d{4})")
+    iso27017 = has(r"\biso[\s\-/]?27017\b")
+    iso27018 = has(r"\biso[\s\-/]?27018\b")
+    iso27701 = has(r"\biso[\s\-/]?27701\b")
+    soc2 = has(r"\bsoc[\s\-]?2\b|\bsoc[\s\-]?ii\b")
+    pci_dss = has(r"\bpci[\s\-]?dss\b")
+    gdpr = has(r"\bgdpr\b|\bgeneral data protection regulation\b")
+    pdpa_mention = has(r"\bpdpa\b|\bpersonal data protection act\b")
+
+    # ── Encryption ──────────────────────────────────────────────────────────
+    aes_mentioned = has(r"\baes[\s\-]?(?:128|192|256)\b")
+    tls_mentioned = has(r"\btls[\s]?1\.?[023]\b|\btransport layer security\b")
+    encryption_generic = has(r"\bencryption\b|\bencrypted\b|\bencrypt\b")
+
+    # ── Cloud providers ────────────────────────────────────────────────────
+    aws = has(r"\baws\b|\bamazon web services\b")
+    azure = has(r"\bmicrosoft azure\b|\bazure cloud\b|(?<!\w)azure(?=[^a-z])")
+    gcp = has(r"\bgcp\b|\bgoogle cloud\b")
+    oci = has(r"\boracle cloud\b|\boci\b")
+
+    # ── Data residency ──────────────────────────────────────────────────────
+    singapore_residency = has(
+        r"\bdata\s+(?:centers?|centres?)\s+in\s+singapore\b"
+        r"|\bhosted\s+in\s+singapore\b"
+        r"|\bstored\s+in\s+singapore\b"
+        r"|\bsingapore\s+region\b"
+        r"|\bap[-\s]?southeast[-\s]?1\b"
+    )
+    non_sg_regions: list[str] = []
+    for pat, label in [
+        (r"\bus[-\s]?east[-\s]?[12]\b", "AWS us-east"),
+        (r"\bus[-\s]?west[-\s]?[12]\b", "AWS us-west"),
+        (r"\beu[-\s]?(?:west|central)[-\s]?\d\b", "AWS eu region"),
+        (r"\bcalifornia\b.{0,40}\bdata\s+center\b", "California data center"),
+    ]:
+        if has(pat):
+            non_sg_regions.append(label)
+
+    # ── Privacy policy contents ─────────────────────────────────────────────
+    has_dpa = has(r"\bdata\s+processing\s+agreement\b|\bdpa\b")
+    has_subprocessors = has(
+        r"\bsub[-\s]?processors?\b|\bsub[-\s]?contractors?\b"
+        r"|\bthird[-\s]?party\s+processors?\b"
+    )
+    has_dpo = has(r"\bdata\s+protection\s+officer\b|\bdpo\b")
+    has_breach_policy = has(
+        r"\b(?:data\s+)?breach\s+(?:notification|response|policy)\b"
+        r"|\bincident\s+response\b"
+    )
+    has_retention_policy = has(r"\bretention\s+(?:policy|period|schedule)\b")
+
+    return {
+        "available": True,
+        # Certifications — these are the most valuable signals because they
+        # ground the most-often-fabricated claims.
+        "iso_27001_mentioned": iso27001,
+        "iso_27001_year": iso27001_year,
+        "iso_27017_mentioned": iso27017,
+        "iso_27018_mentioned": iso27018,
+        "iso_27701_mentioned": iso27701,
+        "soc_2_mentioned": soc2,
+        "pci_dss_mentioned": pci_dss,
+        "gdpr_mentioned": gdpr,
+        "pdpa_mentioned": pdpa_mention,
+        # Encryption
+        "aes_mentioned": aes_mentioned,
+        "tls_mentioned": tls_mentioned,
+        "encryption_generic": encryption_generic,
+        # Cloud / hosting
+        "aws_mentioned": aws,
+        "azure_mentioned": azure,
+        "gcp_mentioned": gcp,
+        "oci_mentioned": oci,
+        # Residency
+        "singapore_residency_mentioned": singapore_residency,
+        "non_sg_regions_mentioned": non_sg_regions,
+        # Policy completeness
+        "dpa_mentioned": has_dpa,
+        "subprocessors_mentioned": has_subprocessors,
+        "dpo_mentioned": has_dpo,
+        "breach_policy_mentioned": has_breach_policy,
+        "retention_policy_mentioned": has_retention_policy,
+    }
+
+
 # ── 6. Hosting signals from HTTP headers ──────────────────────────────────────
 
 async def fetch_hosting_signals(vendor_url: str, stated_hosting: Optional[str] = None) -> Dict[str, Any]:
