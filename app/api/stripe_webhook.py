@@ -299,7 +299,11 @@ async def _activate_subscription(
         try:
             from datetime import datetime, timezone as _tz
 
-            user.subscription_started_at = datetime.now(_tz.utc)
+            _now = datetime.now(_tz.utc)
+            user.subscription_started_at = _now
+            # Anniversary cap at 28: every month has at least 28 days so the
+            # daily cron filter will always find this subscriber once per cycle.
+            user.subscription_anniversary_day = min(_now.day, 28)
         except Exception:
             pass
         if stripe_subscription_id:
@@ -307,6 +311,34 @@ async def _activate_subscription(
         if stripe_customer_id:
             user.stripe_customer_id = stripe_customer_id
         db.commit()
+
+        # ── Instant first-cycle delivery ────────────────────────────────────
+        # Subscribers shouldn't wait up to 30 days for their first deliverable.
+        # Each tier fires the same task its monthly cron would fire, scoped to
+        # just this user. All async via .delay() so checkout webhook returns
+        # quickly; any failure surfaces in worker logs without blocking the
+        # entitlement grant above.
+        try:
+            from app.workers import tasks as _wtasks
+            if new_plan == "tender_intelligence":
+                _wtasks.send_tender_intelligence_digest_for_user.delay(str(user.id))
+            elif new_plan == "pdpa_monitor":
+                _wtasks.run_pdpa_monitor_cycle_for_user.delay(str(user.id))
+            elif new_plan == "compliance_evidence":
+                _wtasks.run_compliance_evidence_cycle_for_user.delay(str(user.id))
+            elif new_plan == "vendor_active":
+                _wtasks.run_vendor_active_check_for_user.delay(str(user.id))
+            elif new_plan == "vendor_pro":
+                _wtasks.run_vendor_pro_activation_for_user.delay(str(user.id))
+            logger.info(
+                "[Subscription] First-cycle delivery queued for user=%s tier=%s",
+                user.email, new_plan,
+            )
+        except Exception as e:
+            logger.warning(
+                "[Subscription] First-cycle delivery failed to enqueue for user=%s tier=%s: %s",
+                user.email, new_plan, e,
+            )
 
         # Refresh seat caps on every org this user owns so plan upgrades take
         # effect immediately (e.g. Starter -> Pro bumps max_seats 1 -> 3).
