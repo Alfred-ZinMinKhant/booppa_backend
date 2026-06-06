@@ -36,10 +36,12 @@ class User(Base):
     verified_at = Column(DateTime, nullable=True)
     subscription_tier = Column(String(50), nullable=True)
     subscription_started_at = Column(DateTime, nullable=True)
-    # Day of month (1-28) the buyer's monthly cycle should fire. Set at
-    # activation from `subscription_started_at.day` (capped at 28 to avoid
-    # Feb edge cases). Replaces calendar-1st delivery so every subscriber
-    # gets their cycle on the same day each month they actually subscribed.
+    # Day of month (1-31) the buyer's monthly cycle should fire. Set at
+    # activation from `subscription_started_at.day` — UNCAPPED. The cron
+    # filter handles short months: on the last day of a 28/29/30-day month,
+    # subscribers with anniversary_day >= today.day all fire (so a Jan-31
+    # subscriber gets their cycle on Feb 28, Apr 30, etc.). Replaces
+    # calendar-1st delivery — each subscriber's cycle lands on their own day.
     subscription_anniversary_day = Column(Integer, nullable=True)
     stripe_customer_id = Column(String(255), nullable=True)
     stripe_subscription_id = Column(String(255), nullable=True)

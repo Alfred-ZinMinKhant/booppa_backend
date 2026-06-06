@@ -2732,6 +2732,27 @@ def check_compliance_drift_task(self, vendor_id: str, vendor_email: str, framewo
         db.close()
 
 
+def _anniversary_match_filter(model_attr, now=None):
+    """Build an SQLAlchemy filter expression that matches subscribers whose
+    anniversary day fires today. Handles short-month edges:
+      • Regular day → anniversary == today.day
+      • Last day of a 28/29/30-day month → anniversary >= today.day
+        (so Jan-31 subscriber fires on Feb 28, Apr 30, etc.)
+
+    `model_attr` is the SQLAlchemy column reference (e.g.
+    `User.subscription_anniversary_day`).
+    """
+    import calendar as _cal
+    from sqlalchemy import or_ as _or
+    now = now or datetime.now(timezone.utc)
+    last_day = _cal.monthrange(now.year, now.month)[1]
+    if now.day < last_day:
+        return model_attr == now.day
+    # Last day of this month — sweep up anyone whose nominal anniversary
+    # falls on a day this month doesn't have.
+    return model_attr >= now.day
+
+
 @celery_app.task(name="run_vendor_active_monthly_checks")
 def run_vendor_active_monthly_checks():
     """
@@ -2743,7 +2764,6 @@ def run_vendor_active_monthly_checks():
     db = SessionLocal()
     try:
         from app.core.models import User, Subscription as SubModel
-        today_dom = min(datetime.now(timezone.utc).day, 28)
         active_subs = db.query(SubModel).filter(
             SubModel.product_type.in_([
                 "vendor_active_monthly", "vendor_active_annual", "vendor_active",
@@ -2755,7 +2775,10 @@ def run_vendor_active_monthly_checks():
         user_ids = {s.user_id for s in active_subs if s.user_id}
         subscribers = (
             db.query(User)
-            .filter(User.id.in_(user_ids), User.subscription_anniversary_day == today_dom)
+            .filter(
+                User.id.in_(user_ids),
+                _anniversary_match_filter(User.subscription_anniversary_day),
+            )
             .all()
             if user_ids else []
         )
@@ -2763,8 +2786,8 @@ def run_vendor_active_monthly_checks():
             if user.email:
                 vendor_active_health_check_task.delay(str(user.id), user.email)
         logger.info(
-            "[VendorActive] anniversary=%d queued %d health checks",
-            today_dom, len(subscribers),
+            "[VendorActive] day=%d queued %d health checks",
+            datetime.now(timezone.utc).day, len(subscribers),
         )
     finally:
         db.close()
@@ -2780,7 +2803,6 @@ def run_pdpa_monitor_monthly_rescans():
     db = SessionLocal()
     try:
         from app.core.models import User, Subscription as SubModel
-        today_dom = min(datetime.now(timezone.utc).day, 28)
         active_subs = db.query(SubModel).filter(
             SubModel.product_type.in_(["pdpa_monitor_monthly", "pdpa_monitor_annual", "pdpa_monitor"]),
             SubModel.status.in_(("active", "trialing")),
@@ -2788,7 +2810,10 @@ def run_pdpa_monitor_monthly_rescans():
         user_ids = {s.user_id for s in active_subs if s.user_id}
         subscribers = (
             db.query(User)
-            .filter(User.id.in_(user_ids), User.subscription_anniversary_day == today_dom)
+            .filter(
+                User.id.in_(user_ids),
+                _anniversary_match_filter(User.subscription_anniversary_day),
+            )
             .all()
             if user_ids else []
         )
@@ -2799,8 +2824,8 @@ def run_pdpa_monitor_monthly_rescans():
                 pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website)
                 queued += 1
         logger.info(
-            "[PdpaMonitor] anniversary=%d queued %d/%d rescans",
-            today_dom, queued, len(subscribers),
+            "[PdpaMonitor] day=%d queued %d/%d rescans",
+            datetime.now(timezone.utc).day, queued, len(subscribers),
         )
     finally:
         db.close()
@@ -2856,7 +2881,6 @@ def run_compliance_evidence_monthly_refresh():
     try:
         from app.core.models import User, Subscription as SubModel
         from app.workers.tasks import fulfill_bundle_task
-        today_dom = min(datetime.now(timezone.utc).day, 28)
 
         active_subs = db.query(SubModel).filter(
             SubModel.product_type.in_(["compliance_evidence_monthly", "compliance_evidence"]),
@@ -2865,7 +2889,10 @@ def run_compliance_evidence_monthly_refresh():
         user_ids = {s.user_id for s in active_subs if s.user_id}
         subscribers = (
             db.query(User)
-            .filter(User.id.in_(user_ids), User.subscription_anniversary_day == today_dom)
+            .filter(
+                User.id.in_(user_ids),
+                _anniversary_match_filter(User.subscription_anniversary_day),
+            )
             .all()
             if user_ids else []
         )
@@ -3755,10 +3782,10 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
         if target_user_id:
             sub_query = sub_query.filter(User.id == target_user_id)
         else:
-            # Anniversary-day filter for the daily cron path: only send to
-            # subscribers whose anniversary == today's day-of-month.
-            today_dom = min(datetime.now(timezone.utc).day, 28)
-            sub_query = sub_query.filter(User.subscription_anniversary_day == today_dom)
+            # Anniversary-day filter (short-month aware).
+            sub_query = sub_query.filter(
+                _anniversary_match_filter(User.subscription_anniversary_day)
+            )
         subscribers = sub_query.all()
 
         if not subscribers:
@@ -4140,16 +4167,17 @@ def send_monthly_intake_refresh_task(self):
     skipped = 0
     failed = 0
     try:
-        # Anniversary-day cron: fire ~6 days before each subscriber's monthly
-        # cycle. Today's target_day = (today + 6) day-of-month, capped at 28.
-        target_day = ((_dt.utcnow() + _td(days=6)).day)
-        if target_day > 28:
-            target_day = 28
+        # Anniversary-day cron — fire ~6 days before each subscriber's cycle.
+        # Use the short-month-aware filter with `now = today + 6 days` so a
+        # Jan-31 subscriber gets the nudge correctly even when the +6-day
+        # target lands in a short month.
+        from app.workers.tasks import _anniversary_match_filter
+        target_now = _dt.utcnow() + _td(days=6)
         subs = (
             db.query(User)
             .filter(
                 User.subscription_tier == "compliance_evidence",
-                User.subscription_anniversary_day == target_day,
+                _anniversary_match_filter(User.subscription_anniversary_day, now=target_now),
             )
             .all()
         )
