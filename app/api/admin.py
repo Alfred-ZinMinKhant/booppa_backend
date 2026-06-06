@@ -884,3 +884,4 @@ async def simulate_purchase(
         "dispatch": dispatch,
         "details": details,
     }
+
