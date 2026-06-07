@@ -295,6 +295,13 @@ async def cover_sheet_status(email: str, response: Response):
                 "signer_title": s_ad.get("signer_title"),
                 "signed_at_utc": s_ad.get("signed_at_utc"),
                 "legal_basis": s_ad.get("legal_basis"),
+                # Surface the anchor-failure flag so the UI can stop the
+                # "Anchoring on-chain..." spinner and show a clear recovery
+                # CTA instead of leaving the buyer wondering.
+                "signed_report_id": str(signed.id),
+                "anchor_failed": bool(s_ad.get("anchor_failed")),
+                "anchor_failed_at": s_ad.get("anchor_failed_at"),
+                "anchor_failed_reason": s_ad.get("anchor_failed_reason"),
             }
 
         # Surface the brief CTA only if the buyer's CURRENT Compliance Bundle
