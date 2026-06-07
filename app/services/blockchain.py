@@ -79,14 +79,24 @@ class BlockchainService:
             raise RuntimeError("BLOCKCHAIN_PRIVATE_KEY is not configured")
         return key
 
-    async def anchor_evidence(self, evidence_hash: str, metadata: str = "") -> str:
-        """Anchor evidence hash on Polygon blockchain"""
+    async def anchor_evidence(self, evidence_hash: str, metadata: str = "", force: bool = False) -> str:
+        """Anchor evidence hash on Polygon blockchain.
+
+        Pass ``force=True`` when the caller needs a fresh tx_hash even if the
+        hash is already on-chain (e.g. signed-Cover-Sheet anchoring, which has
+        to surface a tx for the buyer to see). The idempotency skip exists to
+        save gas on mainnet, but on Polygon Amoy testnet gas is essentially
+        free and the duplicate-anchor pattern is harmless — each call
+        commits an additional evidence record for the same hash.
+        """
         try:
-            # Idempotency check: Don't spend gas if already anchored
-            status = self.get_anchor_status(evidence_hash)
-            if status.get("anchored"):
-                logger.info(f"Evidence {evidence_hash} already anchored. Skipping transaction.")
-                return None  # already on-chain; no new tx_hash available
+            # Idempotency check: Don't spend gas if already anchored, unless
+            # the caller explicitly wants a fresh tx (force=True).
+            if not force:
+                status = self.get_anchor_status(evidence_hash)
+                if status.get("anchored"):
+                    logger.info(f"Evidence {evidence_hash} already anchored. Skipping transaction.")
+                    return None  # already on-chain; no new tx_hash available
 
             file_hash = self._hash_to_bytes32(evidence_hash)
             private_key = self._get_private_key()

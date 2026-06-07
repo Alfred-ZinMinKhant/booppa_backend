@@ -1919,6 +1919,14 @@ def anchor_signed_cover_sheet_task(self, report_id: str, customer_email: str | N
     Anchor the signed Cover Sheet PDF on-chain, then re-fire the cover sheet
     fulfillment task to regenerate the PDF (Section 5 now shows the signed tx)
     and email the user a final blockchain receipt.
+
+    Uses force=True on anchor_evidence so a fresh tx_hash is always returned
+    even when the hash happens to already be on-chain. The previous
+    implementation silently exited on the duplicate-skip path, leaving the
+    buyer's UI stuck on "Anchoring on-chain..." forever. If anchoring still
+    fails after max_retries, we persist anchor_failed=True on the Report so
+    the frontend can surface a clear error + retry CTA instead of a
+    perpetual spinner.
     """
     try:
         from app.core.models import Report
@@ -1934,14 +1942,30 @@ def anchor_signed_cover_sheet_task(self, report_id: str, customer_email: str | N
                 logger.error(f"[SignedCS] Report {report_id} has no file_hash, cannot anchor")
                 return
             blockchain = BlockchainService()
-            tx = asyncio.run(blockchain.anchor_evidence(file_hash, metadata=f"signed_cover_sheet:{report_id}"))
+            tx = asyncio.run(blockchain.anchor_evidence(
+                file_hash,
+                metadata=f"signed_cover_sheet:{report_id}",
+                force=True,
+            ))
             if tx:
                 report.tx_hash = tx
                 report.completed_at = datetime.now(timezone.utc)
                 ad["blockchain_anchored_at"] = report.completed_at.isoformat()
+                # Clear any prior failure flag (this might be a recovery retry).
+                ad.pop("anchor_failed", None)
+                ad.pop("anchor_failed_at", None)
                 report.assessment_data = ad
                 db.commit()
                 logger.info(f"[SignedCS] Anchored {report_id} tx={tx[:12]}…")
+            else:
+                # tx is falsy even with force=True — RPC dropped the call,
+                # contract reverted silently, or some other transient issue.
+                # Raise so Celery retries; the persisted failure flag only
+                # gets set in the max-retries-exhausted path below.
+                raise RuntimeError(
+                    f"[SignedCS] anchor_evidence returned no tx_hash for {report_id} "
+                    f"(file_hash={file_hash[:12]}…). Will retry."
+                )
         finally:
             db.close()
 
@@ -1957,8 +1981,35 @@ def anchor_signed_cover_sheet_task(self, report_id: str, customer_email: str | N
         )
     except Exception as exc:
         logger.error(f"[SignedCS] Anchor failed for {report_id}: {exc}")
-        countdown = 60 * (2 ** self.request.retries)
-        raise self.retry(exc=exc, countdown=countdown)
+        # Retry with exponential backoff. After max_retries, mark the Report
+        # so the frontend can stop spinning and surface a recovery CTA.
+        try:
+            countdown = 60 * (2 ** self.request.retries)
+            raise self.retry(exc=exc, countdown=countdown)
+        except Exception:
+            # Max retries exhausted (or self.retry raised something else).
+            # Mark the Report so the UI knows to stop spinning.
+            try:
+                from app.core.models import Report
+                _db = SessionLocal()
+                try:
+                    _r = _db.query(Report).filter(Report.id == report_id).first()
+                    if _r:
+                        _ad = _r.assessment_data if isinstance(_r.assessment_data, dict) else {}
+                        _ad["anchor_failed"] = True
+                        _ad["anchor_failed_at"] = datetime.now(timezone.utc).isoformat()
+                        _ad["anchor_failed_reason"] = str(exc)[:300]
+                        _r.assessment_data = _ad
+                        _db.commit()
+                        logger.error(
+                            f"[SignedCS] Marked {report_id} anchor_failed=True after max retries"
+                        )
+                finally:
+                    _db.close()
+            except Exception as flag_err:
+                logger.error(f"[SignedCS] Could not persist anchor_failed: {flag_err}")
+            # Re-raise so Celery records the task as failed.
+            raise
 
 
 @celery_app.task(bind=True, max_retries=3, name="fulfill_cover_sheet_task")

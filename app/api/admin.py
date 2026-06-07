@@ -486,6 +486,70 @@ class GrantCreditsBody(BaseModel):
     pending_cover_sheet: bool = Field(False, description="Set to True for Compliance Evidence Pack backfill")
 
 
+class RetryAnchorBody(BaseModel):
+    report_id: str = Field(..., description="UUID of the Report to re-anchor")
+
+
+@router.post("/retry-anchor")
+def retry_anchor(
+    body: RetryAnchorBody,
+    _auth: bool = Depends(_admin_auth),
+):
+    """
+    Re-queue ``anchor_signed_cover_sheet_task`` for a specific Report.
+
+    Use when a signed Cover Sheet's on-chain anchor failed (e.g. the original
+    worker hit the now-fixed "already-anchored → None tx_hash" bug, or RPC
+    timed out, or the contract reverted). Clears any persisted anchor_failed
+    flag so the frontend stops showing the failure card while the retry runs.
+    """
+    from app.core.models import Report
+    db = SessionLocal()
+    try:
+        report = db.query(Report).filter(Report.id == body.report_id).first()
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+        if report.framework != "compliance_evidence_signed_sheet":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Report framework is {report.framework!r}; retry-anchor only handles signed-CS reports.",
+            )
+        ad = report.assessment_data if isinstance(report.assessment_data, dict) else {}
+        # Clear failure flag so UI stops showing the red card while the
+        # retry is in flight. The worker will set it back if it fails again.
+        ad.pop("anchor_failed", None)
+        ad.pop("anchor_failed_at", None)
+        ad.pop("anchor_failed_reason", None)
+        # Also clear any prior partial tx_hash so the UI shows the spinner
+        # for the duration of the retry instead of pointing at a stale tx.
+        report.assessment_data = ad
+        customer_email = ad.get("contact_email")
+        company_name = report.company_name or ""
+        db.commit()
+        logger.info(
+            f"[retry-anchor] Cleared anchor_failed for report={body.report_id}, "
+            f"requeuing worker"
+        )
+    finally:
+        db.close()
+
+    from app.workers.tasks import anchor_signed_cover_sheet_task
+    anchor_signed_cover_sheet_task.apply_async(
+        kwargs={
+            "report_id": body.report_id,
+            "customer_email": customer_email,
+            "company_name": company_name,
+        },
+        countdown=2,
+    )
+    return {
+        "ok": True,
+        "report_id": body.report_id,
+        "queued": True,
+        "note": "Anchor retry queued. The Cover Sheet page will refresh within 30-60s.",
+    }
+
+
 @router.post("/grant-credits")
 def grant_credits(
     body: GrantCreditsBody,
