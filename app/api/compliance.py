@@ -10,8 +10,9 @@ Kept separate from /notarize so other bundle uploads cannot drain the CE credit.
 """
 
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, Response, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Request, Response, UploadFile, File, Form
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, Field
 from typing import Optional
 import hashlib
 import logging
@@ -495,5 +496,211 @@ async def upload_signed_cover_sheet(
         "report_id": report_id,
         "file_hash": file_hash,
         "credits_remaining": 0,
+        "queued": True,
+    }
+
+
+class ESignAttestations(BaseModel):
+    authorised: bool
+    accurate: bool
+
+
+class ESignRequest(BaseModel):
+    email: str
+    signer_name: str = Field(..., min_length=2, max_length=200)
+    signer_title: str = Field(..., min_length=2, max_length=200)
+    attestations: ESignAttestations
+
+
+@router.post("/cover-sheet/sign-electronically")
+async def sign_cover_sheet_electronically(payload: ESignRequest, request: Request):
+    """
+    In-browser electronic signature path for the Compliance Cover Sheet.
+
+    Fetches the buyer's unsigned cover sheet from S3, appends a Signature Page
+    capturing the typed signature + attestations + originating IP + UTC
+    timestamp, and reuses the same downstream pipeline as the wet-signature
+    upload (`anchor_signed_cover_sheet_task`). Same credit/lock semantics —
+    consumes one `compliance_evidence_credits`, sets `signed_cover_sheet_uploaded`.
+
+    Legal basis: Singapore Electronic Transactions Act (Cap. 88) s. 8 —
+    typed-name + intention + binding to document hash satisfies the
+    electronic-signature requirement for commercial purposes.
+    """
+    if not (payload.attestations.authorised and payload.attestations.accurate):
+        raise HTTPException(
+            status_code=400,
+            detail="Both attestations must be ticked before submitting.",
+        )
+
+    signer_ip = (request.client.host if request.client else None) or request.headers.get(
+        "x-forwarded-for", ""
+    ).split(",")[0].strip() or None
+
+    db = SessionLocal()
+    try:
+        # Row-level lock mirrors upload_signed_cover_sheet — two concurrent
+        # sign-electronically calls must not both pass the credit check.
+        user = (
+            db.query(User)
+            .filter(User.email == payload.email)
+            .with_for_update()
+            .first()
+        )
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found.")
+        credits = getattr(user, "compliance_evidence_credits", 0) or 0
+        if credits <= 0:
+            raise HTTPException(
+                status_code=403,
+                detail="No Compliance Evidence credit available. This signature requires a Compliance Evidence Pack purchase.",
+            )
+        if getattr(user, "signed_cover_sheet_uploaded", False):
+            raise HTTPException(
+                status_code=400,
+                detail="A signed Cover Sheet has already been recorded for this account.",
+            )
+
+        # Find the latest unsigned Cover Sheet (framework='compliance_evidence_pack')
+        # for this user — that's the PDF we sign.
+        unsigned_report = (
+            db.query(Report)
+            .filter(
+                Report.owner_id == user.id,
+                Report.framework == "compliance_evidence_pack",
+                Report.status == "completed",
+            )
+            .order_by(Report.created_at.desc())
+            .first()
+        )
+        if not unsigned_report:
+            raise HTTPException(
+                status_code=409,
+                detail="No completed Cover Sheet found yet. Wait for the unsigned PDF to generate before signing.",
+            )
+        ad = unsigned_report.assessment_data or {}
+        unsigned_s3_key = ad.get("s3_key")
+        if not unsigned_s3_key:
+            raise HTTPException(
+                status_code=500,
+                detail="Cover Sheet record is missing its S3 location. Contact support.",
+            )
+
+        # Fetch the unsigned PDF bytes
+        try:
+            s3 = S3Service()
+            obj = s3.s3_client.get_object(Bucket=s3.bucket, Key=unsigned_s3_key)
+            unsigned_pdf_bytes = obj["Body"].read()
+        except Exception as e:
+            logger.error(f"[ESignCS] S3 fetch failed for {unsigned_s3_key}: {e}")
+            raise HTTPException(status_code=500, detail="Could not retrieve the unsigned Cover Sheet.")
+
+        unsigned_sha256 = hashlib.sha256(unsigned_pdf_bytes).hexdigest()
+
+        # Append the Signature Page
+        try:
+            from app.services.cover_sheet_generator import append_signature_page
+            signed_pdf_bytes = append_signature_page(
+                unsigned_pdf_bytes,
+                signer_name=payload.signer_name.strip(),
+                signer_title=payload.signer_title.strip(),
+                signer_email=payload.email,
+                company_name=(user.company or "Your Organisation"),
+                signer_ip=signer_ip,
+                unsigned_pdf_sha256=unsigned_sha256,
+                attestations={
+                    "authorised": payload.attestations.authorised,
+                    "accurate": payload.attestations.accurate,
+                },
+            )
+        except Exception as e:
+            logger.error(f"[ESignCS] Signature page append failed: {e}")
+            raise HTTPException(status_code=500, detail="Could not append the signature page.")
+
+        signed_sha256 = hashlib.sha256(signed_pdf_bytes).hexdigest()
+
+        # Stash the signed PDF in S3 — same path pattern as the upload route.
+        report_id = str(uuid.uuid4())
+        s3_key = f"signed_cover_sheets/{report_id}/cover-sheet-signed-electronically.pdf"
+        try:
+            s3.s3_client.put_object(
+                Bucket=s3.bucket,
+                Key=s3_key,
+                Body=signed_pdf_bytes,
+                ContentType="application/pdf",
+                Metadata={
+                    "report-id": report_id,
+                    "file-hash": signed_sha256,
+                    "kind": "signed-cover-sheet",
+                    "signature-method": "electronic",
+                },
+            )
+        except Exception as e:
+            logger.error(f"[ESignCS] S3 upload failed: {e}")
+            raise HTTPException(status_code=500, detail="Signed PDF upload failed.")
+
+        # Persist Report row + decrement credit + flip flag atomically
+        now_iso = datetime.now(timezone.utc).isoformat()
+        report = Report(
+            id=report_id,
+            owner_id=user.id,
+            framework="compliance_evidence_signed_sheet",
+            company_name=(user.company or "Your Organisation"),
+            assessment_data={
+                "file_hash": signed_sha256,
+                "hash_algorithm": "SHA-256",
+                "original_filename": "cover-sheet-signed-electronically.pdf",
+                "file_size_bytes": len(signed_pdf_bytes),
+                "mime_type": "application/pdf",
+                "s3_key": s3_key,
+                "contact_email": payload.email,
+                "payment_confirmed": True,
+                "compliance_evidence_credit_redeemed": True,
+                "signature_method": "electronic",
+                "signer_name": payload.signer_name.strip(),
+                "signer_title": payload.signer_title.strip(),
+                "signer_ip": signer_ip,
+                "signed_at_utc": now_iso,
+                "attestations": {
+                    "authorised": payload.attestations.authorised,
+                    "accurate": payload.attestations.accurate,
+                },
+                "unsigned_pdf_sha256": unsigned_sha256,
+                "unsigned_pdf_s3_key": unsigned_s3_key,
+                "legal_basis": "Singapore Electronic Transactions Act (Cap. 88) s. 8",
+            },
+            status="pending",
+        )
+        report.audit_hash = signed_sha256
+        db.add(report)
+
+        user.compliance_evidence_credits = max(0, credits - 1)
+        user.signed_cover_sheet_uploaded = True
+        user.pending_cover_sheet = False
+        company_name = (user.company or "").strip() or "Your Organisation"
+        db.commit()
+        logger.info(
+            f"[ESignCS] {payload.email} signed cover sheet electronically (report={report_id}), "
+            f"CE credits {credits} → {user.compliance_evidence_credits}"
+        )
+    finally:
+        db.close()
+
+    # Queue the anchor + regen pipeline — same task as the upload path.
+    from app.workers.tasks import anchor_signed_cover_sheet_task
+    anchor_signed_cover_sheet_task.apply_async(
+        kwargs={
+            "report_id": report_id,
+            "customer_email": payload.email,
+            "company_name": company_name,
+        },
+        countdown=5,
+    )
+
+    return {
+        "report_id": report_id,
+        "file_hash": signed_sha256,
+        "credits_remaining": 0,
+        "signature_method": "electronic",
         "queued": True,
     }

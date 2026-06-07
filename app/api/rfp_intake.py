@@ -4,11 +4,15 @@ Bundle SKUs that include an RFP component defer kit generation: at webhook time
 we create a PendingRfpIntake row and email the buyer a link. This module backs
 those endpoints — list pending intakes and submit a brief.
 """
+import logging
 from datetime import datetime
+from io import BytesIO
 
-from fastapi import APIRouter, Depends, HTTPException, Security
+from fastapi import APIRouter, Depends, File, HTTPException, Security, UploadFile
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.core.auth import verify_access_token
 from app.core.db import get_db
@@ -207,4 +211,105 @@ def submit_intake(
         "status": "queued",
         "intake_id": str(row.id),
         "session_id": row.session_id,
+    }
+
+
+# Cap: 10 MB upload, ~15k chars of extracted text downstream. Bigger than that
+# and we're paying for tokens we'll truncate anyway.
+_EXTRACT_MAX_FILE_BYTES = 10 * 1024 * 1024
+_EXTRACT_MAX_PAGES = 25
+
+
+@router.post("/{intake_id}/extract")
+async def extract_tender_brief(
+    intake_id: str,
+    file: UploadFile = File(...),
+    token: str | None = Security(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    """
+    Extract a structured RFP brief from an uploaded tender PDF so the buyer
+    can pre-fill the intake form instead of typing the description by hand.
+
+    Returns a dict of suggested fields; the frontend merges them into the
+    form state and the buyer reviews + edits before submitting. We never
+    persist the extracted text — only the buyer's confirmed values land on
+    the PendingRfpIntake row.
+
+    Failure modes (return null + a hint, don't 500):
+      - file isn't a PDF or pypdf can't read it
+      - DeepSeek returns no parseable JSON
+    """
+    user = _resolve_user(token, db)
+
+    # Verify the intake belongs to this user — same gate as submit_intake.
+    row = (
+        db.query(PendingRfpIntake)
+        .filter(PendingRfpIntake.id == intake_id, PendingRfpIntake.user_id == user.id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Intake not found")
+
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Upload a PDF tender document.")
+
+    contents = await file.read()
+    if len(contents) == 0:
+        raise HTTPException(status_code=400, detail="File is empty.")
+    if len(contents) > _EXTRACT_MAX_FILE_BYTES:
+        raise HTTPException(status_code=400, detail="PDF too large. Maximum 10 MB.")
+
+    # Extract text via pypdf (same pattern as pdf_nric_scanner.py).
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        logger.error("[ExtractTender] pypdf not installed")
+        raise HTTPException(status_code=500, detail="PDF parsing not available.")
+
+    try:
+        reader = PdfReader(BytesIO(contents))
+    except Exception as e:
+        logger.info(f"[ExtractTender] PdfReader failed: {e}")
+        return {
+            "extracted": None,
+            "reason": "Couldn't read this PDF — please type your brief manually.",
+        }
+
+    pages = reader.pages[:_EXTRACT_MAX_PAGES]
+    parts: list[str] = []
+    for p in pages:
+        try:
+            parts.append(p.extract_text() or "")
+        except Exception:
+            continue
+    text = "\n".join(parts).strip()
+    if len(text) < 80:
+        return {
+            "extracted": None,
+            "reason": "We couldn't pull readable text from this PDF — please type your brief manually.",
+        }
+
+    # Call the extractor on BooppaAIService.
+    try:
+        from app.services.booppa_ai_service import BooppaAIService
+        ai = BooppaAIService()
+        suggested = await ai.extract_rfp_brief_from_tender_pdf(text)
+    except Exception as e:
+        logger.warning(f"[ExtractTender] AI extraction errored: {e}")
+        return {
+            "extracted": None,
+            "reason": "Couldn't extract a brief automatically — please type yours.",
+        }
+
+    if not suggested or not suggested.get("rfp_description"):
+        return {
+            "extracted": None,
+            "reason": "Couldn't extract a brief automatically — please type yours.",
+        }
+
+    return {
+        "extracted": suggested,
+        "source_filename": file.filename,
+        "source_page_count": len(reader.pages),
     }
