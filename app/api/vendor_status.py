@@ -490,6 +490,48 @@ async def vendor_subscription(
     plan_label = (product or {}).get("name") or plan_value.replace("_", " ").title()
     price_sgd = (product or {}).get("price_sgd")
 
+    # Buyers can hold multiple concurrent Stripe subscriptions (e.g. Vendor
+    # Pro + PDPA Monitor + Tender Intelligence). The User row only carries
+    # the LATEST plan, so the rest are invisible to the UI unless we surface
+    # them explicitly. Pull every non-cancelled Subscription row for this
+    # user and decorate with marketing label + price from pricing.py.
+    from app.core.models import Subscription as _SubscriptionRow
+    sub_rows = (
+        db.query(_SubscriptionRow)
+        .filter(_SubscriptionRow.user_id == current_user.id)
+        .filter(_SubscriptionRow.status.in_(["active", "trialing", "past_due"]))
+        .order_by(_SubscriptionRow.created_at.desc())
+        .all()
+    )
+    all_subscriptions: list[dict] = []
+    for s in sub_rows:
+        product_slug = s.product_type or ""
+        prod = get_product(product_slug) or get_product(product_slug.replace("_monthly", "")) or {}
+        all_subscriptions.append({
+            "id": str(s.id),
+            "product_type": product_slug,
+            "label": prod.get("name") or product_slug.replace("_", " ").title(),
+            "description": prod.get("description"),
+            "price_sgd": prod.get("price_sgd"),
+            "interval": "annual" if "annual" in product_slug else "month",
+            "status": s.status,
+            "current_period_end": s.current_period_end.isoformat() if s.current_period_end else None,
+            "started_at": s.created_at.isoformat() if s.created_at else None,
+            "stripe_subscription_id": s.stripe_subscription_id,
+            "stripe_customer_id": s.stripe_customer_id,
+            # The product_type maps to a feature tier — surfacing per-sub
+            # features lets the UI show "this is what you unlocked by buying
+            # X" per tab instead of one merged blob.
+            "features": (enforce_tier(
+                assessment_data={
+                    "plan": product_slug.replace("_monthly", "").replace("_annual", ""),
+                    "subscription_status": "active",
+                    "payment_confirmed": True,
+                },
+                framework=None,
+            ).get("features") or {}),
+        })
+
     return {
         "plan": plan_value,
         "plan_label": plan_label,
@@ -502,6 +544,9 @@ async def vendor_subscription(
         "stripe_customer_id": getattr(current_user, "stripe_customer_id", None),
         "stripe_subscription_id": getattr(current_user, "stripe_subscription_id", None),
         "features": features,
+        # New: every active Stripe subscription on this user, not just the
+        # latest activation. Frontend tabs the list when len > 1.
+        "all_subscriptions": all_subscriptions,
         "notarization": {
             "monthly_quota": quota,
             "used_this_month": used,
