@@ -7,6 +7,7 @@ from app.services.email_service import EmailService
 import asyncio
 import logging
 import time
+import uuid
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -55,6 +56,72 @@ async def _notify_owner_of_qr_scan(owner_id: str, company_name: str, owner_email
         logger.info(f"[Verify] QR scan email sent to {owner_email}")
     except Exception as e:
         logger.warning(f"[Verify] QR scan email failed for {owner_email}: {e}")
+
+
+@router.get("/cover-sheet/{report_id}")
+async def verify_cover_sheet_by_report_id(report_id: str):
+    """
+    Public verification endpoint keyed by Report UUID.
+
+    Used by the QR code printed on page 1 of every Compliance Cover Sheet —
+    the QR encodes booppa.io/verify/<report_id> and resolves here so a
+    procurement officer can scan with their phone and see a single
+    pass/fail card without typing the 64-char SHA-256.
+
+    Returns only public-facing fields (company, framework, issued date,
+    tx hash, anchor status). Same shape as the audit-hash endpoint below
+    for API consistency. The report_id is UUID4 (128 bits unguessable),
+    so this is not enumerable.
+    """
+    db = SessionLocal()
+    try:
+        try:
+            uuid.UUID(report_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid report id")
+
+        report = db.query(Report).filter(Report.id == report_id).first()
+        if not report:
+            raise HTTPException(status_code=404, detail="Cover Sheet not found")
+
+        tx_hash = report.tx_hash
+        anchored = False
+        anchored_at = None
+        tx_confirmed = None
+        if tx_hash:
+            blockchain = BlockchainService()
+            status = blockchain.get_anchor_status(report.audit_hash or "", tx_hash=tx_hash)
+            anchored = status.get("anchored", False)
+            anchored_at = status.get("anchored_at")
+            tx_confirmed = status.get("tx_confirmed")
+
+        ad = report.assessment_data if isinstance(report.assessment_data, dict) else {}
+        return {
+            "verify_id": str(report.id),
+            "report_id": str(report.id),
+            "framework": report.framework,
+            "company_name": report.company_name,
+            "status": report.status,
+            "tx_hash": tx_hash,
+            "tx_network": "Polygon Amoy Testnet",
+            "audit_hash": report.audit_hash,
+            "anchored": anchored,
+            "anchored_at": anchored_at,
+            "tx_confirmed": tx_confirmed,
+            "issued_at": report.completed_at.isoformat() if report.completed_at else (
+                report.created_at.isoformat() if report.created_at else None
+            ),
+            "schema_version": ad.get("schema_version"),
+            "format": "BOOPPA-PROOF-SG",
+            "verify_url": f"{settings.VERIFY_BASE_URL.rstrip('/')}/verify/{report.id}",
+            "disclaimer": (
+                "Verification is read-only and does not certify compliance or "
+                "imply regulatory approval. Anchor confirms document existence "
+                "at the timestamp above; not a guarantee of contents."
+            ),
+        }
+    finally:
+        db.close()
 
 
 @router.get("/{audit_hash}")

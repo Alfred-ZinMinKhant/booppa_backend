@@ -201,6 +201,21 @@ def main() -> None:
                 "Remediation focuses on transparency obligations under s. 11, 13, 25, 26 and 26A."
             ),
             "findings": pdpa_findings,
+            # v7: Scan Scope disclosure — auditor credibility signal.
+            "scan_scope": {
+                "pages_crawled": 14,
+                "started_at": "2026-06-07T08:34:10Z",
+                "completed_at": "2026-06-07T08:34:54Z",
+                "ssl_grade": "A",
+                "ssl_grade_checked_at": "2026-06-07",
+                "excluded": [
+                    "Authenticated areas (login-gated routes)",
+                    "API endpoints",
+                    "Mobile applications",
+                    "Subdomains not crawled from the seed URL",
+                ],
+                "scanner_version": "Booppa PDPA Scanner v1",
+            },
         },
         "pdpa_tx_hash": "0x" + "1a" * 32,
         # RFP
@@ -223,17 +238,35 @@ def main() -> None:
         # Combined Cover Sheet hash
         "tx_hash": "0x" + "3c" * 32,
         "network": "Polygon Amoy Testnet",
+        # Cycle-scoped only (v6): PDPA report, RFP kit, Cover Sheet, signed CS.
+        # No leakage of unrelated notarizations.
         "anchored_documents": [
-            {"kind": "pdpa", "tx_hash": "0x" + "1a" * 32},
-            {"kind": "rfp", "tx_hash": "0x" + "2b" * 32},
-            {"kind": "cover_sheet", "tx_hash": "0x" + "3c" * 32},
+            {
+                "descriptor": "PDPA Quick Scan Report",
+                "filename": "pdpa-report-sample.pdf",
+                "file_hash": "1a" * 32,
+                "tx_hash": "0x" + "1a" * 32,
+            },
+            {
+                "descriptor": "RFP Complete Kit",
+                "filename": "rfp-complete-sample.pdf",
+                "file_hash": "2b" * 32,
+                "tx_hash": "0x" + "2b" * 32,
+            },
+            {
+                "descriptor": "Compliance Cover Sheet (this PDF)",
+                "filename": "compliance-cover-sheet-sample.pdf",
+                "file_hash": "3c" * 32,
+                "tx_hash": "0x" + "3c" * 32,
+            },
         ],
         "trm_domains": [],
+        # v6: recommendations derived from PDPA findings — severity + SLA per
+        # bullet so the buyer has a precise punch-list.
         "recommendations": [
-            "Publish a Subject Access Request (SAR) policy with a 30-day response SLA.",
-            "Add granular cookie consent toggles for analytics vs. marketing.",
-            "Document Sub-processor list with quarterly review cadence.",
-        ],
+            f["recommendation"] + f" ({f['legislation_text'].split(';')[0]} · {f['severity']} · remediate within 30 days)"
+            for f in pdpa_findings if f["severity"] in {"HIGH", "CRITICAL"}
+        ][:5] or None,
     }
 
     pdf_bytes = generate_cover_sheet(data)
