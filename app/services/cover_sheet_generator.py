@@ -57,7 +57,10 @@ for _c in _LOGO_CANDIDATES:
 # v4: RFP Q&A blocks now show the per-answer verification source (intake /
 #     website / ACRA / SSL / GeBIZ / intake+website / etc.) instead of the
 #     binary fact-backed/AI-generated badge; evidence line under each answer.
-COVER_SHEET_SCHEMA_VERSION = 4
+# v5: Sections 3 & 4 reframed as "Full Report" / "Full Q&A" (dropped "Summary"
+#     framing). Empty findings / Q&A now render an explicit placeholder
+#     instead of being silently hidden — so missing-data bugs are visible.
+COVER_SHEET_SCHEMA_VERSION = 5
 
 PAGE_W, PAGE_H = A4
 MARGIN = 0.75 * inch
@@ -454,8 +457,8 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     ]
     story.append(_kv_table(components))
 
-    # ── Section 3: PDPA Status ─────────────────────────────────────────────────
-    story += _section("PDPA Compliance Status", _STYLES, page_break=True)
+    # ── Section 3: PDPA Full Report ────────────────────────────────────────────
+    story += _section("PDPA Quick Scan — Full Report", _STYLES, page_break=True)
     pdpa_score_v = data.get("pdpa_score")
     score_str = f"{pdpa_score_v} / 100" if isinstance(pdpa_score_v, int) else "Pending — scan still running"
     pdpa_d = data.get("pdpa_details") or {}
@@ -484,10 +487,10 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
 
     # Full findings list — one card per finding with severity, description,
     # legislation and remediation. No truncation: this PDF is the customer's
-    # complete evidence record.
+    # complete evidence record, not a summary teaser.
     findings_full = pdpa_d.get("findings") or []
+    story.append(Spacer(1, 0.1 * inch))
     if findings_full:
-        story.append(Spacer(1, 0.1 * inch))
         story.append(Paragraph(
             f"<b>Detailed Findings ({len(findings_full)})</b>", _STYLES["caption"]
         ))
@@ -495,9 +498,24 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
         for idx, f in enumerate(findings_full, 1):
             story.append(_pdpa_finding_block(idx, f))
             story.append(Spacer(1, 0.06 * inch))
+    else:
+        # Render an explicit placeholder so the buyer sees the section attempted
+        # to populate. Empty findings on a real scan = clean site; empty findings
+        # because the data didn't flow = bug. Either way the reader needs
+        # signal, not silence.
+        story.append(Paragraph(
+            "<b>Detailed Findings</b>", _STYLES["caption"]
+        ))
+        story.append(Spacer(1, 0.04 * inch))
+        story.append(Paragraph(
+            "No PDPA findings were attached to this Cover Sheet. If your PDPA "
+            "scan completed but findings are missing here, regenerate this "
+            "Cover Sheet from booppa.io/compliance/cover-sheet.",
+            _STYLES["caption"],
+        ))
 
-    # ── Section 4: RFP Complete Summary ───────────────────────────────────────
-    story += _section("RFP Complete Summary", _STYLES, page_break=True)
+    # ── Section 4: RFP Complete Kit — Full Q&A ────────────────────────────────
+    story += _section("RFP Complete Kit — Full Q&amp;A", _STYLES, page_break=True)
     rfp_d = data.get("rfp_details") or {}
     generated_at = rfp_d.get("generated_at") or "—"
     if isinstance(generated_at, str) and "T" in generated_at:
@@ -537,8 +555,8 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     # Procurement officers can verify the buyer's bid claims against this list
     # without leaving the cover sheet.
     qa_answers = rfp_d.get("qa_answers") or []
+    story.append(Spacer(1, 0.1 * inch))
     if qa_answers:
-        story.append(Spacer(1, 0.1 * inch))
         story.append(Paragraph(
             f"<b>RFP Q&amp;A ({len(qa_answers)})</b>", _STYLES["caption"]
         ))
@@ -546,6 +564,17 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
         for idx, qa in enumerate(qa_answers, 1):
             story.append(_rfp_qa_block(idx, qa))
             story.append(Spacer(1, 0.05 * inch))
+    else:
+        story.append(Paragraph(
+            "<b>RFP Q&amp;A</b>", _STYLES["caption"]
+        ))
+        story.append(Spacer(1, 0.04 * inch))
+        story.append(Paragraph(
+            "No RFP answers were attached to this Cover Sheet. If your RFP "
+            "Complete Kit completed but answers are missing here, regenerate "
+            "this Cover Sheet from booppa.io/compliance/cover-sheet.",
+            _STYLES["caption"],
+        ))
 
     # ── Section 5: Blockchain Evidence Trail ──────────────────────────────────
     story += _section("Blockchain Evidence Trail", _STYLES, page_break=True)
@@ -677,3 +706,128 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
 
     doc.build(story)
     return buf.getvalue()
+
+
+def append_signature_page(
+    unsigned_pdf_bytes: bytes,
+    *,
+    signer_name: str,
+    signer_title: str,
+    signer_email: str,
+    company_name: str,
+    signer_ip: str | None,
+    unsigned_pdf_sha256: str,
+    attestations: dict[str, bool],
+    signed_at_utc: datetime | None = None,
+) -> bytes:
+    """
+    Append a Signature Page to an existing unsigned Cover Sheet PDF.
+
+    Renders a one-page Signature Page (same branding/header/footer as the
+    cover sheet body) capturing the signer's identity, the typed-signature
+    attestation, the SHA-256 of the unsigned PDF, and the legal citation
+    (Singapore Electronic Transactions Act s. 8). Then concatenates it after
+    the original PDF and returns the combined bytes.
+
+    The original PDF is left byte-identical — its prior on-chain anchor still
+    verifies against the unchanged unsigned-PDF hash carried on the appended
+    page. The combined PDF gets its own fresh SHA-256 anchored as the
+    "signed cover sheet" downstream.
+    """
+    signed_at = (signed_at_utc or datetime.now(timezone.utc)).strftime("%d %b %Y %H:%M UTC")
+
+    sig_buf = BytesIO()
+    sig_doc = BaseDocTemplate(
+        sig_buf,
+        pagesize=A4,
+        leftMargin=MARGIN, rightMargin=MARGIN,
+        topMargin=HEADER_H + 0.3 * inch,
+        bottomMargin=FOOTER_H + 0.3 * inch,
+    )
+    frame = Frame(sig_doc.leftMargin, sig_doc.bottomMargin, sig_doc.width, sig_doc.height, id="sig")
+    sig_doc.addPageTemplates([PageTemplate(id="sig", frames=frame, onPage=_draw_page)])
+
+    story: list = []
+
+    story.append(Paragraph("Electronic Signature", _STYLES["h1"]))
+    story.append(Paragraph(f"Cover Sheet attestation — {_xml_escape(company_name)}", _STYLES["caption"]))
+    story.append(Spacer(1, 0.18 * inch))
+
+    story.extend(_section("Signatory", _STYLES))
+    story.append(_kv_table([
+        ("Full legal name", _xml_escape(signer_name)),
+        ("Title / role", _xml_escape(signer_title)),
+        ("Email of record", _xml_escape(signer_email)),
+        ("Organisation", _xml_escape(company_name)),
+        ("Signed (UTC)", signed_at),
+        ("Originating IP", _xml_escape(signer_ip or "—")),
+    ]))
+
+    story.extend(_section("Attestation", _STYLES))
+    attest_authorised = bool(attestations.get("authorised"))
+    attest_accurate = bool(attestations.get("accurate"))
+    tick = "&#10003;"
+    cross = "&#10007;"
+    story.append(Paragraph(
+        f"<font color='#10b981'>{tick if attest_authorised else cross}</font> "
+        f"I am authorised to sign this Compliance Cover Sheet on behalf of "
+        f"<b>{_xml_escape(company_name)}</b>.",
+        _STYLES["Normal"],
+    ))
+    story.append(Spacer(1, 0.06 * inch))
+    story.append(Paragraph(
+        f"<font color='#10b981'>{tick if attest_accurate else cross}</font> "
+        "I attest that the contents of this Cover Sheet are true and accurate "
+        "to the best of my knowledge.",
+        _STYLES["Normal"],
+    ))
+
+    story.extend(_section("Document binding", _STYLES))
+    story.append(_kv_table([
+        ("Unsigned PDF SHA-256", _xml_escape(unsigned_pdf_sha256)),
+        ("Hash algorithm", "SHA-256"),
+        ("Signature method", "Electronic — typed name + attestation"),
+        ("Anchor network", "Polygon Amoy Testnet"),
+    ]))
+
+    story.extend(_section("Legal basis", _STYLES))
+    story.append(Paragraph(
+        "This electronic signature is given under Singapore's "
+        "<b>Electronic Transactions Act (Cap. 88), section 8</b>, which provides "
+        "that a signature requirement under any law is satisfied by an electronic "
+        "method that (a) identifies the signatory, and (b) indicates the "
+        "signatory's intention in respect of the information contained in the "
+        "electronic record. The typed name above, the two attestation checkboxes "
+        "ticked at submission, and the SHA-256 binding to the unsigned PDF "
+        "together satisfy this requirement for commercial purposes.",
+        _STYLES["Normal"],
+    ))
+
+    story.append(Spacer(1, 0.25 * inch))
+    story.append(Paragraph(
+        "Booppa Smart Care LLC retains the submission record (IP, UTC timestamp, "
+        "attestation booleans, and unsigned-PDF SHA-256) as the audit trail for "
+        "this signature.",
+        _STYLES["small"],
+    ))
+
+    sig_doc.build(story)
+    signature_pdf_bytes = sig_buf.getvalue()
+
+    # Concatenate unsigned cover sheet + signature page using pypdf. We never
+    # touch the original pages — they stay byte-identical so the prior on-chain
+    # anchor for the unsigned PDF remains valid.
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except ImportError as e:
+        raise RuntimeError("pypdf is required to append the signature page") from e
+
+    writer = PdfWriter()
+    for page in PdfReader(BytesIO(unsigned_pdf_bytes)).pages:
+        writer.add_page(page)
+    for page in PdfReader(BytesIO(signature_pdf_bytes)).pages:
+        writer.add_page(page)
+
+    out = BytesIO()
+    writer.write(out)
+    return out.getvalue()

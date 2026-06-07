@@ -954,6 +954,96 @@ Note: Consult legal counsel for specific compliance requirements."""
         """Call DeepSeek Chat Completions API."""
         return await self._deepseek_provider.call_chat(messages)
 
+    async def extract_rfp_brief_from_tender_pdf(self, tender_text: str) -> Optional[Dict]:
+        """
+        Extract a structured RFP brief from a tender document's plain text.
+
+        Used by /api/rfp-intake/{id}/extract to pre-fill the buyer's intake
+        form when they upload a tender PDF. Returns None if the model can't
+        produce structured output — the caller must fall back to manual entry.
+
+        Returned fields (any may be empty / "unknown"):
+          - rfp_description: 1-3 sentence summary of what's being procured
+          - sector: free text (fintech, healthcare, government, etc.)
+          - iso_status: 'certified' | 'pursuing' | 'none' | 'unknown' — what
+            the tender REQUIRES of the bidder
+          - data_hosting: 'sg' | 'apac' | 'global' | 'unknown' — residency req
+          - dpo_required: bool
+          - deadline: free text, e.g. "31 Aug 2026" or "" if not stated
+          - scope_keywords: list[str], up to 8 short tags
+        """
+        if not tender_text or not tender_text.strip():
+            return None
+
+        # Cap text to keep token cost predictable. ~15k chars ≈ ~4k tokens.
+        snippet = tender_text.strip()[:15000]
+
+        system = (
+            "You extract structured RFP/tender briefs from raw tender text. "
+            "Return ONLY valid JSON matching the requested schema — no prose, "
+            "no preamble, no code fences. If a field is not stated in the "
+            "text, use the literal string 'unknown' (or [] for lists). Do not "
+            "invent specifics like ISO numbers, AES strengths, or SLAs that "
+            "aren't in the source."
+        )
+        user = (
+            "Extract the following fields from this tender text and return them "
+            "as a single JSON object:\n"
+            "  rfp_description: string  // 1-3 sentence plain-English summary of what is being procured\n"
+            "  sector: string           // e.g. 'fintech', 'healthcare', 'government' — 'unknown' if not clear\n"
+            "  iso_status: string       // one of 'certified', 'pursuing', 'none', 'unknown' — what the tender requires of the BIDDER\n"
+            "  data_hosting: string     // one of 'sg', 'apac', 'global', 'unknown' — residency requirement on the bidder\n"
+            "  dpo_required: bool       // true if the tender requires the bidder to have a DPO\n"
+            "  deadline: string         // submission deadline as written, or '' if not stated\n"
+            "  scope_keywords: string[] // up to 8 short tags (e.g. ['SaaS', 'HR', 'cloud'])\n"
+            f"\nTender text:\n---\n{snippet}\n---"
+        )
+
+        try:
+            content = await self._call_deepseek([
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ])
+        except Exception as e:
+            logger.warning(f"[ExtractTender] DeepSeek call failed: {e}")
+            return None
+
+        parsed = self._extract_json(content or "")
+        if not parsed or not isinstance(parsed, dict):
+            logger.info("[ExtractTender] Model returned no parseable JSON")
+            return None
+
+        # Normalise — coerce types and drop unexpected keys so the caller
+        # gets a predictable shape regardless of model drift.
+        def _str(v) -> str:
+            return v.strip() if isinstance(v, str) else ""
+
+        def _enum(v, allowed: set[str], default: str = "unknown") -> str:
+            s = _str(v).lower()
+            return s if s in allowed else default
+
+        def _bool(v) -> bool:
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, str):
+                return v.strip().lower() in {"true", "yes", "y", "1"}
+            return False
+
+        def _str_list(v) -> List[str]:
+            if not isinstance(v, list):
+                return []
+            return [s.strip() for s in v if isinstance(s, str) and s.strip()][:8]
+
+        return {
+            "rfp_description": _str(parsed.get("rfp_description")),
+            "sector": _str(parsed.get("sector")),
+            "iso_status": _enum(parsed.get("iso_status"), {"certified", "pursuing", "none", "unknown"}),
+            "data_hosting": _enum(parsed.get("data_hosting"), {"sg", "apac", "global", "unknown"}),
+            "dpo_required": _bool(parsed.get("dpo_required")),
+            "deadline": _str(parsed.get("deadline")),
+            "scope_keywords": _str_list(parsed.get("scope_keywords")),
+        }
+
     def _extract_json(self, content: str) -> Optional[Dict]:
         """Extract JSON object from model output."""
         if not content:
