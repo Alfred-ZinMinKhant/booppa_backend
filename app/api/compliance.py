@@ -280,11 +280,21 @@ async def cover_sheet_status(email: str, response: Response):
         signed_payload = None
         if signed:
             s_ad = signed.assessment_data if isinstance(signed.assessment_data, dict) else {}
+            # Surface the signature method + signer identity captured at
+            # sign-time so the UI can render a proper "signed receipt"
+            # panel rather than just file + tx. Electronic signatures
+            # carry signature_method='electronic' from the e-sign endpoint;
+            # wet-sign uploads have no such key (rendered as 'uploaded').
             signed_payload = {
                 "uploaded_at": signed.created_at.isoformat() if signed.created_at else None,
                 "tx_hash": signed.tx_hash,
                 "file_hash": s_ad.get("file_hash") or signed.audit_hash,
                 "file_name": s_ad.get("original_filename"),
+                "signature_method": s_ad.get("signature_method") or "uploaded",
+                "signer_name": s_ad.get("signer_name"),
+                "signer_title": s_ad.get("signer_title"),
+                "signed_at_utc": s_ad.get("signed_at_utc"),
+                "legal_basis": s_ad.get("legal_basis"),
             }
 
         # Surface the brief CTA only if the buyer's CURRENT Compliance Bundle

@@ -1186,9 +1186,17 @@ async def _fulfill_bundle(
                     current_ce = getattr(user, "compliance_evidence_credits", 0) or 0
                     user.compliance_evidence_credits = max(current_ce, 1)
                     user.pending_cover_sheet = True
+                    # Reset the lifetime "have you signed?" flag because this
+                    # is a fresh cycle. Without this, a buyer who re-purchases
+                    # CEP stays stuck on the post-sign UI from their prior
+                    # cycle and never sees the new cycle's sign loop. The
+                    # cycle-scoped `signed` payload (filtered by PDPA
+                    # created_at) still surfaces the prior signed sheet for
+                    # audit, just not as "you have signed THIS cycle".
+                    user.signed_cover_sheet_uploaded = False
                     logger.info(
                         f"[Bundle:compliance_evidence_pack] Set CE credit=1 for {customer_email} "
-                        f"(was {current_ce})"
+                        f"(was {current_ce}); reset signed_cover_sheet_uploaded=False for fresh cycle"
                     )
                 else:
                     current_balance = getattr(user, "notarization_credits", 0) or 0
