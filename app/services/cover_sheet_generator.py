@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from typing import Optional, Dict, Any
 
+import qrcode
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -60,7 +61,21 @@ for _c in _LOGO_CANDIDATES:
 # v5: Sections 3 & 4 reframed as "Full Report" / "Full Q&A" (dropped "Summary"
 #     framing). Empty findings / Q&A now render an explicit placeholder
 #     instead of being silently hidden — so missing-data bugs are visible.
-COVER_SHEET_SCHEMA_VERSION = 5
+# v6: Anchored Compliance Documents scoped to current cycle's bundle artifacts
+#     only (no more leakage of unrelated notarizations). Risk Overview now
+#     surfaces top 3 findings instead of a boilerplate paragraph.
+#     Recommendations derived from findings (severity + SLA) instead of
+#     generic 4-bullet fallback. Section 4 RFP Q&A gets an "N of M answers
+#     need your input" banner when incomplete entries exist.
+# v7: Page 1 carries a QR code to booppa.io/verify/cover-sheet/{report_id}
+#     so any procurer can scan + see a green-✓ verification card. Section 3
+#     gains a Scan Scope disclosure block (auditor credibility signal).
+#     Section 5 renamed "Evidence Integrity Anchors" with an honest
+#     guarantee disclosure — no more overclaiming "regulator-ready
+#     blockchain" on a testnet. Added a verification-path sentence pointing
+#     readers at the EvidenceAnchorV3 contract so the anchor isn't a
+#     trust-us claim.
+COVER_SHEET_SCHEMA_VERSION = 7
 
 PAGE_W, PAGE_H = A4
 MARGIN = 0.75 * inch
@@ -283,6 +298,33 @@ _VERIFICATION_BADGES: dict[str, tuple[str, "colors.Color"]] = {
 }
 
 
+def _is_qa_incomplete(qa: dict) -> bool:
+    """Detect Q&A entries the buyer still owes content on. Two patterns:
+
+    1. The answer is a bare `[Verify: X]` placeholder (intake field never
+       supplied → AI couldn't draft a real answer, just stubbed it out).
+    2. The verification source is `ai_drafted` AND the AI couldn't find
+       supporting evidence on the buyer's website.
+
+    Used by the Cover Sheet to flag a banner at the top of Section 4
+    ("N of M answers need your input") so procurers know which lines to
+    weight and the buyer knows what to fix.
+    """
+    answer = (qa.get("answer") or "").strip()
+    if not answer:
+        return True
+    # Pure placeholder: starts with [Verify and contains little else.
+    stripped = answer.strip("[]")
+    if stripped.lower().startswith("verify:") and len(answer) < 120:
+        return True
+    verification = qa.get("verification") if isinstance(qa.get("verification"), dict) else {}
+    source = (verification.get("source") or "").lower()
+    evidence = verification.get("evidence") or []
+    if source == "ai_drafted" and not evidence:
+        return True
+    return False
+
+
 def _rfp_qa_block(idx: int, qa: dict):
     """Render a single RFP Q&A entry: question, answer, verification-source
     badge, and the evidence line that justifies the badge.
@@ -434,12 +476,69 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     story.append(hero)
     story.append(Spacer(1, 0.12 * inch))
 
-    story.append(_kv_table([
-        ("Report ID", data.get("report_id", "—")),
+    # Verify QR — page 1 trust signal. Procurer scans with their phone,
+    # lands on booppa.io/verify/cover-sheet/{report_id}, sees the green
+    # ✓ verified card. Without this the "anchored on-chain" claim reads
+    # as theatre. Placed side-by-side with the Report ID KV table so the
+    # reader's eye binds the two together.
+    report_id = data.get("report_id", "—")
+    verify_base = (
+        os.environ.get("VERIFY_BASE_URL")
+        or "https://www.booppa.io"
+    ).rstrip("/")
+    verify_url = f"{verify_base}/verify/cover-sheet/{report_id}" if report_id and report_id != "—" else None
+
+    qr_flowable = None
+    if verify_url:
+        try:
+            qr = qrcode.QRCode(version=1, box_size=4, border=2)
+            qr.add_data(verify_url)
+            qr.make(fit=True)
+            pil_img = qr.make_image(fill_color="#0f172a", back_color="white")
+            qr_buf = BytesIO()
+            pil_img.save(qr_buf, format="PNG")
+            qr_buf.seek(0)
+            qr_flowable = Image(qr_buf, width=1.1 * inch, height=1.1 * inch)
+        except Exception as e:
+            logger.warning(f"[CoverSheet] QR generation failed: {e}")
+
+    id_table = _kv_table([
+        ("Report ID", report_id),
         ("Generated", now),
         ("Bundle", bundle_type.replace("_", " ").title()),
         ("Prepared for", data.get("customer_email", "—")),
-    ]))
+    ])
+
+    if qr_flowable is not None:
+        qr_label_style = ParagraphStyle(
+            "qr_label", fontSize=6.5, leading=8, textColor=SLATE,
+            alignment=1, fontName="Helvetica-Bold",
+        )
+        qr_caption_style = ParagraphStyle(
+            "qr_caption", fontSize=6, leading=7.5, textColor=SLATE,
+            alignment=1,
+        )
+        qr_cell = [
+            Paragraph("SCAN TO VERIFY", qr_label_style),
+            Spacer(1, 2),
+            qr_flowable,
+            Spacer(1, 2),
+            Paragraph("Anchored proof on booppa.io", qr_caption_style),
+        ]
+        id_plus_qr = Table(
+            [[id_table, qr_cell]],
+            colWidths=[5.5 * inch, 1.2 * inch],
+        )
+        id_plus_qr.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        story.append(id_plus_qr)
+    else:
+        story.append(id_table)
 
     # ── Section 2: Components Delivered ───────────────────────────────────────
     story += _section("Bundle Components Delivered", _STYLES)
@@ -478,6 +577,45 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
         ("Frameworks Detected", laws_str),
     ]
     story.append(_kv_table(pdpa_rows))
+
+    # Scan Scope disclosure — honest about what was and wasn't checked.
+    # Auditors weight this heavily: a report that admits its limits is
+    # more trustworthy than one that pretends to have scanned everything.
+    scan_scope = pdpa_d.get("scan_scope") or {}
+    if scan_scope:
+        story.append(Spacer(1, 0.08 * inch))
+        story.append(Paragraph("<b>Scan Scope</b>", _STYLES["caption"]))
+        story.append(Spacer(1, 0.03 * inch))
+        scope_rows: list[tuple[str, str]] = []
+        if scan_scope.get("pages_crawled"):
+            scope_rows.append(("Pages crawled", f"{scan_scope['pages_crawled']}"))
+        if scan_scope.get("started_at") or scan_scope.get("completed_at"):
+            s_at = scan_scope.get("started_at", "")[:19].replace("T", " ") if scan_scope.get("started_at") else "—"
+            c_at = scan_scope.get("completed_at", "")[:19].replace("T", " ") if scan_scope.get("completed_at") else "—"
+            scope_rows.append(("Scan window (UTC)", f"{s_at} → {c_at}"))
+        if scan_scope.get("ssl_grade"):
+            ssl_str = f"Grade {scan_scope['ssl_grade']}"
+            if scan_scope.get("ssl_grade_checked_at"):
+                ssl_str += f" (checked {scan_scope['ssl_grade_checked_at'][:10]})"
+            scope_rows.append(("SSL Labs", ssl_str))
+        excluded_list = scan_scope.get("excluded") or []
+        if excluded_list:
+            scope_rows.append((
+                "Excluded from scan",
+                "; ".join(excluded_list),
+            ))
+        if scan_scope.get("scanner_version"):
+            scope_rows.append(("Scanner", scan_scope["scanner_version"]))
+        if scope_rows:
+            story.append(_kv_table(scope_rows))
+        story.append(Spacer(1, 0.02 * inch))
+        story.append(Paragraph(
+            "<i>Scope disclosure: Booppa's automated scanner crawls the public web "
+            "surface of the seed URL only. Authenticated areas, APIs, mobile apps, "
+            "and uncrawled subdomains are out of scope and may carry independent "
+            "risks not reflected in the findings above.</i>",
+            _STYLES["small"],
+        ))
 
     exec_sum = pdpa_d.get("executive_summary")
     if exec_sum:
@@ -557,6 +695,28 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     qa_answers = rfp_d.get("qa_answers") or []
     story.append(Spacer(1, 0.1 * inch))
     if qa_answers:
+        # Count buyer-incomplete entries up-front so a procurer reading this
+        # section sees the gap before they read individual answers, and the
+        # buyer sees a clear "go finish your intake" CTA.
+        incomplete_count = sum(1 for qa in qa_answers if _is_qa_incomplete(qa))
+        if incomplete_count > 0:
+            banner_style = ParagraphStyle(
+                "qa_banner_warn", fontSize=8, leading=11,
+                textColor=colors.HexColor("#92400e"), fontName="Helvetica-Bold",
+                backColor=colors.HexColor("#fef3c7"),
+                borderPadding=6, borderColor=colors.HexColor("#fbbf24"),
+                borderWidth=0.6, leftIndent=4, rightIndent=4,
+                spaceBefore=2, spaceAfter=6,
+            )
+            story.append(Paragraph(
+                f"&#9888; <b>{incomplete_count} of {len(qa_answers)} answers need your input.</b> "
+                f"Update your intake at "
+                f"<font color='#0ea5e9'>booppa.io/rfp-intake</font> "
+                f"so the AI can replace placeholders with verifiable facts. "
+                f"Procurement evaluators reading this Cover Sheet should treat "
+                f"those entries as drafts, not commitments.",
+                banner_style,
+            ))
         story.append(Paragraph(
             f"<b>RFP Q&amp;A ({len(qa_answers)})</b>", _STYLES["caption"]
         ))
@@ -576,8 +736,13 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
             _STYLES["caption"],
         ))
 
-    # ── Section 5: Blockchain Evidence Trail ──────────────────────────────────
-    story += _section("Blockchain Evidence Trail", _STYLES, page_break=True)
+    # ── Section 5: Evidence Integrity Anchors ─────────────────────────────────
+    # Renamed from "Blockchain Evidence Trail" to be honest about what the
+    # anchor is for: SHA-256 timestamp integrity, not financial-grade
+    # blockchain settlement. We anchor on Polygon Amoy Testnet today; this
+    # is sufficient for proving a document existed at a point in time, but
+    # NOT a substitute for a notarized legal record. Don't oversell.
+    story += _section("Evidence Integrity Anchors", _STYLES, page_break=True)
     from app.core.config import settings
     network = data.get("network", settings.POLYGON_NETWORK_NAME)
     explorer = settings.POLYGON_EXPLORER_URL.rstrip("/")
@@ -617,6 +782,23 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
             ),
         ))
     story.append(_kv_table(rows))
+
+    # Anchor disclosure: be honest about what Polygon Amoy guarantees,
+    # without promising anything we're not shipping. State the integrity
+    # guarantee clearly. Don't oversell, don't roadmap-tease either.
+    story.append(Spacer(1, 0.06 * inch))
+    story.append(Paragraph(
+        "<b>Anchor guarantee.</b> Each transaction above commits a SHA-256 hash "
+        "of the corresponding artifact to Polygon Amoy Testnet via the "
+        "EvidenceAnchorV3 smart contract. This proves the artifact existed at "
+        "the timestamp of inclusion in the recorded block — sufficient for "
+        "integrity verification and audit-trail purposes. Polygon Amoy is a "
+        "testnet, intended for evidence anchoring; it does not provide the "
+        "financial-grade settlement guarantees of a mainnet chain. Anchors "
+        "are independently verifiable by reading the EvidenceAnchorV3 "
+        "contract on Polygon Amoy with any standard Web3 client.",
+        _STYLES["small"],
+    ))
 
     # ── Section 5b: Anchored Compliance Documents ────────────────────────────
     anchored_docs = data.get("anchored_documents") or []
@@ -674,13 +856,67 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
         story.append(trm_table)
 
     # ── Section 7: Risk Overview ───────────────────────────────────────────────
+    # Surface the buyer's top 3 risks tied to specific PDPA findings so the
+    # procurer reading this Cover Sheet sees what to weight, and the buyer
+    # gets a precise punch-list. Boilerplate paragraph stays as the fallback
+    # for clean scans (0 findings) so the section never reads as empty.
     story += _section("Risk Overview", _STYLES, page_break=True)
-    story.append(Paragraph(
-        "This pack represents a snapshot assessment. Booppa's automated scans "
-        "cover PDPA obligations and vendor credibility signals. "
-        "A qualified DPO should review findings before submission to regulators.",
-        _STYLES["caption"],
-    ))
+    _findings_for_risk = (pdpa_d.get("findings") or []) if isinstance(pdpa_d, dict) else []
+    _SEV_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+    _SEV_SLA = {
+        "CRITICAL": "immediate",
+        "HIGH": "30 days",
+        "MEDIUM": "60 days",
+        "LOW": "90 days",
+        "INFO": "next quarter",
+    }
+    _top_risks = sorted(
+        (f for f in _findings_for_risk if isinstance(f, dict)),
+        key=lambda f: _SEV_RANK.get((f.get("severity") or "").upper(), 9),
+    )[:3]
+    if _top_risks:
+        story.append(Paragraph(
+            f"<b>Top {len(_top_risks)} risk{'s' if len(_top_risks) != 1 else ''} from the scan</b>",
+            _STYLES["caption"],
+        ))
+        story.append(Spacer(1, 0.04 * inch))
+        for idx, f in enumerate(_top_risks, 1):
+            sev = (f.get("severity") or "—").upper()
+            sla = _SEV_SLA.get(sev, "30 days")
+            title = _xml_escape(f.get("title") or f.get("type") or "Risk")
+            desc = _xml_escape(f.get("description") or f.get("details") or "")
+            lawref = _xml_escape(
+                f.get("legislation_text")
+                or "; ".join(f.get("legislation_references") or [])
+                or ""
+            )
+            tail_bits: list[str] = [f"<b>{sev}</b>", f"remediate within {sla}"]
+            if lawref:
+                tail_bits.insert(1, lawref)
+            tail = " · ".join(tail_bits)
+            story.append(Paragraph(
+                f"{idx}. <b>{title}</b> — {desc}",
+                _STYLES["caption"],
+            ))
+            story.append(Paragraph(
+                f"<font size='7' color='#64748b'>{tail}</font>",
+                _STYLES["caption"],
+            ))
+            story.append(Spacer(1, 0.04 * inch))
+        story.append(Spacer(1, 0.04 * inch))
+        story.append(Paragraph(
+            "<i>A qualified DPO should review findings before submission to regulators. "
+            "Each finding above includes a recommended remediation in Section 8.</i>",
+            _STYLES["small"],
+        ))
+    else:
+        story.append(Paragraph(
+            "This pack represents a snapshot assessment. Booppa's automated scans "
+            "cover PDPA obligations and vendor credibility signals. "
+            "The current scan surfaced no findings; a qualified DPO should still "
+            "review the evidence trail before submission to regulators.",
+            _STYLES["caption"],
+        ))
 
     # ── Section 8: Recommendations ────────────────────────────────────────────
     recommendations = data.get("recommendations") or [
@@ -787,7 +1023,7 @@ def append_signature_page(
         ("Unsigned PDF SHA-256", _xml_escape(unsigned_pdf_sha256)),
         ("Hash algorithm", "SHA-256"),
         ("Signature method", "Electronic — typed name + attestation"),
-        ("Anchor network", "Polygon Amoy Testnet"),
+        ("Anchor network", "Polygon Amoy (integrity anchor)"),
     ]))
 
     story.extend(_section("Legal basis", _STYLES))

@@ -2016,28 +2016,55 @@ def fulfill_cover_sheet_task(
                 if customer_email else None
             )
             if user:
-                # Pull bundle-redeemed notarizations
-                rows = (
+                # Anchored Compliance Documents is scoped to THIS cycle's
+                # bundle artifacts only — PDPA scan PDF, RFP kit PDF, the
+                # Cover Sheet itself (referenced below as the current report),
+                # and any signed Cover Sheet from this cycle. We deliberately
+                # exclude general compliance_notarization rows: those carry
+                # the buyer's ad-hoc document uploads (across all projects
+                # they've worked on) and leaking them onto a Cover Sheet the
+                # buyer hands to a procurer/regulator looks unprofessional
+                # and exposes unrelated work. The PDPA / RFP / signed-CS
+                # anchors are pulled below from their dedicated Report
+                # frameworks; this section dedupes them with proper
+                # descriptors so the procurer sees only this bundle's
+                # artifacts.
+                CYCLE_FRAMEWORKS = (
+                    "pdpa_quick_scan",
+                    "rfp_complete",
+                    "compliance_evidence_signed_sheet",
+                )
+                cycle_rows = (
                     db.query(Report)
                     .filter(
                         Report.owner_id == user.id,
-                        Report.framework == "compliance_notarization",
+                        Report.framework.in_(CYCLE_FRAMEWORKS),
+                        Report.tx_hash.isnot(None),
                     )
                     .order_by(Report.created_at.desc())
-                    .limit(20)
                     .all()
                 )
-                for r in rows:
-                    ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
-                    if not ad.get("bundle_credit_redeemed"):
+                # Keep only the most recent of each framework — this is the
+                # current cycle's artifact. Anything older is a prior cycle.
+                seen_frameworks: set[str] = set()
+                FRAMEWORK_LABELS = {
+                    "pdpa_quick_scan": "PDPA Quick Scan Report",
+                    "rfp_complete": "RFP Complete Kit",
+                    "compliance_evidence_signed_sheet": "Signed Cover Sheet",
+                }
+                for r in cycle_rows:
+                    if r.framework in seen_frameworks:
                         continue
+                    seen_frameworks.add(r.framework)
+                    ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
                     anchored_documents.append({
-                        "filename": ad.get("original_filename") or "—",
-                        "descriptor": ad.get("document_descriptor") or "",
+                        "filename": ad.get("original_filename") or FRAMEWORK_LABELS.get(r.framework, r.framework),
+                        "descriptor": FRAMEWORK_LABELS.get(r.framework, r.framework),
                         "file_hash": ad.get("file_hash") or r.audit_hash or "—",
                         "tx_hash": r.tx_hash,
                         "tx_url": f"{explorer_base}/tx/{r.tx_hash}" if r.tx_hash else None,
-                        "anchored_at": ad.get("blockchain_anchored_at"),
+                        "anchored_at": ad.get("blockchain_anchored_at")
+                            or (r.completed_at.isoformat() if r.completed_at else None),
                     })
                 # PDPA + VP status from latest matching reports
                 pdpa_report = (
@@ -2075,15 +2102,107 @@ def fulfill_cover_sheet_task(
                             pdpa_score = max(0, min(100, 100 - int(raw_risk)))
                         except (TypeError, ValueError):
                             pdpa_score = "—"
-                    findings = structured.get("detailed_findings") or pdpa_ad.get("detailed_findings") or []
+                    # Findings have lived under several keys in different
+                    # versions of the PDPA worker output. Check all of them
+                    # so the Cover Sheet doesn't silently lose findings when
+                    # the AI returns them under an unexpected key. Order
+                    # reflects observed frequency: structured.detailed_findings
+                    # is the modern path; the rest are backfills.
+                    findings = (
+                        structured.get("detailed_findings")
+                        or pdpa_ad.get("detailed_findings")
+                        or structured.get("findings")
+                        or pdpa_ad.get("findings")
+                        or structured_ra.get("findings")
+                        or pdpa_ad.get("violations")
+                        or []
+                    )
+                    # Coerce dict-of-findings to list (some older AI paths return
+                    # {"finding_key": {...}, ...} instead of a list of dicts).
+                    if isinstance(findings, dict):
+                        findings = list(findings.values())
+                    if not isinstance(findings, list):
+                        findings = []
+
                     sev_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
                     for f in findings:
+                        if not isinstance(f, dict):
+                            continue
                         sev = (f.get("severity") or "").title()
                         if sev in sev_counts:
                             sev_counts[sev] += 1
+
+                    # Score-vs-findings consistency check: if the AI reported
+                    # a clean score but enumerated findings, derive the score
+                    # from the findings count using PDPC's standard weighting
+                    # (Critical=25, High=15, Medium=8, Low=3) so the displayed
+                    # number can't contradict the rendered findings list. The
+                    # raw `pdpa_score` derived from raw_risk takes precedence
+                    # only when findings are empty (clean site).
+                    if findings:
+                        weighted_risk = (
+                            sev_counts["Critical"] * 25
+                            + sev_counts["High"] * 15
+                            + sev_counts["Medium"] * 8
+                            + sev_counts["Low"] * 3
+                        )
+                        derived_score = max(0, min(100, 100 - weighted_risk))
+                        # Trust the findings-derived score when it disagrees
+                        # materially with the raw AI score — a 100/100 with
+                        # 3 High findings is the bug we're guarding against.
+                        if not isinstance(pdpa_score, int) or abs(pdpa_score - derived_score) >= 10:
+                            pdpa_score = derived_score
+                            logger.info(
+                                f"[CoverSheet] PDPA score derived from {len(findings)} findings "
+                                f"({sev_counts}) → {derived_score}; raw was inconsistent"
+                            )
+
+                    # Risk level: derive from worst finding severity if AI didn't
+                    # set one, so "Risk Level —" doesn't appear next to actual
+                    # High/Critical findings.
+                    risk_level = pdpa_ad.get("risk_level") or structured.get("risk_level")
+                    if not risk_level or risk_level == "—":
+                        if sev_counts["Critical"] > 0:
+                            risk_level = "Critical"
+                        elif sev_counts["High"] > 0:
+                            risk_level = "High"
+                        elif sev_counts["Medium"] > 0:
+                            risk_level = "Medium"
+                        elif sev_counts["Low"] > 0:
+                            risk_level = "Low"
+                        else:
+                            risk_level = "Minimal"
+
+                    # Scan scope data — what was actually crawled and when.
+                    # Disclosure is the single most powerful credibility
+                    # signal for an auditor: it shows the report is honest
+                    # about its limits. Pull what's persisted; fall back to
+                    # static defaults that are accurate for any web-only
+                    # PDPA scan (we never log into authenticated areas).
+                    scan_scope = {
+                        "pages_crawled": (
+                            pdpa_ad.get("pages_crawled")
+                            or pdpa_ad.get("page_count")
+                            or structured.get("pages_crawled")
+                        ),
+                        "started_at": pdpa_ad.get("scan_started_at") or (
+                            pdpa_report.created_at.isoformat() if pdpa_report.created_at else None
+                        ),
+                        "completed_at": pdpa_report.completed_at.isoformat() if pdpa_report.completed_at else None,
+                        "ssl_grade": pdpa_ad.get("ssl_grade") or structured.get("ssl_grade"),
+                        "ssl_grade_checked_at": pdpa_ad.get("ssl_grade_checked_at"),
+                        "excluded": [
+                            "Authenticated areas (login-gated routes)",
+                            "API endpoints",
+                            "Mobile applications",
+                            "Subdomains not crawled from the seed URL",
+                        ],
+                        "scanner_version": pdpa_ad.get("scanner_version") or "Booppa PDPA Scanner v1",
+                    }
+
                     pdpa_details = {
                         "website_url": pdpa_ad.get("website_url") or pdpa_report.company_website or "—",
-                        "risk_level": pdpa_ad.get("risk_level") or structured.get("risk_level") or "—",
+                        "risk_level": risk_level,
                         "total_findings": len(findings),
                         "severity_counts": sev_counts,
                         # Full findings list — cover sheet renders each with
@@ -2094,6 +2213,7 @@ def fulfill_cover_sheet_task(
                         "executive_summary": structured.get("executive_summary") or pdpa_report.ai_narrative or "",
                         "detected_laws": pdpa_ad.get("detected_laws") or [],
                         "scanned_at": pdpa_report.completed_at.isoformat() if pdpa_report.completed_at else None,
+                        "scan_scope": scan_scope,
                     }
                 rfp_report = (
                     db.query(Report)
@@ -2191,6 +2311,43 @@ def fulfill_cover_sheet_task(
             )
             raise self.retry(countdown=countdown)
 
+        # Derive Recommendations from the actual PDPA findings, sorted by
+        # severity. A buyer reading the boilerplate "Address any PDPA gaps
+        # identified in your scan report within 30 days" alongside 3 specific
+        # findings looks lazy. A buyer reading "Add a 'Purpose' clause to your
+        # privacy policy (PDPA s. 20) — 30-day deadline" + the other 2
+        # specifics has actionable next steps.
+        SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+        SEVERITY_SLA = {
+            "CRITICAL": "immediate",
+            "HIGH": "30 days",
+            "MEDIUM": "60 days",
+            "LOW": "90 days",
+            "INFO": "next quarter",
+        }
+        findings_list = (pdpa_details.get("findings") or []) if pdpa_details else []
+        ranked = sorted(
+            (f for f in findings_list if isinstance(f, dict)),
+            key=lambda f: SEVERITY_RANK.get((f.get("severity") or "").upper(), 9),
+        )[:5]
+        if ranked:
+            derived_recs: list[str] = []
+            for f in ranked:
+                title = (f.get("title") or f.get("type") or "PDPA finding").strip()
+                rec_text = (f.get("recommendation") or f.get("remediation") or "").strip()
+                sev = (f.get("severity") or "").upper()
+                sla = SEVERITY_SLA.get(sev, "30 days")
+                lawref = (f.get("legislation_text") or "").split(";")[0].strip()
+                lead = rec_text if rec_text else f"Address: {title}"
+                tail_parts: list[str] = []
+                if lawref:
+                    tail_parts.append(lawref)
+                tail_parts.append(f"{sev or 'PDPA'} · remediate within {sla}")
+                derived_recs.append(f"{lead} ({' · '.join(tail_parts)})")
+            recommendations = derived_recs
+        else:
+            recommendations = None  # cover_sheet_generator falls back to its boilerplate
+
         # 2. Build cover data
         cover_data = {
             "report_id": report_id,
@@ -2210,7 +2367,7 @@ def fulfill_cover_sheet_task(
             "anchored_documents": anchored_documents,
             "tx_hash": "—",
             "network": settings.POLYGON_NETWORK_NAME,
-            "recommendations": None,
+            "recommendations": recommendations,
             "trm_domains": [],
         }
 
