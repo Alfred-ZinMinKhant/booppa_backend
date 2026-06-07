@@ -10,7 +10,7 @@ Kept separate from /notarize so other bundle uploads cannot drain the CE credit.
 """
 
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Response, UploadFile, File, Form
 from fastapi.responses import RedirectResponse
 from typing import Optional
 import hashlib
@@ -82,12 +82,19 @@ async def download_cover_sheet(report_id: str):
 
 
 @router.get("/cover-sheet/status")
-async def cover_sheet_status(email: str):
+async def cover_sheet_status(email: str, response: Response):
     """
     One-stop status feed for the dedicated /compliance/cover-sheet page.
     Includes: pdpa, rfp, cover_sheet (issued PDF), signed (uploaded copy),
     credits balance, and the pending_cover_sheet flag.
+
+    Cache-Control: no-store — the buyer polls this every 8s while the brief
+    state flips ("pending" → "submitted") on the webhook + intake submit.
+    Without no-store, Cloudflare can serve a stale pre-submit body back to
+    the page and the "Complete brief" CTA stays stuck after the user has
+    actually submitted.
     """
+    response.headers["Cache-Control"] = "no-store"
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == email).first()
@@ -279,23 +286,27 @@ async def cover_sheet_status(email: str):
                 "file_name": s_ad.get("original_filename"),
             }
 
-        # Surface any unsubmitted RFP brief so the cover-sheet page can show the
-        # buyer a clear CTA instead of spinning on "Generating…" — the kit can't
-        # actually be generated until they submit the brief.
+        # Surface the brief CTA only if the buyer's CURRENT Compliance Bundle
+        # intake is still pending. Take the latest CE-pack intake regardless of
+        # status, then check it — this way an old pending row from a prior
+        # purchase doesn't keep the CTA stuck after the buyer has actually
+        # submitted today's bundle's brief. (Don't change to "latest pending"
+        # — that's the regression pattern called out in CLAUDE.md for the
+        # /stripe/checkout/verify endpoint, and the same trap applies here.)
         rfp_brief_intake_id = None
         try:
             from app.core.models_v12 import PendingRfpIntake
-            pending_intake = (
+            latest_ce_intake = (
                 db.query(PendingRfpIntake)
                 .filter(
                     PendingRfpIntake.user_id == user.id,
-                    PendingRfpIntake.status == "pending",
+                    PendingRfpIntake.bundle_source == "compliance_evidence_pack",
                 )
                 .order_by(PendingRfpIntake.created_at.desc())
                 .first()
             )
-            if pending_intake:
-                rfp_brief_intake_id = str(pending_intake.id)
+            if latest_ce_intake and latest_ce_intake.status == "pending":
+                rfp_brief_intake_id = str(latest_ce_intake.id)
         except Exception as e:
             logger.warning(f"[ComplianceStatus] PendingRfpIntake lookup failed: {e}")
 
