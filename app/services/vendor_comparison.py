@@ -15,14 +15,51 @@ from app.core.models_v10 import MarketplaceVendor
 logger = logging.getLogger(__name__)
 
 
-def compare_vendors(db: Session, vendor_ids: list[str]) -> dict:
+def _framework_total(db, buyer_org_id, vendor_user_id, score) -> int:
+    """Vendor total under the buyer's evaluation framework (read-time reweight).
+    Falls back to the stored total when no org/framework or no score."""
+    if not score:
+        return 0
+    if not buyer_org_id or not vendor_user_id:
+        return score.total_score or 0
+    try:
+        from app.services.scoring import VendorScoreEngine
+        weights = VendorScoreEngine.resolve_weights(db, buyer_org_id, vendor_user_id)
+        return VendorScoreEngine.calculate_total({
+            "complianceScore": score.compliance_score or 0,
+            "visibilityScore": score.visibility_score or 0,
+            "engagementScore": score.engagement_score or 0,
+            "recencyScore": score.recency_score or 0,
+            "procurementInterestScore": score.procurement_interest_score or 0,
+        }, weights)
+    except Exception:
+        return score.total_score or 0
+
+
+def compare_vendors(db: Session, vendor_ids: list[str], buyer_user=None) -> dict:
     """Generate comparison matrix for 2-4 vendors.
 
     vendor_ids are MarketplaceVendor UUIDs (marketplace_vendors.id).
     We join to users via claimed_by_user_id to fetch scores and status.
+
+    When `buyer_user` is provided and their org has an active evaluation
+    framework, each vendor's `total_score` is recomputed from its stored
+    component scores under the framework's weights (read-time reweight).
     """
     if len(vendor_ids) < 2 or len(vendor_ids) > 4:
         return {"error": "Provide 2-4 vendor IDs for comparison"}
+
+    # Resolve the buyer's org once for framework-weighted totals.
+    buyer_org_id = None
+    if buyer_user is not None:
+        try:
+            from app.core.models_enterprise import Organisation
+            org = db.query(Organisation).filter(
+                Organisation.owner_user_id == buyer_user.id
+            ).first()
+            buyer_org_id = org.id if org else None
+        except Exception:
+            buyer_org_id = None
 
     vendors = []
     for vid in vendor_ids:
@@ -62,7 +99,7 @@ def compare_vendors(db: Session, vendor_ids: list[str]) -> dict:
                 "uen": mv.uen,
                 "scores": (
                     {
-                        "total_score": score.total_score if score else 0,
+                        "total_score": _framework_total(db, buyer_org_id, user_id, score),
                         "compliance_score": score.compliance_score if score else 0,
                         "visibility_score": score.visibility_score if score else 0,
                         "engagement_score": score.engagement_score if score else 0,

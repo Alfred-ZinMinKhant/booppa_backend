@@ -73,6 +73,29 @@ COLLABORATION_PLAN_KEYS = SUITE_PLAN_KEYS | PRO_SUITE_PLAN_KEYS | {
     "verify_supplier_evidence", "verify_supplier_evidence_monthly",
 }
 
+# Vendor-evaluation frameworks (custom scoring weight profiles).
+# Customising the five scoring weights is the Buyer Professional "customisable
+# risk-scoring weights" feature → Buyer Pro+ and Suites.
+FRAMEWORK_CUSTOMISE_PLAN_KEYS = SUITE_PLAN_KEYS | {
+    "buyer_pro", "buyer_pro_monthly", "buyer_pro_annual",
+    "buyer_enterprise", "buyer_enterprise_monthly", "buyer_enterprise_annual",
+}
+# Multiple named/sector-scoped frameworks + built-in templates (MAS TRM, MOH)
+# is the Buyer Enterprise "custom evaluation frameworks" feature → Enterprise
+# buyer + Pro Suite / legacy Enterprise Pro.
+FRAMEWORK_TEMPLATE_PLAN_KEYS = PRO_SUITE_PLAN_KEYS | {
+    "buyer_enterprise", "buyer_enterprise_monthly", "buyer_enterprise_annual",
+}
+
+
+def can_customise_frameworks(plan: str | None) -> bool:
+    return (plan or "").lower().strip() in FRAMEWORK_CUSTOMISE_PLAN_KEYS
+
+
+def can_use_framework_templates(plan: str | None) -> bool:
+    return (plan or "").lower().strip() in FRAMEWORK_TEMPLATE_PLAN_KEYS
+
+
 # Buyer-ladder + Suite scan quotas (per unique vendor per month per scan-type).
 # None = unlimited. Used by app.billing.scan_credits.consume_scan.
 # A re-view of an already-scanned vendor within the same month is free.

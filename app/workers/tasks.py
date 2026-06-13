@@ -4743,3 +4743,65 @@ def send_tender_intelligence_digest_for_user(self, user_id: str):
         logger.warning(
             "[TenderIntelFirstCycle] failed for user=%s: %s", user_id, e,
         )
+
+
+@celery_app.task(bind=True, max_retries=4, name="anchor_scan_ledger_task")
+def anchor_scan_ledger_task(self, ledger_id: str):
+    """Anchor a buyer scan on Polygon for the Buyer Enterprise on-chain
+    verification log. Computes a SHA-256 over the ledger fields, anchors it,
+    and stores tx_hash/anchored_at on the row. Non-blocking; tolerant of a
+    not-yet-committed row (retries) and of missing blockchain config (no-op)."""
+    from app.core.models_v8 import VendorScanLedger
+    from datetime import datetime as _dt, timezone as _tz
+
+    if not getattr(settings, "BLOCKCHAIN_PRIVATE_KEY", None):
+        logger.info("[scan-anchor] BLOCKCHAIN_PRIVATE_KEY unset — skipping %s", ledger_id)
+        return
+
+    db = SessionLocal()
+    try:
+        row = db.query(VendorScanLedger).filter(VendorScanLedger.id == ledger_id).first()
+        if not row:
+            # Request commit may not have landed yet — retry a few times.
+            raise self.retry(countdown=10, exc=RuntimeError(f"ledger {ledger_id} not found yet"))
+        if row.tx_hash:
+            return  # already anchored
+
+        scan_data = {
+            "buyer_id": str(row.buyer_id),
+            "vendor_id": str(row.vendor_id),
+            "scan_type": row.scan_type,
+            "month": row.month,
+            "plan_at_consumption": row.plan_at_consumption,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        scan_hash = hashlib.sha256(json.dumps(scan_data, sort_keys=True).encode()).hexdigest()
+
+        tx_hash = asyncio.run(BlockchainService().anchor_evidence(
+            scan_hash, metadata=f"scan_ledger:{row.scan_type}:{ledger_id}",
+        ))
+        if tx_hash:
+            row.tx_hash = tx_hash
+            row.anchored_at = _dt.now(_tz.utc)
+            row.anchor_error = None
+            db.commit()
+            logger.info("[scan-anchor] anchored ledger %s -> %s", ledger_id, tx_hash[:16])
+        else:
+            logger.info("[scan-anchor] anchor_evidence returned None (idempotent) for %s", ledger_id)
+    except self.MaxRetriesExceededError:
+        logger.warning("[scan-anchor] gave up on %s (row never committed)", ledger_id)
+    except Exception as exc:
+        try:
+            raise self.retry(countdown=60 * (2 ** self.request.retries), exc=exc)
+        except self.MaxRetriesExceededError:
+            db.rollback()
+            try:
+                row = db.query(VendorScanLedger).filter(VendorScanLedger.id == ledger_id).first()
+                if row:
+                    row.anchor_error = str(exc)[:500]
+                    db.commit()
+            except Exception:
+                pass
+            logger.error("[scan-anchor] failed for %s: %s", ledger_id, exc)
+    finally:
+        db.close()

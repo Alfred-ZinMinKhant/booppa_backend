@@ -225,6 +225,61 @@ critical alerts, seats/RBAC, multi-subsidiary, white-label, generic webhooks,
 API keys, notarizations. Frontend: `/procurement/dashboard`,
 `/procurement/vendor/[slug]`, `/compare`, `/buyer/dashboard`.
 
+## 3d. Buyer feature-gap build (frameworks + on-chain scan log)
+
+Closed 3 of the 4 buyer gaps from §3c (Slack/Teams reworded, not built).
+**Backend complete + compiles; frontend UI pending.**
+
+**Reword (done):** `lib/pricing.ts` buyer_pro bullet → "Webhook integrations —
+email or any incoming-webhook URL (Slack, Teams, etc.)". Backend `pricing.py`
+already said generic "webhooks".
+
+**Evaluation frameworks (= custom risk-weights + custom frameworks, unified):**
+- Model `VendorEvaluationFramework` (`models_v12.py`): org-scoped weight profile
+  (5 component weights, `framework_type`, `sector`, `criteria`, `is_builtin`).
+  `Organisation.active_framework_id` added. Migration
+  `2026_06_13_0001-add_eval_frameworks_and_scan_anchor.py`.
+- `VendorScoreEngine.calculate_total(components, weights=None)` +
+  `resolve_weights(db, org_id, vendor_id)` (`scoring.py`): sector framework →
+  org active → DEFAULT. **Re-ranking recomputes from stored component scores at
+  read time** (no caching).
+- Endpoints in `procurement.py`: `GET/POST /procurement/frameworks`,
+  `PATCH /procurement/frameworks/{id}`, `POST …/{id}/activate`. Built-ins
+  (DEFAULT/MAS_TRM/MOH) seeded lazily per-org via `_ensure_builtin_frameworks`.
+  Gating: `can_customise_frameworks` (Pro+), `can_use_framework_templates`
+  (Enterprise) in `enforcement.py`.
+- Applied: `/procurement/vendors` re-ranks via `_buyer_has_active_framework`
+  (fast SQL path unchanged when no framework) + `_buyer_weight_map`;
+  `vendor_comparison.compare_vendors(buyer_user=…)` recomputes totals.
+- **Boundary:** frameworks are weight profiles + criteria metadata; framework-
+  specific component recomputation is out of scope. `sector_percentiles` stays
+  framework-agnostic.
+
+**On-chain per-scan log (Buyer Enterprise):**
+- `VendorScanLedger` += `tx_hash`/`anchored_at`/`anchor_error` (same migration).
+- `anchor_scan_ledger_task` (`tasks.py`): SHA-256 of ledger fields →
+  `BlockchainService.anchor_evidence`; retries; tolerates not-yet-committed row;
+  no-op if `BLOCKCHAIN_PRIVATE_KEY` unset. Routes to `default` queue.
+- Spawned from `scan_credits.consume_scan` (countdown=5) for **new** rows when
+  plan is buyer_enterprise. `consume_scan` now returns `ledger_id`.
+- `GET /procurement/scan-verification-log?vendor_slug=&months=` (Enterprise-only)
+  returns rows with tx_hash + Polygonscan URL + status.
+
+**Migration:** run `alembic upgrade head` (revision `2026_06_13_0001`).
+
+**Frontend (done, `tsc` clean):** built in `../booppa-nextjs` —
+- Proxy routes (cookie-auth via `fetchWithAuth`): `app/api/procurement/frameworks/route.ts`
+  (GET/POST), `frameworks/[id]/route.ts` (PATCH), `frameworks/[id]/activate/route.ts`
+  (POST), `scan-verification-log/route.ts` (GET).
+- Pages: `app/procurement/frameworks/page.tsx` (list/create/activate weight
+  profiles with sliders + sector tag), `app/procurement/scan-log/page.tsx`
+  (per-vendor on-chain scan log with Polygonscan links).
+- Dashboard header now links to "Scoring profiles" + "Scan log"
+  (`app/procurement/dashboard/page.tsx`).
+- Note: gating is enforced backend-side (403); the UI shows the backend error.
+  No edit form for existing custom frameworks yet (create + activate only) — a
+  small follow-up if needed.
+
 ## 4. AWS access cheat-sheet (booppa account `997493291407`, `ap-southeast-1`)
 
 > The Booppa account is **not** in your SSO profiles (those are Issara/Golden

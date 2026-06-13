@@ -411,6 +411,12 @@ class VendorScanLedger(Base):
     plan_at_consumption = Column(String(64))               # audit trail
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # On-chain verification (Buyer Enterprise). Populated asynchronously by
+    # anchor_scan_ledger_task after the scan is consumed; NULL until anchored.
+    tx_hash = Column(String(128), nullable=True, index=True)
+    anchored_at = Column(DateTime, nullable=True)
+    anchor_error = Column(Text, nullable=True)
+
     __table_args__ = (
         UniqueConstraint(
             "buyer_id", "vendor_id", "month", "scan_type",
