@@ -48,7 +48,10 @@ celery_app.conf.update(
     # Beat schedule
     beat_schedule={
         "cleanup-old-tasks": {
-            "task": "app.workers.tasks.cleanup_old_tasks",
+            # Must match the registered task name (name="cleanup_old_tasks");
+            # the old dotted "app.workers.tasks.cleanup_old_tasks" is unregistered
+            # and was rejected by the worker, so the hourly cleanup never ran.
+            "task": "cleanup_old_tasks",
             "schedule": 3600.0,  # Every hour
         },
         # Sync live GeBIZ open tenders every 30 minutes.

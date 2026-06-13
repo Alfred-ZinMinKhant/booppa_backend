@@ -85,6 +85,33 @@ only the `.delay()` enqueue was misrouted.
 stranded tasks now route to `default`; `reports` tasks unchanged. Needs the
 worker redeployed to take effect.
 
+**Full audit (every Celery task):** the stranded set was large — 15 of 16 beat
+tasks (all except cleanup) plus `.delay()`/`.apply_async()` sites with no
+`queue=`: the five `run_*_for_user`/`send_tender_intelligence_digest_for_user`
+first-cycle tasks, `anchor_signed_cover_sheet_task`, `post_payment_drip`,
+`send_referral_reward_email_task`, `fire_strategy_6_task`,
+`scrape_vendor_contact_task`. All now route to `default`.
+
+**Second, separate bug fixed:** the `cleanup-old-tasks` beat entry referenced
+`"app.workers.tasks.cleanup_old_tasks"` but the task is registered
+`name="cleanup_old_tasks"` → beat published an unregistered name → worker
+rejected it → hourly cleanup never ran. Changed the beat ref to
+`"cleanup_old_tasks"`.
+
+**⚠ Contradiction to verify on the live broker (don't skip):** static routing
+says ~all scheduled tasks fell to the unconsumed `celery` queue, yet
+`gebiz_tenders` has rows from today 05:26 and cover-sheet anchoring works. Likely
+a pre-restart worker consumed `celery`; the current worker (restarted 05:52)
+runs `-Q reports,default`, so stranding is newly active. Confirm with
+`redis-cli -u "$REDIS_URL" LLEN celery` (+ `default`/`reports`) and check the ECS
+worker task def's actual `-Q`. The queue fix only affects NEW enqueues — anything
+already stuck in `celery` won't drain (beat re-fires on next cron; one-off
+`.delay()` jobs are lost and need re-trigger).
+
+**Not scheduled anywhere (flag):** `auto_activation_check`,
+`compute_quarterly_leaderboard`, `compute_monthly_snapshot` (auto_activation.py)
+are not in `beat_schedule`.
+
 ---
 
 ## 2. RFP Kit redesign (PDF + frontend)
