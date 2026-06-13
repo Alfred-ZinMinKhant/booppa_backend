@@ -948,27 +948,19 @@ class RFPExpressBuilder:
             pdf = PDFService()
             verify_base = settings.VERIFY_BASE_URL.rstrip("/")
 
-            # Pre-flight review checklist — one line per answer with an initials
-            # slot. Forces the buyer to manually acknowledge each answer before
-            # submission instead of paste-and-pray. Lives at the top of the Q&A
-            # section so it's the first thing the reader hits.
-            checklist_lines = [
-                f"  [  ]  {self._q_label(k)} — reviewed, accurate, no [FILL IN] left.    Initials: ______"
+            # Pre-flight review checklist — one item per answer the buyer must
+            # tick off. Rendered as a real checkbox table by PDFService rather
+            # than a run-on paragraph. Forces manual acknowledgement of each
+            # answer before submission instead of paste-and-pray.
+            checklist_items = [
+                f"{self._q_label(k)} — reviewed, accurate, no [FILL IN] left."
                 for k in qa_answers.keys()
             ]
-            checklist = (
-                "PRE-FLIGHT REVIEW CHECKLIST\n"
-                "Tick each box and initial after you have read the corresponding answer, "
-                "confirmed it reflects your company's actual practice, and replaced any "
-                "[FILL IN] placeholders. Do NOT submit this document if any box is unticked.\n\n"
-                + "\n".join(checklist_lines)
-                + "\n\n  [  ]  All [FILL IN] placeholders have been replaced with real, accurate values.    Initials: ______"
-                + "\n  [  ]  I confirm the company has the capability to substantiate every claim above.    Initials: ______"
-                + "\n  [  ]  This document is being submitted alongside the proposal, pricing, and team sections."
-                + "    Initials: ______"
-                + "\n\nReviewer name: ______________________________    Date: __________    Signature: ______________________"
-                + "\n─────────────────────────────────────────────────────────────────────\n"
-            )
+            checklist_confirmations = [
+                "All [FILL IN] placeholders have been replaced with real, accurate values.",
+                "I confirm the company has the capability to substantiate every claim above.",
+                "This document is being submitted alongside the proposal, pricing, and team sections.",
+            ]
 
             # Verification label per answer — mirrors the web result page.
             # Buyers reading the PDF see the same source attribution.
@@ -986,154 +978,130 @@ class RFPExpressBuilder:
             }
             verification_map = verification_map or {}
 
-            def _verif_line(key: str) -> str:
+            def _verif_text(key: str) -> str:
+                """Bracket-free verification caption for the structured renderer."""
                 vinfo = verification_map.get(key) or {"source": "ai_drafted", "evidence": []}
                 src = vinfo.get("source") or "ai_drafted"
                 label = _SOURCE_LABEL.get(src, src)
                 ev = vinfo.get("evidence") or []
                 ev_part = (" · Evidence: " + " · ".join(ev[:3])) if ev else ""
-                return f"[Verification: {label}{ev_part}]"
+                return f"{label}{ev_part}"
 
-            qa_section = "\n\n".join(
-                f"Q: {self._q_label(k)}\nA: {v}\n{_verif_line(k)}"
+            qa_list = [
+                {
+                    "question": self._q_label(k),
+                    "answer": v,
+                    "verification": _verif_text(k),
+                    "ai_drafted": (verification_map.get(k) or {}).get("source", "ai_drafted") == "ai_drafted",
+                }
                 for k, v in qa_answers.items()
-            )
-
-            explorer_base = settings.POLYGON_EXPLORER_URL.rstrip("/")
-            blockchain_info = (
-                f"Blockchain TX: {tx_hash}\n"
-                f"Network: {settings.POLYGON_NETWORK_NAME}\n"
-                f"Note: {settings.POLYGON_TESTNET_NOTICE}\n"
-                f"Verify: {explorer_base}/tx/{tx_hash}"
-            ) if tx_hash else "Blockchain anchor pending."
+            ]
 
             is_complete = product_type == "rfp_complete"
             framework_label = "RFP Kit Complete Evidence Pack" if is_complete else "RFP Kit Express Evidence Certificate"
-            # 4.3: Template disclaimer
-            template_warning = (
-                "\n⚠ NOTICE: These answers were generated from a standard template because "
-                "AI generation was unavailable. They have not been independently verified "
-                "against company-specific information. Review and customise before submission."
-                if self.used_template else ""
-            )
 
             intake = intake or {}
 
-            # ACRA verification line
-            acra_line = "ACRA Status: Not verified"
+            # ── Structured evidence detail rows (symbol-free; PDFService renders
+            # these in a meta table). Blockchain anchor is rendered separately by
+            # PDFService._blockchain_block, so it is not duplicated here.
+            details: list[tuple[str, str]] = [
+                ("Vendor URL", vendor_url),
+                ("Sector", ctx.get("sector") or "General"),
+                ("UEN (Business Reg. No.)", ctx.get("uen") or "Not provided"),
+            ]
+
+            # ACRA verification
             if acra_live and acra_live.get("found"):
-                status = acra_live.get("entity_status", "")
-                acra_line = (
-                    f"ACRA Status: {'✓ LIVE' if acra_live.get('live') else '⚠ ' + status} "
-                    f"({acra_live.get('entity_type', '')})"
-                )
+                entity_type = acra_live.get("entity_type", "")
+                acra_val = ("LIVE" if acra_live.get("live")
+                            else (acra_live.get("entity_status") or "Inactive"))
+                details.append(("ACRA Status", f"{acra_val}{f' ({entity_type})' if entity_type else ''}"))
+            else:
+                details.append(("ACRA Status", "Not verified"))
 
-            # PDPC enforcement warning
-            pdpc_line = ""
-            if pdpc_result and pdpc_result.get("found"):
-                pdpc_line = "⚠ PDPC Enforcement: Previous enforcement action found — see warnings."
-
-            # Audit fix D: GeBIZ supplier line
-            gebiz_line = ""
+            # GeBIZ supplier
             if ctx.get("gebiz_supplier"):
                 count = ctx.get("gebiz_contracts_count") or 0
-                gebiz_line = (
-                    f"✓ GeBIZ Registered Supplier — {count} prior government contract(s)"
-                    if count else "✓ GeBIZ Registered Supplier"
-                )
+                details.append((
+                    "GeBIZ Supplier",
+                    f"Registered — {count} prior government contract(s)" if count
+                    else "Registered",
+                ))
 
-            # DPO contact details (audit fix B)
-            dpo_line = ""
-            dpo_name = intake.get("dpo_name") or ""
-            dpo_email = intake.get("dpo_email") or ""
-            if dpo_name or dpo_email:
-                dpo_parts = [x for x in [dpo_name, dpo_email] if x]
-                dpo_line = f"DPO Contact: {', '.join(dpo_parts)}"
+            # DPO contact (audit fix B)
+            dpo_parts = [x for x in [intake.get("dpo_name") or "", intake.get("dpo_email") or ""] if x]
+            if dpo_parts:
+                details.append(("DPO Contact", ", ".join(dpo_parts)))
 
             # Privacy policy URL (audit fix C/F)
-            privacy_line = ""
             if ctx.get("privacy_policy_url"):
-                privacy_line = f"Privacy Policy: {ctx['privacy_policy_url']}"
+                details.append(("Privacy Policy", ctx["privacy_policy_url"]))
 
-            # ISO certification details
-            iso_line = ""
+            # ISO certification
             if intake.get("iso_cert_number"):
                 expiry = intake.get("iso_cert_expiry", "")
-                iso_line = (
-                    f"ISO 27001 Cert: {intake['iso_cert_number']}"
+                details.append((
+                    "ISO 27001 Cert",
+                    f"{intake['iso_cert_number']}"
                     + (f" (expires {expiry})" if expiry else "")
-                    + "  [Verify at bsigroup.com/en-SG/validate-bsi-issued-certificates/]"
-                )
+                    + " — verify at bsigroup.com/en-SG/validate-bsi-issued-certificates/",
+                ))
             elif intake.get("iso_status") and intake["iso_status"].lower() not in ("no", "none", "pursuing", ""):
-                # ISO claimed via status field but no cert number supplied
-                iso_line = (
-                    f"ISO Status: {intake['iso_status']}  "
-                    f"[Certificate number not provided — buyers should request cert for independent verification]"
-                )
+                details.append((
+                    "ISO Status",
+                    f"{intake['iso_status']} — certificate number not provided; "
+                    "buyers should request the cert for independent verification",
+                ))
 
-            # Discrepancy notes
-            disc_lines = ""
-            if discrepancies:
-                disc_lines = "\n⚠ Unresolved Discrepancies:\n" + "\n".join(f"  • {d}" for d in discrepancies)
+            # PDPC enforcement
+            if pdpc_result and pdpc_result.get("found"):
+                details.append(("PDPC Enforcement", "Previous enforcement action found — see warnings"))
 
-            vendor_details = "\n".join(filter(None, [
-                f"Vendor URL: {vendor_url}",
-                f"Report ID: {self.report_id}",
-                f"Sector: {ctx.get('sector') or 'General'}",
-                f"UEN (Singapore Business Registration No.): {ctx.get('uen') or '_______________________________'}",
-                acra_line,
-                gebiz_line,
-                dpo_line,
-                privacy_line,
-                iso_line,
-                pdpc_line,
-                blockchain_info,
-                template_warning,
-                disc_lines,
-            ]))
-            # Scope banner — kit covers PDPA + security only; buyer must add
-            # the rest of the bid (proposal, pricing, team) themselves. Without
-            # this, "Ready-to-submit bid kit" framing mis-sets expectations.
-            # Lives in ai_narrative (not summary) because PDFService renders
-            # ai_narrative as visible paragraphs in this product; summary feeds
-            # the structured cover and isn't shown verbatim.
-            scope_banner = (
-                "⚠ SCOPE NOTICE — READ BEFORE SUBMITTING\n"
+            # Scope notice — kit covers PDPA + security only; buyer must add the
+            # rest of the bid (proposal, pricing, team) themselves.
+            scope_intro = (
                 "This document covers PDPA and information-security compliance answers only. "
                 "It is NOT a complete bid response. Before submitting to GeBIZ or any other "
-                "procurement portal, you must add your own:\n"
-                "  • Technical proposal\n"
-                "  • Pricing and commercial terms\n"
-                "  • Delivery timeline and milestones\n"
-                "  • Team and key personnel\n"
-                "  • Tender-specific requirements (references, case studies, certifications attached)\n"
+                "procurement portal, you must add your own:"
+            )
+            scope_bullets = [
+                "Technical proposal",
+                "Pricing and commercial terms",
+                "Delivery timeline and milestones",
+                "Team and key personnel",
+                "Tender-specific requirements (references, case studies, certifications attached)",
+            ]
+            scope_closing = (
                 "Review every answer below and replace any [FILL IN] placeholders before submission. "
                 "Booppa does not warrant the suitability of these answers for any particular tender; "
-                "the buyer remains responsible for the accuracy of submitted statements.\n"
-                "─────────────────────────────────────────────────────────────────────\n\n"
+                "the buyer remains responsible for the accuracy of submitted statements."
             )
 
             report_data = {
                 "company_name": company_name,
                 "report_id":    self.report_id,
-                "created_at":   datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC"),
+                "created_at":   datetime.now(timezone.utc).isoformat(),
                 "framework":    framework_label,
                 "product_type": product_type,
-                "summary":      (
+                "status":       "Completed",
+                "summary": (
                     f"This certificate confirms that {company_name} has completed the "
                     f"BOOPPA {'RFP Kit Complete' if is_complete else 'RFP Kit Express'} process, "
-                    f"generating blockchain-anchored evidence for procurement submission.\n\n"
-                    f"Scope of Assessment: This compliance pack is based on information provided by the "
-                    f"company's authorised representative and automated website assessment conducted by "
-                    f"Booppa on the date indicated.\n\n"
-                    f"{vendor_details}"
+                    f"generating blockchain-anchored evidence for procurement submission."
                 ),
-                "key_issues":   [],
-                # Use ai_narrative so PDFService renders as plain paragraphs
-                # (not structured mode). Order matters: scope banner → checklist
-                # → Q&A — reader hits the scope notice first, then the checklist
-                # they must initial, only then the actual answers.
-                "ai_narrative": scope_banner + checklist + "\n" + qa_section,
+                # Structured payload consumed by PDFService._rfp_kit_story.
+                "rfp_kit": {
+                    "scope_intro": scope_intro,
+                    "scope_bullets": scope_bullets,
+                    "scope_closing": scope_closing,
+                    "details": details,
+                    "checklist": checklist_items,
+                    "checklist_confirmations": checklist_confirmations,
+                    "qa": qa_list,
+                    "template_used": bool(self.used_template),
+                    "discrepancies": list(discrepancies or []),
+                },
                 "audit_hash": self.report_id,
                 "verify_url": f"{verify_base}/verify/{self.report_id}",
                 "tx_hash": tx_hash,
