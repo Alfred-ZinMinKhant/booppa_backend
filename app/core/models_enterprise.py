@@ -27,6 +27,10 @@ class Organisation(Base):
     # Source of truth is PLAN_TO_MAX_SEATS — set on org creation and refreshed
     # by the subscription webhook on plan change.
     max_seats = Column(Integer, nullable=True)
+    # Buyer's default vendor-scoring profile (VendorEvaluationFramework). NULL =
+    # use the built-in DEFAULT weights. Plain UUID column (no hard FK) to avoid a
+    # circular dependency with models_v12; resolution is by id lookup.
+    active_framework_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

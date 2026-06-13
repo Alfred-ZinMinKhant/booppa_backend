@@ -27,6 +27,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -96,6 +97,81 @@ def _predict_downgrade_risk(risk_score: float, stability: float, volatility: flo
     return          {"level": "LOW",      "score": round(composite), "reason": "Stable profile"}
 
 
+def _buyer_has_active_framework(db, current_user) -> bool:
+    """Cheap check: does the buyer have a non-DEFAULT scoring framework in play?
+    Lets the /vendors fast path stay pure-SQL when no framework is configured."""
+    from app.core.models_enterprise import Organisation
+    from app.core.models_v12 import VendorEvaluationFramework
+
+    org = db.query(Organisation).filter(Organisation.owner_user_id == current_user.id).first()
+    if not org:
+        return False
+    has_sector = (
+        db.query(VendorEvaluationFramework.id)
+        .filter(
+            VendorEvaluationFramework.organisation_id == org.id,
+            VendorEvaluationFramework.sector.isnot(None),
+        ).first() is not None
+    )
+    if has_sector:
+        return True
+    if org.active_framework_id:
+        active = (
+            db.query(VendorEvaluationFramework)
+            .filter(VendorEvaluationFramework.id == org.active_framework_id).first()
+        )
+        return bool(active and active.framework_type != "DEFAULT")
+    return False
+
+
+def _buyer_weight_map(db, current_user, vendor_ids):
+    """Per-vendor scoring weights for the buyer's active evaluation framework.
+
+    Returns None when the buyer has only the DEFAULT framework (or none) — the
+    caller then keeps the fast stored-total SQL path. Otherwise returns a
+    {vendor_id_str: weights_dict} map so the caller can re-rank from the stored
+    component scores. Bounded to ~3 queries regardless of vendor count.
+    """
+    from app.core.models_enterprise import Organisation
+    from app.core.models_v12 import VendorEvaluationFramework
+    from app.services.scoring import VendorScoreEngine
+
+    org = db.query(Organisation).filter(Organisation.owner_user_id == current_user.id).first()
+    if not org:
+        return None
+    fws = (
+        db.query(VendorEvaluationFramework)
+        .filter(VendorEvaluationFramework.organisation_id == org.id)
+        .all()
+    )
+    sector_fws = {f.sector.lower(): f.weights() for f in fws if f.sector}
+    active = next((f for f in fws if str(f.id) == str(org.active_framework_id)), None) if org.active_framework_id else None
+    default_w = active.weights() if active else VendorScoreEngine.WEIGHTS
+    # Nothing custom in play → let the caller use the stored total.
+    if not sector_fws and (active is None or active.framework_type == "DEFAULT"):
+        return None
+
+    # Bulk-load sectors for all candidate vendors (one query).
+    sector_by_vendor: dict[str, list[str]] = {}
+    if sector_fws and vendor_ids:
+        for vid, sec in (
+            db.query(VendorSector.vendor_id, VendorSector.sector)
+            .filter(VendorSector.vendor_id.in_(vendor_ids)).all()
+        ):
+            sector_by_vendor.setdefault(str(vid), []).append((sec or "").lower())
+
+    weight_map: dict[str, dict] = {}
+    for vid in vendor_ids:
+        vid = str(vid)
+        chosen = default_w
+        for sec in sector_by_vendor.get(vid, []):
+            if sec in sector_fws:
+                chosen = sector_fws[sec]
+                break
+        weight_map[vid] = chosen
+    return weight_map
+
+
 @router.get("/vendors")
 async def procurement_vendors(
     sector:      Optional[str]  = Query(None),
@@ -139,13 +215,43 @@ async def procurement_vendors(
         base = base.filter(User.id.in_(sector_ids))
 
     total_count = base.count()
-    rows = (
-        base
-        .order_by(func.coalesce(VendorScore.total_score, 0).desc())
-        .offset((page - 1) * limit)
-        .limit(limit)
-        .all()
-    )
+    _offset = (page - 1) * limit
+
+    if not _buyer_has_active_framework(db, current_user):
+        # Fast path (unchanged): rank by stored total, paginate in SQL.
+        rows = (
+            base
+            .order_by(func.coalesce(VendorScore.total_score, 0).desc())
+            .offset(_offset)
+            .limit(limit)
+            .all()
+        )
+    else:
+        # Framework path: recompute each vendor's total from stored components
+        # using the buyer's active/sector weights, then rank + paginate in memory.
+        from app.services.scoring import VendorScoreEngine
+
+        _CANDIDATE_CAP = 1000
+        candidates = (
+            base.order_by(func.coalesce(VendorScore.total_score, 0).desc())
+            .limit(_CANDIDATE_CAP).all()
+        )
+        weight_map = _buyer_weight_map(db, current_user, [u.id for u, _ in candidates]) or {}
+
+        def _fw_total(pair):
+            u, s = pair
+            if not s:
+                return 0
+            return VendorScoreEngine.calculate_total({
+                "complianceScore": s.compliance_score or 0,
+                "visibilityScore": s.visibility_score or 0,
+                "engagementScore": s.engagement_score or 0,
+                "recencyScore": s.recency_score or 0,
+                "procurementInterestScore": s.procurement_interest_score or 0,
+            }, weight_map.get(str(u.id)))
+
+        candidates.sort(key=_fw_total, reverse=True)
+        rows = candidates[_offset:_offset + limit]
 
     vendor_ids = [str(user.id) for user, _ in rows]
     elevation_map = fetch_elevation_metadata_batch(db, vendor_ids)
@@ -812,3 +918,292 @@ async def export_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=booppa_audit_trail_{ts_file}.pdf"},
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Vendor evaluation frameworks (scoring weight profiles)
+# Powers Buyer Professional "customisable risk-scoring weights" and Buyer
+# Enterprise "custom evaluation frameworks (MAS TRM / MOH)".
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Built-in templates seeded lazily per org. Weights sum to 1.0.
+_BUILTIN_FRAMEWORKS = {
+    "DEFAULT": {
+        "name": "Balanced (default)",
+        "sector": None,
+        "weights": {"COMPLIANCE": 0.30, "VISIBILITY": 0.20, "ENGAGEMENT": 0.20, "RECENCY": 0.15, "PROCUREMENT_INTEREST": 0.15},
+    },
+    "MAS_TRM": {
+        "name": "MAS TRM (fintech)",
+        "sector": "fintech",
+        "weights": {"COMPLIANCE": 0.45, "VISIBILITY": 0.15, "ENGAGEMENT": 0.15, "RECENCY": 0.15, "PROCUREMENT_INTEREST": 0.10},
+    },
+    "MOH": {
+        "name": "MOH (healthcare)",
+        "sector": "healthcare",
+        "weights": {"COMPLIANCE": 0.40, "VISIBILITY": 0.15, "ENGAGEMENT": 0.10, "RECENCY": 0.25, "PROCUREMENT_INTEREST": 0.10},
+    },
+}
+
+_WEIGHT_KEYS = ("COMPLIANCE", "VISIBILITY", "ENGAGEMENT", "RECENCY", "PROCUREMENT_INTEREST")
+
+
+def _ensure_builtin_frameworks(db: Session, org_id) -> None:
+    """Seed DEFAULT/MAS_TRM/MOH templates for an org if not already present."""
+    from app.core.models_v12 import VendorEvaluationFramework
+
+    existing = {
+        f.framework_type
+        for f in db.query(VendorEvaluationFramework.framework_type)
+        .filter(VendorEvaluationFramework.organisation_id == org_id).all()
+    }
+    created = False
+    for ftype, spec in _BUILTIN_FRAMEWORKS.items():
+        if ftype in existing:
+            continue
+        w = spec["weights"]
+        db.add(VendorEvaluationFramework(
+            organisation_id=org_id,
+            name=spec["name"],
+            framework_type=ftype,
+            sector=spec["sector"],
+            weight_compliance=w["COMPLIANCE"],
+            weight_visibility=w["VISIBILITY"],
+            weight_engagement=w["ENGAGEMENT"],
+            weight_recency=w["RECENCY"],
+            weight_procurement_interest=w["PROCUREMENT_INTEREST"],
+            is_builtin=True,
+        ))
+        created = True
+    if created:
+        db.commit()
+
+
+def _framework_dict(fw, active_id=None) -> dict:
+    return {
+        "id": str(fw.id),
+        "name": fw.name,
+        "frameworkType": fw.framework_type,
+        "sector": fw.sector,
+        "weights": fw.weights(),
+        "isBuiltin": fw.is_builtin,
+        "isActive": str(fw.id) == str(active_id) if active_id else False,
+    }
+
+
+class FrameworkWeights(BaseModel):
+    COMPLIANCE: float = Field(ge=0, le=1)
+    VISIBILITY: float = Field(ge=0, le=1)
+    ENGAGEMENT: float = Field(ge=0, le=1)
+    RECENCY: float = Field(ge=0, le=1)
+    PROCUREMENT_INTEREST: float = Field(ge=0, le=1)
+
+
+class FrameworkCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    weights: FrameworkWeights
+    sector: Optional[str] = Field(default=None, max_length=120)
+
+
+class FrameworkPatch(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=120)
+    weights: Optional[FrameworkWeights] = None
+    sector: Optional[str] = Field(default=None, max_length=120)
+
+
+def _validate_weights_sum(w: dict) -> None:
+    total = sum(w.get(k, 0) for k in _WEIGHT_KEYS)
+    if abs(total - 1.0) > 0.01:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Weights must sum to 1.0 (got {total:.2f}).",
+        )
+
+
+@router.get("/frameworks")
+async def list_frameworks(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """List the buyer org's scoring frameworks (built-in templates + custom)."""
+    _require_procurement(current_user)
+    from app.api.vendor_features import _get_or_create_org
+
+    org = _get_or_create_org(db, current_user)
+    _ensure_builtin_frameworks(db, org.id)
+    from app.core.models_v12 import VendorEvaluationFramework
+
+    rows = (
+        db.query(VendorEvaluationFramework)
+        .filter(VendorEvaluationFramework.organisation_id == org.id)
+        .order_by(VendorEvaluationFramework.is_builtin.desc(), VendorEvaluationFramework.name)
+        .all()
+    )
+    return {
+        "frameworks": [_framework_dict(f, org.active_framework_id) for f in rows],
+        "activeFrameworkId": str(org.active_framework_id) if org.active_framework_id else None,
+    }
+
+
+@router.post("/frameworks")
+async def create_framework(body: FrameworkCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """Create a custom scoring weight profile (Buyer Pro+)."""
+    _require_procurement(current_user)
+    from app.billing.enforcement import can_customise_frameworks
+
+    plan = (getattr(current_user, "plan", "") or "").lower().strip()
+    role = getattr(current_user, "role", "")
+    if role != "ADMIN" and not can_customise_frameworks(plan):
+        raise HTTPException(
+            status_code=403,
+            detail="Customisable scoring frameworks require Buyer Professional or higher.",
+        )
+    w = body.weights.model_dump()
+    _validate_weights_sum(w)
+    from app.api.vendor_features import _get_or_create_org
+    from app.core.models_v12 import VendorEvaluationFramework
+
+    org = _get_or_create_org(db, current_user)
+    fw = VendorEvaluationFramework(
+        organisation_id=org.id,
+        name=body.name.strip(),
+        framework_type="CUSTOM",
+        sector=(body.sector or "").strip().lower() or None,
+        weight_compliance=w["COMPLIANCE"],
+        weight_visibility=w["VISIBILITY"],
+        weight_engagement=w["ENGAGEMENT"],
+        weight_recency=w["RECENCY"],
+        weight_procurement_interest=w["PROCUREMENT_INTEREST"],
+        is_builtin=False,
+    )
+    db.add(fw)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A framework with that name already exists.")
+    return _framework_dict(fw, org.active_framework_id)
+
+
+@router.patch("/frameworks/{framework_id}")
+async def update_framework(framework_id: str, body: FrameworkPatch, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """Edit a custom framework's weights/sector/name (Buyer Pro+)."""
+    _require_procurement(current_user)
+    from app.billing.enforcement import can_customise_frameworks
+
+    plan = (getattr(current_user, "plan", "") or "").lower().strip()
+    role = getattr(current_user, "role", "")
+    if role != "ADMIN" and not can_customise_frameworks(plan):
+        raise HTTPException(status_code=403, detail="Editing scoring frameworks requires Buyer Professional or higher.")
+    from app.api.vendor_features import _get_or_create_org
+    from app.core.models_v12 import VendorEvaluationFramework
+
+    org = _get_or_create_org(db, current_user)
+    fw = (
+        db.query(VendorEvaluationFramework)
+        .filter(VendorEvaluationFramework.id == framework_id, VendorEvaluationFramework.organisation_id == org.id)
+        .first()
+    )
+    if not fw:
+        raise HTTPException(status_code=404, detail="Framework not found.")
+    if fw.is_builtin:
+        raise HTTPException(status_code=403, detail="Built-in templates can't be edited — create a custom framework instead.")
+    if body.weights is not None:
+        w = body.weights.model_dump()
+        _validate_weights_sum(w)
+        fw.weight_compliance = w["COMPLIANCE"]
+        fw.weight_visibility = w["VISIBILITY"]
+        fw.weight_engagement = w["ENGAGEMENT"]
+        fw.weight_recency = w["RECENCY"]
+        fw.weight_procurement_interest = w["PROCUREMENT_INTEREST"]
+    if body.name is not None:
+        fw.name = body.name.strip()
+    if body.sector is not None:
+        fw.sector = (body.sector or "").strip().lower() or None
+    db.commit()
+    return _framework_dict(fw, org.active_framework_id)
+
+
+@router.post("/frameworks/{framework_id}/activate")
+async def activate_framework(framework_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """Set the org's default scoring framework. Sector-scoped templates require
+    the Enterprise tier (multiple frameworks); a single custom profile is Pro+."""
+    _require_procurement(current_user)
+    from app.api.vendor_features import _get_or_create_org
+    from app.core.models_v12 import VendorEvaluationFramework
+
+    org = _get_or_create_org(db, current_user)
+    fw = (
+        db.query(VendorEvaluationFramework)
+        .filter(VendorEvaluationFramework.id == framework_id, VendorEvaluationFramework.organisation_id == org.id)
+        .first()
+    )
+    if not fw:
+        raise HTTPException(status_code=404, detail="Framework not found.")
+    org.active_framework_id = fw.id
+    db.commit()
+    return {"activeFrameworkId": str(fw.id), "name": fw.name}
+
+
+@router.get("/scan-verification-log")
+async def scan_verification_log(
+    vendor_slug: str = Query(..., description="Vendor email-prefix / slug"),
+    months: int = Query(6, ge=1, le=24),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Buyer Enterprise: on-chain per-scan verification log for one vendor.
+
+    Lists this buyer's scans of the vendor with their Polygon tx_hash (anchored
+    asynchronously after each scan) and explorer link.
+    """
+    _require_procurement(current_user)
+    plan = (getattr(current_user, "plan", "") or "").lower().strip()
+    role = getattr(current_user, "role", "")
+    if role != "ADMIN" and plan not in (
+        "buyer_enterprise", "buyer_enterprise_monthly", "buyer_enterprise_annual",
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="On-chain scan verification log is a Buyer Enterprise feature.",
+        )
+
+    vendor = db.query(User).filter(User.email.like(f"{vendor_slug}@%")).first()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found.")
+
+    from app.core.models_v8 import VendorScanLedger
+    from app.core.config import settings as _settings
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30 * months)
+    scans = (
+        db.query(VendorScanLedger)
+        .filter(
+            VendorScanLedger.buyer_id == current_user.id,
+            VendorScanLedger.vendor_id == vendor.id,
+            VendorScanLedger.created_at >= cutoff,
+        )
+        .order_by(VendorScanLedger.created_at.desc())
+        .all()
+    )
+    explorer = (getattr(_settings, "POLYGON_EXPLORER_URL", "") or "https://amoy.polygonscan.com").rstrip("/")
+
+    return {
+        "vendor": {"company": vendor.company, "slug": vendor_slug},
+        "network": getattr(_settings, "POLYGON_NETWORK_NAME", "Polygon Amoy"),
+        "periodMonths": months,
+        "scans": [
+            {
+                "id": str(s.id),
+                "month": s.month,
+                "scanType": s.scan_type,
+                "createdAt": s.created_at.isoformat() if s.created_at else None,
+                "txHash": s.tx_hash,
+                "anchoredAt": s.anchored_at.isoformat() if s.anchored_at else None,
+                "status": (
+                    "anchored" if s.tx_hash
+                    else ("failed" if s.anchor_error else "pending")
+                ),
+                "explorerUrl": f"{explorer}/tx/{s.tx_hash}" if s.tx_hash else None,
+            }
+            for s in scans
+        ],
+        "total": len(scans),
+    }

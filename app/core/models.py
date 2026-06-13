@@ -276,3 +276,7 @@ from .models_v11 import *
 
 # Import V12 Enterprise extensions
 from .models_enterprise import *
+
+# Import V12 (ApiKey, PendingRfpIntake, VendorEvaluationFramework) so Alembic
+# metadata + create_all see them even if no API module has imported v12 yet.
+from .models_v12 import *

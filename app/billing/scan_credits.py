@@ -138,9 +138,26 @@ def consume_scan(
             "remaining": (None if limit is None else max(0, limit - used)),
         }
 
+    new_ledger_id = str(row.id)
+
+    # On-chain per-scan verification log (Buyer Enterprise). Anchored async so it
+    # never blocks the scan response. countdown lets the request's commit land
+    # first; the task tolerates a not-yet-committed row by retrying.
+    if (plan or "").lower().strip() in (
+        "buyer_enterprise", "buyer_enterprise_monthly", "buyer_enterprise_annual",
+    ):
+        try:
+            from app.workers.tasks import anchor_scan_ledger_task
+            anchor_scan_ledger_task.apply_async(
+                kwargs={"ledger_id": new_ledger_id}, countdown=5,
+            )
+        except Exception as e:  # never let anchoring break a paid scan
+            logger.warning("[scan-anchor] could not enqueue anchor for %s: %s", new_ledger_id, e)
+
     return {
         "allowed": True,
         "already_consumed": False,
+        "ledger_id": new_ledger_id,
         "used": used + 1,
         "limit": limit,
         "remaining": (None if limit is None else max(0, limit - used - 1)),

@@ -6,7 +6,7 @@ Phase 2: Vendor comparison engine.
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from app.core.db import get_db
+from app.core.db import get_db, get_current_user
 from app.services.feature_flags import require_feature
 from app.services.vendor_comparison import compare_vendors, find_comparable_vendors
 
@@ -17,11 +17,12 @@ router = APIRouter()
 async def compare_get(
     ids: str = Query(..., description="Comma-separated vendor IDs (2-4)"),
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
     _: None = Depends(require_feature("FEATURE_COMPARISON")),
 ):
     """Compare 2-4 vendors side-by-side (GET with comma-separated ids)."""
     vendor_ids = [v.strip() for v in ids.split(",") if v.strip()]
-    return compare_vendors(db, vendor_ids)
+    return compare_vendors(db, vendor_ids, buyer_user=current_user)
 
 
 from pydantic import BaseModel
@@ -36,10 +37,11 @@ class CompareRequest(BaseModel):
 async def compare_post(
     body: CompareRequest,
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
     _: None = Depends(require_feature("FEATURE_COMPARISON")),
 ):
     """Compare 2-4 vendors side-by-side (POST with JSON body)."""
-    return compare_vendors(db, body.vendor_ids)
+    return compare_vendors(db, body.vendor_ids, buyer_user=current_user)
 
 
 @router.get("/{vendor_id}/similar")

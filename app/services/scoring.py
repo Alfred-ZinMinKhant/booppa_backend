@@ -64,14 +64,69 @@ class VendorScoreEngine:
     }
 
     @classmethod
-    def calculate_total(cls, components: dict) -> int:
+    def calculate_total(cls, components: dict, weights: dict | None = None) -> int:
+        """Weighted total of the five component scores.
+
+        `weights` lets a buyer's evaluation framework re-rank vendors at read
+        time without rescanning — the components are framework-agnostic, only
+        the weighting differs. Falls back to the default WEIGHTS.
+        """
+        w = weights or cls.WEIGHTS
         return round(
-            components.get("complianceScore", 0) * cls.WEIGHTS["COMPLIANCE"] +
-            components.get("visibilityScore", 0) * cls.WEIGHTS["VISIBILITY"] +
-            components.get("engagementScore", 0) * cls.WEIGHTS["ENGAGEMENT"] +
-            components.get("recencyScore", 0) * cls.WEIGHTS["RECENCY"] +
-            components.get("procurementInterestScore", 0) * cls.WEIGHTS["PROCUREMENT_INTEREST"]
+            components.get("complianceScore", 0) * w.get("COMPLIANCE", cls.WEIGHTS["COMPLIANCE"]) +
+            components.get("visibilityScore", 0) * w.get("VISIBILITY", cls.WEIGHTS["VISIBILITY"]) +
+            components.get("engagementScore", 0) * w.get("ENGAGEMENT", cls.WEIGHTS["ENGAGEMENT"]) +
+            components.get("recencyScore", 0) * w.get("RECENCY", cls.WEIGHTS["RECENCY"]) +
+            components.get("procurementInterestScore", 0) * w.get("PROCUREMENT_INTEREST", cls.WEIGHTS["PROCUREMENT_INTEREST"])
         )
+
+    @classmethod
+    def resolve_weights(cls, db, buyer_org_id, vendor_id=None) -> dict:
+        """Resolve the scoring weights a buyer's org applies to a vendor.
+
+        Order: a framework whose `sector` matches one of the vendor's tags →
+        the org's `active_framework_id` → the default WEIGHTS. Any failure falls
+        back to defaults so scoring never breaks on a misconfigured framework.
+        """
+        if not buyer_org_id:
+            return cls.WEIGHTS
+        try:
+            from app.core.models_v12 import VendorEvaluationFramework
+            from app.core.models_enterprise import Organisation
+
+            # 1. Sector-matched framework (e.g. MAS_TRM for fintech vendors).
+            if vendor_id is not None:
+                from app.core.models_v6 import VendorSector
+
+                sectors = [
+                    s[0] for s in db.query(VendorSector.sector)
+                    .filter(VendorSector.vendor_id == vendor_id).all()
+                ]
+                if sectors:
+                    fw = (
+                        db.query(VendorEvaluationFramework)
+                        .filter(
+                            VendorEvaluationFramework.organisation_id == buyer_org_id,
+                            VendorEvaluationFramework.sector.in_(sectors),
+                        )
+                        .first()
+                    )
+                    if fw:
+                        return fw.weights()
+
+            # 2. Org's active default framework.
+            org = db.query(Organisation).filter(Organisation.id == buyer_org_id).first()
+            if org and getattr(org, "active_framework_id", None):
+                fw = (
+                    db.query(VendorEvaluationFramework)
+                    .filter(VendorEvaluationFramework.id == org.active_framework_id)
+                    .first()
+                )
+                if fw:
+                    return fw.weights()
+        except Exception as e:
+            logger.warning(f"resolve_weights fell back to default for org={buyer_org_id}: {e}")
+        return cls.WEIGHTS
 
     @classmethod
     def calculate_compliance_score(cls, db: Session, vendor_id: str) -> int:
