@@ -53,6 +53,46 @@ LIGHT_BG = colors.HexColor("#f8fafc")
 BORDER = colors.HexColor("#e2e8f0")
 TEXT_DARK = colors.HexColor("#1e293b")
 WHITE = colors.white
+# Amber palette for warning callouts (scope notice, discrepancies).
+AMBER = colors.HexColor("#b45309")
+AMBER_BG = colors.HexColor("#fffbeb")
+AMBER_BORDER = colors.HexColor("#fcd34d")
+
+
+def _pdf_escape(text) -> str:
+    """Escape user-supplied strings for ReportLab's Paragraph mini-XML.
+
+    `&`, `<`, `>` would otherwise be read as entity/tag starts. Mirrors
+    cover_sheet_generator._xml_escape — kept local to avoid a cross-import.
+    """
+    return (
+        str(text if text is not None else "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _format_date_long(value) -> str:
+    """Best-effort 'DD Month YYYY' from ISO, 'DD Mon YYYY HH:MM UTC', or a date.
+
+    Falls back to the raw string rather than a clipped slice — the old
+    `created[:10]` fallback is what produced the truncated '13 Jun 202'.
+    """
+    if not value:
+        return datetime.now(timezone.utc).strftime("%d %B %Y")
+    raw = str(value).strip()
+    # ISO 8601 (with or without timezone / microseconds)
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")[:25]).strftime("%d %B %Y")
+    except Exception:
+        pass
+    for fmt in ("%d %b %Y %H:%M UTC", "%d %b %Y", "%d %B %Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%d %B %Y")
+        except Exception:
+            continue
+    return raw
 
 SEVERITY_HEX = {
     "CRITICAL": "#ef4444",
@@ -321,6 +361,32 @@ class PDFService:
                 spaceAfter=4,
                 leading=11,
             ),
+            # ── RFP kit ──────────────────────────────────────────────
+            "RfpCalloutHead": ps(
+                "RfpCalloutHead",
+                fontSize=10,
+                fontName="Helvetica-Bold",
+                textColor=AMBER,
+                spaceAfter=0,
+                leading=13,
+            ),
+            "RfpQ": ps(
+                "RfpQ",
+                fontSize=9.5,
+                fontName="Helvetica-Bold",
+                textColor=colors.HexColor("#0369a1"),
+                spaceAfter=3,
+                leading=13,
+            ),
+            "RfpVerif": ps(
+                "RfpVerif",
+                fontSize=7.5,
+                fontName="Helvetica-Oblique",
+                textColor=SLATE,
+                spaceBefore=2,
+                spaceAfter=2,
+                leading=10,
+            ),
         }
 
     # ── Layout helpers ─────────────────────────────────────────────────────────
@@ -378,11 +444,7 @@ class PDFService:
         created = (
             report_data.get("created_at") or datetime.now(timezone.utc).isoformat()
         )
-        try:
-            dt = datetime.fromisoformat(created[:19])
-            date_str = dt.strftime("%d %B %Y")
-        except Exception:
-            date_str = created[:10]
+        date_str = _format_date_long(created)
 
         cells = [
             Paragraph(
@@ -425,6 +487,175 @@ class PDFService:
     def _sev_badge(severity: str) -> str:
         hex_c = SEVERITY_HEX.get(severity.upper(), "#64748b")
         return f'<font color="{hex_c}"><b>[{severity.upper()}]</b></font>'
+
+    # ── RFP kit layout ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _checkbox() -> Table:
+        """A small empty bordered square for manual ticking (no glyph fonts)."""
+        box = Table([[""]], colWidths=[9], rowHeights=[9])
+        box.setStyle(
+            TableStyle(
+                [
+                    ("BOX", (0, 0), (-1, -1), 0.8, SLATE),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]
+            )
+        )
+        return box
+
+    def _checklist_table(self, items: list[str]) -> Table:
+        """Real checkbox rows: [☐] label … Initials ____ , one per item."""
+        s = self._s
+        initials_w = 1.0 * inch
+        box_w = 0.32 * inch
+        rows = [
+            [
+                self._checkbox(),
+                Paragraph(_pdf_escape(label), s["Body"]),
+                Paragraph("Initials ______", s["Label"]),
+            ]
+            for label in items
+        ]
+        t = Table(rows, colWidths=[box_w, CONTENT_W - box_w - initials_w, initials_w])
+        t.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 7),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                    ("LEFTPADDING", (0, 0), (0, -1), 2),
+                    ("LINEBELOW", (0, 0), (-1, -1), 0.5, BORDER),
+                ]
+            )
+        )
+        return t
+
+    def _amber_callout(self, head: str, body_flowables: list) -> Table:
+        """Amber warning box with a left accent bar (scope notice, template warning)."""
+        flow = [Paragraph(_pdf_escape(head), self._s["RfpCalloutHead"]), Spacer(1, 4)]
+        flow.extend(body_flowables)
+        t = Table([[flow]], colWidths=[CONTENT_W])
+        t.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), AMBER_BG),
+                    ("BOX", (0, 0), (-1, -1), 0.8, AMBER_BORDER),
+                    ("LINEBEFORE", (0, 0), (0, -1), 3, AMBER),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 12),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+                    ("TOPPADDING", (0, 0), (-1, -1), 10),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                ]
+            )
+        )
+        return t
+
+    def _rfp_kit_story(self, report_data: dict) -> list:
+        """Structured RFP Kit body: scope notice → details → checklist → Q&A.
+
+        Replaces the old single-`ai_narrative` text dump. All user strings are
+        `_pdf_escape`d and no non-Latin-1 glyphs are used (the prior layout
+        rendered ⚠/─ as missing-glyph boxes in Helvetica).
+        """
+        s = self._s
+        kit = report_data.get("rfp_kit") or {}
+        items: list = []
+
+        # ── Scope notice (amber callout) ───────────────────────────────
+        scope_body = [Paragraph(_pdf_escape(kit.get("scope_intro") or ""), s["Body"])]
+        for b in kit.get("scope_bullets") or []:
+            scope_body.append(Paragraph(f"•  {_pdf_escape(b)}", s["Bullet"]))
+        if kit.get("scope_closing"):
+            scope_body.append(Spacer(1, 4))
+            scope_body.append(Paragraph(_pdf_escape(kit["scope_closing"]), s["Body"]))
+        items.append(self._amber_callout("SCOPE NOTICE — READ BEFORE SUBMITTING", scope_body))
+        items.append(Spacer(1, 0.22 * inch))
+
+        # ── Template-fallback warning ──────────────────────────────────
+        if kit.get("template_used"):
+            items.append(
+                self._amber_callout(
+                    "Standard template used",
+                    [Paragraph(
+                        "These answers were generated from a standard template because AI "
+                        "generation was unavailable. They have not been independently verified "
+                        "against company-specific information. Review and customise before submission.",
+                        s["Body"],
+                    )],
+                )
+            )
+            items.append(Spacer(1, 0.18 * inch))
+
+        # ── Evidence & verification details ────────────────────────────
+        details = kit.get("details") or []
+        if details:
+            items.append(self._section_header("Evidence & Verification"))
+            items.append(Spacer(1, 6))
+            items.append(self._meta_table([(lbl, _pdf_escape(val)) for lbl, val in details]))
+            items.append(Spacer(1, 0.2 * inch))
+
+        # ── Discrepancies (action required) ────────────────────────────
+        disc = kit.get("discrepancies") or []
+        if disc:
+            items.append(self._section_header("Action Required — Discrepancies"))
+            items.append(Spacer(1, 6))
+            for d in disc:
+                items.append(Paragraph(f"•  {_pdf_escape(d)}", s["Bullet"]))
+            items.append(Spacer(1, 0.2 * inch))
+
+        # ── Pre-flight review checklist ────────────────────────────────
+        checklist = kit.get("checklist") or []
+        confirmations = kit.get("checklist_confirmations") or []
+        if checklist or confirmations:
+            items.append(self._section_header("Pre-Flight Review Checklist"))
+            items.append(Spacer(1, 6))
+            items.append(Paragraph(
+                "Tick each box and initial after reading the corresponding answer, confirming it "
+                "reflects your company's actual practice, and replacing any [FILL IN] placeholders. "
+                "Do not submit this document if any box is unticked.",
+                s["Body"],
+            ))
+            items.append(Spacer(1, 8))
+            if checklist:
+                items.append(self._checklist_table(checklist))
+            if confirmations:
+                items.append(Spacer(1, 8))
+                items.append(self._checklist_table(confirmations))
+            items.append(Spacer(1, 12))
+            items.append(Paragraph(
+                "Reviewer name: ______________________________      "
+                "Date: ______________      Signature: ______________________",
+                s["Body"],
+            ))
+            items.append(Spacer(1, 0.22 * inch))
+
+        # ── Draft answers (Q&A) ────────────────────────────────────────
+        qa = kit.get("qa") or []
+        if qa:
+            items.append(self._section_header("Draft Answers — Review Before Submitting"))
+            items.append(Spacer(1, 6))
+            for i, item in enumerate(qa, 1):
+                question = _pdf_escape(item.get("question") or "—")
+                answer = _pdf_escape(item.get("answer") or "—")
+                verif = _pdf_escape(item.get("verification") or "")
+                badge_color = "#b45309" if item.get("ai_drafted") else "#0f766e"
+                block = [
+                    Paragraph(f"Q{i}.  {question}", s["RfpQ"]),
+                    Paragraph(answer, s["Body"]),
+                ]
+                if verif:
+                    block.append(
+                        Paragraph(f'<font color="{badge_color}"><b>{verif}</b></font>', s["RfpVerif"])
+                    )
+                block.append(Spacer(1, 9))
+                items.append(KeepTogether(block))
+            items.append(Spacer(1, 0.1 * inch))
+
+        return items
 
     # ── Blockchain section ─────────────────────────────────────────────────────
 
@@ -1288,6 +1519,9 @@ class PDFService:
             framework_raw = (report_data.get("framework") or "").upper()
             is_pdpa = framework_raw in {"PDPA", "PDPA_QUICK_SCAN"}
             is_notarization = "NOTARIZATION" in framework_raw
+            is_rfp = "RFP KIT" in framework_raw or str(
+                report_data.get("product_type") or ""
+            ).startswith("rfp_")
 
             # Change 6(b/d): set PDPA footer disclaimer on doc object for _draw_page
             if is_pdpa:
@@ -1348,7 +1582,8 @@ class PDFService:
                 )
 
             # ── Report details (generic / notarization only) ───────────────
-            if not is_pdpa:
+            # RFP kits render their own details table inside _rfp_kit_story.
+            if not is_pdpa and not is_rfp:
                 created_raw = (
                     report_data.get("created_at") or datetime.now(timezone.utc).isoformat()
                 )
@@ -1404,6 +1639,9 @@ class PDFService:
 
             if is_notarization:
                 story.extend(self._notarization_certificate_story(report_data))
+
+            elif is_rfp:
+                story.extend(self._rfp_kit_story(report_data))
 
             elif is_pdpa:
                 # PDPA Quick Scan — Developer Brief Layout
@@ -1797,7 +2035,7 @@ class PDFService:
                             story.append(Paragraph(f"• {title}", s["Body"]))
                     story.append(Spacer(1, 0.1 * inch))
 
-            elif not is_pdpa and not is_notarization:
+            elif not is_pdpa and not is_notarization and not is_rfp:
                 # AI narrative fallback (generic reports only)
                 narrative = report_data.get("ai_narrative") or ""
                 if narrative:
