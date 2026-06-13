@@ -177,6 +177,24 @@ new `test_simulation` param), so admin CE tests auto-generate the kit.
 
 ---
 
+## 3b. Suite onboarding email (Standard / Pro Suite)
+
+Standard/Pro Suite are **access tiers** — no per-feature report to generate
+(MAS TRM controls are initialised in-DB; AI gap analysis needs user-provided
+context so it can't be meaningfully auto-run; notarization limits are lazy;
+API keys are on-demand). Previously they only got the generic
+"{label} — Activated" email. Now `_activate_subscription` (`stripe_webhook.py`)
+sends a **rich itemised onboarding email** instead: one CTA per entitlement —
+TRM workspace (`/vendor/trm`), gap analysis, `{50|100}` notarizations
+(`/notarization`), API keys (`/vendor/api-keys`), and for Pro also SSO
+(`/vendor/sso`), white-label, multi-subsidiary (`/vendor/subsidiaries`).
+- Generic activation email is gated off for suites (`new_plan not in (...)`).
+- Sent **synchronously** in the suite block → works on admin simulate-purchase
+  and doesn't depend on the Celery queue. Notar count from
+  `ENTERPRISE_NOTARIZATION_LIMITS` (`models_v8.py`).
+- Decided against auto-running the 13-domain DeepSeek gap analysis at checkout
+  (no user context = generic output, ~13 AI calls/purchase vs Lean Mode budget).
+
 ## 4. AWS access cheat-sheet (booppa account `997493291407`, `ap-southeast-1`)
 
 > The Booppa account is **not** in your SSO profiles (those are Issara/Golden

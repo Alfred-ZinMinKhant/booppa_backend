@@ -407,8 +407,9 @@ async def _activate_subscription(
             f"[Subscription] Activated plan={new_plan} for user={customer_email}"
         )
 
-        # Send confirmation email
-        if customer_email:
+        # Send confirmation email. Suites get a richer, itemised onboarding
+        # email instead (sent from the standard_suite/pro_suite block below).
+        if customer_email and new_plan not in ("standard_suite", "pro_suite"):
             plan_labels = {
                 "vendor_active": "Vendor Active",
                 "pdpa_monitor": "PDPA Monitor",
@@ -613,6 +614,110 @@ async def _activate_subscription(
                 logger.warning(
                     f"[Subscription] Failed to initialise MAS TRM controls: {e}"
                 )
+
+            # ── Onboarding email — itemise everything the suite unlocks with a
+            # direct CTA per feature. Replaces the generic activation email
+            # (gated off above). Sent synchronously so it also fires on the admin
+            # simulate-purchase path, and doesn't depend on the Celery queue.
+            if customer_email:
+                try:
+                    from app.core.models_v8 import ENTERPRISE_NOTARIZATION_LIMITS
+
+                    is_pro = new_plan == "pro_suite"
+                    suite_label = "Pro Suite" if is_pro else "Standard Suite"
+                    notar = ENTERPRISE_NOTARIZATION_LIMITS.get(new_plan, 50)
+
+                    def _feature(title: str, desc: str, cta: str, url: str) -> str:
+                        return f"""
+                        <tr><td style="padding:14px 0;border-bottom:1px solid #1e293b;">
+                          <p style="margin:0 0 4px;color:#fff;font-weight:bold;font-size:15px;">{title}</p>
+                          <p style="margin:0 0 10px;color:#94a3b8;font-size:13px;line-height:1.5;">{desc}</p>
+                          <a href="{url}" style="color:#10b981;font-weight:bold;text-decoration:none;font-size:13px;">{cta} &rarr;</a>
+                        </td></tr>"""
+
+                    features = [
+                        _feature(
+                            "MAS TRM — all 13 domains",
+                            "We've initialised all 13 MAS Technology Risk Management control domains for your "
+                            "organisation. Review and work each one in your TRM workspace.",
+                            "Open TRM workspace", "https://www.booppa.io/vendor/trm",
+                        ),
+                        _feature(
+                            "AI gap analysis (DeepSeek)",
+                            "Run an AI-assisted gap analysis on any TRM domain — describe your current controls and "
+                            "get a gap narrative, risk rating, and compliance status.",
+                            "Run a gap analysis", "https://www.booppa.io/vendor/trm",
+                        ),
+                        _feature(
+                            f"{notar} notarizations / month",
+                            f"Your plan includes {notar} blockchain document notarizations every month. Upload any "
+                            "compliance document to anchor a tamper-proof SHA-256 proof.",
+                            "Notarize a document", "https://www.booppa.io/notarization",
+                        ),
+                        _feature(
+                            "RESTful API + webhooks",
+                            "Programmatic access to your compliance data. Create an API key and configure webhooks "
+                            "to push events into your own systems.",
+                            "Create an API key", "https://www.booppa.io/vendor/api-keys",
+                        ),
+                    ]
+                    if is_pro:
+                        features += [
+                            _feature(
+                                "SSO — SAML 2.0 + OIDC",
+                                "Connect your identity provider so your team signs in with corporate credentials.",
+                                "Configure SSO", "https://www.booppa.io/vendor/sso",
+                            ),
+                            _feature(
+                                "White-label reports",
+                                "Your reports and evidence packs now carry your own branding instead of Booppa's.",
+                                "Manage branding", "https://www.booppa.io/settings",
+                            ),
+                            _feature(
+                                "Multi-subsidiary management",
+                                "Manage compliance across multiple legal entities from one account, each with its "
+                                "own evidence and controls.",
+                                "Manage subsidiaries", "https://www.booppa.io/vendor/subsidiaries",
+                            ),
+                        ]
+
+                    onboarding_html = f"""
+                    <html><body style="font-family:Arial,sans-serif;background:#0a0f1e;color:#e5e5e5;padding:32px;">
+                    <div style="max-width:600px;margin:0 auto;">
+                      <div style="background:#0f172a;padding:24px 28px;border-radius:12px 12px 0 0;">
+                        <p style="margin:0 0 4px;color:#64748b;text-transform:uppercase;letter-spacing:.1em;font-size:11px;">BOOPPA · Subscription active</p>
+                        <h1 style="margin:0;color:#10b981;font-size:22px;">{suite_label} — you're all set</h1>
+                      </div>
+                      <div style="background:#0d1424;padding:28px;border:1px solid #1e293b;border-top:none;border-radius:0 0 12px 12px;">
+                        <p style="color:#cbd5e1;line-height:1.6;margin:0 0 18px;">
+                          Your <strong>{suite_label}</strong> subscription is now active. Here's everything it unlocks and where to start:
+                        </p>
+                        <table style="width:100%;border-collapse:collapse;">{''.join(features)}</table>
+                        <div style="text-align:center;margin:26px 0 6px;">
+                          <a href="https://www.booppa.io/vendor/dashboard" style="display:inline-block;background:#10b981;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;">Go to your dashboard &rarr;</a>
+                        </div>
+                        <p style="color:#475569;font-size:11px;text-align:center;margin-top:20px;">Questions? Reply to this email or visit booppa.io/support.</p>
+                      </div>
+                    </div></body></html>"""
+
+                    sent_ob = await EmailService().send_html_email(
+                        to_email=customer_email,
+                        subject=f"Welcome to {suite_label} — here's everything included",
+                        body_html=onboarding_html,
+                    )
+                    if not sent_ob:
+                        logger.error(
+                            f"[Subscription] Suite onboarding email rejected by provider "
+                            f"for {customer_email} ({new_plan})"
+                        )
+                    else:
+                        logger.info(
+                            f"[Subscription] Sent {suite_label} onboarding email to {customer_email}"
+                        )
+                except Exception as ob_err:
+                    logger.warning(
+                        f"[Subscription] Suite onboarding email failed for {customer_email}: {ob_err}"
+                    )
 
         # Record activation in ActivityLog so Engagement + Recency move.
         _log_purchase_activity(
