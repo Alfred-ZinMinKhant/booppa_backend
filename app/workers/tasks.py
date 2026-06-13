@@ -4691,8 +4691,12 @@ def run_vendor_pro_activation_for_user(self, user_id: str):
 
 
 @celery_app.task(bind=True, max_retries=2, name="run_compliance_evidence_cycle_for_user")
-def run_compliance_evidence_cycle_for_user(self, user_id: str):
-    """Per-user wrapper: Compliance Evidence bundle regen for a single user."""
+def run_compliance_evidence_cycle_for_user(self, user_id: str, test_simulation: bool = False):
+    """Per-user wrapper: Compliance Evidence bundle regen for a single user.
+
+    `test_simulation` (admin simulate-purchase) flows into the bundle metadata so
+    the RFP component auto-generates instead of emailing a brief-intake link.
+    """
     user, db = _load_user(user_id)
     try:
         if not user or not user.email:
@@ -4718,6 +4722,7 @@ def run_compliance_evidence_cycle_for_user(self, user_id: str):
                 "company_name": getattr(user, "company", ""),
                 "vendor_url": website,
                 "subscription_cycle": True,
+                **({"test_simulation": "1"} if test_simulation else {}),
             },
             report_id=None,
         )

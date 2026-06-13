@@ -830,6 +830,7 @@ async def simulate_purchase(
             customer_email=customer_email,
             stripe_subscription_id=sim_id,
             stripe_customer_id=sim_id,
+            test_simulation=True,
         )
         db = SessionLocal()
         try:
