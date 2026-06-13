@@ -240,10 +240,16 @@ async def _activate_subscription(
     customer_email: str | None,
     stripe_subscription_id: str | None,
     stripe_customer_id: str | None,
+    test_simulation: bool = False,
 ) -> None:
     """
     Persist subscription state when a new Stripe subscription is created or renewed.
     Grants the appropriate platform role/plan to the user.
+
+    `test_simulation` is set by the admin simulate-purchase harness; it propagates
+    into any auto-fulfilled bundle so RFP-bearing tiers (e.g. compliance_evidence)
+    skip the brief intake and generate the kit directly — matching the standalone
+    bundle test path in `_fulfill_bundle`.
     """
     db = SessionLocal()
     try:
@@ -327,7 +333,9 @@ async def _activate_subscription(
             elif new_plan == "pdpa_monitor":
                 _wtasks.run_pdpa_monitor_cycle_for_user.delay(str(user.id))
             elif new_plan == "compliance_evidence":
-                _wtasks.run_compliance_evidence_cycle_for_user.delay(str(user.id))
+                _wtasks.run_compliance_evidence_cycle_for_user.delay(
+                    str(user.id), test_simulation=test_simulation
+                )
             elif new_plan == "vendor_active":
                 _wtasks.run_vendor_active_check_for_user.delay(str(user.id))
             elif new_plan == "vendor_pro":
@@ -568,6 +576,7 @@ async def _activate_subscription(
                         metadata={
                             "company_name": getattr(user, "company", ""),
                             "vendor_url": website,
+                            **({"test_simulation": "1"} if test_simulation else {}),
                         },
                         report_id=None,
                     )
