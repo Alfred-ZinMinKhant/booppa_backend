@@ -3198,11 +3198,14 @@ def refresh_gebiz_base_rates():
         db = SessionLocal()
         try:
             # ── 1. Fetch GeBIZ award data from data.gov.sg ──────────────────────
-            # Dataset: Government Procurement Awards
-            # Resource IDs to try in order (primary + fallback)
+            # Dataset: "Government Procurement via GeBIZ" (MOF). Fields:
+            #   tender_no, tender_description, agency, award_date (D/M/YYYY),
+            #   tender_detail_status, supplier_name, awarded_amt
+            # The two IDs used previously were stale (one 404s, the other was the
+            # UEN company registry) so award_history never populated — see the
+            # field mapping below. Verified live against the datastore API.
             GEBIZ_DATASET_IDS = [
-                "d_a2c0b1c04e3e55e4e8d39f86b42b0e57",  # Government Procurement Awards
-                "5ab68aac-91f6-4f39-9b21-698610bdf3f7",  # Fallback
+                "d_acde1106003906a75c3fa052592f2fcb",  # Government Procurement via GeBIZ
             ]
             SECTOR_KEYWORDS = {
                 "IT": ["information technology", "ict", "software", "hardware", "digital", "cyber", "data"],
@@ -3265,10 +3268,14 @@ def refresh_gebiz_base_rates():
                                 rec.get("agency")
                                 or rec.get("procuring_entity", "UNKNOWN")
                             ).upper().strip()
+                            # A row counts as awarded when GeBIZ marked it
+                            # "Awarded to Suppliers" / "Awarded by Items" (a named
+                            # supplier exists). "Awarded to No Suppliers" rows have
+                            # no supplier and are excluded from award_history.
+                            status_desc = (rec.get("tender_detail_status") or "").lower()
                             awarded = bool(
-                                rec.get("awarded_date")
-                                or rec.get("supplier_name")
-                                or rec.get("award_amt")
+                                (rec.get("supplier_name") or "").strip()
+                                or ("awarded" in status_desc and "no supplier" not in status_desc)
                             )
 
                             # Classify sector from description keywords
@@ -3296,7 +3303,11 @@ def refresh_gebiz_base_rates():
                                             break
                                         except (ValueError, TypeError):
                                             continue
-                                amt_raw = rec.get("award_amt") or rec.get("award_amount")
+                                amt_raw = (
+                                    rec.get("awarded_amt")
+                                    or rec.get("award_amt")
+                                    or rec.get("award_amount")
+                                )
                                 try:
                                     amt = float(str(amt_raw).replace(",", "")) if amt_raw not in (None, "") else None
                                 except (ValueError, TypeError):
@@ -3858,7 +3869,19 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
     sent = 0
     failed = 0
     try:
-        since = datetime.now(timezone.utc).date() - timedelta(days=30)
+        # GeBIZ awards are published to data.gov.sg with a long lag (often
+        # ~12 months), so a "last 30 days from today" window is almost always
+        # empty. Anchor the window on the most recent award date we actually
+        # have and report the trailing WINDOW_DAYS of available data.
+        WINDOW_DAYS = 90
+        latest_award = db.query(func.max(GebizAwardHistory.awarded_date)).scalar()
+        if latest_award is None:
+            logger.info(
+                "[TenderIntelDigest] gebiz_award_history is empty — skipping send "
+                "(run refresh_gebiz_base_rates to populate)"
+            )
+            return
+        since = latest_award - timedelta(days=WINDOW_DAYS)
         rows = (
             db.query(GebizAwardHistory)
             .filter(
@@ -3869,8 +3892,19 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
         )
 
         if not rows:
-            logger.info("[TenderIntelDigest] No award rows in last 30d — skipping send")
+            logger.info(
+                "[TenderIntelDigest] No award rows in trailing %dd window "
+                "(latest award %s) — skipping send", WINDOW_DAYS, latest_award,
+            )
             return
+
+        # Human-readable label for the actual window covered (data lags, so this
+        # is not "this month" — it's the latest WINDOW_DAYS of published awards).
+        period_label = (
+            f"{since:%b %Y} – {latest_award:%b %Y}"
+            if since.strftime("%Y-%m") != latest_award.strftime("%Y-%m")
+            else f"{latest_award:%b %Y}"
+        )
 
         # Aggregate top sectors and agencies by award count + total value.
         sector_stats: dict[str, dict] = {}
@@ -3919,7 +3953,7 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
             story: list = []
             story.append(Paragraph("Tender Intelligence — Monthly Digest", h_style))
             story.append(Paragraph(
-                f"{since.strftime('%b %Y')} · {len(rows)} awards · "
+                f"{period_label} · {len(rows)} awards · "
                 f"Total value S${total_value:,.0f}",
                 sub_style,
             ))
@@ -4004,11 +4038,11 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
             return
 
         email_svc = EmailService()
-        period = since.strftime("%b %Y")
+        period = period_label
 
         for sub in subscribers:
             try:
-                subject = f"Tender Intelligence — {len(rows)} awards in the last 30 days"
+                subject = f"Tender Intelligence — {len(rows)} GeBIZ awards ({period_label})"
                 body_html = f"""
                 <html><body style="font-family:Arial,sans-serif;background:#0a0a0a;color:#e5e5e5;padding:32px;">
                 <div style="max-width:640px;margin:0 auto;">
@@ -4018,7 +4052,7 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                   <h2 style="color:#ffffff;margin-top:0;">Monthly Sector Trends — {period}</h2>
                   <p style="color:#a3a3a3;">
                     Hi {sub.full_name or sub.company or sub.email},<br>
-                    Across the last 30 days, GeBIZ awarded <strong style="color:#ffffff;">{len(rows)} contracts</strong>
+                    Across {period_label}, GeBIZ awarded <strong style="color:#ffffff;">{len(rows)} contracts</strong>
                     totalling <strong style="color:#60a5fa;">S${total_value:,.0f}</strong>.
                   </p>
 
