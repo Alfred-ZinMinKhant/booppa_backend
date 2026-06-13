@@ -24,6 +24,13 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     broker_connection_retry_on_startup=True,
     worker_max_tasks_per_child=100,
+    # Fallback queue for any task without an explicit route below. MUST be
+    # "default" (a queue the worker consumes via `-Q reports,default`), not
+    # Celery's built-in "celery" queue — otherwise explicitly-named tasks that
+    # aren't listed in task_routes (e.g. the per-user first-cycle delivery
+    # tasks like send_tender_intelligence_digest_for_user) get enqueued to a
+    # queue nothing listens on and silently never run.
+    task_default_queue="default",
     # Queue routing
     task_routes={
         "process_report_task": {"queue": "reports"},

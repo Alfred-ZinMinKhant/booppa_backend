@@ -68,6 +68,23 @@ python -c "from app.workers.tasks import send_tender_intelligence_digest_for_use
 > Tender Intelligence features (historical lookup, bid/watch/pass, supplier
 > benchmarking) are dashboard-only at `/tender-intelligence`.
 
+### Celery queue-routing bug (found via admin first-cycle not delivering)
+
+`app/workers/celery_app.py` had **no `task_default_queue`**, so Celery's default
+(`celery`) was the fallback. The worker only consumes `-Q reports,default`.
+Tasks registered with explicit short `name=`s that aren't listed in `task_routes`
+(all the per-user first-cycle tasks: `send_tender_intelligence_digest_for_user`,
+`run_compliance_evidence_cycle_for_user`, `run_pdpa_monitor_cycle_for_user`,
+`run_vendor_active_check_for_user`, `run_vendor_pro_activation_for_user`)
+routed to `celery` → **never consumed → silently dropped**. This hit **real
+subscribers too**, not just admin tests — their instant first-cycle delivery
+never ran. The digest *code* was fine (a direct in-process call sends correctly);
+only the `.delay()` enqueue was misrouted.
+
+**Fix:** added `task_default_queue="default"` to the Celery conf. Verified the
+stranded tasks now route to `default`; `reports` tasks unchanged. Needs the
+worker redeployed to take effect.
+
 ---
 
 ## 2. RFP Kit redesign (PDF + frontend)
