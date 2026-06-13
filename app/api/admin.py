@@ -721,6 +721,16 @@ def admin_delete_vendor(vendor_id: str, _auth: bool = Depends(_admin_auth)):
 # they can be identified later (Report.assessment_data.test_simulation = true,
 # and stripe_*_id / session_id prefixed with "admin-sim-").
 
+# Canned brief used so admin test checkouts skip the /rfp-intake step entirely
+# and fulfill the RFP kit immediately. Real user purchases still go through the
+# brief intake — this default only applies inside simulate_purchase.
+DEFAULT_QA_RFP_BRIEF = (
+    "QA test brief: procurement for a SaaS vendor handling personal data. "
+    "Evaluate PDPA compliance, data security controls (encryption, access "
+    "management), sub-processor disclosure, and incident response readiness. "
+    "Budget and timeline are illustrative — this is an internal Booppa QA run."
+)
+
 
 class SimulatePurchaseRequest(BaseModel):
     product_type: str = Field(..., description="A product_type from MODE_MAP")
@@ -765,7 +775,7 @@ async def simulate_purchase(
     customer_email = body.customer_email.strip().lower()
     vendor_url = (body.vendor_url or "").strip()
     company_name = (body.company_name or "").strip()
-    rfp_description = (body.rfp_description or "").strip()
+    rfp_description = (body.rfp_description or "").strip() or DEFAULT_QA_RFP_BRIEF
     sim_id = f"admin-sim-{_uuid.uuid4()}"
 
     # Ensure a User row exists for the test email so fulfillment helpers can attach

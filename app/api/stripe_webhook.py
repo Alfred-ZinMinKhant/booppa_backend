@@ -1140,7 +1140,17 @@ async def _fulfill_bundle(
         # The intake endpoint queues fulfill_rfp_task once they submit the brief.
         rfp_product = components.get("rfp")
         pending_intake_id: str | None = None
-        if rfp_product and owner_id:
+        if rfp_product and owner_id and _is_test:
+            # Admin test checkout — skip the brief intake and fulfill the kit
+            # immediately using the canned QA brief carried in metadata. Leaving
+            # pending_intake_id=None also suppresses the brief-intake email below.
+            rfp_desc = (metadata.get("rfp_description") or "").strip()
+            tasks_to_queue.append(("rfp", (rfp_product, rfp_desc)))
+            logger.info(
+                f"[Bundle:{product_type}] test_simulation — fulfilling {rfp_product} "
+                f"directly (no intake) for {customer_email}"
+            )
+        elif rfp_product and owner_id:
             pending = PendingRfpIntake(
                 user_id=owner_id,
                 session_id=session_id,
@@ -1227,7 +1237,26 @@ async def _fulfill_bundle(
             elif task_type == "pdpa":
                 fulfill_pdpa_task.delay(payload, customer_email)
                 logger.info(f"[Bundle:{product_type}] Queued pdpa for report {payload}")
-            # RFP is no longer queued at this stage — see PendingRfpIntake above.
+            elif task_type == "rfp":
+                # Only reached for admin test checkouts — real purchases defer to
+                # /rfp-intake via the PendingRfpIntake row created above.
+                from app.workers.tasks import fulfill_rfp_task
+
+                rfp_product, rfp_desc = payload
+                fulfill_rfp_task.delay(
+                    product_type=rfp_product,
+                    vendor_id=str(owner_id),
+                    vendor_email=customer_email or "",
+                    vendor_url=website or "https://booppa.io",
+                    company_name=company_name or "Booppa QA",
+                    rfp_description=rfp_desc,
+                    session_id=session_id,
+                    intake_data=None,
+                )
+                logger.info(
+                    f"[Bundle:{product_type}] Queued fulfill_rfp_task ({rfp_product}) "
+                    f"for {customer_email} (test_simulation)"
+                )
 
         # Send credits-granted notification email
         if notarization_count > 0 and customer_email:
