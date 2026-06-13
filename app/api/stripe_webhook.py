@@ -407,9 +407,12 @@ async def _activate_subscription(
             f"[Subscription] Activated plan={new_plan} for user={customer_email}"
         )
 
-        # Send confirmation email. Suites get a richer, itemised onboarding
-        # email instead (sent from the standard_suite/pro_suite block below).
-        if customer_email and new_plan not in ("standard_suite", "pro_suite"):
+        # Send confirmation email. Suites and buyer tiers get a richer, itemised
+        # onboarding email instead (sent from their provisioning blocks below).
+        if customer_email and new_plan not in (
+            "standard_suite", "pro_suite",
+            "buyer_starter", "buyer_pro", "buyer_enterprise",
+        ):
             plan_labels = {
                 "vendor_active": "Vendor Active",
                 "pdpa_monitor": "PDPA Monitor",
@@ -718,6 +721,138 @@ async def _activate_subscription(
                     logger.warning(
                         f"[Subscription] Suite onboarding email failed for {customer_email}: {ob_err}"
                     )
+
+        elif new_plan in ("buyer_starter", "buyer_pro", "buyer_enterprise") and customer_email:
+            # Buyer-tier onboarding email — itemise the due-diligence features
+            # the tier unlocks with a direct CTA each. Only ships features that
+            # are actually wired (see HANDOFF audit); marketed-but-unbuilt items
+            # (custom risk weights, native Slack/Teams, custom frameworks) are
+            # intentionally omitted so the welcome email has no dead links.
+            try:
+                from app.billing.enforcement import scan_limit_for, max_seats_for
+                from app.core.models_v8 import ENTERPRISE_NOTARIZATION_LIMITS
+
+                labels = {
+                    "buyer_starter": "Buyer Essentials",
+                    "buyer_pro": "Buyer Professional",
+                    "buyer_enterprise": "Buyer Enterprise",
+                }
+                buyer_label = labels[new_plan]
+                quick = scan_limit_for(new_plan, "QUICK") or 0
+                deep = scan_limit_for(new_plan, "DEEP") or 0
+                evidence = scan_limit_for(new_plan, "EVIDENCE") or 0
+                notar = ENTERPRISE_NOTARIZATION_LIMITS.get(new_plan, 1)
+                seats = max_seats_for(new_plan)
+                seats_txt = "Unlimited seats with RBAC" if seats is None else (
+                    f"{seats} seats with role-based access" if seats > 1 else "1 user seat"
+                )
+                dash = "https://www.booppa.io/procurement/dashboard"
+
+                def _bf(title: str, desc: str, cta: str, url: str) -> str:
+                    return f"""
+                    <tr><td style="padding:14px 0;border-bottom:1px solid #1e293b;">
+                      <p style="margin:0 0 4px;color:#fff;font-weight:bold;font-size:15px;">{title}</p>
+                      <p style="margin:0 0 10px;color:#94a3b8;font-size:13px;line-height:1.5;">{desc}</p>
+                      <a href="{url}" style="color:#10b981;font-weight:bold;text-decoration:none;font-size:13px;">{cta} &rarr;</a>
+                    </td></tr>"""
+
+                feats = []
+                scan_line = f"Quick Scan on {quick} vendors/month (ACRA + MAS watchlist + PDPA flag)"
+                if deep:
+                    scan_line = (f"{quick} Quick Scans + {deep} Deep Scans/month "
+                                 "(11-dimension PDPA + certifications + financial risk)")
+                feats.append(_bf("Vendor scans", scan_line, "Start scanning", dash))
+                if evidence:
+                    feats.append(_bf(
+                        f"Evidence Scan — {evidence} vendors/month",
+                        "Level-3 blockchain evidence retrieval + complete vendor dossier.",
+                        "Run an Evidence Scan", dash,
+                    ))
+                feats.append(_bf(
+                    "Compliance dashboard",
+                    "Traffic-light status across every vendor you scan, with automatic alerts when one enters critical status.",
+                    "Open dashboard", dash,
+                ))
+                feats.append(_bf(
+                    "Vendor directory",
+                    "Browse the vendor network with advanced filters (sector, size, certifications).",
+                    "Browse vendors", dash,
+                ))
+                if deep:
+                    feats.append(_bf(
+                        "Comparison engine + drift tracking",
+                        "Compare vendors side-by-side across Deep Scan parameters, with automatic change alerts as their compliance drifts.",
+                        "Compare vendors", "https://www.booppa.io/compare",
+                    ))
+                export_desc = ("CSV export of scan results for tender spreadsheets."
+                               if not deep else
+                               "CSV export plus exportable Deep Scan PDF reports for shortlists and tender minutes.")
+                feats.append(_bf("Exports", export_desc, "Export results", dash))
+                if new_plan == "buyer_enterprise":
+                    feats.append(_bf(
+                        "Multi-subsidiary management",
+                        "Manage due diligence across multiple BUs / legal entities from one account.",
+                        "Manage subsidiaries", "https://www.booppa.io/vendor/subsidiaries",
+                    ))
+                    feats.append(_bf(
+                        "White-label reports",
+                        "Board- and regulator-ready reports carrying your own branding.",
+                        "Manage branding", "https://www.booppa.io/settings",
+                    ))
+                    feats.append(_bf(
+                        "RESTful API + webhooks",
+                        "Programmatic access for ERP integration. Create an API key and configure webhooks.",
+                        "Create an API key", "https://www.booppa.io/vendor/api-keys",
+                    ))
+                elif new_plan == "buyer_pro":
+                    feats.append(_bf(
+                        "Webhook integrations",
+                        "Push scan + drift events into your own systems (email, or any incoming-webhook URL such as Slack or Teams).",
+                        "Configure webhooks", "https://www.booppa.io/vendor/api-keys",
+                    ))
+                feats.append(_bf(
+                    f"{notar} notarization{'s' if notar != 1 else ''} / month",
+                    "Anchor any compliance document on the blockchain with a tamper-proof SHA-256 proof.",
+                    "Notarize a document", "https://www.booppa.io/notarization",
+                ))
+
+                onboarding_html = f"""
+                <html><body style="font-family:Arial,sans-serif;background:#0a0f1e;color:#e5e5e5;padding:32px;">
+                <div style="max-width:600px;margin:0 auto;">
+                  <div style="background:#0f172a;padding:24px 28px;border-radius:12px 12px 0 0;">
+                    <p style="margin:0 0 4px;color:#64748b;text-transform:uppercase;letter-spacing:.1em;font-size:11px;">BOOPPA · Subscription active</p>
+                    <h1 style="margin:0;color:#10b981;font-size:22px;">{buyer_label} — you're all set</h1>
+                  </div>
+                  <div style="background:#0d1424;padding:28px;border:1px solid #1e293b;border-top:none;border-radius:0 0 12px 12px;">
+                    <p style="color:#cbd5e1;line-height:1.6;margin:0 0 8px;">
+                      Your <strong>{buyer_label}</strong> subscription is now active — {seats_txt}. Here's everything it unlocks and where to start:
+                    </p>
+                    <table style="width:100%;border-collapse:collapse;">{''.join(feats)}</table>
+                    <div style="text-align:center;margin:26px 0 6px;">
+                      <a href="{dash}" style="display:inline-block;background:#10b981;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;">Go to your dashboard &rarr;</a>
+                    </div>
+                    <p style="color:#475569;font-size:11px;text-align:center;margin-top:20px;">Questions? Reply to this email or visit booppa.io/support.</p>
+                  </div>
+                </div></body></html>"""
+
+                sent_ob = await EmailService().send_html_email(
+                    to_email=customer_email,
+                    subject=f"Welcome to {buyer_label} — here's everything included",
+                    body_html=onboarding_html,
+                )
+                if not sent_ob:
+                    logger.error(
+                        f"[Subscription] Buyer onboarding email rejected by provider "
+                        f"for {customer_email} ({new_plan})"
+                    )
+                else:
+                    logger.info(
+                        f"[Subscription] Sent {buyer_label} onboarding email to {customer_email}"
+                    )
+            except Exception as ob_err:
+                logger.warning(
+                    f"[Subscription] Buyer onboarding email failed for {customer_email}: {ob_err}"
+                )
 
         # Record activation in ActivityLog so Engagement + Recency move.
         _log_purchase_activity(

@@ -195,6 +195,36 @@ TRM workspace (`/vendor/trm`), gap analysis, `{50|100}` notarizations
 - Decided against auto-running the 13-domain DeepSeek gap analysis at checkout
   (no user context = generic output, ~13 AI calls/purchase vs Lean Mode budget).
 
+## 3c. Buyer-tier onboarding email + buyer feature audit
+
+Same onboarding treatment for the buyer tiers (`buyer_starter`/`buyer_pro`/
+`buyer_enterprise`) in `_activate_subscription` — itemised email, generic email
+gated off, sent synchronously (works on admin test, no queue dependency). Content
+is driven by real entitlements: scans from `BUYER_SCAN_LIMITS`, seats from
+`max_seats_for`, notarizations from `ENTERPRISE_NOTARIZATION_LIMITS`. CTAs:
+`/procurement/dashboard`, `/compare`, `/notarization`, and for enterprise
+`/vendor/subsidiaries`, `/settings`, `/vendor/api-keys`.
+
+**Audit — advertised buyer features that are NOT (fully) built (omitted from the
+email to avoid dead links; reported for build-or-reword decision):**
+1. **Customisable risk-scoring weights per category** (Buyer Pro) — no model/
+   endpoint, only marketing text in `pricing.py`. Genuine gap.
+2. **Native Slack/Teams webhooks** (Buyer Pro) — only a generic webhook
+   (`webhook_service.py`/`WebhookEndpoint`); works via incoming-webhook URL but no
+   Slack/Teams-native formatting. The email wording reflects this honestly.
+3. **Custom evaluation frameworks (MAS TRM/MOH) for buyer scans** (Buyer
+   Enterprise) — TRM exists for suites only; MOH is just a tender listing. Gap.
+4. **On-chain per-scan timestamping** (Buyer Enterprise "every scan blockchain-
+   timestamped") — `VendorScanLedger` is a DB usage ledger; verify whether scans
+   are actually anchored (Evidence Scan L3 does retrieve blockchain evidence).
+
+Everything else advertised IS wired: Quick/Deep/Evidence scans + limits
+(`procurement.py`), scan quota, traffic-light dashboard, vendor directory+filters,
+CSV/PDF export, comparison engine (`comparison.py`/`/compare`), drift tracking +
+critical alerts, seats/RBAC, multi-subsidiary, white-label, generic webhooks,
+API keys, notarizations. Frontend: `/procurement/dashboard`,
+`/procurement/vendor/[slug]`, `/compare`, `/buyer/dashboard`.
+
 ## 4. AWS access cheat-sheet (booppa account `997493291407`, `ap-southeast-1`)
 
 > The Booppa account is **not** in your SSO profiles (those are Issara/Golden
