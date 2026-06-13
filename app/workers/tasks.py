@@ -3227,30 +3227,75 @@ def refresh_gebiz_base_rates():
             agency_awards: dict[str, int] = {}   # agency → awarded count
             agency_tenders: dict[str, int] = {}  # agency → total seen
 
+            # Politeness + resilience constants for the data.gov.sg API, which
+            # rate-limits aggressively (HTTP 429). A single 429 used to abort the
+            # entire refresh (it broke the loop and there is no fallback dataset);
+            # now each page retries with exponential backoff and we pause between
+            # pages so the weekly cron doesn't silently produce zero rows.
+            MAX_PAGE_RETRIES = 4
+            INTER_PAGE_DELAY = 0.6          # seconds between successful pages
+            RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+            async def _fetch_page(client, dataset_id: str, offset: int):
+                """GET one datastore page, retrying on 429 / 5xx / network errors
+                with exponential backoff (honouring Retry-After). Returns parsed
+                JSON, or None when the page can't be fetched after all retries."""
+                backoff = 2.0
+                for attempt in range(1, MAX_PAGE_RETRIES + 1):
+                    try:
+                        resp = await client.get(
+                            "https://data.gov.sg/api/action/datastore_search",
+                            params={"resource_id": dataset_id, "limit": PAGE_SIZE, "offset": offset},
+                            headers={"User-Agent": "BooppaBot/1.0 (+https://www.booppa.io)"},
+                        )
+                    except Exception as e:
+                        if attempt == MAX_PAGE_RETRIES:
+                            logger.warning(
+                                f"[GeBIZ] Network error dataset={dataset_id} offset={offset} "
+                                f"after {attempt} tries: {e}"
+                            )
+                            return None
+                        await _asyncio.sleep(backoff)
+                        backoff *= 2
+                        continue
+
+                    if resp.status_code == 200:
+                        return resp.json()
+
+                    if resp.status_code in RETRYABLE_STATUS and attempt < MAX_PAGE_RETRIES:
+                        ra = resp.headers.get("Retry-After")
+                        try:
+                            wait_s = float(ra) if ra else backoff
+                        except (TypeError, ValueError):
+                            wait_s = backoff
+                        wait_s = min(wait_s, 30.0)
+                        logger.info(
+                            f"[GeBIZ] HTTP {resp.status_code} dataset={dataset_id} offset={offset} "
+                            f"— retry {attempt}/{MAX_PAGE_RETRIES} in {wait_s:.0f}s"
+                        )
+                        await _asyncio.sleep(wait_s)
+                        backoff *= 2
+                        continue
+
+                    # Non-retryable (e.g. 404 dead resource) or retries exhausted.
+                    logger.warning(
+                        f"[GeBIZ] HTTP {resp.status_code} dataset={dataset_id} offset={offset} — giving up"
+                    )
+                    return None
+                return None
+
             fetched_any = False
+            award_total = 0
             async with httpx.AsyncClient(timeout=30) as client:
                 for dataset_id in GEBIZ_DATASET_IDS:
                     offset = 0
                     while True:
-                        try:
-                            resp = await client.get(
-                                "https://data.gov.sg/api/action/datastore_search",
-                                params={
-                                    "resource_id": dataset_id,
-                                    "limit": PAGE_SIZE,
-                                    "offset": offset,
-                                },
-                                headers={"User-Agent": "BooppaBot/1.0"},
-                            )
-                        except Exception as e:
-                            logger.warning(f"[GeBIZ] Fetch error dataset={dataset_id} offset={offset}: {e}")
+                        data = await _fetch_page(client, dataset_id, offset)
+                        if data is None:
+                            # Page unfetchable after retries — stop paginating this
+                            # dataset. Rows already committed below are retained.
                             break
 
-                        if resp.status_code != 200:
-                            logger.warning(f"[GeBIZ] HTTP {resp.status_code} for dataset {dataset_id}")
-                            break
-
-                        data = resp.json()
                         records = data.get("result", {}).get("records", [])
                         if not records:
                             break
@@ -3333,6 +3378,7 @@ def refresh_gebiz_base_rates():
                                 )
                                 db.execute(stmt)
                                 db.commit()
+                                award_total += len(award_rows_batch)
                             except Exception as e:
                                 logger.warning(f"[GeBIZ] award_history upsert failed (offset={offset}): {e}")
                                 db.rollback()
@@ -3341,13 +3387,18 @@ def refresh_gebiz_base_rates():
                         offset += PAGE_SIZE
                         if offset >= total:
                             break
+                        await _asyncio.sleep(INTER_PAGE_DELAY)  # be polite between pages
 
                     if fetched_any:
                         break  # got data from first working dataset
 
             if not fetched_any:
-                logger.warning("[GeBIZ] No data fetched from any dataset — base_rates unchanged")
+                logger.warning(
+                    "[GeBIZ] No data fetched (all pages failed — likely rate-limited "
+                    "after retries). base_rates and award_history unchanged"
+                )
                 return
+            logger.info(f"[GeBIZ] Fetch complete — {award_total:,} award rows upserted (pre-dedupe)")
 
             # ── 2. Compute sector rates ─────────────────────────────────────────
             def _rate(awarded: int, total: int) -> float:
