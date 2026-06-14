@@ -2271,6 +2271,52 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                 db.add(VendorSector(vendor_id=vendor_id, sector=sector))
                 db.flush()
 
+        # ── Honest procurement readiness (audit integrity finding) ──────────
+        # Vendor Proof previously flat-awarded procurement_readiness=CONDITIONAL
+        # + confidence 30 + a green "Verified" badge to EVERY buyer, even one
+        # whose PDPA scan showed critical gaps — misleading procurement officers
+        # into reading the badge as a compliance endorsement. Derive the standing
+        # from the vendor's ACTUAL latest PDPA scan when one exists; otherwise
+        # mark it explicitly as identity-verified-only (compliance not assessed).
+        from app.core.models import Report as _Report
+
+        _latest_pdpa = (
+            db.query(_Report)
+            .filter(
+                _Report.owner_id == vendor_id,
+                _Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
+                _Report.status == "completed",
+            )
+            .order_by(_Report.created_at.desc())
+            .first()
+        )
+        _pdpa_compliance = None
+        if _latest_pdpa and isinstance(_latest_pdpa.assessment_data, dict):
+            _cs = _latest_pdpa.assessment_data.get("compliance_score")
+            if isinstance(_cs, (int, float)):
+                _pdpa_compliance = int(round(_cs))
+
+        if _pdpa_compliance is None:
+            vp_readiness = "CONDITIONAL"
+            vp_confidence = 30.0
+            vp_readiness_label = "Identity verified — compliance not yet assessed"
+            vp_score_display = "Not yet assessed — run a PDPA scan to establish it"
+        elif _pdpa_compliance >= 70:
+            vp_readiness = "READY"
+            vp_confidence = float(_pdpa_compliance)
+            vp_readiness_label = "Ready"
+            vp_score_display = f"{_pdpa_compliance}/100"
+        elif _pdpa_compliance >= 40:
+            vp_readiness = "CONDITIONAL"
+            vp_confidence = float(_pdpa_compliance)
+            vp_readiness_label = "Conditional"
+            vp_score_display = f"{_pdpa_compliance}/100"
+        else:
+            vp_readiness = "NOT_READY"
+            vp_confidence = float(_pdpa_compliance)
+            vp_readiness_label = "Action required — critical compliance gaps"
+            vp_score_display = f"{_pdpa_compliance}/100"
+
         # Step 2: Create or upsert VendorStatusSnapshot
         snapshot = (
             db.query(VendorStatusSnapshot)
@@ -2280,9 +2326,9 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         if snapshot:
             if snapshot.verification_depth in ("UNVERIFIED", None):
                 snapshot.verification_depth = "BASIC"
-            if snapshot.procurement_readiness == "NOT_READY":
-                snapshot.procurement_readiness = "CONDITIONAL"
-            snapshot.confidence_score = max(snapshot.confidence_score or 0.0, 30.0)
+            # Reflect actual standing — never silently upgrade NOT_READY → CONDITIONAL.
+            snapshot.procurement_readiness = vp_readiness
+            snapshot.confidence_score = vp_confidence
             snapshot.computed_at = datetime.now(timezone.utc)
         else:
             snapshot = VendorStatusSnapshot(
@@ -2290,8 +2336,8 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                 verification_depth="BASIC",
                 monitoring_activity="ACTIVE",
                 risk_signal="CLEAN",
-                procurement_readiness="CONDITIONAL",
-                confidence_score=30.0,
+                procurement_readiness=vp_readiness,
+                confidence_score=vp_confidence,
                 evidence_count=0,
                 notarization_depth=0,
                 dual_silent_mode="SILENT_RISK_CAPTURE",
@@ -2340,12 +2386,17 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
 
         # Step 5: Email with embeddable badge
         if contact_email:
+            # The badge attests IDENTITY/registration on BOOPPA — not compliance
+            # approval. Wording is deliberately "Identity Verified" (not a bare
+            # "Verified" that reads as a compliance pass) and the linked verify
+            # page shows the real readiness, so a procurement officer is never
+            # misled about a vendor with open compliance gaps (audit finding).
             badge_html = (
                 f'<a href="{verify_url}" target="_blank" rel="noopener noreferrer" '
                 f'style="display:inline-flex;align-items:center;gap:8px;background:#0f172a;'
                 f"color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none;"
                 f'font-family:Arial,sans-serif;font-size:13px;font-weight:600;">'
-                f'<span style="color:#10b981;">✓</span> {company_name} — Verified on BOOPPA</a>'
+                f'<span style="color:#10b981;">✓</span> {company_name} — Identity Verified on BOOPPA</a>'
             )
             body_html = f"""
             <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
@@ -2357,11 +2408,17 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                 <p>Your Vendor Proof is now <strong style="color:#10b981;">active</strong>. You are now visible to procurement officers who filter by verified vendors on the BOOPPA platform.</p>
                 <h3 style="color:#0f172a;">What changed on your profile</h3>
                 <ul>
-                  <li>Verification status: <strong>BASIC (Active)</strong></li>
-                  <li>Compliance score baseline: <strong>30/100</strong></li>
-                  <li>Procurement readiness: <strong>Conditional</strong></li>
+                  <li>Verification status: <strong>BASIC (Identity Verified, Active)</strong></li>
+                  <li>Compliance score: <strong>{vp_score_display}</strong></li>
+                  <li>Procurement readiness: <strong>{vp_readiness_label}</strong></li>
                   <li>CAL Level 1 activated — personalised upgrade recommendations will appear in your dashboard</li>
                 </ul>
+                <p style="color:#475569;font-size:13px;background:#f8fafc;border-left:3px solid #94a3b8;padding:10px 14px;border-radius:4px;">
+                  <strong>What Vendor Proof attests:</strong> your identity and registration on BOOPPA — not a
+                  compliance endorsement. Your procurement readiness above reflects your latest PDPA scan
+                  {"(run a PDPA scan to establish it)" if _pdpa_compliance is None else ""}. Procurement officers
+                  see your real standing on your verification page.
+                </p>
                 <h3 style="color:#0f172a;">Embed your Booppa Verified badge</h3>
                 <p>Add this to your website or RFP proposals:</p>
                 <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px;font-family:monospace;font-size:12px;word-break:break-all;">
