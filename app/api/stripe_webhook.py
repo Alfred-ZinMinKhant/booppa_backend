@@ -591,26 +591,11 @@ async def _activate_subscription(
         # re-fire on a duplicate webhook delivery.
         if not first_activation:
             pass
-        elif new_plan == "pdpa_monitor":
-            website = (getattr(user, "website", "") or "").strip()
-            if website and customer_email:
-                try:
-                    from app.workers.tasks import pdpa_monitor_monthly_rescan_task
-
-                    pdpa_monitor_monthly_rescan_task.delay(
-                        str(user.id), customer_email, website
-                    )
-                    logger.info(
-                        f"[Subscription] Queued initial PDPA scan for {customer_email} ({website})"
-                    )
-                except Exception as scan_err:
-                    logger.warning(
-                        f"[Subscription] Could not queue initial PDPA scan: {scan_err}"
-                    )
-            else:
-                logger.info(
-                    f"[Subscription] Skipping initial PDPA scan — no website on profile for {customer_email}"
-                )
+        # NOTE: pdpa_monitor's first-cycle scan + Monitor report is fired by the
+        # "Instant first-cycle delivery" block above (run_pdpa_monitor_cycle_for_user).
+        # It used to ALSO fire here — a DUPLICATE scan that produced a second
+        # Monitor report email per activation. Removed so each activation runs one
+        # scan / one report.
         elif new_plan == "compliance_evidence":
             website = (getattr(user, "website", "") or "").strip()
             if not website:
@@ -650,28 +635,12 @@ async def _activate_subscription(
                     logger.warning(
                         f"[Subscription] Could not send CE website-needed email: {email_exc}"
                     )
-            else:
-                try:
-                    from app.workers.tasks import fulfill_bundle_task
-
-                    fulfill_bundle_task.delay(
-                        product_type="compliance_evidence_pack",
-                        session_id=stripe_subscription_id,
-                        customer_email=customer_email,
-                        metadata={
-                            "company_name": getattr(user, "company", ""),
-                            "vendor_url": website,
-                            **({"test_simulation": "1"} if test_simulation else {}),
-                        },
-                        report_id=None,
-                    )
-                    logger.info(
-                        f"[Subscription] Auto-fulfilled compliance_evidence_pack bundle for {customer_email}"
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"[Subscription] Failed to fulfill compliance_evidence bundle: {e}"
-                    )
+            # NOTE: when a website IS on file, the compliance_evidence first-cycle
+            # bundle is fulfilled by the "Instant first-cycle delivery" block above
+            # (run_compliance_evidence_cycle_for_user, which also resets the cycle
+            # state). It used to ALSO fulfill here — a DUPLICATE bundle run (double
+            # PDPA + RFP + cover sheet + emails). Removed. This branch now only
+            # handles the no-website nudge above.
         elif new_plan in ["standard_suite", "pro_suite"]:
             try:
                 from app.trm_workflow_service import initialise_trm_controls
