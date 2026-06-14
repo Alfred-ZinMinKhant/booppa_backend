@@ -2689,6 +2689,38 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str):
                 ProofView.created_at >= thirty_days_ago,
             ).count()
 
+        # 2b. Render a one-page status snapshot PDF so the monthly email links a
+        # real, fileable/forwardable artifact instead of being email-only.
+        plan = (getattr(user, "plan", "") or "")
+        plan_label = "Vendor Pro" if plan == "vendor_pro" else "Vendor Active"
+        snapshot_url = None
+        try:
+            from app.services.vendor_snapshot_generator import generate_vendor_snapshot_pdf
+            from app.services.storage import S3Service
+
+            snapshot_pdf = generate_vendor_snapshot_pdf({
+                "company_name": company,
+                "plan_label": plan_label,
+                "trust_score": getattr(score_record, "total_score", None),
+                "compliance_score": getattr(score_record, "compliance_score", None),
+                "profile_views_30d": profile_views,
+                "verification_level": getattr(verify, "verification_level", None),
+            })
+            snapshot_url = asyncio.run(
+                S3Service().upload_pdf(snapshot_pdf, f"vendor-snapshot-{vendor_id}")
+            )
+        except Exception as snap_err:
+            logger.warning(f"[VendorSnapshot] PDF/upload failed for {vendor_id}: {snap_err}")
+
+        snapshot_cta = (
+            f"""<p><a href="{snapshot_url}"
+                     style="background:#0f172a;color:#fff;padding:11px 22px;text-decoration:none;
+                            border-radius:8px;font-weight:bold;display:inline-block;">
+                Download your status snapshot (PDF) ↓
+              </a></p>"""
+            if snapshot_url else ""
+        )
+
         # 3. Email monthly digest
         email_svc = EmailService()
         asyncio.run(email_svc.send_html_email(
@@ -2707,6 +2739,7 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str):
                   <p style="margin:4px 0;"><strong>Compliance Score:</strong> {score_record.compliance_score}/100</p>
                   <p style="margin:4px 0;"><strong>Profile Views (30d):</strong> {profile_views}</p>
                 </div>
+                {snapshot_cta}
                 <p>
                   <a href="https://www.booppa.io/vendor/dashboard"
                      style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;
@@ -2818,6 +2851,13 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
         asyncio.run(_fulfill_pdpa(report_id=str(stub.id), customer_email=vendor_email))
         logger.info(f"PDPA Monitor monthly re-scan complete for vendor {vendor_id}")
 
+        # Deliver the month-over-month Monitor Report PDF — the actual Monitor
+        # deliverable (distinct from the one-off Quick Scan). Short countdown so
+        # the just-completed report is fully committed first.
+        run_pdpa_monitor_report_for_user.apply_async(
+            args=[vendor_id, vendor_email], countdown=60,
+        )
+
         # Drift detection: scan completion is async (process_report_task writes
         # results back to assessment_data). Defer drift check by 30 min so the
         # new report has a comparable risk_score before we diff it.
@@ -2828,6 +2868,121 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
     except Exception as exc:
         logger.error(f"PDPA Monitor monthly re-scan failed for {vendor_id}: {exc}")
         raise self.retry(exc=exc, countdown=600)
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, max_retries=2, name="run_pdpa_monitor_report_for_user")
+def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | None = None):
+    """Generate + deliver the month-over-month PDPA Monitor Report PDF.
+
+    This is the actual Monitor deliverable: a comparison of the two most recent
+    scans (current compliance score, change vs last month, dimension moves) —
+    distinct from the one-off Quick Scan the activation email used to link. On
+    the first cycle (only one scan) it ships a baseline edition.
+    """
+    from app.core.models import Report, User
+    from app.services.compliance_drift import _extract_risk_score, _per_dimension_flips
+    from app.services.pdpa_monitor_delta_generator import generate_pdpa_monitor_report_pdf
+    from app.services.storage import S3Service
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == vendor_id).first()
+        if not user:
+            logger.warning("[MonitorReport] no user for id=%s", vendor_id)
+            return
+        email = vendor_email or user.email
+        if not email:
+            return
+        company = (getattr(user, "company", "") or "").strip() or "Your Organisation"
+        framework = "pdpa_quick_scan"
+
+        reports = (
+            db.query(Report)
+            .filter(
+                Report.owner_id == user.id,
+                Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
+                Report.status == "completed",
+            )
+            .order_by(Report.completed_at.desc().nullslast())
+            .limit(2)
+            .all()
+        )
+        if not reports:
+            logger.info("[MonitorReport] no completed PDPA report yet for %s — skipping", email)
+            return
+        current = reports[0]
+        previous = reports[1] if len(reports) > 1 else None
+
+        def _compliance(r) -> int | None:
+            ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
+            # Prefer the canonical persisted score (single source of truth, C2);
+            # fall back to 100 - risk_score.
+            cs = ad.get("compliance_score")
+            if isinstance(cs, (int, float)):
+                return int(round(cs))
+            risk = _extract_risk_score(r)
+            return None if risk is None else max(0, min(100, 100 - int(round(risk))))
+
+        cur_ad = current.assessment_data if isinstance(current.assessment_data, dict) else {}
+        findings = (
+            cur_ad.get("detailed_findings") or cur_ad.get("findings")
+            or (cur_ad.get("risk_assessment") or {}).get("findings") or []
+        )
+        dimension_changes = (
+            _per_dimension_flips(db, str(user.id), framework, current.id, previous.id)
+            if previous else []
+        )
+        scanned_url = cur_ad.get("display_url") or cur_ad.get("website_url") or current.company_website
+
+        pdf_bytes = generate_pdpa_monitor_report_pdf({
+            "company_name": company,
+            "current_score": _compliance(current),
+            "previous_score": _compliance(previous) if previous else None,
+            "scanned_url": scanned_url,
+            "findings_count": len(findings) if isinstance(findings, list) else None,
+            "dimension_changes": dimension_changes,
+            "full_report_url": f"https://api.booppa.io/api/v1/reports/{current.id}/download",
+        })
+
+        report_url = None
+        try:
+            report_url = asyncio.run(
+                S3Service().upload_pdf(pdf_bytes, f"pdpa-monitor-report-{current.id}")
+            )
+        except Exception as up_err:
+            logger.error("[MonitorReport] S3 upload failed for %s: %s", email, up_err)
+
+        if report_url:
+            month_label = datetime.now(timezone.utc).strftime("%B %Y")
+            body_html = f"""
+            <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
+              <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
+                <h1 style="color:#10b981;margin:0;font-size:20px;">PDPA Monitor Report — {month_label}</h1>
+              </div>
+              <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
+                <p>Hello <strong>{company}</strong>,</p>
+                <p>Your monthly PDPA Monitor report is ready — it compares this month's scan against last
+                   month's, so you can see exactly what moved.</p>
+                <p style="text-align:center;margin:26px 0;">
+                  <a href="{report_url}" style="background:#10b981;color:#fff;padding:12px 28px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">Download your Monitor Report (PDF)</a>
+                </p>
+                <p style="color:#64748b;font-size:12px;">PDPA Monitor — monthly compliance tracking · booppa.io</p>
+              </div>
+            </body></html>"""
+            sent = asyncio.run(EmailService().send_html_email(
+                to_email=email,
+                subject=f"Your PDPA Monitor Report — {month_label}",
+                body_html=body_html,
+            ))
+            if not sent:
+                logger.error("[MonitorReport] delivery email rejected for %s", email)
+            else:
+                logger.info("[MonitorReport] Delivered to %s (previous=%s)", email, bool(previous))
+    except Exception as exc:
+        logger.error("[MonitorReport] Failed for %s: %s", vendor_id, exc)
+        raise self.retry(exc=exc, countdown=300)
     finally:
         db.close()
 
