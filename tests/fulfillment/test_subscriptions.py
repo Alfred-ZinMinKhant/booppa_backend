@@ -57,10 +57,20 @@ def test_subscription_activates_plan_and_emails(
     assert sub.status == "active"
     assert sub.product_type == case.product_type
 
-    # Email
-    assert any("subscription is active" in m["subject"].lower() for m in email_capture), \
+    # Email — most tiers use the "Your <label> subscription is active" subject,
+    # but suites + buyer tiers ship a richer itemised onboarding email whose
+    # subject is "Welcome to <label> — here's everything included" (the
+    # "subscription is now active" line lives in the body). Accept either as a
+    # valid activation email.
+    def _is_activation(m: dict) -> bool:
+        subject = m["subject"].lower()
+        return (
+            "subscription is active" in subject
+            or "here's everything included" in subject
+        ) and "subscription is now active" in m["body"].lower()
+
+    assert any(_is_activation(m) and m["to"] == email for m in email_capture), \
         f"no activation email captured for {case.product_type}: {[m['subject'] for m in email_capture]}"
-    assert any(m["to"] == email for m in email_capture)
 
 
 def test_subscription_idempotent_on_replay(
