@@ -2493,6 +2493,18 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
                 "contact_email": contact_email,
                 "base_url": "https://www.booppa.io",
             }
+            # Pass raw scan evidence so the dimension-weighted score this PDF
+            # computes matches the canonical scan report (process_report_task).
+            # Without these, _compliance_score_table scores from findings alone
+            # and can diverge from the rich report — the 53-vs-54 bug.
+            for _scan_key in (
+                "security_headers", "consent_mechanism", "privacy_policy",
+                "dpo_compliance", "dnc_mention", "nric_evidence", "nric",
+                "policy_clauses", "pdpc_enforcement", "hosting", "trackers",
+                "ssl_grade", "primary_language",
+            ):
+                if _scan_key in assessment:
+                    pdf_data[_scan_key] = assessment[_scan_key]
             # Capture screenshot live if not already stored
             if not pdf_data["site_screenshot"] and website_url:
                 try:
@@ -2537,6 +2549,10 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
         # reproduces both verbatim instead of recomputing and drifting (the
         # 53-vs-54 / crayon.com-vs-crayon.com/sg inconsistency in the audit).
         _computed_score = pdf_data.get("computed_overall_compliance_score")
+        if _computed_score is None and isinstance(pdf_data.get("scan_data"), dict):
+            # Defensive: _compliance_score_table stashes onto report_data["scan_data"]
+            # when that nested key is present, so read it back from there too.
+            _computed_score = pdf_data["scan_data"].get("computed_overall_compliance_score")
         if _computed_score is not None:
             assessment["compliance_score"] = _computed_score
         if website_url:
@@ -2586,6 +2602,13 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
                     if pdf_url
                     else "<p>Your report will be available on the BOOPPA dashboard shortly.</p>"
                 )
+                # Show the SAME compliance score the PDF + Cover Sheet show
+                # (dimension-weighted, persisted), not a separate 100-risk figure
+                # that drifted (e.g. 54 in the email vs 53 in the PDF).
+                _email_compliance = assessment.get("compliance_score")
+                if not isinstance(_email_compliance, (int, float)):
+                    _email_compliance = 100 - int(risk_score or 50)
+                _email_compliance = int(_email_compliance)
                 body_html = f"""
                 <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
                   <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
@@ -2599,7 +2622,7 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
                        privacy notice — and provides specific recommendations with legislative references.</p>
                     <div style="background:#f0fdf4;border-left:3px solid #10b981;padding:12px 16px;
                                 border-radius:4px;margin:20px 0;">
-                      <strong>Compliance Score:</strong> {100 - int(risk_score or 50)}/100<br>
+                      <strong>Compliance Score:</strong> {_email_compliance}/100<br>
                       <strong>Report ID:</strong> {report_id[:8].upper()}<br>
                       <strong>Generated:</strong> {datetime.now(timezone.utc).strftime('%d %B %Y')}
                     </div>
