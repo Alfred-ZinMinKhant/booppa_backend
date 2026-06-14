@@ -539,7 +539,7 @@ def generate_shortlist_report(body: ShortlistReportRequest, db: Session = Depend
         f"Procurement Officer: {body.officer or 'Not specified'}",
         f"Tender Reference:    {body.tender_ref or 'Not specified'}",
         f"Framework:           Booppa Automated Compliance Framework v1.0",
-        f"Assessing Entity:    Booppa Smart Care LLC  ·  UEN 202415732W",
+        f"Assessing Entity:    Booppa Smart Care LLC",
         sep,
         f"VENDORS EVALUATED ({len(body.vendors)})",
         "",
@@ -586,7 +586,7 @@ def generate_shortlist_report(body: ShortlistReportRequest, db: Session = Depend
         "information, ACRA registration data, GeBIZ supplier history, and Booppa trust",
         "signals at the time of generation. It does not substitute for legal due diligence.",
         "",
-        "Booppa Smart Care LLC  ·  booppa.io  ·  evidence@booppa.io  ·  UEN 202415732W",
+        "Booppa Smart Care LLC  ·  booppa.io  ·  evidence@booppa.io",
     ]
 
     return "\n".join(lines)

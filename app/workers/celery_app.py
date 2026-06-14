@@ -54,6 +54,21 @@ celery_app.conf.update(
             "task": "cleanup_old_tasks",
             "schedule": 3600.0,  # Every hour
         },
+        # Backstop for Compliance Evidence Pack cover-sheet delivery — re-fires
+        # the idempotent _maybe_fire_cover_sheet for any buyer still owed a
+        # cover sheet, so a missed inline trigger self-heals within the hour
+        # instead of silently never delivering the 3rd bundle document.
+        "sweep-pending-cover-sheets": {
+            "task": "sweep_pending_cover_sheets",
+            "schedule": 3600.0,  # Every hour
+        },
+        # Auto-recover signed cover-sheet blockchain anchors stuck in "Pending"
+        # after their inline retries were exhausted (transient RPC/gas outages),
+        # bounded so a genuinely un-anchorable hash eventually stops retrying.
+        "retry-failed-cover-sheet-anchors": {
+            "task": "retry_failed_cover_sheet_anchors",
+            "schedule": 3600.0,  # Every hour
+        },
         # Sync live GeBIZ open tenders every 30 minutes.
         "sync-gebiz-tenders": {
             "task": "sync_gebiz_tenders",

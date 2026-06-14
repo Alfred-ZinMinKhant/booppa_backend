@@ -1948,13 +1948,20 @@ def anchor_signed_cover_sheet_task(self, report_id: str, customer_email: str | N
                 force=True,
             ))
             if tx:
+                from sqlalchemy.orm.attributes import flag_modified
                 report.tx_hash = tx
                 report.completed_at = datetime.now(timezone.utc)
                 ad["blockchain_anchored_at"] = report.completed_at.isoformat()
                 # Clear any prior failure flag (this might be a recovery retry).
                 ad.pop("anchor_failed", None)
                 ad.pop("anchor_failed_at", None)
+                ad.pop("anchor_failed_reason", None)
+                ad.pop("anchor_sweep_attempts", None)
                 report.assessment_data = ad
+                # assessment_data is a plain JSON column (no MutableDict), so an
+                # in-place mutation isn't auto-detected — flag it explicitly or
+                # the cleared failure flags silently won't persist.
+                flag_modified(report, "assessment_data")
                 db.commit()
                 logger.info(f"[SignedCS] Anchored {report_id} tx={tx[:12]}…")
             else:
@@ -1995,11 +2002,17 @@ def anchor_signed_cover_sheet_task(self, report_id: str, customer_email: str | N
                 try:
                     _r = _db.query(Report).filter(Report.id == report_id).first()
                     if _r:
+                        from sqlalchemy.orm.attributes import flag_modified
                         _ad = _r.assessment_data if isinstance(_r.assessment_data, dict) else {}
                         _ad["anchor_failed"] = True
                         _ad["anchor_failed_at"] = datetime.now(timezone.utc).isoformat()
                         _ad["anchor_failed_reason"] = str(exc)[:300]
                         _r.assessment_data = _ad
+                        # Plain JSON column — without flag_modified this in-place
+                        # mutation never persists, so the status endpoint would
+                        # keep showing the buyer a perpetual "Anchoring…" spinner
+                        # and the retry sweep would never see anchor_failed=True.
+                        flag_modified(_r, "assessment_data")
                         _db.commit()
                         logger.error(
                             f"[SignedCS] Marked {report_id} anchor_failed=True after max retries"
@@ -2148,9 +2161,16 @@ def fulfill_cover_sheet_task(
                         if pdpa_ad.get("risk_score") is not None
                         else structured_ra.get("score")
                     )
-                    if raw_risk is not None:
+                    # Single source of truth: when the PDPA report persisted the
+                    # exact compliance score its own PDF printed, display THAT
+                    # verbatim — never recompute (recomputing is what drifted the
+                    # cover sheet to 54 while the PDPA report showed 53).
+                    canonical_score = pdpa_ad.get("compliance_score")
+                    if isinstance(canonical_score, (int, float)):
+                        pdpa_score = int(round(canonical_score))
+                    elif raw_risk is not None:
                         try:
-                            pdpa_score = max(0, min(100, 100 - int(raw_risk)))
+                            pdpa_score = max(0, min(100, 100 - int(round(float(raw_risk)))))
                         except (TypeError, ValueError):
                             pdpa_score = "—"
                     # Findings have lived under several keys in different
@@ -2190,7 +2210,12 @@ def fulfill_cover_sheet_task(
                     # number can't contradict the rendered findings list. The
                     # raw `pdpa_score` derived from raw_risk takes precedence
                     # only when findings are empty (clean site).
-                    if findings:
+                    # Only fall back to a findings-derived score when the PDPA
+                    # report did NOT persist a canonical compliance_score (older
+                    # reports). When it did, that value is authoritative and must
+                    # not be overridden — otherwise the cover sheet and the PDPA
+                    # report disagree.
+                    if findings and not isinstance(canonical_score, (int, float)):
                         weighted_risk = (
                             sev_counts["Critical"] * 25
                             + sev_counts["High"] * 15
@@ -2252,7 +2277,16 @@ def fulfill_cover_sheet_task(
                     }
 
                     pdpa_details = {
-                        "website_url": pdpa_ad.get("website_url") or pdpa_report.company_website or "—",
+                        # Prefer the exact URL the PDPA report PDF displayed
+                        # (persisted as display_url) so both documents in the
+                        # bundle name the same scanned URL — no crayon.com vs
+                        # crayon.com/sg mismatch.
+                        "website_url": (
+                            pdpa_ad.get("display_url")
+                            or pdpa_ad.get("website_url")
+                            or pdpa_report.company_website
+                            or "—"
+                        ),
                         "risk_level": risk_level,
                         "total_findings": len(findings),
                         "severity_counts": sev_counts,
@@ -3635,6 +3669,121 @@ def cleanup_old_tasks():
         db.close()
 
 
+@celery_app.task(name="sweep_pending_cover_sheets")
+def sweep_pending_cover_sheets():
+    """Backstop for Compliance Evidence Pack cover-sheet delivery.
+
+    The cover sheet auto-fires inline from `_maybe_fire_cover_sheet` when both
+    the PDPA scan and the RFP Complete kit finish. That inline trigger is
+    correct in the happy path, but it runs from two async tasks and a missed
+    fire (task ordering, a swallowed exception, a transient DB error) leaves the
+    customer with `pending_cover_sheet=True` and NO cover sheet — silently, with
+    no alert. A forensic audit caught exactly this: one buyer received the
+    3-doc bundle's cover sheet, another (same SKU) never did.
+
+    This hourly sweep re-runs the idempotent `_maybe_fire_cover_sheet` for every
+    user still owed a cover sheet, so any transient miss self-heals within the
+    hour. `_maybe_fire_cover_sheet` itself re-checks that both inputs are ready
+    and clears the flag once it queues the task, so re-running it is safe and a
+    no-op for buyers who simply haven't submitted their RFP brief yet.
+    """
+    from app.core.models import User
+    from app.api.stripe_webhook import _maybe_fire_cover_sheet
+
+    db = SessionLocal()
+    try:
+        pending = (
+            db.query(User)
+            .filter(User.pending_cover_sheet == True)  # noqa: E712
+            .all()
+        )
+        emails = [u.email for u in pending if u.email]
+    except Exception as e:
+        logger.error(f"[CoverSheetSweep] Could not list pending users: {e}")
+        return
+    finally:
+        db.close()
+
+    if not emails:
+        return
+
+    fired = 0
+    for email in emails:
+        try:
+            # Idempotent: fires only when PDPA + RFP are both done, then clears
+            # the flag. A no-op otherwise.
+            _maybe_fire_cover_sheet(email)
+            fired += 1
+        except Exception as e:
+            logger.error(f"[CoverSheetSweep] Re-fire failed for {email}: {e}")
+    logger.info(
+        f"[CoverSheetSweep] Re-checked {len(emails)} pending cover-sheet user(s)"
+    )
+
+
+@celery_app.task(name="retry_failed_cover_sheet_anchors")
+def retry_failed_cover_sheet_anchors():
+    """Auto-recover signed Cover Sheet anchors stuck in 'Pending'.
+
+    `anchor_signed_cover_sheet_task` retries 5× with backoff, then marks the
+    Report `anchor_failed=True` with `tx_hash` still NULL. The status endpoint
+    surfaces that flag so the UI can stop spinning — but until now nothing
+    re-attempted the anchor, so a transient RPC/gas outage left the buyer's
+    third bundle anchor permanently 'Pending' (a finding in the forensic audit).
+
+    This hourly sweep re-queues `anchor_signed_cover_sheet_task` for any signed
+    cover sheet that failed to anchor, bounded by `anchor_sweep_attempts` so a
+    genuinely un-anchorable hash (bad config, contract revert) eventually stops
+    retrying and is left for manual intervention via /bundle/cover-sheet/trigger.
+    """
+    from app.core.models import Report, User
+
+    MAX_SWEEP_ATTEMPTS = 8  # ~8 hourly tries before giving up
+
+    db = SessionLocal()
+    requeued = 0
+    try:
+        candidates = (
+            db.query(Report)
+            .filter(
+                Report.framework == "compliance_evidence_signed_sheet",
+                Report.tx_hash.is_(None),
+            )
+            .all()
+        )
+        for r in candidates:
+            src = r.assessment_data if isinstance(r.assessment_data, dict) else {}
+            if not src.get("anchor_failed"):
+                continue  # still in normal retry window, not yet exhausted
+            attempts = int(src.get("anchor_sweep_attempts", 0) or 0)
+            if attempts >= MAX_SWEEP_ATTEMPTS:
+                continue  # give up — leave anchor_failed for manual retry
+            # Fresh dict so SQLAlchemy detects the JSONB change (reassigning the
+            # same reference would not mark the column dirty).
+            ad = {**src, "anchor_sweep_attempts": attempts + 1}
+            r.assessment_data = ad
+            owner = db.query(User).filter(User.id == r.owner_id).first()
+            customer_email = owner.email if owner else None
+            company_name = (getattr(owner, "company", "") or "") if owner else ""
+            db.commit()
+            anchor_signed_cover_sheet_task.apply_async(
+                kwargs={
+                    "report_id": str(r.id),
+                    "customer_email": customer_email,
+                    "company_name": company_name,
+                },
+                countdown=5,
+            )
+            requeued += 1
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[AnchorRetrySweep] Failed: {e}")
+    finally:
+        db.close()
+    if requeued:
+        logger.info(f"[AnchorRetrySweep] Re-queued {requeued} stuck cover-sheet anchor(s)")
+
+
 @celery_app.task(name="send_weekly_vendor_scores")
 def send_weekly_vendor_scores():
     """
@@ -4685,6 +4834,110 @@ def run_vendor_pro_activation_for_user(self, user_id: str):
                 "[VendorProFirstCycle] %s has no website — PDPA scan skipped; will fire after profile update",
                 user.email,
             )
+    finally:
+        if db:
+            db.close()
+
+
+@celery_app.task(bind=True, max_retries=2, name="run_suite_trm_baseline_for_user")
+def run_suite_trm_baseline_for_user(self, user_id: str):
+    """Generate the MAS TRM Baseline Assessment PDF for a new suite subscriber.
+
+    Standard/Pro Suite activation seeds 13 TRM control domains; this turns that
+    into a tangible, board-presentable artifact and emails the buyer a download
+    link — closing the audit gap where suites delivered only an email claiming
+    "13 domains initialised" with nothing to show.
+    """
+    from app.core.models import User
+    from app.core.models_enterprise import Organisation, TrmControl, MAS_TRM_DOMAINS
+    from app.services.trm_baseline_generator import generate_trm_baseline_pdf
+    from app.services.storage import S3Service
+    from app.services.email_service import EmailService
+
+    user, db = _load_user(user_id)
+    try:
+        if not user or not user.email:
+            logger.warning("[TRMBaseline] no user/email for id=%s", user_id)
+            return
+        plan = (getattr(user, "plan", "") or "")
+        plan_label = "Pro Suite" if plan == "pro_suite" else "Standard Suite"
+
+        org = (
+            db.query(Organisation)
+            .filter(Organisation.owner_user_id == user.id)
+            .order_by(Organisation.created_at.asc())
+            .first()
+        )
+        controls = []
+        if org:
+            rows = (
+                db.query(TrmControl)
+                .filter(TrmControl.organisation_id == org.id)
+                .all()
+            )
+            # Order by the canonical domain sequence for a stable, readable doc.
+            order = {d: i for i, d in enumerate(MAS_TRM_DOMAINS)}
+            rows.sort(key=lambda r: order.get(r.domain, 99))
+            controls = [
+                {
+                    "domain": r.domain,
+                    "control_ref": r.control_ref,
+                    "status": r.status,
+                    "risk_rating": r.risk_rating,
+                    "gap_analysis": r.gap_analysis,
+                }
+                for r in rows
+            ]
+        if not controls:
+            # Controls not yet seeded (race) — fall back to the canonical domains
+            # so the buyer still receives a complete baseline.
+            controls = [{"domain": d, "control_ref": f"TRM-{i}", "status": "not_started"}
+                        for i, d in enumerate(MAS_TRM_DOMAINS, 1)]
+
+        company_name = (getattr(user, "company", "") or "").strip() or "Your Organisation"
+        pdf_bytes = generate_trm_baseline_pdf({
+            "company_name": company_name,
+            "plan_label": plan_label,
+            "controls": controls,
+        })
+
+        report_id = f"trm-baseline-{user.id}"
+        download_url = None
+        try:
+            download_url = asyncio.run(S3Service().upload_pdf(pdf_bytes, report_id))
+        except Exception as up_err:
+            logger.error("[TRMBaseline] S3 upload failed for %s: %s", user.email, up_err)
+
+        if download_url:
+            body_html = f"""
+            <html><body style="font-family:Arial,sans-serif;background:#0a0f1e;color:#e5e5e5;padding:32px;">
+            <div style="max-width:600px;margin:0 auto;background:#0d1424;border:1px solid #1e293b;border-radius:12px;padding:28px;">
+              <p style="margin:0 0 4px;color:#64748b;text-transform:uppercase;letter-spacing:.1em;font-size:11px;">BOOPPA · {plan_label}</p>
+              <h1 style="margin:0 0 12px;color:#10b981;font-size:20px;">Your MAS TRM Baseline is ready</h1>
+              <p style="color:#cbd5e1;line-height:1.6;margin:0 0 18px;">
+                We've prepared a baseline assessment of all 13 MAS Technology Risk Management control
+                domains for <strong>{company_name}</strong>. Use it as your starting inventory — then
+                work each domain (with AI gap analysis) in your TRM workspace.
+              </p>
+              <div style="text-align:center;margin:24px 0;">
+                <a href="{download_url}" style="display:inline-block;background:#10b981;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;">Download your TRM Baseline (PDF)</a>
+              </div>
+              <p style="color:#94a3b8;font-size:13px;margin:0;">
+                Open your <a href="https://www.booppa.io/vendor/trm" style="color:#10b981;">TRM workspace</a> to begin.
+              </p>
+            </div></body></html>"""
+            sent = asyncio.run(EmailService().send_html_email(
+                to_email=user.email,
+                subject=f"Your MAS TRM Baseline Assessment — {plan_label}",
+                body_html=body_html,
+            ))
+            if not sent:
+                logger.error("[TRMBaseline] delivery email rejected for %s", user.email)
+            else:
+                logger.info("[TRMBaseline] Delivered baseline to %s (%d domains)", user.email, len(controls))
+    except Exception as exc:
+        logger.error("[TRMBaseline] Failed for %s: %s", user_id, exc)
+        raise self.retry(exc=exc, countdown=120)
     finally:
         if db:
             db.close()
