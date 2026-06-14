@@ -22,6 +22,10 @@ def test_baseline_pdf_renders_all_domains():
         "company_name": "Funding Societies",
         "plan_label": "Pro Suite",
         "controls": controls,
+        "provisioning": [
+            {"capability": "SSO — SAML 2.0 / OIDC", "status": "Ready", "detail": "Configure at booppa.io/vendor/sso"},
+            {"capability": "White-label reports", "status": "Ready", "detail": "Enable at booppa.io/vendor/profile"},
+        ],
     })
     assert pdf.startswith(b"%PDF")
 
@@ -32,6 +36,10 @@ def test_baseline_pdf_renders_all_domains():
     for domain in ("Cyber Security", "Incident Management", "Cloud Computing"):
         assert domain in text, f"missing domain: {domain}"
     assert "Not Started" in text
+    # New: initial gap analysis + provisioning evidence sections.
+    assert "Initial Gap Analysis" in text
+    assert "Configuration" in text and "Provisioning" in text
+    assert "SSO" in text and "White-label" in text
 
 
 def test_baseline_task_generates_uploads_and_emails(test_db, mocker):
@@ -82,3 +90,7 @@ def test_baseline_task_generates_uploads_and_emails(test_db, mocker):
     assert captured["to"] == "suite+trm@booppa.io"
     assert "TRM Baseline" in captured["subject"]
     assert "Download your TRM Baseline" in captured["body"]
+    # Pro Suite: the PDF carries the initial gap analysis + provisioning evidence.
+    text = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(captured["pdf"])).pages)
+    assert "Initial Gap Analysis" in text
+    assert "Multi-subsidiary" in text  # Pro-only provisioning row

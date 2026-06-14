@@ -30,7 +30,33 @@ from app.core.company import COMPANY_NAME
 logger = logging.getLogger(__name__)
 
 # Bump when the visible structure of the baseline PDF changes.
-TRM_BASELINE_SCHEMA_VERSION = 1
+# v2: added an Initial Gap Analysis section (per-domain requirement, priority,
+#     and baseline gap) + an optional Configuration & Provisioning Status section
+#     (Pro Suite evidence of what's provisioned). Closes the audit gaps "no
+#     initial gap analysis report" and "zero evidence of active configuration".
+TRM_BASELINE_SCHEMA_VERSION = 2
+
+# Per-domain initial gap framework — what each MAS TRM domain requires + its
+# supervisory priority. Used to render a real starting gap analysis on day one
+# (everything is "Not Started", so the gap is establishing the control). Once
+# the customer runs the AI gap analysis in the workspace, the per-control
+# `gap_analysis` text overrides the template line below.
+_DOMAIN_GAP = {
+    "Technology Risk Governance": ("Board/senior-management oversight, a risk-appetite statement, and a TRM framework with defined roles.", "High"),
+    "IT Project and Change Management": ("A documented SDLC and change-management process with approvals, testing gates, and rollback plans.", "Medium"),
+    "Technology Operations": ("Capacity, availability, and configuration management with documented operating procedures and monitoring.", "Medium"),
+    "IT Outsourcing and Vendor Management": ("Due diligence, contractual safeguards, and ongoing monitoring of material service providers (incl. cloud).", "High"),
+    "Cyber Security": ("Layered controls — perimeter, endpoint, vulnerability & patch management, and continuous threat monitoring.", "High"),
+    "Data and Information Management": ("Data classification, encryption in transit/at rest, and access-on-need with audit logging.", "High"),
+    "Customer Awareness and Education": ("Customer security advisories and anti-phishing / scam education materials.", "Low"),
+    "Incident Management": ("An incident response plan with severity tiers, escalation, and MAS notification timelines.", "High"),
+    "IT Audit": ("Independent periodic IT audit coverage with tracked findings and remediation.", "Medium"),
+    "Business Continuity and Disaster Recovery": ("BCP/DR plans with defined RTO/RPO and at least annual tested recovery.", "High"),
+    "Technology Testing": ("Security testing — VAPT and source-code review — on a risk-based schedule.", "Medium"),
+    "Cloud Computing": ("Cloud governance: shared-responsibility mapping, configuration baselines, and key management.", "Medium"),
+    "Authentication and Access Management": ("MFA, least-privilege RBAC, privileged-access management, and periodic access recertification.", "High"),
+}
+_PRIORITY_COLOR = {"High": "#dc2626", "Medium": "#b45309", "Low": "#475569"}
 
 _STATUS_LABEL = {
     "not_started": "Not Started",
@@ -166,6 +192,87 @@ def generate_trm_baseline_pdf(data: Dict[str, Any]) -> bytes:
     ]))
     story.append(table)
     story.append(Spacer(1, 14))
+
+    # ── Initial Gap Analysis ────────────────────────────────────────────────
+    story.append(Paragraph("Initial Gap Analysis", s["h2"]))
+    story.append(Paragraph(
+        "A starting gap assessment for each domain. On day one every domain is "
+        "<b>Not Started</b>, so the gap is establishing and evidencing the control "
+        "below. As you run the AI gap analysis and attach evidence in your TRM "
+        "workspace, regenerate this report to replace these with your assessed gaps.",
+        s["body"]))
+    story.append(Spacer(1, 6))
+    gap_header = [
+        Paragraph("<b>MAS TRM Domain</b>", s["cell_b"]),
+        Paragraph("<b>Priority</b>", s["cell_b"]),
+        Paragraph("<b>Gap &amp; First Control to Establish</b>", s["cell_b"]),
+    ]
+    gap_rows = [gap_header]
+    for c in controls:
+        domain = c.get("domain") or "—"
+        requirement, priority = _DOMAIN_GAP.get(domain, ("Establish and document this control with evidence.", "Medium"))
+        # Customer-assessed gap (from the workspace) overrides the template line.
+        assessed = (c.get("gap_analysis") or "").strip()
+        gap_text = assessed or f"No control evidence on file yet. Establish: {requirement}"
+        pcolor = _PRIORITY_COLOR.get(priority, "#475569")
+        gap_rows.append([
+            Paragraph(_xml_escape(domain), s["cell"]),
+            Paragraph(f'<font color="{pcolor}"><b>{priority}</b></font>', s["cell"]),
+            Paragraph(_xml_escape(gap_text), s["cell"]),
+        ])
+    gap_table = Table(gap_rows, colWidths=[2.4 * inch, 0.8 * inch, 3.7 * inch], repeatRows=1)
+    gap_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(gap_table)
+    story.append(Spacer(1, 14))
+
+    # ── Configuration & Provisioning Status (Pro Suite evidence) ────────────
+    provisioning = data.get("provisioning") or []
+    if provisioning:
+        story.append(Paragraph("Configuration &amp; Provisioning Status", s["h2"]))
+        story.append(Paragraph(
+            "Tangible evidence of what your subscription has provisioned. "
+            "&ldquo;Active&rdquo; capabilities are live now; &ldquo;Ready&rdquo; capabilities are "
+            "provisioned and waiting on a one-time setup step at the linked page.",
+            s["body"]))
+        story.append(Spacer(1, 6))
+        prov_header = [
+            Paragraph("<b>Capability</b>", s["cell_b"]),
+            Paragraph("<b>Status</b>", s["cell_b"]),
+            Paragraph("<b>Detail / Next Step</b>", s["cell_b"]),
+        ]
+        prov_rows = [prov_header]
+        for p in provisioning:
+            st = (p.get("status") or "Ready")
+            pcolor = "#065f46" if st.lower() == "active" else "#1d4ed8"
+            prov_rows.append([
+                Paragraph(_xml_escape(p.get("capability") or "—"), s["cell"]),
+                Paragraph(f'<font color="{pcolor}"><b>{_xml_escape(st)}</b></font>', s["cell"]),
+                Paragraph(_xml_escape(p.get("detail") or "—"), s["cell"]),
+            ])
+        prov_table = Table(prov_rows, colWidths=[2.2 * inch, 0.9 * inch, 3.8 * inch], repeatRows=1)
+        prov_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(prov_table)
+        story.append(Spacer(1, 14))
 
     story.append(Paragraph("Recommended First Steps", s["h2"]))
     for step in (

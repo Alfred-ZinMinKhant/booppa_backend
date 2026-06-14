@@ -2554,31 +2554,39 @@ def fulfill_cover_sheet_task(
                     db2.close()
 
         # 6. Email delivery — branch on whether signed CS hash is present.
-        # Idempotency-keyed on (email, signed-state) so retries, worker
-        # recycles, and accidental regen calls cannot re-flood the inbox.
-        # 24h TTL is long enough to suppress any plausible retry storm and
-        # short enough that the monthly cycle (fires 1st of month) still
-        # delivers a fresh email next cycle.
+        # Idempotency is CONTENT-AWARE: keyed on (email, signed-state, schema
+        # version, and a fingerprint of the anchored documents). This suppresses
+        # the genuine re-flood cases — the hourly `sweep_pending_cover_sheets`
+        # backstop and Celery retries, which re-fire with the SAME underlying
+        # PDPA/RFP documents — while still delivering a fresh email when the
+        # content actually changes (a new scan produces new document hashes, or
+        # the cover sheet's visible structure changes and COVER_SHEET_SCHEMA_VERSION
+        # is bumped per CLAUDE.md). 24h TTL bounds the suppression window.
         if customer_email:
             email_state = "signed" if signed_cs_tx else "unsigned"
-            # Dedup key includes the cover-sheet SCHEMA VERSION so a structural
-            # change (which must bump COVER_SHEET_SCHEMA_VERSION per CLAUDE.md)
-            # delivers a fresh email instead of being suppressed as a "duplicate".
-            # Pure retries within one version/cycle stay deduped (24h TTL).
             try:
                 from app.services.cover_sheet_generator import COVER_SHEET_SCHEMA_VERSION as _cs_ver
             except Exception:
                 _cs_ver = "x"
+            # Fingerprint the anchored documents (PDPA + RFP file hashes). A new
+            # scan/cycle yields different hashes → new key → email delivers; an
+            # unchanged cycle (sweep/retry) yields the same key → suppressed.
+            _doc_hashes = sorted(
+                str(d.get("file_hash") or "")
+                for d in (anchored_documents or [])
+                if d.get("file_hash")
+            )
+            _docs_fp = hashlib.sha256("|".join(_doc_hashes).encode()).hexdigest()[:12] if _doc_hashes else "nodocs"
             # test_simulation (admin test-checkout) always re-sends so iteration
             # isn't blocked by the 24h guard.
             _is_test = bool((metadata or {}).get("test_simulation"))
             email_dedupe_key = _cache.cache_key(
-                f"cover_sheet_email:{customer_email}:{email_state}:v{_cs_ver}"
+                f"cover_sheet_email:{customer_email}:{email_state}:v{_cs_ver}:{_docs_fp}"
             )
             if not _is_test and _cache.get(email_dedupe_key):
                 logger.info(
                     f"[CoverSheet] Skipping duplicate email to {customer_email} "
-                    f"(state={email_state}, schema=v{_cs_ver}, already sent within 24h)"
+                    f"(state={email_state}, schema=v{_cs_ver}, docs={_docs_fp}, already sent within 24h)"
                 )
                 return
 
@@ -5352,10 +5360,38 @@ def run_suite_trm_baseline_for_user(self, user_id: str):
                         for i, d in enumerate(MAS_TRM_DOMAINS, 1)]
 
         company_name = (getattr(user, "company", "") or "").strip() or "Your Organisation"
+
+        # Configuration & provisioning evidence — tangible proof of what the
+        # subscription unlocked (audit: suites showed "zero evidence of active
+        # configuration", especially Pro's SSO/white-label/multi-subsidiary).
+        # "Active" = live entitlement; "Ready" = provisioned, awaiting one-time
+        # buyer setup at the linked page (kept honest — we don't claim SSO is
+        # configured when it needs the buyer's IdP details).
+        from app.core.models_v8 import ENTERPRISE_NOTARIZATION_LIMITS
+        _notar = ENTERPRISE_NOTARIZATION_LIMITS.get(plan, 50)
+        provisioning = [
+            {"capability": "MAS TRM workspace (13 domains)", "status": "Active",
+             "detail": "Initialised — work each domain at booppa.io/vendor/trm"},
+            {"capability": f"{_notar} notarizations / month", "status": "Active",
+             "detail": "Included this cycle — redeem at booppa.io/notarize"},
+            {"capability": "RESTful API + webhooks", "status": "Ready",
+             "detail": "Generate an API key at booppa.io/vendor/api-keys"},
+        ]
+        if plan == "pro_suite":
+            provisioning += [
+                {"capability": "SSO — SAML 2.0 / OIDC", "status": "Ready",
+                 "detail": "Configure your IdP at booppa.io/vendor/sso"},
+                {"capability": "White-label reports", "status": "Ready",
+                 "detail": "Enable + add your brand at booppa.io/vendor/profile"},
+                {"capability": "Multi-subsidiary management", "status": "Ready",
+                 "detail": "Add subsidiaries at booppa.io/vendor/subsidiaries"},
+            ]
+
         pdf_bytes = generate_trm_baseline_pdf({
             "company_name": company_name,
             "plan_label": plan_label,
             "controls": controls,
+            "provisioning": provisioning,
         })
 
         report_id = f"trm-baseline-{user.id}"
