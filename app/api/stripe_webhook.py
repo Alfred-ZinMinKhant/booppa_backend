@@ -1589,96 +1589,88 @@ async def _fulfill_bundle(
                     f"for {customer_email} (test_simulation)"
                 )
 
-        # Send credits-granted notification email
-        if notarization_count > 0 and customer_email:
-            try:
-                await EmailService().send_html_email(
-                    to_email=customer_email,
-                    subject=f"Your {notarization_count} included notarizations are ready to redeem",
-                    body_html=f"""
-                    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;">
-                      <h2 style="color:#0f172a;">Notarization credits issued</h2>
-                      <p style="color:#334155;">
-                        Your <strong>{product_type.replace('_', ' ').title()}</strong> bundle includes
-                        <strong>{notarization_count} notarization{"s" if notarization_count != 1 else ""}</strong>.
-                        Each lets you anchor any compliance document (PDF, DOCX, image, etc.) on the blockchain
-                        with SHA-256 proof.
-                      </p>
-                      <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:16px;margin:20px 0;">
-                        <p style="margin:0 0 12px;font-weight:bold;color:#0369a1;">How to redeem</p>
-                        <p style="margin:0;color:#334155;font-size:14px;">
-                          Visit <a href="https://www.booppa.io/notarize" style="color:#0ea5e9;font-weight:bold;">booppa.io/notarize</a>,
-                          upload your document, and enter this email ({customer_email}).
-                          Your credit will be applied automatically — no payment required.
-                        </p>
-                      </div>
-                      <p style="color:#64748b;font-size:13px;">
-                        Credits don't expire. You can use them one at a time or all at once.
-                      </p>
-                    </div>
-                    """,
-                )
-                logger.info(
-                    f"[Bundle:{product_type}] Sent credits-granted email to {customer_email}"
-                )
-            except Exception as email_err:
-                logger.warning(
-                    f"[Bundle:{product_type}] Credits email failed: {email_err}"
-                )
+        # ── Single consolidated bundle email ────────────────────────────────
+        # Previously this sent up to TWO separate purchase-time emails (a
+        # notarization-credits email + an RFP brief-intake email), on top of the
+        # async PDPA/RFP/cover-sheet deliverable emails — the inbox spam the
+        # forensic audit flagged. We now compose ONE email that lists everything
+        # the bundle includes + the single required next step. The component
+        # deliverables (PDPA report, RFP kit, signed cover sheet) still email as
+        # each completes, since they arrive at different times.
+        sections: list[str] = []
 
-        # Pending RFP intake — prompt the buyer to fill in the brief.
+        # Redeemable notarization credits — NOT for compliance_evidence_pack,
+        # whose single credit is reserved for the Cover Sheet signing flow (which
+        # has its own email when the sheet is ready), not /notarize redemption.
+        if notarization_count > 0 and product_type != "compliance_evidence_pack":
+            sections.append(f"""
+                      <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:16px;margin:16px 0;">
+                        <p style="margin:0 0 6px;font-weight:bold;color:#0369a1;">{notarization_count} notarization{'s' if notarization_count != 1 else ''} included</p>
+                        <p style="margin:0;color:#334155;font-size:14px;">
+                          Anchor any compliance document on-chain with SHA-256 proof at
+                          <a href="https://www.booppa.io/notarize" style="color:#0ea5e9;font-weight:bold;">booppa.io/notarize</a>
+                          (enter {customer_email} — credits apply automatically, no payment). Credits don't expire.
+                        </p>
+                      </div>""")
+
+        if components.get("pdpa"):
+            sections.append("""
+                      <p style="color:#334155;font-size:14px;">📄 Your <strong>PDPA Snapshot</strong> scan is running now — the report arrives by email shortly.</p>""")
+
+        if components.get("cover_sheet"):
+            sections.append("""
+                      <p style="color:#334155;font-size:14px;">🔗 Your <strong>Compliance Cover Sheet</strong> is generated once your PDPA scan and RFP kit are ready; we'll email you to sign &amp; anchor it.</p>""")
+
+        # The RFP brief CTA is the one required action — it gates the RFP kit.
+        brief_cta = ""
         if pending_intake_id and customer_email:
+            kit_label = "RFP Complete Kit" if rfp_product == "rfp_complete" else "RFP Express Kit"
+            intake_url = f"https://www.booppa.io/rfp-intake/{pending_intake_id}"
+            brief_cta = f"""
+                      <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:16px;margin:16px 0;">
+                        <p style="margin:0 0 8px;font-weight:bold;color:#92400e;">One step to unlock your {kit_label}</p>
+                        <p style="margin:0 0 12px;color:#334155;font-size:14px;">Share a few details about the procurement (about 2 minutes) and we'll generate the kit.</p>
+                        <a href="{intake_url}" style="display:inline-block;background:#0ea5e9;color:#fff;padding:11px 22px;border-radius:8px;text-decoration:none;font-weight:bold;">Complete your RFP brief →</a>
+                      </div>"""
+
+        if (sections or brief_cta) and customer_email:
+            bundle_label = product_type.replace('_', ' ').title()
             try:
-                kit_label = (
-                    "RFP Complete Kit"
-                    if rfp_product == "rfp_complete"
-                    else "RFP Express Kit"
-                )
-                intake_url = f"https://www.booppa.io/rfp-intake/{pending_intake_id}"
                 sent = await EmailService().send_html_email(
                     to_email=customer_email,
-                    subject=f"One more step: complete your {kit_label} brief",
+                    subject=f"Your {bundle_label} — what's included & next steps",
                     body_html=f"""
                     <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;">
-                      <h2 style="color:#0f172a;">Tell us about your RFP</h2>
-                      <p style="color:#334155;">
-                        Your <strong>{product_type.replace('_', ' ').title()}</strong> bundle includes a
-                        <strong>{kit_label}</strong>. Share a few details about the procurement and we'll
-                        generate the kit for you.
-                      </p>
-                      <div style="text-align:center;margin:24px 0;">
-                        <a href="{intake_url}"
-                           style="display:inline-block;background:#0ea5e9;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">
-                          Complete your RFP brief
-                        </a>
-                      </div>
-                      <p style="color:#64748b;font-size:13px;">
-                        Takes about 2 minutes. Your kit is generated as soon as you submit.
-                      </p>
-                    </div>
-                    """,
+                      <h2 style="color:#0f172a;">Your {bundle_label} is being prepared</h2>
+                      <p style="color:#334155;">Here's everything included and what happens next:</p>
+                      {''.join(sections)}
+                      {brief_cta}
+                      <p style="color:#64748b;font-size:13px;margin-top:20px;">booppa.io</p>
+                    </div>""",
                 )
                 if not sent:
                     logger.error(
-                        f"[Bundle:{product_type}] RFP-intake email rejected by provider "
-                        f"for {customer_email} (intake_id={pending_intake_id})"
+                        f"[Bundle:{product_type}] Consolidated bundle email rejected for {customer_email}"
                     )
-                    await _alert_payment_fulfillment_issue(
-                        reason="Bundle RFP-intake email rejected by email provider",
-                        product_type=product_type,
-                        customer_email=customer_email,
-                        session_id=session_id,
-                        extra={"intake_id": pending_intake_id},
-                        notify_customer=False,
-                    )
+                    # A rejected email is critical when it carries the RFP brief
+                    # CTA — without it the buyer can't unlock the kit they paid for.
+                    if pending_intake_id:
+                        await _alert_payment_fulfillment_issue(
+                            reason="Bundle email (with RFP brief CTA) rejected by email provider",
+                            product_type=product_type,
+                            customer_email=customer_email,
+                            session_id=session_id,
+                            extra={"intake_id": pending_intake_id},
+                            notify_customer=False,
+                        )
                 else:
                     logger.info(
-                        f"[Bundle:{product_type}] Sent RFP-intake email to {customer_email} "
+                        f"[Bundle:{product_type}] Sent consolidated bundle email to {customer_email} "
                         f"(intake_id={pending_intake_id})"
                     )
             except Exception as email_err:
                 logger.warning(
-                    f"[Bundle:{product_type}] RFP-intake email failed: {email_err}"
+                    f"[Bundle:{product_type}] Consolidated bundle email failed: {email_err}"
                 )
 
         # 4. Cover Sheet — auto-fires once BOTH inputs are ready, not at purchase.
@@ -3577,15 +3569,13 @@ async def _stripe_webhook_impl(
                         logger.info(
                             f"[Webhook] Queued monthly health check for {cust_email_inv}"
                         )
-                    if user and "pdpa_monitor" in user_plan:
-                        from app.workers.tasks import pdpa_monitor_monthly_alert_task
-
-                        pdpa_monitor_monthly_alert_task.delay(
-                            str(user.id), cust_email_inv
-                        )
-                        logger.info(
-                            f"[Webhook] Queued PDPA monthly alert for {cust_email_inv}"
-                        )
+                    # PDPA Monitor's monthly deliverable is the month-over-month
+                    # Monitor report (delta + drift + a folded-in regulatory
+                    # briefing), fired by the `run_pdpa_monitor_monthly_rescans`
+                    # beat task. We intentionally do NOT also send the standalone
+                    # generic "regulatory alert" email here — that was a second,
+                    # canned email per cycle (inbox spam the forensic audit flagged).
+                    # See `run_pdpa_monitor_report_for_user`.
                 except Exception as exc:
                     logger.error(f"[Webhook] Invoice renewal hook failed: {exc}")
                 finally:
