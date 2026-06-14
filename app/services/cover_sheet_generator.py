@@ -83,7 +83,12 @@ for _c in _LOGO_CANDIDATES:
 # v8: Legal disclaimer no longer prints a Booppa UEN — Booppa has no Singapore
 #     UEN, and the previously hardcoded value was fabricated (it had also drifted
 #     to a second number). The disclaimer now names the entity only.
-COVER_SHEET_SCHEMA_VERSION = 8
+# v9: PDPA section aligned to the standalone PDPA Quick Scan report — the
+#     Compliance Score now reads the single-source-of-truth dimension-weighted
+#     value persisted on the report (no more 53-vs-54 drift between the cover
+#     sheet and the PDPA report). Flags existing customers' copies as outdated
+#     so they get the corrected, internally-consistent cover sheet.
+COVER_SHEET_SCHEMA_VERSION = 9
 
 PAGE_W, PAGE_H = A4
 MARGIN = 0.75 * inch
