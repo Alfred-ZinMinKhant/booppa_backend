@@ -15,6 +15,12 @@ from pypdf import PdfReader
 def _seed_awards(db):
     from app.core.models_gebiz import GebizAwardHistory
 
+    # Clean slate: the digest computes latest_award across ALL rows, and the
+    # table has a unique (tender_no, supplier_name, awarded_date) constraint —
+    # so prior committed rows would skew the window or collide on re-run.
+    db.query(GebizAwardHistory).delete()
+    db.commit()
+
     base = date(2026, 3, 15)
     # Two suppliers, two sectors, spread across months, varying amounts.
     awards = [
