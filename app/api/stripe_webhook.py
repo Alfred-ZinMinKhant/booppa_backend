@@ -320,15 +320,52 @@ async def _activate_subscription(
             user.stripe_customer_id = stripe_customer_id
         db.commit()
 
+        # ── Once-only side-effect guard ─────────────────────────────────────
+        # `_activate_subscription` is reachable from BOTH the synchronous
+        # `checkout.session.completed` handler AND the async
+        # `customer.subscription.created` handler (plus webhook replays). The
+        # entitlement writes above are idempotent, but the activation email and
+        # the first-cycle `.delay()` fan-out below are NOT — running them twice
+        # double-emails the buyer and double-queues their first deliverable.
+        # Claim a once-per-subscription slot atomically (Redis SET NX) so only
+        # the first caller fires side effects. Absent a subscription id (should
+        # not happen for subs) we fall open and treat it as the first run.
+        first_activation = True
+        if stripe_subscription_id:
+            try:
+                from app.core.cache import cache as _cache
+                from datetime import datetime, timezone as _tz2
+
+                first_activation = _cache.add(
+                    _cache.cache_key(f"sub_activated:{stripe_subscription_id}"),
+                    {"activated_at": datetime.now(_tz2.utc).isoformat()},
+                    ttl=86400,  # 24h: long enough to absorb retry storms /
+                                # dual-event delivery, short enough that a genuine
+                                # re-subscribe next cycle still re-activates.
+                )
+            except Exception as guard_err:
+                logger.warning(
+                    f"[Subscription] Activation guard check failed (firing once anyway): {guard_err}"
+                )
+                first_activation = True
+        if not first_activation:
+            logger.info(
+                f"[Subscription] Skipping duplicate activation side-effects for "
+                f"sub={stripe_subscription_id} ({new_plan}) — already activated"
+            )
+
         # ── Instant first-cycle delivery ────────────────────────────────────
         # Subscribers shouldn't wait up to 30 days for their first deliverable.
         # Each tier fires the same task its monthly cron would fire, scoped to
         # just this user. All async via .delay() so checkout webhook returns
         # quickly; any failure surfaces in worker logs without blocking the
-        # entitlement grant above.
+        # entitlement grant above. Gated on `first_activation` so a dual webhook
+        # delivery doesn't queue the first cycle twice.
         try:
             from app.workers import tasks as _wtasks
-            if new_plan == "tender_intelligence":
+            if not first_activation:
+                pass
+            elif new_plan == "tender_intelligence":
                 _wtasks.send_tender_intelligence_digest_for_user.delay(str(user.id))
             elif new_plan == "pdpa_monitor":
                 _wtasks.run_pdpa_monitor_cycle_for_user.delay(str(user.id))
@@ -340,6 +377,13 @@ async def _activate_subscription(
                 _wtasks.run_vendor_active_check_for_user.delay(str(user.id))
             elif new_plan == "vendor_pro":
                 _wtasks.run_vendor_pro_activation_for_user.delay(str(user.id))
+            elif new_plan in ("standard_suite", "pro_suite"):
+                # Deliver the MAS TRM Baseline Assessment PDF. Small countdown so
+                # the TRM controls initialised later in this same activation are
+                # committed first (the task also falls back to canonical domains).
+                _wtasks.run_suite_trm_baseline_for_user.apply_async(
+                    args=[str(user.id)], countdown=30,
+                )
             logger.info(
                 "[Subscription] First-cycle delivery queued for user=%s tier=%s",
                 user.email, new_plan,
@@ -409,7 +453,9 @@ async def _activate_subscription(
 
         # Send confirmation email. Suites and buyer tiers get a richer, itemised
         # onboarding email instead (sent from their provisioning blocks below).
-        if customer_email and new_plan not in (
+        # Gated on `first_activation` so a dual webhook delivery / replay can't
+        # send the activation email twice.
+        if first_activation and customer_email and new_plan not in (
             "standard_suite", "pro_suite",
             "buyer_starter", "buyer_pro", "buyer_enterprise",
         ):
@@ -510,7 +556,13 @@ async def _activate_subscription(
                 logger.error(f"[Subscription] Email failed for {customer_email}: {e}")
 
         # ── Trigger features based on plan ────────
-        if new_plan == "pdpa_monitor":
+        # Gated on `first_activation`: these branches queue scans, fulfil the
+        # compliance-evidence cycle, initialise TRM controls, and send the suite
+        # / buyer onboarding emails — all once-only side effects that must not
+        # re-fire on a duplicate webhook delivery.
+        if not first_activation:
+            pass
+        elif new_plan == "pdpa_monitor":
             website = (getattr(user, "website", "") or "").strip()
             if website and customer_email:
                 try:
@@ -640,9 +692,10 @@ async def _activate_subscription(
 
                     features = [
                         _feature(
-                            "MAS TRM — all 13 domains",
+                            "MAS TRM — all 13 domains + baseline PDF",
                             "We've initialised all 13 MAS Technology Risk Management control domains for your "
-                            "organisation. Review and work each one in your TRM workspace.",
+                            "organisation and are emailing you a baseline assessment PDF shortly. Review and "
+                            "work each domain in your TRM workspace.",
                             "Open TRM workspace", "https://www.booppa.io/vendor/trm",
                         ),
                         _feature(
@@ -1599,14 +1652,19 @@ async def _fulfill_bundle(
                     f"[Bundle:{product_type}] RFP-intake email failed: {email_err}"
                 )
 
-        # 4. Cover Sheet — NOT auto-fired anymore for compliance_evidence_pack.
-        # The user must upload their compliance documents at /compliance-evidence-pack/upload
-        # so the cover sheet can include real anchored hashes. It will be queued automatically
-        # when the user redeems their last credit, or on-demand via the bundle trigger endpoint.
+        # 4. Cover Sheet — auto-fires once BOTH inputs are ready, not at purchase.
+        # `pending_cover_sheet=True` was set above (credit-grant block); when the
+        # PDPA scan and the RFP Complete kit each finish they call
+        # `_maybe_fire_cover_sheet`, which queues `fulfill_cover_sheet_task` as
+        # soon as both are done. The hourly `sweep_pending_cover_sheets` beat task
+        # is a backstop that re-fires for any buyer whose inline trigger was
+        # missed, so the 3-doc bundle always delivers its cover sheet. The signed
+        # version (with the buyer's signature anchored) is regenerated later when
+        # they upload it via their CE credit at /compliance/cover-sheet.
         if components.get("cover_sheet"):
             logger.info(
-                f"[Bundle:{product_type}] Cover sheet deferred — waiting for user uploads "
-                f"(will fire on last credit redemption or via /bundle/cover-sheet/trigger)"
+                f"[Bundle:{product_type}] Cover sheet will auto-fire when PDPA + RFP "
+                f"complete (pending_cover_sheet=True); hourly sweep backstops misses"
             )
 
     except Exception as e:
@@ -2476,6 +2534,16 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None) -> None:
         assessment["pdf_generated"] = True
         assessment["pdf_url"] = pdf_url
         assessment["on_page_only"] = False
+        # Persist the EXACT headline compliance score this PDF printed (the
+        # dimension-weighted overall, stashed by _compliance_score_table) and
+        # the exact URL it displayed, so the Compliance Evidence Cover Sheet
+        # reproduces both verbatim instead of recomputing and drifting (the
+        # 53-vs-54 / crayon.com-vs-crayon.com/sg inconsistency in the audit).
+        _computed_score = pdf_data.get("computed_overall_compliance_score")
+        if _computed_score is not None:
+            assessment["compliance_score"] = _computed_score
+        if website_url:
+            assessment["display_url"] = website_url
         report.assessment_data = assessment
         from sqlalchemy.orm.attributes import flag_modified as _flag
 

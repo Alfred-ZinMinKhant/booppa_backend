@@ -93,3 +93,38 @@ def test_subscription_idempotent_on_replay(
         Subscription.stripe_subscription_id == session["subscription"]
     ).all()
     assert len(rows) == 1
+
+
+def test_activation_email_sent_once_across_dual_webhook_delivery(
+    client, test_db, post_webhook, stripe_session_factory, email_capture, mocker
+):
+    """A single subscription must yield exactly one activation email even when
+    `_activate_subscription` is reached twice via DIFFERENT events.
+
+    Stripe delivers both `checkout.session.completed` and
+    `customer.subscription.created` for a new subscription (and may re-deliver
+    either). Those carry different `event.id`s, so the event-level idempotency
+    guard does NOT collapse them — only the once-per-subscription side-effect
+    guard (keyed on stripe_subscription_id) does. Without it the buyer is
+    double-emailed (the exact regression the forensic audit caught with the
+    duplicate Standard Suite activation emails).
+    """
+    mocker.patch("app.api.stripe_webhook._apply_subscription_score_lever", return_value=None)
+    mocker.patch("app.api.stripe_webhook._log_purchase_activity", return_value=None)
+
+    email = "sub+dualdelivery@booppa.io"
+    _seed_user(test_db, email)
+
+    session = stripe_session_factory("vendor_active_monthly", customer_email=email)
+    # Same session (same `subscription` id) wrapped in two distinct events so the
+    # processed-event idempotency check can't short-circuit the second.
+    post_webhook(wrap_event(session, event_id="evt_dual_a"))
+    post_webhook(wrap_event(session, event_id="evt_dual_b"))
+
+    activation_emails = [
+        m for m in email_capture
+        if m["to"] == email and "subscription is active" in m["subject"].lower()
+    ]
+    assert len(activation_emails) == 1, \
+        f"expected exactly one activation email, got {len(activation_emails)}: " \
+        f"{[m['subject'] for m in activation_emails]}"

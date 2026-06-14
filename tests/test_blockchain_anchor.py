@@ -118,3 +118,54 @@ class TestRFPAnchorUsesHashedReportId:
 
         assert tx is None
         assert any("Blockchain anchor skipped" in w for w in builder.warnings)
+
+
+class TestContentBoundEvidenceHash:
+    """The evidence hash PRINTED in the PDF must equal the hash ANCHORED on
+    chain, and must be a real content-bound SHA-256 — not the raw UUID. This is
+    what makes the document independently verifiable (forensic audit finding:
+    'evidence hash is a UUID, not SHA-256')."""
+
+    def _builder(self):
+        from app.services.rfp_express_builder import RFPExpressBuilder
+        b = RFPExpressBuilder.__new__(RFPExpressBuilder)
+        b.report_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "rfp:cs_test_xyz"))
+        b.vendor_id = "vendor-789"
+        b.warnings = []
+        return b
+
+    def test_hash_is_64_hex_and_deterministic(self):
+        b = self._builder()
+        qa = {"encryption_standards": "AES-256", "data_residency": "Singapore"}
+        h1 = b._compute_evidence_hash("Acme Pte Ltd", qa)
+        h2 = b._compute_evidence_hash("Acme Pte Ltd", dict(reversed(list(qa.items()))))
+        assert len(h1) == 64 and all(c in "0123456789abcdef" for c in h1)
+        assert h1 == h2, "key order must not change the hash"
+        assert h1 != b.report_id, "must not be the raw UUID"
+
+    def test_hash_changes_with_content(self):
+        b = self._builder()
+        base = b._compute_evidence_hash("Acme", {"q": "AES-256"})
+        assert base != b._compute_evidence_hash("Acme", {"q": "AES-128"})
+        assert base != b._compute_evidence_hash("Other Co", {"q": "AES-256"})
+
+    def test_anchored_hash_equals_displayed_evidence_hash(self):
+        captured = {}
+
+        async def fake_anchor(evidence_hash, metadata=""):
+            captured["evidence_hash"] = evidence_hash
+            return "0x" + "d" * 64
+
+        with patch("app.services.blockchain.BlockchainService") as MockBC:
+            inst = MagicMock()
+            inst.anchor_evidence = AsyncMock(side_effect=fake_anchor)
+            MockBC.return_value = inst
+
+            b = self._builder()
+            # This is the value generate_express_package computes before anchoring
+            # and the value _build_pdf renders as the EVIDENCE HASH.
+            b.evidence_hash = b._compute_evidence_hash("Acme", {"q": "AES-256"})
+            asyncio.run(b._anchor_to_blockchain())
+
+        assert captured["evidence_hash"] == b.evidence_hash, \
+            "anchored hash must equal the displayed evidence hash"

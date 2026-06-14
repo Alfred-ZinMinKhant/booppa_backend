@@ -36,6 +36,25 @@ def test_pdpa_quick_scan_pdf_has_company_and_framework():
     assert "Pdpa Quick Scan" in text or "PDPA QUICK SCAN" in text.upper()
 
 
+def test_compliance_score_table_stashes_overall_for_persistence():
+    """`_compliance_score_table` must write the headline compliance score back
+    into the scan_data dict so the PDPA fulfillment can persist it and the
+    Compliance Evidence Cover Sheet can display the identical number (verbatim)
+    instead of recomputing and drifting (53-vs-54 audit finding)."""
+    from app.services.pdf_service import PDFService
+
+    scan_data = {"some": "signals"}
+    findings = [
+        {"check_id": "no_consent_banner", "severity": "HIGH", "title": "No cookie banner"},
+        {"check_id": "no_privacy_policy", "severity": "HIGH", "title": "No privacy policy"},
+    ]
+    PDFService()._compliance_score_table(findings, scan_data=scan_data)
+
+    score = scan_data.get("computed_overall_compliance_score")
+    assert isinstance(score, int) and 0 <= score <= 100, \
+        f"overall compliance score not stashed for persistence: {score!r}"
+
+
 @freeze_time("2026-05-24T12:00:00Z")
 def test_pdpa_pdf_is_deterministic_when_time_frozen():
     """Two generations with identical input + frozen clock should match by length

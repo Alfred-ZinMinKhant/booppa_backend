@@ -39,7 +39,7 @@ from reportlab.platypus import (
 
 from app.core.config import settings
 from app.core.company import (
-    COMPANY_LEGAL_FOOTER, COMPANY_NAME, COMPANY_UEN,
+    COMPANY_LEGAL_FOOTER, COMPANY_NAME,
     COMPANY_FRAMEWORK_VERSION, COMPANY_DPO_EMAIL,
 )
 
@@ -1229,6 +1229,14 @@ class PDFService:
         weighted_sum = sum(s * w for s, w in zip(scores, weights))
         total_weight = sum(weights) or 1
         overall = round(weighted_sum / total_weight)
+        # Stash the headline number back onto the scan_data dict so the caller
+        # can persist it as the single source of truth. The Compliance Evidence
+        # Cover Sheet reads this exact value instead of recomputing its own
+        # PDPA score (which used a different formula and drifted, e.g. 53 vs 54
+        # within one bundle — a forensic-audit finding). Same render, same dict,
+        # so the persisted score is guaranteed to equal what this PDF prints.
+        if isinstance(scan_data, dict):
+            scan_data["computed_overall_compliance_score"] = overall
         if all(s == "Compliant" for s in statuses):
             overall_status = "Compliant"
             overall_color = "#065f46"
@@ -1353,7 +1361,6 @@ class PDFService:
 
         rows = [
             ("ASSESSING ENTITY",    COMPANY_NAME),
-            ("UEN (SINGAPORE)",     COMPANY_UEN),
             ("FRAMEWORK VERSION",   COMPANY_FRAMEWORK_VERSION),
             ("ASSESSMENT DATE/TIME", date_display),
             ("ASSESSED ENTITY",     report_data.get("company_name") or "—"),
@@ -1531,7 +1538,7 @@ class PDFService:
                 )
                 _disc2 = (
                     "May be used as supporting evidence in procurement and regulatory contexts. "
-                    f"Does not substitute for legal counsel. {COMPANY_NAME}, Singapore UEN: {COMPANY_UEN}."
+                    f"Does not substitute for legal counsel. {COMPANY_NAME}."
                 )
                 doc._pdpa_footer_lines = [_disc, _disc2]
 

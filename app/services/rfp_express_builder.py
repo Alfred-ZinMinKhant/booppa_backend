@@ -18,6 +18,7 @@ an editable DOCX — handled by a separate builder.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
@@ -162,6 +163,15 @@ class RFPExpressBuilder:
             ws_data=ws_data,
         )
 
+        # 2a. Fill the placeholders the buyer ALREADY answered in their intake.
+        # The anti-fabrication prompt makes the AI leave "[Verify: …]" markers
+        # for facts it can't ground from the website — but when the buyer
+        # supplied that exact fact in the intake (ISO cert number, BCP test
+        # date, training cadence, sub-processors), the kit must use it instead
+        # of telling the buyer to re-enter what they already gave us. (Forensic
+        # audit: supplied facts were still shipping as "[Verify: …]".)
+        qa_answers = self._apply_intake_substitutions(qa_answers, intake)
+
         # 2b. Post-AI validation pass — catch AI hallucinations against intake.
         # LLMs over-confidently fill in DPO names, ISO certifications, hosting
         # regions, etc. even when the intake declared otherwise. We surface
@@ -190,7 +200,10 @@ class RFPExpressBuilder:
             ssl_result=ssl_result, domain_rep=domain_rep, acra_live=acra_live,
         )
 
-        # 2.5. Anchor report ID to blockchain
+        # 2.5. Anchor the content-bound evidence hash to the blockchain. Compute
+        # it from the finished Q&A first so the SAME SHA-256 is anchored AND
+        # printed in the PDF (independently verifiable on EvidenceAnchorV3).
+        self.evidence_hash = self._compute_evidence_hash(company_name, qa_answers)
         tx_hash = await self._anchor_to_blockchain()
 
         # 3. Build PDF
@@ -212,6 +225,42 @@ class RFPExpressBuilder:
 
         # 4c. Write CertificateLog audit row (4.11)
         await self._write_certificate_log(pdf_bytes, download_url, db)
+
+        # 4d. Pre-delivery quality gate — count placeholders the buyer still has
+        # to fill after intake substitution. We deliver regardless (the kit is a
+        # buyer-completable draft), but a kit that is mostly placeholders, or one
+        # that fell back to the canned template, means the AI/intake produced
+        # little of value — alert the team so a human can follow up instead of it
+        # silently shipping an empty-looking document (forensic-audit finding:
+        # 17-25 unfilled placeholders delivered with no flag).
+        residual_placeholders = self._count_residual_placeholders(qa_answers)
+        if residual_placeholders:
+            self.warnings.append(
+                f"{residual_placeholders} field(s) still need the buyer's input "
+                f"([FILL IN] / [Verify: …]) after intake substitution."
+            )
+        _PLACEHOLDER_ALERT_THRESHOLD = 5
+        if self.used_template or residual_placeholders >= _PLACEHOLDER_ALERT_THRESHOLD:
+            try:
+                from app.api.stripe_webhook import _alert_payment_fulfillment_issue
+                await _alert_payment_fulfillment_issue(
+                    reason=(
+                        "RFP kit delivered with low completeness — "
+                        + ("AI fell back to canned template; " if self.used_template else "")
+                        + f"{residual_placeholders} placeholder field(s) remain after intake fill"
+                    ),
+                    product_type=product_type,
+                    customer_email=self.vendor_email,
+                    session_id=self.session_id,
+                    extra={
+                        "residual_placeholders": residual_placeholders,
+                        "used_template": self.used_template,
+                        "company_name": company_name,
+                    },
+                    notify_customer=False,
+                )
+            except Exception as gate_err:
+                logger.warning(f"[RFP] Quality-gate alert failed (non-blocking): {gate_err}")
 
         # 5. Send email
         await self._send_email(company_name, download_url, product_type, docx_url=docx_url)
@@ -906,14 +955,111 @@ class RFPExpressBuilder:
 
     # ── Step 2.5: blockchain anchor ───────────────────────────────────────────
 
+    def _compute_evidence_hash(self, company_name: str, qa_answers: Dict[str, str]) -> str:
+        """Deterministic SHA-256 over the kit's actual content.
+
+        This is the value we both ANCHOR on-chain and PRINT in the PDF, so a
+        procurer can take the hash off the document and verify it against the
+        EvidenceAnchorV3 contract. Previously the PDF printed the raw UUID
+        report_id (not a hash at all) while the chain anchored sha256(report_id)
+        — two different strings, so the "evidence hash" couldn't be verified.
+
+        Binding the hash to report_id + company + the sorted Q&A means it proves
+        the specific answers existed at anchor time, not merely that an id was
+        minted. Sorting keys keeps it stable across regeneration of identical
+        content (idempotent re-anchor skip).
+        """
+        import hashlib
+        import json as _json
+        payload = {
+            "report_id": self.report_id,
+            "company": company_name or "",
+            "qa": {k: qa_answers[k] for k in sorted(qa_answers.keys())},
+        }
+        canonical = _json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    # ── Intake-fill + quality gate ────────────────────────────────────────────
+
+    # Placeholder markers the AI/template emit for facts the buyer must supply.
+    _PLACEHOLDER_RE = re.compile(r"\[\s*(?:FILL IN|Verify:)[^\]]*\]|_{2,}\s*\[\s*FILL IN\s*\]\s*_{2,}", re.I)
+
+    def _apply_intake_substitutions(self, qa_answers: Dict[str, str], intake: dict | None) -> Dict[str, str]:
+        """Replace `[Verify: …]` placeholders with facts the buyer gave in intake.
+
+        Only fills placeholders whose underlying fact the buyer actually supplied
+        — anything genuinely unknown stays a placeholder for them to complete.
+        Matching is keyed off the placeholder's own wording so we don't overwrite
+        an unrelated field.
+        """
+        if not intake or not isinstance(qa_answers, dict):
+            return qa_answers
+
+        def _v(key: str) -> str:
+            val = (intake.get(key) or "").strip() if isinstance(intake.get(key), str) else intake.get(key)
+            return val if val and val not in ("unknown", "") else ""
+
+        subs: list[tuple[re.Pattern, str]] = []
+        iso_num, iso_exp = _v("iso_cert_number"), _v("iso_cert_expiry")
+        if iso_num:
+            iso_text = f"ISO/IEC 27001 certificate {iso_num}"
+            if iso_exp:
+                iso_text += f" (valid until {iso_exp})"
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*ISO[^\]]*\]", re.I), iso_text))
+        if _v("bcp_last_tested"):
+            subs.append((
+                re.compile(r"\[\s*Verify:[^\]]*(?:BCP|business continuity|DR plan|last test(?:ed)?)[^\]]*\]", re.I),
+                f"last tested {_v('bcp_last_tested')}",
+            ))
+        if _v("training_frequency"):
+            subs.append((
+                re.compile(r"\[\s*Verify:[^\]]*(?:cadence|training|frequency)[^\]]*\]", re.I),
+                str(_v("training_frequency")),
+            ))
+        if _v("key_processors"):
+            subs.append((
+                re.compile(r"\[\s*Verify:[^\]]*(?:sub-?processors?|processors?)[^\]]*\]", re.I),
+                str(_v("key_processors")),
+            ))
+        if not subs:
+            return qa_answers
+
+        filled = 0
+        out: Dict[str, str] = {}
+        for k, v in qa_answers.items():
+            if isinstance(v, str):
+                for pattern, repl in subs:
+                    v, n = pattern.subn(repl, v)
+                    filled += n
+            out[k] = v
+        if filled:
+            logger.info(f"[RFP] Filled {filled} intake-backed placeholder(s) in qa_answers")
+        return out
+
+    def _count_residual_placeholders(self, qa_answers: Dict[str, str]) -> int:
+        """Count `[FILL IN]` / `[Verify: …]` markers still present after fill."""
+        if not isinstance(qa_answers, dict):
+            return 0
+        return sum(
+            len(self._PLACEHOLDER_RE.findall(v))
+            for v in qa_answers.values()
+            if isinstance(v, str)
+        )
+
     async def _anchor_to_blockchain(self) -> Optional[str]:
         try:
-            import hashlib
             from app.services.blockchain import BlockchainService
             from app.core.config import settings
-            # report_id is a UUID string; derive a 64-char SHA-256 hex so it is
-            # valid input for the EvidenceAnchorV3 bytes32 contract parameter.
-            evidence_hash = hashlib.sha256(self.report_id.encode()).hexdigest()
+            # self.evidence_hash is a 64-char SHA-256 hex computed from the kit
+            # content (see _compute_evidence_hash) — valid bytes32 input AND the
+            # exact value printed in the PDF so the anchor is independently
+            # verifiable. Defensive fallback to sha256(report_id) if a caller
+            # anchors before the hash is set.
+            import hashlib
+            evidence_hash = getattr(self, "evidence_hash", None) or hashlib.sha256(
+                self.report_id.encode()
+            ).hexdigest()
+            self.evidence_hash = evidence_hash
             blockchain = BlockchainService()
             tx = await blockchain.anchor_evidence(
                 evidence_hash,
@@ -1102,7 +1248,11 @@ class RFPExpressBuilder:
                     "template_used": bool(self.used_template),
                     "discrepancies": list(discrepancies or []),
                 },
-                "audit_hash": self.report_id,
+                # The evidence hash shown to the buyer is the SAME SHA-256 we
+                # anchored on-chain (not the raw UUID report_id) — so it is
+                # actually verifiable against the EvidenceAnchorV3 contract.
+                # report_id remains available above as the human-facing Report ID.
+                "audit_hash": getattr(self, "evidence_hash", None) or self.report_id,
                 "verify_url": f"{verify_base}/verify/{self.report_id}",
                 "tx_hash": tx_hash,
             }

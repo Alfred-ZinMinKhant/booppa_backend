@@ -62,6 +62,38 @@ def set(key: str, value: dict[str, Any], ttl: int = DEFAULT_TTL) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
 
 
+def add(key: str, value: dict[str, Any], ttl: int = DEFAULT_TTL) -> bool:
+    """Atomically claim `key` only if it does not already exist.
+
+    Returns True if THIS caller won the claim (key was absent and is now set),
+    False if the key already existed. Backed by Redis `SET NX EX` so two
+    concurrent callers can't both win — use this for once-only guards (e.g.
+    "send this email exactly once per subscription") where the get-then-set
+    pattern would race.
+
+    Falls back to a best-effort file check when Redis is unreachable; the file
+    path is not atomic across processes, but degrades no worse than `get`+`set`.
+    """
+    if _redis is not None:
+        try:
+            won = _redis.set(
+                f"booppa:{key}", json.dumps(value, ensure_ascii=False), nx=True, ex=ttl
+            )
+            return bool(won)
+        except Exception as e:
+            logger.warning(f"[cache] Redis add failed, falling back to file: {e}")
+
+    # File fallback — not cross-process atomic, but preserves once-only intent.
+    path = CACHE_DIR / key
+    if path.exists():
+        return False
+    try:
+        path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
 def rate_limit_check(key: str, max_count: int, window_seconds: int) -> bool:
     """
     Atomic per-key rate limit backed by Redis INCR+EXPIRE.
