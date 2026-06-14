@@ -2561,13 +2561,24 @@ def fulfill_cover_sheet_task(
         # delivers a fresh email next cycle.
         if customer_email:
             email_state = "signed" if signed_cs_tx else "unsigned"
+            # Dedup key includes the cover-sheet SCHEMA VERSION so a structural
+            # change (which must bump COVER_SHEET_SCHEMA_VERSION per CLAUDE.md)
+            # delivers a fresh email instead of being suppressed as a "duplicate".
+            # Pure retries within one version/cycle stay deduped (24h TTL).
+            try:
+                from app.services.cover_sheet_generator import COVER_SHEET_SCHEMA_VERSION as _cs_ver
+            except Exception:
+                _cs_ver = "x"
+            # test_simulation (admin test-checkout) always re-sends so iteration
+            # isn't blocked by the 24h guard.
+            _is_test = bool((metadata or {}).get("test_simulation"))
             email_dedupe_key = _cache.cache_key(
-                f"cover_sheet_email:{customer_email}:{email_state}"
+                f"cover_sheet_email:{customer_email}:{email_state}:v{_cs_ver}"
             )
-            if _cache.get(email_dedupe_key):
+            if not _is_test and _cache.get(email_dedupe_key):
                 logger.info(
                     f"[CoverSheet] Skipping duplicate email to {customer_email} "
-                    f"(state={email_state}, already sent within 24h)"
+                    f"(state={email_state}, schema=v{_cs_ver}, already sent within 24h)"
                 )
                 return
 
