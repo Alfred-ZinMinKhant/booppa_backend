@@ -69,6 +69,21 @@ def test_subscription_activates_plan_and_emails(
             or "here's everything included" in subject
         ) and "subscription is now active" in m["body"].lower()
 
+    # vendor_active / vendor_pro no longer emit a synchronous activation email:
+    # to avoid inbox spam, their single consolidated welcome digest (scores +
+    # snapshot PDF + GeBIZ alerts + feature checklist) is delivered ASYNC by
+    # vendor_active_health_check_task, queued via the first-cycle wrapper. That
+    # email is asserted directly in
+    # tests/test_vendor_snapshot.py::test_health_check_links_snapshot_pdf. Here
+    # we've already verified plan activation + the Subscription row, which is the
+    # synchronous contract for these tiers.
+    ASYNC_WELCOME_TIERS = {
+        "vendor_active_monthly", "vendor_active_annual",
+        "vendor_pro_monthly", "vendor_pro_annual",
+    }
+    if case.product_type in ASYNC_WELCOME_TIERS:
+        return
+
     assert any(_is_activation(m) and m["to"] == email for m in email_capture), \
         f"no activation email captured for {case.product_type}: {[m['subject'] for m in email_capture]}"
 
@@ -115,7 +130,12 @@ def test_activation_email_sent_once_across_dual_webhook_delivery(
     email = "sub+dualdelivery@booppa.io"
     _seed_user(test_db, email)
 
-    session = stripe_session_factory("vendor_active_monthly", customer_email=email)
+    # Use a tier that emits a SYNCHRONOUS activation email (tender_intelligence),
+    # so "exactly one" is a meaningful count. vendor_active/vendor_pro now deliver
+    # their welcome async via the digest task, so the same once-per-subscription
+    # guard instead collapses a double first-cycle queue rather than a double
+    # email — both are governed by the identical `first_activation` SETNX gate.
+    session = stripe_session_factory("tender_intelligence_monthly", customer_email=email)
     # Same session (same `subscription` id) wrapped in two distinct events so the
     # processed-event idempotency check can't short-circuit the second.
     post_webhook(wrap_event(session, event_id="evt_dual_a"))

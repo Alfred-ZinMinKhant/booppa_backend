@@ -2658,16 +2658,24 @@ def fulfill_cover_sheet_task(
 
 
 @celery_app.task(bind=True, max_retries=2, name="vendor_active_health_check_task")
-def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, override_company: str | None = None):
+def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, override_company: str | None = None, is_first_cycle: bool = False):
     """
-    Monthly health check for Vendor Active subscribers.
-    1. Recalculate vendor score
-    2. Send monthly metrics email (profile views, search appearances, movement vs prior month)
-    3. Competitor alert: notify if any sector peer improved verificationDepth this month
+    Single consolidated digest for Vendor Active / Vendor Pro subscribers.
 
-    `override_company` is test-harness-only (admin Test Identity): the snapshot
-    PDF reflects it instead of the stored profile company, without mutating the
-    real account. Production monthly runs leave it None.
+    This is the ONE email these tiers send per cycle (the bare "Activated" email
+    is suppressed for them in `_activate_subscription`). It bundles every tangible
+    artifact + an evidence-of-features section so the buyer isn't left with a
+    one-line email:
+      • Recalculated Trust + Compliance scores and 30-day profile views
+      • A downloadable one-page status snapshot PDF (badge + scores)
+      • GeBIZ tender alerts closing soon (the "real-time GeBIZ alerts" feature)
+      • An itemised checklist of what their tier unlocks, with dashboard links
+      • Vendor Pro only: the included monthly notarization + a note that the
+        PDPA Snapshot/drift report follows in a second email when the scan ends
+
+    `is_first_cycle=True` (set by the activation wrappers) switches the framing
+    from "monthly digest" to "welcome". `override_company` is test-harness-only
+    (admin Test Identity) and never mutates the stored profile.
     """
     db = SessionLocal()
     try:
@@ -2725,26 +2733,123 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
             if snapshot_url else ""
         )
 
-        # 3. Email monthly digest
+        is_pro = (plan == "vendor_pro")
+
+        def _esc(s) -> str:
+            return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        # 2c. GeBIZ tender alerts — the "real-time GeBIZ alerts" feature, rendered
+        # as a fileable list of open tenders closing soonest (top 5).
+        gebiz_section = ""
+        try:
+            from app.core.models_gebiz import GebizTender
+
+            _now = datetime.now(timezone.utc)
+            tenders = (
+                db.query(GebizTender)
+                .filter(GebizTender.status == "Open", GebizTender.closing_date >= _now)
+                .order_by(GebizTender.closing_date.asc())
+                .limit(5)
+                .all()
+            )
+            if tenders:
+                rows = ""
+                for t in tenders:
+                    close = t.closing_date.strftime("%d %b %Y") if t.closing_date else "—"
+                    title = _esc((t.title or "")[:90])
+                    cell = f'<a href="{_esc(t.url)}" style="color:#0ea5e9;text-decoration:none;">{title}</a>' if t.url else title
+                    rows += (
+                        f'<tr><td style="padding:7px 8px;border-bottom:1px solid #eef2f7;font-size:13px;">{cell}</td>'
+                        f'<td style="padding:7px 8px;border-bottom:1px solid #eef2f7;white-space:nowrap;font-size:12px;color:#475569;">{close}</td></tr>'
+                    )
+                gebiz_section = f"""
+                <h3 style="color:#0f172a;font-size:15px;margin:24px 0 8px;">GeBIZ tender alerts — closing soon</h3>
+                <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #eef2f7;border-radius:8px;overflow:hidden;">
+                  <tr style="background:#f8fafc;"><th style="text-align:left;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Tender</th><th style="text-align:left;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Closes</th></tr>
+                  {rows}
+                </table>
+                <p style="font-size:12px;color:#64748b;margin:6px 0 0;">
+                  <a href="https://www.booppa.io/vendor/dashboard" style="color:#0ea5e9;">See all GeBIZ alerts in your dashboard →</a>
+                </p>
+                """
+        except Exception as gebiz_err:
+            logger.warning(f"[VendorDigest] GeBIZ alerts section failed for {vendor_id}: {gebiz_err}")
+
+        # 2d. Feature checklist — evidence of what the tier unlocks (some are
+        # in-app entitlements, not files: badge, search priority, dashboards).
+        active_feats = [
+            ("Active badge on your public BOOPPA profile", "https://www.booppa.io/vendor/dashboard"),
+            ("Priority placement in procurement searches", "https://www.booppa.io/vendor/dashboard"),
+            ("Real-time GeBIZ tender alerts (above)", None),
+            ("Unlimited win-probability checks", "https://www.booppa.io/tender-check"),
+        ]
+        pro_feats = [
+            ("Quarterly PDPA Snapshot with drift tracking", "https://www.booppa.io/vendor/dashboard"),
+            ("1 notarization included this month", "https://www.booppa.io/notarize"),
+            ("Tender analytics dashboard (lite)", "https://www.booppa.io/vendor/dashboard"),
+            ("Competitor awareness signals", "https://www.booppa.io/vendor/dashboard"),
+        ]
+        feats = active_feats + (pro_feats if is_pro else [])
+        feat_items = "".join(
+            f'<li style="margin:6px 0;">✓ ' +
+            (f'<a href="{lnk}" style="color:#0f172a;">{label}</a>' if lnk else label) + '</li>'
+            for label, lnk in feats
+        )
+        features_section = f"""
+        <h3 style="color:#0f172a;font-size:15px;margin:24px 0 8px;">What your {plan_label} subscription includes</h3>
+        <ul style="list-style:none;padding:0;margin:0;font-size:13px;color:#334155;">{feat_items}</ul>
+        """
+
+        # 2e. Vendor Pro: surface the included notarization + the second-email note.
+        pro_note = ""
+        if is_pro:
+            from app.core.models_v8 import ENTERPRISE_NOTARIZATION_LIMITS
+            notar_limit = ENTERPRISE_NOTARIZATION_LIMITS.get(plan, 1)
+            scan_line = (
+                "<p style=\"font-size:13px;color:#334155;\">Your PDPA Snapshot with drift "
+                "is being generated now — it arrives in a separate email shortly.</p>"
+                if is_first_cycle else ""
+            )
+            pro_note = f"""
+            <div style="background:#f0fdf4;border-left:3px solid #10b981;padding:12px 16px;border-radius:4px;margin:20px 0;">
+              <strong>{notar_limit} notarization{'s' if notar_limit != 1 else ''} included this month.</strong>
+              <a href="https://www.booppa.io/notarize" style="color:#10b981;">Redeem now →</a>
+            </div>
+            {scan_line}
+            """
+
+        # 3. Single consolidated digest / welcome email
+        if is_first_cycle:
+            subject = f"Welcome to {plan_label} — here's everything included"
+            header = f"Welcome to {plan_label}"
+            intro = f"Your <strong>{plan_label}</strong> subscription is now active. Here's everything it unlocks:"
+        else:
+            subject = f"Your monthly {plan_label} digest — {company}"
+            header = f"Monthly {plan_label} Digest"
+            intro = "Here is your BOOPPA profile activity and tender intelligence for the past 30 days:"
+
         email_svc = EmailService()
         asyncio.run(email_svc.send_html_email(
             to_email=vendor_email,
-            subject=f"Your Monthly BOOPPA Health Check — {company}",
+            subject=subject,
             body_html=f"""
             <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
               <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-                <h1 style="color:#10b981;margin:0;font-size:20px;">Monthly Profile Health Check</h1>
+                <h1 style="color:#10b981;margin:0;font-size:20px;">{header}</h1>
               </div>
               <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
                 <p>Hello <strong>{company}</strong>,</p>
-                <p>Here is your BOOPPA profile activity for the past 30 days:</p>
+                <p>{intro}</p>
                 <div style="background:#f8fafc;border-radius:8px;padding:20px;margin:20px 0;">
                   <p style="margin:4px 0;"><strong>Trust Score:</strong> {score_record.total_score}/100</p>
                   <p style="margin:4px 0;"><strong>Compliance Score:</strong> {score_record.compliance_score}/100</p>
                   <p style="margin:4px 0;"><strong>Profile Views (30d):</strong> {profile_views}</p>
                 </div>
                 {snapshot_cta}
-                <p>
+                {pro_note}
+                {gebiz_section}
+                {features_section}
+                <p style="margin-top:24px;">
                   <a href="https://www.booppa.io/vendor/dashboard"
                      style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;
                             border-radius:8px;font-weight:bold;display:inline-block;">
@@ -2752,13 +2857,13 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
                   </a>
                 </p>
                 <p style="color:#64748b;font-size:12px;margin-top:24px;">
-                  Vendor Active — monthly health check · booppa.io
+                  {plan_label} · booppa.io
                 </p>
               </div>
             </body></html>
             """,
         ))
-        logger.info(f"Vendor Active health check completed for vendor {vendor_id}")
+        logger.info(f"Vendor digest ({plan_label}, first_cycle={is_first_cycle}) sent for vendor {vendor_id}")
     except Exception as exc:
         logger.error(f"Vendor Active health check failed for {vendor_id}: {exc}")
         raise self.retry(exc=exc, countdown=300)
@@ -2855,7 +2960,10 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
         db.refresh(stub)
 
         from app.api.stripe_webhook import _fulfill_pdpa
-        asyncio.run(_fulfill_pdpa(report_id=str(stub.id), customer_email=vendor_email))
+        # send_email=False: the month-over-month Monitor Report (queued below) is
+        # the single consolidated PDPA deliverable email for this cycle — no
+        # separate raw Quick-Scan email.
+        asyncio.run(_fulfill_pdpa(report_id=str(stub.id), customer_email=vendor_email, send_email=False))
         logger.info(f"PDPA Monitor monthly re-scan complete for vendor {vendor_id}")
 
         # Deliver the month-over-month Monitor Report PDF — the actual Monitor
@@ -4955,7 +5063,7 @@ def run_vendor_active_check_for_user(self, user_id: str, override_company: str |
         if not user or not user.email:
             logger.warning("[VendorActiveFirstCycle] no user/email for id=%s", user_id)
             return
-        vendor_active_health_check_task.delay(str(user.id), user.email, override_company)
+        vendor_active_health_check_task.delay(str(user.id), user.email, override_company, is_first_cycle=True)
     finally:
         if db:
             db.close()
@@ -5001,8 +5109,8 @@ def run_vendor_pro_activation_for_user(self, user_id: str, override_website: str
         if not user or not user.email:
             logger.warning("[VendorProFirstCycle] no user/email for id=%s", user_id)
             return
-        # Health check (same as Vendor Active)
-        vendor_active_health_check_task.delay(str(user.id), user.email, override_company)
+        # Health check (same as Vendor Active) — consolidated welcome digest
+        vendor_active_health_check_task.delay(str(user.id), user.email, override_company, is_first_cycle=True)
         # First PDPA rescan if a website is configured
         website = (override_website or "").strip() or (getattr(user, "website", "") or "").strip()
         if website:

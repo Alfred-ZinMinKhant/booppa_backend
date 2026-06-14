@@ -475,11 +475,18 @@ async def _activate_subscription(
 
         # Send confirmation email. Suites and buyer tiers get a richer, itemised
         # onboarding email instead (sent from their provisioning blocks below).
+        # vendor_active / vendor_pro are ALSO excluded: their first-cycle health
+        # check sends ONE consolidated welcome digest (snapshot + GeBIZ alerts +
+        # features [+ "PDPA report incoming" for Pro]) so the buyer doesn't get a
+        # bare "Activated" email on top of it. pdpa_monitor keeps this email — it
+        # is the immediate "scan running" welcome, paired with the Monitor report
+        # that follows when the scan completes.
         # Gated on `first_activation` so a dual webhook delivery / replay can't
         # send the activation email twice.
         if first_activation and customer_email and new_plan not in (
             "standard_suite", "pro_suite",
             "buyer_starter", "buyer_pro", "buyer_enterprise",
+            "vendor_active", "vendor_pro",
         ):
             plan_labels = {
                 "vendor_active": "Vendor Active",
@@ -2432,7 +2439,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         db.close()
 
 
-async def _fulfill_pdpa(report_id: str, customer_email: str | None) -> None:
+async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: bool = True) -> None:
     """
     PDPA Snapshot fulfillment:
     1. Run the full on-page + AI scan (if not already done)
@@ -2441,6 +2448,13 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None) -> None:
     4. Update vendor compliance score (+8 to +25 pts)
     5. Write CertificateLog entry
     6. Send email with PDF download link
+
+    `send_email=False` suppresses the standalone "Snapshot Ready" email. The
+    PDPA Monitor / Vendor Pro cycle uses this so the buyer gets a SINGLE
+    consolidated PDPA deliverable email (the month-over-month Monitor report)
+    instead of a raw Quick-Scan email plus the Monitor report — see
+    `pdpa_monitor_monthly_rescan_task`. The score/PDF/CertificateLog side
+    effects still run; only the email is gated.
     """
     db = SessionLocal()
     try:
@@ -2599,7 +2613,9 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None) -> None:
             logger.error(f"[PDPA] CertificateLog failed for {report_id}: {e}")
 
         # ── Step 6: Email PDF to vendor ────────────────────────────────────
-        if contact_email:
+        # Gated on send_email so the PDPA Monitor / Vendor Pro cycle can deliver
+        # ONE consolidated PDPA email (the Monitor report) instead of two.
+        if contact_email and send_email:
             try:
                 download_section = (
                     f'<p style="margin-top:24px;">'
