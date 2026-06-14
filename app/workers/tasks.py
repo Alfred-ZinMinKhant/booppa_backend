@@ -3087,7 +3087,13 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
                 <p style="text-align:center;margin:26px 0;">
                   <a href="{report_url}" style="background:#10b981;color:#fff;padding:12px 28px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">Download your Monitor Report (PDF)</a>
                 </p>
-                <p style="color:#64748b;font-size:12px;">PDPA Monitor — monthly compliance tracking · booppa.io</p>
+                <h3 style="color:#0f172a;font-size:15px;margin:24px 0 6px;">This month's regulatory briefing</h3>
+                <ul style="font-size:13px;color:#334155;margin:0 0 8px;padding-left:18px;">
+                  <li>Confirm your data-breach notification path meets PDPA §26D (notify PDPC within 3 calendar days).</li>
+                  <li>Verify your DPO contact details are current and published.</li>
+                  <li>Check that third-party processors have signed up-to-date data-processing agreements.</li>
+                </ul>
+                <p style="color:#64748b;font-size:12px;">PDPA Monitor — monthly compliance tracking + regulatory briefing · booppa.io</p>
               </div>
             </body></html>"""
             sent = asyncio.run(EmailService().send_html_email(
