@@ -4402,8 +4402,13 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
         )
 
         # Aggregate top sectors and agencies by award count + total value.
+        import statistics as _stats
+
         sector_stats: dict[str, dict] = {}
         agency_stats: dict[str, dict] = {}
+        supplier_stats: dict[str, dict] = {}   # supplier benchmarking
+        month_stats: dict[str, dict] = {}      # bid-timing (awards per month)
+        sector_amounts: dict[str, list] = {}   # price history per sector
         total_value = 0.0
         for r in rows:
             amt = float(r.award_amt) if r.award_amt is not None else 0.0
@@ -4414,9 +4419,53 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                 e = bucket.setdefault(key, {"count": 0, "value": 0.0})
                 e["count"] += 1
                 e["value"] += amt
+            # Supplier benchmarking — which firms win, and their average ticket.
+            sup = (r.supplier_name or "").strip().upper() or "UNDISCLOSED"
+            se = supplier_stats.setdefault(sup, {"count": 0, "value": 0.0})
+            se["count"] += 1
+            se["value"] += amt
+            # Bid-timing — award volume by calendar month.
+            if r.awarded_date:
+                mk = r.awarded_date.strftime("%Y-%m")
+                me = month_stats.setdefault(mk, {"count": 0, "value": 0.0})
+                me["count"] += 1
+                me["value"] += amt
+            # Price history — collect non-zero award amounts per sector.
+            if amt > 0:
+                sector_amounts.setdefault(sec, []).append(amt)
 
         top_sectors = sorted(sector_stats.items(), key=lambda kv: kv[1]["count"], reverse=True)[:5]
         top_agencies = sorted(agency_stats.items(), key=lambda kv: kv[1]["count"], reverse=True)[:5]
+
+        # Supplier benchmarking — top awardees + average award size (so a vendor
+        # sees who they're up against and at what contract sizes).
+        top_suppliers = sorted(
+            supplier_stats.items(), key=lambda kv: kv[1]["count"], reverse=True
+        )[:5]
+
+        # Price history — typical contract size per top sector (low / median / high).
+        price_by_sector = []
+        for _sec_name, _v in top_sectors:
+            _amts = sorted(sector_amounts.get(_sec_name, []))
+            if _amts:
+                price_by_sector.append(
+                    (_sec_name, _amts[0], _stats.median(_amts), _amts[-1])
+                )
+
+        # Bid-timing — awards by month + the busiest window as a "when to bid" cue.
+        timing_rows = sorted(month_stats.items(), key=lambda kv: kv[0])
+        busiest_month = (
+            max(month_stats.items(), key=lambda kv: kv[1]["count"])[0]
+            if month_stats else None
+        )
+
+        def _fmt_month(mk: str) -> str:
+            try:
+                return datetime.strptime(mk, "%Y-%m").strftime("%b %Y")
+            except Exception:
+                return mk
+
+        busiest_label = _fmt_month(busiest_month) if busiest_month else None
 
         # ── Build PDF once and upload to S3 (link is shared by every subscriber) ──
         pdf_url: str | None = None
@@ -4453,8 +4502,8 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                 sub_style,
             ))
 
-            def _build_table(rows_data: list[list], header: list[str]) -> Table:
-                t = Table([header] + rows_data, hAlign="LEFT", colWidths=[3.2 * inch, 1.2 * inch, 1.8 * inch])
+            def _build_table(rows_data: list[list], header: list[str], colWidths=None) -> Table:
+                t = Table([header] + rows_data, hAlign="LEFT", colWidths=colWidths or [3.2 * inch, 1.2 * inch, 1.8 * inch])
                 t.setStyle(TableStyle([
                     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f1f5f9")),
                     ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#475569")),
@@ -4481,11 +4530,49 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                 ["Agency", "Awards", "Total value"],
             ))
 
+            # ── Supplier benchmarking ───────────────────────────────────────
+            if top_suppliers:
+                story.append(Paragraph("Top suppliers — who's winning", h2_style))
+                story.append(_build_table(
+                    [[k[:38], str(v["count"]),
+                      f"S${(v['value'] / v['count'] if v['count'] else 0):,.0f}",
+                      f"S${v['value']:,.0f}"]
+                     for k, v in top_suppliers],
+                    ["Supplier", "Wins", "Avg award", "Total"],
+                    colWidths=[2.7 * inch, 0.8 * inch, 1.4 * inch, 1.3 * inch],
+                ))
+
+            # ── Price history (typical contract size per sector) ────────────
+            if price_by_sector:
+                story.append(Paragraph("Typical contract size by sector", h2_style))
+                story.append(_build_table(
+                    [[s[:30], f"S${lo:,.0f}", f"S${med:,.0f}", f"S${hi:,.0f}"]
+                     for s, lo, med, hi in price_by_sector],
+                    ["Sector", "Low", "Median", "High"],
+                    colWidths=[2.7 * inch, 1.1 * inch, 1.2 * inch, 1.2 * inch],
+                ))
+
+            # ── Bid timing ──────────────────────────────────────────────────
+            if timing_rows:
+                story.append(Paragraph("When awards land — bid timing", h2_style))
+                if busiest_label:
+                    story.append(Paragraph(
+                        f"Busiest award month in this window: <b>{busiest_label}</b>. "
+                        "Line up submissions to land ahead of peak procurement cycles.",
+                        body_style,
+                    ))
+                story.append(_build_table(
+                    [[_fmt_month(mk), str(v["count"]), f"S${v['value']:,.0f}"]
+                     for mk, v in timing_rows],
+                    ["Month", "Awards", "Value"],
+                ))
+
             story.append(Spacer(1, 0.3 * inch))
             story.append(Paragraph(
                 "Source: GeBIZ / data.gov.sg Government Procurement Awards. "
-                "Open the live dashboard for sector trends, supplier benchmarking, "
-                "and bid/watch/pass timing on current tenders.",
+                "Supplier benchmarking, contract-size bands, and bid-timing are "
+                "computed from the published award history for the window shown. "
+                "Open the live dashboard for current-tender bid/watch/pass signals.",
                 body_style,
             ))
 
@@ -4511,6 +4598,57 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
 
         sector_rows = "".join(_row(k, v) for k, v in top_sectors)
         agency_rows = "".join(_row(k, v) for k, v in top_agencies)
+
+        # ── Extra email sections: supplier benchmarking, price history, timing ──
+        def _row4(c0, c1, c2, c3) -> str:
+            return f"""
+            <tr>
+              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#e5e5e5;">{c0}</td>
+              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#60a5fa;text-align:right;">{c1}</td>
+              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#a3a3a3;text-align:right;">{c2}</td>
+              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#a3a3a3;text-align:right;">{c3}</td>
+            </tr>"""
+
+        def _email_section(title: str, header_cols: list[str], rows_html: str) -> str:
+            if not rows_html:
+                return ""
+            ths = "".join(
+                f'<th style="padding:8px;text-align:{"left" if i == 0 else "right"};color:#737373;">{h}</th>'
+                for i, h in enumerate(header_cols)
+            )
+            return f"""
+                  <h3 style="color:#ffffff;margin-top:32px;font-size:1.05em;">{title}</h3>
+                  <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
+                    <thead><tr style="border-bottom:1px solid #404040;">{ths}</tr></thead>
+                    <tbody>{rows_html}</tbody>
+                  </table>"""
+
+        supplier_rows_html = "".join(
+            _row4(k[:38], v["count"],
+                  f"S${(v['value'] / v['count'] if v['count'] else 0):,.0f}",
+                  f"S${v['value']:,.0f}")
+            for k, v in top_suppliers
+        )
+        price_rows_html = "".join(
+            _row4(s[:30], f"S${lo:,.0f}", f"S${med:,.0f}", f"S${hi:,.0f}")
+            for s, lo, med, hi in price_by_sector
+        )
+        timing_rows_html = "".join(_row(_fmt_month(mk), v) for mk, v in timing_rows)
+
+        extra_sections_html = ""
+        if busiest_label:
+            extra_sections_html += (
+                f'<p style="color:#a3a3a3;margin-top:32px;">⏱ '
+                f'<strong style="color:#fff;">Bid timing:</strong> the busiest award month in this '
+                f'window was <strong style="color:#60a5fa;">{busiest_label}</strong> — plan submissions '
+                f'to land ahead of peak procurement cycles.</p>'
+            )
+        extra_sections_html += _email_section(
+            "Top suppliers — who's winning", ["Supplier", "Wins", "Avg award", "Total"], supplier_rows_html)
+        extra_sections_html += _email_section(
+            "Typical contract size by sector", ["Sector", "Low", "Median", "High"], price_rows_html)
+        extra_sections_html += _email_section(
+            "Awards by month", ["Month", "Awards", "Value"], timing_rows_html)
 
         sub_query = db.query(User).filter(
             User.is_active == True,  # noqa: E712
@@ -4570,6 +4708,7 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                     </tr></thead>
                     <tbody>{agency_rows}</tbody>
                   </table>
+                  {extra_sections_html}
 
                   <div style="margin:32px 0;display:flex;gap:12px;flex-wrap:wrap;">
                     <a href="https://www.booppa.io/tender-intelligence"
