@@ -831,6 +831,10 @@ async def simulate_purchase(
             stripe_subscription_id=sim_id,
             stripe_customer_id=sim_id,
             test_simulation=True,
+            # Test Identity drives first-cycle deliverables (Vendor snapshot,
+            # PDPA Monitor report) without mutating the real user profile.
+            override_company=company_name or None,
+            override_website=vendor_url or None,
         )
         db = SessionLocal()
         try:

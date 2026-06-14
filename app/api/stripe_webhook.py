@@ -241,6 +241,8 @@ async def _activate_subscription(
     stripe_subscription_id: str | None,
     stripe_customer_id: str | None,
     test_simulation: bool = False,
+    override_company: str | None = None,
+    override_website: str | None = None,
 ) -> None:
     """
     Persist subscription state when a new Stripe subscription is created or renewed.
@@ -250,6 +252,13 @@ async def _activate_subscription(
     into any auto-fulfilled bundle so RFP-bearing tiers (e.g. compliance_evidence)
     skip the brief intake and generate the kit directly — matching the standalone
     bundle test path in `_fulfill_bundle`.
+
+    `override_company` / `override_website` are ALSO test-harness-only: the admin
+    Test Identity supplies the company + website that first-cycle deliverables
+    (Vendor snapshot, PDPA Monitor report) should reflect, WITHOUT mutating the
+    real user profile (the harness email can be a real account). They are passed
+    through to the per-user first-cycle wrappers; production renewals leave them
+    None and fall back to the stored profile as before.
     """
     db = SessionLocal()
     try:
@@ -366,17 +375,30 @@ async def _activate_subscription(
             if not first_activation:
                 pass
             elif new_plan == "tender_intelligence":
+                # Sector digest — not company/website-specific, no override needed.
                 _wtasks.send_tender_intelligence_digest_for_user.delay(str(user.id))
             elif new_plan == "pdpa_monitor":
-                _wtasks.run_pdpa_monitor_cycle_for_user.delay(str(user.id))
+                _wtasks.run_pdpa_monitor_cycle_for_user.delay(
+                    str(user.id),
+                    override_website=override_website,
+                    override_company=override_company,
+                )
             elif new_plan == "compliance_evidence":
                 _wtasks.run_compliance_evidence_cycle_for_user.delay(
-                    str(user.id), test_simulation=test_simulation
+                    str(user.id), test_simulation=test_simulation,
+                    override_website=override_website,
+                    override_company=override_company,
                 )
             elif new_plan == "vendor_active":
-                _wtasks.run_vendor_active_check_for_user.delay(str(user.id))
+                _wtasks.run_vendor_active_check_for_user.delay(
+                    str(user.id), override_company=override_company,
+                )
             elif new_plan == "vendor_pro":
-                _wtasks.run_vendor_pro_activation_for_user.delay(str(user.id))
+                _wtasks.run_vendor_pro_activation_for_user.delay(
+                    str(user.id),
+                    override_website=override_website,
+                    override_company=override_company,
+                )
             elif new_plan in ("standard_suite", "pro_suite"):
                 # Deliver the MAS TRM Baseline Assessment PDF. Small countdown so
                 # the TRM controls initialised later in this same activation are

@@ -2658,12 +2658,16 @@ def fulfill_cover_sheet_task(
 
 
 @celery_app.task(bind=True, max_retries=2, name="vendor_active_health_check_task")
-def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str):
+def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, override_company: str | None = None):
     """
     Monthly health check for Vendor Active subscribers.
     1. Recalculate vendor score
     2. Send monthly metrics email (profile views, search appearances, movement vs prior month)
     3. Competitor alert: notify if any sector peer improved verificationDepth this month
+
+    `override_company` is test-harness-only (admin Test Identity): the snapshot
+    PDF reflects it instead of the stored profile company, without mutating the
+    real account. Production monthly runs leave it None.
     """
     db = SessionLocal()
     try:
@@ -2677,7 +2681,7 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str):
 
         # 2. Build metrics summary
         user = db.query(User).filter(User.id == vendor_id).first()
-        company = getattr(user, "company", "Your company") if user else "Your company"
+        company = (override_company or "").strip() or (getattr(user, "company", "Your company") if user else "Your company")
 
         thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
         from app.core.models import VerifyRecord, ProofView
@@ -2815,11 +2819,14 @@ def pdpa_monitor_monthly_alert_task(self, vendor_id: str, vendor_email: str):
 
 
 @celery_app.task(bind=True, max_retries=2, name="pdpa_monitor_monthly_rescan_task")
-def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, website_url: str):
+def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, website_url: str, override_company: str | None = None):
     """
     Monthly PDPA re-scan for PDPA Monitor subscribers.
     Creates a new PDPA report and queues fulfill_pdpa_task.
     Schedules a delayed drift check after the scan has had time to complete.
+
+    `override_company` is test-harness-only (admin Test Identity); production
+    monthly runs leave it None and use the stored profile company.
     """
     db = SessionLocal()
     try:
@@ -2827,7 +2834,7 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
         import uuid as _uuid
 
         user = db.query(User).filter(User.id == vendor_id).first()
-        company = getattr(user, "company", "Customer") if user else "Customer"
+        company = (override_company or "").strip() or (getattr(user, "company", "Customer") if user else "Customer")
 
         stub = Report(
             owner_id=_uuid.UUID(vendor_id),
@@ -2855,7 +2862,8 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
         # deliverable (distinct from the one-off Quick Scan). Short countdown so
         # the just-completed report is fully committed first.
         run_pdpa_monitor_report_for_user.apply_async(
-            args=[vendor_id, vendor_email], countdown=60,
+            args=[vendor_id, vendor_email], kwargs={"override_company": override_company},
+            countdown=60,
         )
 
         # Drift detection: scan completion is async (process_report_task writes
@@ -2873,13 +2881,16 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
 
 
 @celery_app.task(bind=True, max_retries=2, name="run_pdpa_monitor_report_for_user")
-def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | None = None):
+def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | None = None, override_company: str | None = None):
     """Generate + deliver the month-over-month PDPA Monitor Report PDF.
 
     This is the actual Monitor deliverable: a comparison of the two most recent
     scans (current compliance score, change vs last month, dimension moves) —
     distinct from the one-off Quick Scan the activation email used to link. On
     the first cycle (only one scan) it ships a baseline edition.
+
+    `override_company` is test-harness-only (admin Test Identity); production
+    leaves it None and uses the stored profile company.
     """
     from app.core.models import Report, User
     from app.services.compliance_drift import _extract_risk_score, _per_dimension_flips
@@ -2895,7 +2906,7 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
         email = vendor_email or user.email
         if not email:
             return
-        company = (getattr(user, "company", "") or "").strip() or "Your Organisation"
+        company = (override_company or "").strip() or (getattr(user, "company", "") or "").strip() or "Your Organisation"
         framework = "pdpa_quick_scan"
 
         reports = (
@@ -4933,45 +4944,57 @@ def _load_user(user_id: str):
 
 
 @celery_app.task(bind=True, max_retries=2, name="run_vendor_active_check_for_user")
-def run_vendor_active_check_for_user(self, user_id: str):
-    """Per-user wrapper: queue Vendor Active's monthly health check."""
+def run_vendor_active_check_for_user(self, user_id: str, override_company: str | None = None):
+    """Per-user wrapper: queue Vendor Active's monthly health check.
+
+    `override_company` is test-harness-only (admin Test Identity), threaded into
+    the snapshot PDF without touching the real profile.
+    """
     user, db = _load_user(user_id)
     try:
         if not user or not user.email:
             logger.warning("[VendorActiveFirstCycle] no user/email for id=%s", user_id)
             return
-        vendor_active_health_check_task.delay(str(user.id), user.email)
+        vendor_active_health_check_task.delay(str(user.id), user.email, override_company)
     finally:
         if db:
             db.close()
 
 
 @celery_app.task(bind=True, max_retries=2, name="run_pdpa_monitor_cycle_for_user")
-def run_pdpa_monitor_cycle_for_user(self, user_id: str):
-    """Per-user wrapper: queue PDPA Monitor's monthly rescan."""
+def run_pdpa_monitor_cycle_for_user(self, user_id: str, override_website: str | None = None, override_company: str | None = None):
+    """Per-user wrapper: queue PDPA Monitor's monthly rescan.
+
+    `override_website` / `override_company` are test-harness-only (admin Test
+    Identity): the scan + Monitor report reflect them without mutating the real
+    profile. Production leaves them None and uses the stored profile.
+    """
     user, db = _load_user(user_id)
     try:
         if not user or not user.email:
             logger.warning("[PdpaMonitorFirstCycle] no user/email for id=%s", user_id)
             return
-        website = (getattr(user, "website", "") or "").strip()
+        website = (override_website or "").strip() or (getattr(user, "website", "") or "").strip()
         if not website:
             logger.warning(
                 "[PdpaMonitorFirstCycle] %s has no website — skipping initial scan, will run on next cycle after profile update",
                 user.email,
             )
             return
-        pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website)
+        pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website, override_company)
     finally:
         if db:
             db.close()
 
 
 @celery_app.task(bind=True, max_retries=2, name="run_vendor_pro_activation_for_user")
-def run_vendor_pro_activation_for_user(self, user_id: str):
+def run_vendor_pro_activation_for_user(self, user_id: str, override_website: str | None = None, override_company: str | None = None):
     """Per-user wrapper: Vendor Pro inherits Vendor Active's monthly health
     check + an immediate first PDPA rescan (Vendor Pro's quarterly cycle
     normally fires Jan/Apr/Jul/Oct; on activation we kick the first one now).
+
+    `override_website` / `override_company` are test-harness-only (admin Test
+    Identity); production leaves them None and uses the stored profile.
     """
     user, db = _load_user(user_id)
     try:
@@ -4979,11 +5002,11 @@ def run_vendor_pro_activation_for_user(self, user_id: str):
             logger.warning("[VendorProFirstCycle] no user/email for id=%s", user_id)
             return
         # Health check (same as Vendor Active)
-        vendor_active_health_check_task.delay(str(user.id), user.email)
+        vendor_active_health_check_task.delay(str(user.id), user.email, override_company)
         # First PDPA rescan if a website is configured
-        website = (getattr(user, "website", "") or "").strip()
+        website = (override_website or "").strip() or (getattr(user, "website", "") or "").strip()
         if website:
-            pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website)
+            pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website, override_company)
         else:
             logger.warning(
                 "[VendorProFirstCycle] %s has no website — PDPA scan skipped; will fire after profile update",
@@ -5099,18 +5122,20 @@ def run_suite_trm_baseline_for_user(self, user_id: str):
 
 
 @celery_app.task(bind=True, max_retries=2, name="run_compliance_evidence_cycle_for_user")
-def run_compliance_evidence_cycle_for_user(self, user_id: str, test_simulation: bool = False):
+def run_compliance_evidence_cycle_for_user(self, user_id: str, test_simulation: bool = False, override_website: str | None = None, override_company: str | None = None):
     """Per-user wrapper: Compliance Evidence bundle regen for a single user.
 
     `test_simulation` (admin simulate-purchase) flows into the bundle metadata so
     the RFP component auto-generates instead of emailing a brief-intake link.
+    `override_website` / `override_company` are test-harness-only (admin Test
+    Identity); production leaves them None and uses the stored profile.
     """
     user, db = _load_user(user_id)
     try:
         if not user or not user.email:
             logger.warning("[CEFirstCycle] no user/email for id=%s", user_id)
             return
-        website = (getattr(user, "website", "") or "").strip()
+        website = (override_website or "").strip() or (getattr(user, "website", "") or "").strip()
         if not website:
             logger.warning(
                 "[CEFirstCycle] %s has no website — initial bundle deferred until profile update",
@@ -5127,7 +5152,7 @@ def run_compliance_evidence_cycle_for_user(self, user_id: str, test_simulation: 
             session_id=None,
             customer_email=user.email,
             metadata={
-                "company_name": getattr(user, "company", ""),
+                "company_name": (override_company or "").strip() or getattr(user, "company", ""),
                 "vendor_url": website,
                 "subscription_cycle": True,
                 **({"test_simulation": "1"} if test_simulation else {}),
