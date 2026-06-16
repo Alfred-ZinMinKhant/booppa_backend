@@ -404,7 +404,9 @@ async def _activate_subscription(
                 # the TRM controls initialised later in this same activation are
                 # committed first (the task also falls back to canonical domains).
                 _wtasks.run_suite_trm_baseline_for_user.apply_async(
-                    args=[str(user.id)], countdown=30,
+                    args=[str(user.id)],
+                    kwargs={"override_company": override_company},
+                    countdown=30,
                 )
             logger.info(
                 "[Subscription] First-cycle delivery queued for user=%s tier=%s",
@@ -1343,6 +1345,134 @@ async def _fulfill_standalone_no_report(
         db.close()
 
 
+async def _fulfill_compliance_evidence_pack(
+    db,
+    owner_id,
+    customer_email: str | None,
+    company_name: str,
+    website: str,
+    session_id: str | None,
+    metadata: dict,
+    is_test: bool,
+) -> None:
+    """Create the EvidencePack intake for a Compliance Evidence Pack purchase.
+
+    Real purchases defer to the structured intake at /evidence-pack-intake/{id}.
+    Admin test simulations auto-build an intake from the profile/test identity and
+    queue generation immediately (so the test harness yields a pack end-to-end).
+    """
+    import uuid as _uuid
+    from datetime import datetime as _dt
+    from app.core.models import User
+    from app.core.models_v13 import EvidencePack
+
+    if not owner_id:
+        await _alert_payment_fulfillment_issue(
+            reason="compliance_evidence_pack paid but no owner resolved — cannot create EvidencePack",
+            product_type="compliance_evidence_pack",
+            customer_email=customer_email,
+            session_id=session_id,
+        )
+        return
+
+    org = (company_name or "").strip() or "Your Organisation"
+    pack_id = f"BCEP-{org.upper().replace(' ', '')[:8]}-{_dt.utcnow().strftime('%Y%m%d%H%M%S')}"
+    row = EvidencePack(
+        id=_uuid.uuid4(),
+        pack_id=pack_id,
+        user_id=owner_id,
+        session_id=session_id,
+        organisation=org,
+        status="intake_pending",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    if is_test:
+        # Auto-build a usable intake from the buyer profile + test identity so the
+        # admin test-checkout produces a full pack without a manual intake step.
+        user = db.query(User).filter(User.id == owner_id).first()
+        intake = {
+            "org_name": org,
+            "uen": (getattr(user, "uen", "") or "").strip() or metadata.get("uen") or "Not provided",
+            "domain": (website or getattr(user, "website", "") or "").replace("https://", "").replace("http://", "").strip("/"),
+            "sector": metadata.get("sector") or "Professional Services",
+            "employee_count": metadata.get("employee_count") or "11-50",
+            "dpo_name": metadata.get("dpo_name") or "To be designated",
+            "dpo_email": metadata.get("dpo_email") or "",
+            "approver_name": metadata.get("approver_name") or (getattr(user, "full_name", "") or "Authorised Representative"),
+            "approver_role": metadata.get("approver_role") or "Director",
+            "data_types": ["customer data", "employee data", "vendor data"],
+            "customer_types": ["B2B clients"],
+            "systems": ["AWS", "Google Workspace", "Stripe"],
+            "cloud_provider": "AWS",
+            "other_markets": "",
+            "it_contact": "IT Manager",
+        }
+        row.intake = intake
+        row.status = "queued"
+        db.commit()
+        from app.workers.tasks import fulfill_evidence_pack_task
+        fulfill_evidence_pack_task.delay(str(row.id))
+        logger.info("[Bundle:compliance_evidence_pack] test_simulation — auto-queued pack %s", pack_id)
+        return
+
+    # Subscription renewal: reuse the buyer's most recent completed intake so they
+    # don't re-fill the form every month — regenerate against last cycle's facts.
+    if metadata.get("subscription_cycle"):
+        prior = (
+            db.query(EvidencePack)
+            .filter(
+                EvidencePack.user_id == owner_id,
+                EvidencePack.id != row.id,
+                EvidencePack.intake.isnot(None),
+            )
+            .order_by(EvidencePack.created_at.desc())
+            .first()
+        )
+        if prior and isinstance(prior.intake, dict) and prior.intake.get("org_name"):
+            row.intake = prior.intake
+            row.status = "queued"
+            db.commit()
+            from app.workers.tasks import fulfill_evidence_pack_task
+            fulfill_evidence_pack_task.delay(str(row.id))
+            logger.info("[Bundle:compliance_evidence_pack] cycle — reused prior intake, queued %s", pack_id)
+            return
+
+    # Real purchase (or first cycle with no prior intake) — email the buyer a link
+    # to complete the structured intake.
+    if customer_email:
+        intake_url = f"https://www.booppa.io/evidence-pack-intake/{row.id}"
+        body_html = f"""
+        <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:620px;margin:0 auto;">
+          <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
+            <h1 style="color:#10b981;margin:0;font-size:20px;">Start your PDPA Compliance Evidence Pack</h1>
+          </div>
+          <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
+            <p>Thank you for your purchase. Your Evidence Pack builds seven PDPA governance
+               documents — DPMP, ROPA, Data Inventory, Vendor/DPA Register, Breach Runbook,
+               Training Register, and Security Review Log — tailored to your organisation.</p>
+            <p>To generate documents that reflect your actual operations, we need a short
+               structured intake (about 5 minutes): your org details, DPO, systems, data types,
+               and where data is hosted.</p>
+            <div style="text-align:center;margin:24px 0;">
+              <a href="{intake_url}" style="display:inline-block;background:#10b981;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;">Complete your intake →</a>
+            </div>
+            <p style="color:#64748b;font-size:12px;">Every document is an AI-generated DRAFT with no
+               evidentiary value until your authorised representative reviews and signs it.</p>
+          </div>
+        </body></html>"""
+        sent = await EmailService().send_html_email(
+            to_email=customer_email,
+            subject="Action needed: start your PDPA Compliance Evidence Pack",
+            body_html=body_html,
+        )
+        if not sent:
+            logger.error("[Bundle:compliance_evidence_pack] intake email rejected for %s", customer_email)
+    logger.info("[Bundle:compliance_evidence_pack] Created intake-pending pack %s for %s", pack_id, customer_email)
+
+
 async def _fulfill_bundle(
     product_type: str,
     report_id: str | None,
@@ -1403,6 +1533,26 @@ async def _fulfill_bundle(
         ) or metadata.get("vendor_url", "")
 
         _is_test = bool(metadata.get("test_simulation"))
+
+        # ── Compliance Evidence Pack → BCEP 7-document engine ────────────────
+        # The CE SKU no longer produces the cover-sheet bundle (PDPA + RFP + cover
+        # sheet). It now produces the BCEP governance pack (DPMP, ROPA, Data
+        # Inventory, Vendor/DPA Register, Breach Runbook, Training Register,
+        # Security Review Log), which closes PDPC Levels 2-6. Generation needs a
+        # structured intake, so we defer exactly like the RFP flow: create an
+        # EvidencePack row (status=intake_pending) and email the buyer a brief link.
+        if product_type == "compliance_evidence_pack":
+            await _fulfill_compliance_evidence_pack(
+                db=db,
+                owner_id=owner_id,
+                customer_email=customer_email,
+                company_name=company_name,
+                website=website,
+                session_id=session_id,
+                metadata=metadata,
+                is_test=_is_test,
+            )
+            return
 
         def _make_stub(framework: str) -> str:
             return _create_stub_report(
@@ -2019,6 +2169,23 @@ async def _fulfill_rfp_package(
             db=db,
             product_type=product_type,
         )
+        # HARD GATE (audit fix): the builder blocks delivery when any
+        # [Verify:]/[FILL IN] placeholder survives intake substitution. Do NOT
+        # persist a completed Report, do NOT cache an rfp_result — instead route
+        # the buyer back to the intake form to supply the missing facts, then
+        # they resubmit and we regenerate.
+        if result.get("blocked"):
+            await _handle_blocked_rfp(
+                db=db,
+                product_type=product_type,
+                vendor_email=vendor_email,
+                session_id=session_id,
+                missing_fields=result.get("missing_fields") or [],
+                residual_placeholders=result.get("residual_placeholders") or 0,
+                company_name=company_name,
+            )
+            return
+
         download_url = result.get("download_url")
         logger.info(
             f"RFP package fulfilled: product={product_type} vendor={vendor_id} "
@@ -2103,6 +2270,114 @@ async def _fulfill_rfp_package(
         logger.error(f"RFP fulfillment failed for vendor {vendor_id}: {e}")
     finally:
         db.close()
+
+
+async def _handle_blocked_rfp(
+    db,
+    product_type: str,
+    vendor_email: str,
+    session_id: str | None,
+    missing_fields: list[str],
+    residual_placeholders: int,
+    company_name: str,
+) -> None:
+    """An RFP kit was blocked at the hard placeholder gate. Route the buyer back
+    to intake to supply the missing facts (status -> needs_more_info), email them
+    the exact fields to complete, and alert ops. No kit is delivered or cached.
+    """
+    from app.core.models_v12 import PendingRfpIntake
+
+    intake_id = None
+    try:
+        row = None
+        if session_id:
+            row = (
+                db.query(PendingRfpIntake)
+                .filter(PendingRfpIntake.session_id == session_id)
+                .order_by(PendingRfpIntake.created_at.desc())
+                .first()
+            )
+        if row is None and vendor_email:
+            # Fall back to this buyer's most recent submitted/pending intake.
+            buyer = db.query(User).filter(User.email == vendor_email).first()
+            if buyer:
+                row = (
+                    db.query(PendingRfpIntake)
+                    .filter(PendingRfpIntake.user_id == buyer.id)
+                    .order_by(PendingRfpIntake.created_at.desc())
+                    .first()
+                )
+        if row is not None:
+            row.status = "needs_more_info"
+            db.commit()
+            intake_id = str(row.id)
+    except Exception as flip_err:
+        logger.warning(f"[RFP] Could not flip intake to needs_more_info: {flip_err}")
+
+    # Email the buyer the precise fields to complete, with a link back to intake.
+    try:
+        import html as _html
+        from app.services.email_service import EmailService
+
+        intake_link = (
+            f"https://www.booppa.io/rfp-intake/{intake_id}" if intake_id else None
+        )
+        fields_html = "".join(
+            f"<li style=\"margin:4px 0;\">{_html.escape(f)}</li>" for f in missing_fields
+        ) or "<li>Some verification details were missing.</li>"
+        cta_html = (
+            f'<p style="text-align:center;margin:24px 0;"><a href="{intake_link}" '
+            f'style="background:#10b981;color:#fff;padding:12px 28px;text-decoration:none;'
+            f'border-radius:8px;font-weight:bold;display:inline-block;">Complete your RFP brief</a></p>'
+            if intake_link else
+            '<p>Please return to your RFP brief on booppa.io to complete the missing details.</p>'
+        )
+        body_html = f"""
+        <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
+          <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
+            <h1 style="color:#10b981;margin:0;font-size:20px;">A few details needed to finish your RFP Kit</h1>
+          </div>
+          <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
+            <p>Hello <strong>{_html.escape(company_name or "there")}</strong>,</p>
+            <p>Your RFP Complete Kit is almost ready. To make it usable for a real GeBIZ tender, we
+               need you to confirm a few verification details we could not source automatically.
+               Your kit will be generated and delivered as soon as you complete these:</p>
+            <ul style="font-size:14px;color:#334155;padding-left:20px;">{fields_html}</ul>
+            {cta_html}
+            <p style="color:#64748b;font-size:12px;">We don't deliver kits with unverified
+               placeholders — GeBIZ procurement officers reject them. This step keeps yours submission-ready.</p>
+          </div>
+        </body></html>"""
+        sent = await EmailService().send_html_email(
+            to_email=vendor_email,
+            subject="Action needed: complete your RFP Kit details",
+            body_html=body_html,
+        )
+        if not sent:
+            logger.error(f"[RFP] needs-more-info email rejected for {vendor_email}")
+    except Exception as mail_err:
+        logger.warning(f"[RFP] Could not send needs-more-info email: {mail_err}")
+
+    # Ops visibility.
+    try:
+        await _alert_payment_fulfillment_issue(
+            reason=(
+                f"RFP kit BLOCKED at hard placeholder gate — {residual_placeholders} "
+                "unfilled [Verify:]/[FILL IN] field(s); buyer routed back to intake"
+            ),
+            product_type=product_type,
+            customer_email=vendor_email,
+            session_id=session_id,
+            extra={
+                "residual_placeholders": residual_placeholders,
+                "missing_fields": missing_fields,
+                "company_name": company_name,
+                "intake_id": intake_id,
+            },
+            notify_customer=False,
+        )
+    except Exception as alert_err:
+        logger.warning(f"[RFP] Block alert failed (non-blocking): {alert_err}")
 
 
 def _maybe_fire_cover_sheet(customer_email: str | None) -> None:

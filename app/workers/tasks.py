@@ -3015,6 +3015,18 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
             args=[vendor_id, vendor_email, "pdpa_quick_scan"],
             countdown=1800,
         )
+
+        # Vendor Pro: deliver the promised Quarterly PDPA Snapshot with drift as a
+        # PDF attachment. This task is the single point Vendor Pro scans flow
+        # through (activation + the Jan/Apr/Jul/Oct quarterly cron), so gating on
+        # plan here yields the promised quarterly cadence. Deferred like the drift
+        # check so the just-queued scan has completed before we diff it.
+        if user and (getattr(user, "plan", "") or "") == "vendor_pro":
+            run_vendor_pro_pdpa_snapshot_for_user.apply_async(
+                args=[vendor_id, vendor_email],
+                kwargs={"override_company": override_company},
+                countdown=1860,
+            )
     except Exception as exc:
         logger.error(f"PDPA Monitor monthly re-scan failed for {vendor_id}: {exc}")
         raise self.retry(exc=exc, countdown=600)
@@ -3107,8 +3119,17 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
         except Exception as up_err:
             logger.error("[MonitorReport] S3 upload failed for %s: %s", email, up_err)
 
-        if report_url:
+        if pdf_bytes:
             month_label = datetime.now(timezone.utc).strftime("%B %Y")
+            # The PDF is attached directly to the email (audit fix: the report must
+            # arrive as a downloadable file, not a dashboard-only link). The S3 link,
+            # when available, is kept as a secondary access path.
+            link_block = (
+                f"""<p style="text-align:center;margin:26px 0;">
+                  <a href="{report_url}" style="background:#10b981;color:#fff;padding:12px 28px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">View your Monitor Report online</a>
+                </p>"""
+                if report_url else ""
+            )
             body_html = f"""
             <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
               <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
@@ -3116,11 +3137,9 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
               </div>
               <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
                 <p>Hello <strong>{company}</strong>,</p>
-                <p>Your monthly PDPA Monitor report is ready — it compares this month's scan against last
-                   month's, so you can see exactly what moved.</p>
-                <p style="text-align:center;margin:26px 0;">
-                  <a href="{report_url}" style="background:#10b981;color:#fff;padding:12px 28px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">Download your Monitor Report (PDF)</a>
-                </p>
+                <p>Your monthly PDPA Monitor report is <strong>attached to this email as a PDF</strong> —
+                   it compares this month's scan against last month's, so you can see exactly what moved.</p>
+                {link_block}
                 <h3 style="color:#0f172a;font-size:15px;margin:24px 0 6px;">This month's regulatory briefing</h3>
                 <ul style="font-size:13px;color:#334155;margin:0 0 8px;padding-left:18px;">
                   <li>Confirm your data-breach notification path meets PDPA §26D (notify PDPC within 3 calendar days).</li>
@@ -3130,10 +3149,12 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
                 <p style="color:#64748b;font-size:12px;">PDPA Monitor — monthly compliance tracking + regulatory briefing · booppa.io</p>
               </div>
             </body></html>"""
+            _safe_company = (company or "report").replace("/", "-").replace(" ", "-")
             sent = asyncio.run(EmailService().send_html_email(
                 to_email=email,
                 subject=f"Your PDPA Monitor Report — {month_label}",
                 body_html=body_html,
+                attachments=[(f"PDPA-Monitor-Report-{_safe_company}-{month_label}.pdf", pdf_bytes)],
             ))
             if not sent:
                 logger.error("[MonitorReport] delivery email rejected for %s", email)
@@ -3141,6 +3162,148 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
                 logger.info("[MonitorReport] Delivered to %s (previous=%s)", email, bool(previous))
     except Exception as exc:
         logger.error("[MonitorReport] Failed for %s: %s", vendor_id, exc)
+        raise self.retry(exc=exc, countdown=300)
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, max_retries=2, name="run_vendor_pro_pdpa_snapshot_for_user")
+def run_vendor_pro_pdpa_snapshot_for_user(self, vendor_id: str, vendor_email: str | None = None, override_company: str | None = None):
+    """Generate + deliver Vendor Pro's Quarterly PDPA Snapshot with drift (PDF).
+
+    Closes the audit gap "PDPA Quarterly Snapshot with drift for Vendor Pro — not
+    attached". Compares the vendor's two most recent completed PDPA scans, renders
+    a one-page drift PDF, anchors it on the existing (Amoy testnet) chain, and
+    emails it as a direct attachment. Baseline edition when only one scan exists.
+
+    `override_company` is test-harness-only (admin Test Identity).
+    """
+    from app.core.models import Report, User
+    from app.services.compliance_drift import _extract_risk_score, _per_dimension_flips
+    from app.services.vendor_pdpa_snapshot_generator import generate_vendor_pdpa_snapshot_pdf
+    from app.services.storage import S3Service
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == vendor_id).first()
+        if not user:
+            logger.warning("[VendorProSnapshot] no user for id=%s", vendor_id)
+            return
+        email = vendor_email or user.email
+        if not email:
+            return
+        company = (override_company or "").strip() or (getattr(user, "company", "") or "").strip() or "Your Organisation"
+        framework = "pdpa_quick_scan"
+
+        reports = (
+            db.query(Report)
+            .filter(
+                Report.owner_id == user.id,
+                Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
+                Report.status == "completed",
+            )
+            .order_by(Report.completed_at.desc().nullslast())
+            .limit(2)
+            .all()
+        )
+        if not reports:
+            logger.info("[VendorProSnapshot] no completed PDPA report yet for %s — skipping", email)
+            return
+        current = reports[0]
+        previous = reports[1] if len(reports) > 1 else None
+
+        def _compliance(r) -> int | None:
+            ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
+            cs = ad.get("compliance_score")
+            if isinstance(cs, (int, float)):
+                return int(round(cs))
+            risk = _extract_risk_score(r)
+            return None if risk is None else max(0, min(100, 100 - int(round(risk))))
+
+        cur_ad = current.assessment_data if isinstance(current.assessment_data, dict) else {}
+        findings = (
+            cur_ad.get("detailed_findings") or cur_ad.get("findings")
+            or (cur_ad.get("risk_assessment") or {}).get("findings") or []
+        )
+        dimension_flips = (
+            _per_dimension_flips(db, str(user.id), framework, current.id, previous.id)
+            if previous else []
+        )
+        scanned_url = cur_ad.get("display_url") or cur_ad.get("website_url") or current.company_website
+
+        pdf_bytes = generate_vendor_pdpa_snapshot_pdf({
+            "company_name": company,
+            "scanned_url": scanned_url,
+            "current_score": _compliance(current),
+            "previous_score": _compliance(previous) if previous else None,
+            "current_risk": _extract_risk_score(current),
+            "previous_risk": _extract_risk_score(previous) if previous else None,
+            "dimension_flips": dimension_flips,
+            "findings_count": len(findings) if isinstance(findings, list) else None,
+            "is_baseline": previous is None,
+        })
+
+        # Anchor the snapshot hash on the existing chain (Amoy testnet under Lean
+        # Mode) — best-effort; the PDF discloses the network honestly.
+        anchor_tx = None
+        try:
+            import hashlib
+            from app.services.blockchain import BlockchainService
+            digest = hashlib.sha256(pdf_bytes).hexdigest()
+            anchor_tx = asyncio.run(BlockchainService().anchor_evidence(
+                digest, metadata=f"vendor_pro_pdpa_snapshot:{current.id}"))
+        except Exception as anchor_err:
+            logger.warning("[VendorProSnapshot] anchoring failed for %s: %s", email, anchor_err)
+
+        if anchor_tx:
+            # Re-render with the anchor tx disclosed on the PDF.
+            pdf_bytes = generate_vendor_pdpa_snapshot_pdf({
+                "company_name": company,
+                "scanned_url": scanned_url,
+                "current_score": _compliance(current),
+                "previous_score": _compliance(previous) if previous else None,
+                "current_risk": _extract_risk_score(current),
+                "previous_risk": _extract_risk_score(previous) if previous else None,
+                "dimension_flips": dimension_flips,
+                "findings_count": len(findings) if isinstance(findings, list) else None,
+                "is_baseline": previous is None,
+                "anchor_tx": anchor_tx,
+            })
+
+        try:
+            asyncio.run(S3Service().upload_pdf(pdf_bytes, f"vendor-pro-pdpa-snapshot-{current.id}"))
+        except Exception as up_err:
+            logger.error("[VendorProSnapshot] S3 upload failed for %s: %s", email, up_err)
+
+        edition = "Baseline" if previous is None else "Drift"
+        quarter_label = datetime.now(timezone.utc).strftime("%b %Y")
+        body_html = f"""
+        <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
+          <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
+            <h1 style="color:#10b981;margin:0;font-size:20px;">Your Quarterly PDPA Snapshot</h1>
+          </div>
+          <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
+            <p>Hello <strong>{company}</strong>,</p>
+            <p>Your Vendor Pro <strong>Quarterly PDPA Snapshot with drift</strong> is
+               <strong>attached to this email as a PDF</strong>. It compares your latest PDPA scan
+               against the previous one and flags any dimensions that moved.</p>
+            <p style="color:#64748b;font-size:12px;">Vendor Pro — quarterly PDPA drift tracking · booppa.io</p>
+          </div>
+        </body></html>"""
+        _safe_company = (company or "vendor").replace("/", "-").replace(" ", "-")
+        sent = asyncio.run(EmailService().send_html_email(
+            to_email=email,
+            subject=f"Your Quarterly PDPA Snapshot — {quarter_label}",
+            body_html=body_html,
+            attachments=[(f"PDPA-Snapshot-{_safe_company}-{quarter_label}.pdf", pdf_bytes)],
+        ))
+        if not sent:
+            logger.error("[VendorProSnapshot] delivery email rejected for %s", email)
+        else:
+            logger.info("[VendorProSnapshot] Delivered %s edition to %s (flips=%d)",
+                        edition, email, len(dimension_flips))
+    except Exception as exc:
+        logger.error("[VendorProSnapshot] Failed for %s: %s", vendor_id, exc)
         raise self.retry(exc=exc, countdown=300)
     finally:
         db.close()
@@ -5305,7 +5468,7 @@ def run_vendor_pro_activation_for_user(self, user_id: str, override_website: str
 
 
 @celery_app.task(bind=True, max_retries=2, name="run_suite_trm_baseline_for_user")
-def run_suite_trm_baseline_for_user(self, user_id: str):
+def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | None = None):
     """Generate the MAS TRM Baseline Assessment PDF for a new suite subscriber.
 
     Standard/Pro Suite activation seeds 13 TRM control domains; this turns that
@@ -5359,7 +5522,15 @@ def run_suite_trm_baseline_for_user(self, user_id: str):
             controls = [{"domain": d, "control_ref": f"TRM-{i}", "status": "not_started"}
                         for i, d in enumerate(MAS_TRM_DOMAINS, 1)]
 
-        company_name = (getattr(user, "company", "") or "").strip() or "Your Organisation"
+        # Assessed entity is the CUSTOMER. Prefer the test-harness override (so the
+        # admin test-checkout never stamps the real account's company, e.g. "Booppa",
+        # onto a customer's MAS document), then the user's company. Never fall back to
+        # the Booppa platform name — use a neutral placeholder if truly unknown.
+        company_name = (
+            (override_company or "").strip()
+            or (getattr(user, "company", "") or "").strip()
+            or "Your Organisation"
+        )
 
         # Configuration & provisioning evidence — tangible proof of what the
         # subscription unlocked (audit: suites showed "zero evidence of active
@@ -5436,6 +5607,165 @@ def run_suite_trm_baseline_for_user(self, user_id: str):
             db.close()
 
 
+@celery_app.task(bind=True, max_retries=2, name="fulfill_evidence_pack_task")
+def fulfill_evidence_pack_task(self, evidence_pack_id: str):
+    """Generate + deliver the BCEP PDPA Compliance Evidence Pack (7 documents).
+
+    Runs after the buyer submits the structured intake. Pipeline: generate 7 docs
+    via DeepSeek → anchor each hash + a master hash on the existing chain (Amoy
+    testnet) → build branded DRAFT PDFs → upload to S3 → email the buyer the pack
+    with per-document download links and the client-verification one-pager. The
+    EvidencePack row is updated through each stage so the result page can poll it.
+    """
+    import hashlib
+    from datetime import datetime as _dt, timezone as _tz
+    from app.core.models import User
+    from app.core.models_v13 import EvidencePack
+    from app.services.evidence_pack import generate_evidence_pack, build_single_pdf, DOC_META
+    from app.services.storage import S3Service
+    from app.services.blockchain import BlockchainService
+
+    explorer = (getattr(settings, "POLYGON_EXPLORER_URL", "") or "https://amoy.polygonscan.com").rstrip("/")
+    db = SessionLocal()
+    try:
+        row = db.query(EvidencePack).filter(EvidencePack.id == evidence_pack_id).first()
+        if not row:
+            logger.warning("[EvidencePack] row not found: %s", evidence_pack_id)
+            return
+        intake = row.intake if isinstance(row.intake, dict) else {}
+        if not intake.get("org_name"):
+            logger.warning("[EvidencePack] %s has no intake — cannot generate", evidence_pack_id)
+            row.status = "error"; row.error = "Missing intake"; db.commit()
+            return
+
+        # 1. Generate the 7 documents.
+        row.status = "generating"; db.commit()
+        pack = generate_evidence_pack(intake)
+        if pack.get("errors"):
+            logger.warning("[EvidencePack] %s generation errors: %s", evidence_pack_id, pack["errors"])
+
+        # 2. Anchor each document hash + the master hash (Amoy testnet, best-effort).
+        row.status = "anchoring"; db.commit()
+        anchoring: dict = {}
+
+        async def _anchor_all():
+            bsvc = BlockchainService()
+            for dt, h in (pack.get("hashes") or {}).items():
+                try:
+                    tx = await bsvc.anchor_evidence(h, metadata=f"evidence_pack:{dt}:{pack['pack_id']}")
+                    if tx:
+                        anchoring[dt] = {
+                            "tx_hash": tx,
+                            "verification_url": f"{explorer}/tx/{tx}",
+                            "anchor_time_utc": _dt.now(_tz.utc).isoformat(),
+                        }
+                except Exception as ae:
+                    logger.warning("[EvidencePack] anchor failed for %s: %s", dt, ae)
+            try:
+                mtx = await bsvc.anchor_evidence(pack["master_hash"], metadata=f"evidence_pack:MASTER:{pack['pack_id']}")
+                if mtx:
+                    anchoring["master"] = {
+                        "tx_hash": mtx,
+                        "verification_url": f"{explorer}/tx/{mtx}",
+                        "anchor_time_utc": _dt.now(_tz.utc).isoformat(),
+                    }
+            except Exception as me:
+                logger.warning("[EvidencePack] master anchor failed: %s", me)
+
+        try:
+            asyncio.run(_anchor_all())
+        except Exception as anchor_err:
+            logger.warning("[EvidencePack] anchoring stage error: %s", anchor_err)
+        pack["anchoring"] = anchoring
+
+        # 3. Build PDFs + upload to S3.
+        row.status = "building_pdfs"; db.commit()
+        download_urls: dict = {}
+        for dt in DOC_META:
+            if dt not in pack.get("documents", {}):
+                continue
+            try:
+                pdf_bytes = build_single_pdf(pack, dt, "")  # falsy path → returns bytes
+                url = asyncio.run(S3Service().upload_pdf(pdf_bytes, f"evidence-pack-{pack['pack_id']}-{dt}"))
+                if url:
+                    download_urls[dt] = url
+            except Exception as pe:
+                logger.error("[EvidencePack] PDF/upload failed for %s: %s", dt, pe)
+
+        # 4. Persist the finished pack.
+        row.documents = pack.get("documents")
+        row.hashes = pack.get("hashes")
+        row.master_hash = pack.get("master_hash")
+        row.anchoring = anchoring
+        row.download_urls = download_urls
+        row.status = "ready"
+        db.commit()
+
+        # 4b. Cache by session so the result page can fetch it (mirrors RFP).
+        if row.session_id and download_urls:
+            try:
+                from app.core.cache import cache as cache_mod
+                cache_mod.set(
+                    cache_mod.cache_key(f"evidence_pack_result:{row.session_id}"),
+                    {
+                        "pack_id": pack["pack_id"],
+                        "organisation": pack["organisation"],
+                        "download_urls": download_urls,
+                        "master_hash": pack.get("master_hash"),
+                        "master_tx": (anchoring.get("master") or {}).get("tx_hash"),
+                    },
+                    ttl=604800,
+                )
+            except Exception as ce:
+                logger.warning("[EvidencePack] result cache failed: %s", ce)
+
+        # 5. Email the buyer the pack.
+        buyer = db.query(User).filter(User.id == row.user_id).first()
+        to_email = buyer.email if buyer else None
+        if to_email and download_urls:
+            links = "".join(
+                f'<li style="margin:6px 0;"><a href="{u}" style="color:#10b981;">'
+                f'{DOC_META.get(dt, {}).get("title", dt)}</a></li>'
+                for dt, u in download_urls.items()
+            )
+            body_html = f"""
+            <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:620px;margin:0 auto;">
+              <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
+                <h1 style="color:#10b981;margin:0;font-size:20px;">Your PDPA Compliance Evidence Pack is ready</h1>
+              </div>
+              <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
+                <p>Hello <strong>{pack['organisation']}</strong>,</p>
+                <p>Your Evidence Pack of seven PDPA governance documents has been generated and
+                   anchored. Each document is an <strong>AI-generated DRAFT</strong> — your
+                   authorised representative must review, correct, and sign it before it carries
+                   evidentiary value.</p>
+                <ul style="font-size:14px;padding-left:20px;">{links}</ul>
+                <p style="color:#64748b;font-size:12px;">Anchored on the Polygon Amoy testnet for
+                   tamper-checking. A testnet timestamp evidences existence; it is not a mainnet or
+                   RFC 3161 timestamp. Not legal advice; does not certify PDPA compliance.</p>
+              </div>
+            </body></html>"""
+            sent = asyncio.run(EmailService().send_html_email(
+                to_email=to_email,
+                subject="Your PDPA Compliance Evidence Pack (7 documents)",
+                body_html=body_html,
+            ))
+            if not sent:
+                logger.error("[EvidencePack] delivery email rejected for %s", to_email)
+        logger.info("[EvidencePack] %s ready — %d docs delivered", evidence_pack_id, len(download_urls))
+    except Exception as exc:
+        logger.error("[EvidencePack] Failed for %s: %s", evidence_pack_id, exc)
+        try:
+            row = db.query(EvidencePack).filter(EvidencePack.id == evidence_pack_id).first()
+            if row:
+                row.status = "error"; row.error = str(exc)[:1000]; db.commit()
+        except Exception:
+            pass
+        raise self.retry(exc=exc, countdown=300)
+    finally:
+        db.close()
+
+
 @celery_app.task(bind=True, max_retries=2, name="run_compliance_evidence_cycle_for_user")
 def run_compliance_evidence_cycle_for_user(self, user_id: str, test_simulation: bool = False, override_website: str | None = None, override_company: str | None = None):
     """Per-user wrapper: Compliance Evidence bundle regen for a single user.
@@ -5451,17 +5781,13 @@ def run_compliance_evidence_cycle_for_user(self, user_id: str, test_simulation: 
             logger.warning("[CEFirstCycle] no user/email for id=%s", user_id)
             return
         website = (override_website or "").strip() or (getattr(user, "website", "") or "").strip()
-        if not website:
-            logger.warning(
-                "[CEFirstCycle] %s has no website — initial bundle deferred until profile update",
-                user.email,
-            )
-            return
-        # Reset cycle state same as the monthly refresh does
-        user.signed_cover_sheet_uploaded = False
-        user.compliance_evidence_credits = 1
-        user.pending_cover_sheet = True
-        db.commit()
+        # CE now produces the BCEP evidence pack, which is driven by a structured
+        # intake (not a website scan), so a missing website no longer blocks the
+        # cycle — the buyer supplies the domain in the intake form. The legacy
+        # cover-sheet flags (pending_cover_sheet / compliance_evidence_credits /
+        # signed_cover_sheet_uploaded) are intentionally NOT set: the cover-sheet
+        # flow is retired for CE and setting pending_cover_sheet=True would make
+        # the hourly sweep try to fire a cover sheet that no longer exists.
         fulfill_bundle_task.delay(
             product_type="compliance_evidence_pack",
             session_id=None,

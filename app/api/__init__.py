@@ -66,6 +66,8 @@ router.include_router(
 )
 # Deferred RFP intake for bundle buyers (rfp_accelerator / enterprise_bid_kit / compliance_evidence_pack)
 router.include_router(rfp_intake_router, prefix="/rfp-intake", tags=["rfp-intake"])
+from .evidence_pack_intake import router as evidence_pack_intake_router
+router.include_router(evidence_pack_intake_router, prefix="/evidence-pack-intake", tags=["evidence-pack-intake"])
 # V10 — Marketplace & Vendor Directory
 router.include_router(marketplace_router, prefix="/marketplace", tags=["marketplace"])
 # V10 — Feature Flags
@@ -113,6 +115,15 @@ router.include_router(
     vendor_pro_router,
     prefix="/vendor-pro",
     tags=["vendor-pro"],
+)
+# Verifiable offline artefacts — exportable PDFs (badge, priority placement,
+# competitor signals, bid timing) for features that were dashboard-only.
+from .vendor_artifacts import router as vendor_artifacts_router
+
+router.include_router(
+    vendor_artifacts_router,
+    prefix="/vendor-artifacts",
+    tags=["vendor-artifacts"],
 )
 # PDPA Free Scan
 from .pdpa_free_scan import router as pdpa_free_scan_router
