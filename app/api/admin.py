@@ -732,6 +732,11 @@ DEFAULT_QA_RFP_BRIEF = (
 )
 
 
+# Bundle SKUs intentionally removed from the admin test-checkout. They still work
+# for real purchases; the test tool just no longer exercises them.
+_TEST_CHECKOUT_DENYLIST = {"rfp_accelerator", "enterprise_bid_kit"}
+
+
 class SimulatePurchaseRequest(BaseModel):
     product_type: str = Field(..., description="A product_type from MODE_MAP")
     customer_email: str = Field(..., description="Test email — receives real fulfillment mail")
@@ -770,6 +775,13 @@ async def simulate_purchase(
         raise HTTPException(
             status_code=422,
             detail=f"Unknown product_type — must be one of {sorted(MODE_MAP.keys())}",
+        )
+    # These bundle SKUs are retired from the test-checkout (they remain live for
+    # real purchases). Reject so the tool stays consistent with the catalog UI.
+    if product_type in _TEST_CHECKOUT_DENYLIST:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{product_type} is disabled in test checkout.",
         )
 
     customer_email = body.customer_email.strip().lower()
@@ -881,6 +893,21 @@ async def simulate_purchase(
                 "stub_report_ids": [str(s.id) for s in stubs],
                 "pending_rfp_intake_id": str(pending.id) if pending else None,
             }
+            # Compliance Evidence Pack now produces a BCEP EvidencePack (not stubs/
+            # cover sheet) — surface its id so the test-checkout can link to the
+            # generated pack at /evidence-pack-intake/{id}.
+            if product_type == "compliance_evidence_pack":
+                from app.core.models_v13 import EvidencePack
+
+                ep = (
+                    db.query(EvidencePack)
+                    .filter(EvidencePack.session_id == sim_id)
+                    .order_by(EvidencePack.created_at.desc())
+                    .first()
+                )
+                if ep:
+                    details["evidence_pack_id"] = str(ep.id)
+                    details["pack_id"] = ep.pack_id
         finally:
             db.close()
 
