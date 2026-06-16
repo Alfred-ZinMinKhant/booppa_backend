@@ -199,3 +199,42 @@ def test_evidence_pack_pdf_has_no_fabricated_uen_and_honest_testnet(monkeypatch)
     assert pdf[:4] == b"%PDF"
     assert b"202415732W" not in pdf          # fabricated Booppa UEN never printed
     assert b"Chain ID 137" not in pdf        # no mainnet claim
+
+
+# ── Follow-up: artefact builders (shared by endpoints + email) ──────────────
+
+def test_vendor_artifact_builders_render(test_db):
+    from app.core.models import User
+    from app.services import vendor_artifacts_builder as vab
+
+    u = User(email="artefacts@test.io", hashed_password="x", company="Crayon Singapore",
+             role="VENDOR", is_active=True)
+    test_db.add(u)
+    test_db.commit()
+    test_db.refresh(u)
+
+    for builder in (vab.build_badge_certificate, vab.build_priority_placement, vab.build_bid_timing):
+        fn, pdf = builder(test_db, u)
+        assert fn.endswith('.pdf')
+        assert pdf[:4] == b'%PDF'
+
+    # company_override flows through (test-harness identity).
+    fn, pdf = vab.build_badge_certificate(test_db, u, company_override="Funding Societies Pte Ltd")
+    assert pdf[:4] == b'%PDF'
+
+
+# ── Follow-up: admin test-checkout denylist ─────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_test_checkout_denylist_rejects_retired_bundles():
+    from fastapi import HTTPException
+    from app.api.admin import simulate_purchase, SimulatePurchaseRequest
+
+    for pt in ("rfp_accelerator", "enterprise_bid_kit"):
+        with pytest.raises(HTTPException) as exc:
+            await simulate_purchase(
+                SimulatePurchaseRequest(product_type=pt, customer_email="qa@test.io"),
+                _auth=True,
+            )
+        assert exc.value.status_code == 422
+        assert "disabled in test checkout" in str(exc.value.detail)

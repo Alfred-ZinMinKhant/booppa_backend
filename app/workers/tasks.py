@@ -2740,6 +2740,7 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
         plan = (getattr(user, "plan", "") or "")
         plan_label = "Vendor Pro" if plan == "vendor_pro" else "Vendor Active"
         snapshot_url = None
+        snapshot_pdf = None
         try:
             from app.services.vendor_snapshot_generator import generate_vendor_snapshot_pdf
             from app.services.storage import S3Service
@@ -2852,6 +2853,35 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
             {scan_line}
             """
 
+        # 2f. Offline evidence artefacts — attach the exportable PDFs directly to
+        # the digest (audit: vendors need these in the inbox, not only on the
+        # dashboard). Badge Certificate + Priority Placement + Bid-Timing are
+        # generic; Competitor Activity needs a specific tender number so it stays
+        # on-demand (dashboard + endpoint). Each is best-effort — one failure
+        # must never block the email. Reuses the same builders as the endpoints.
+        digest_attachments: list[tuple[str, bytes]] = []
+        if user:
+            from app.services import vendor_artifacts_builder as _vab
+            for _builder in (_vab.build_badge_certificate, _vab.build_priority_placement, _vab.build_bid_timing):
+                try:
+                    fn, pdf_bytes = _builder(db, user, company_override=override_company)
+                    if pdf_bytes:
+                        digest_attachments.append((fn, pdf_bytes))
+                except Exception as art_err:
+                    logger.warning("[VendorDigest] artefact %s failed for %s: %s", getattr(_builder, "__name__", "?"), vendor_id, art_err)
+            # Attach the status snapshot too (was link-only) when it was generated.
+            if snapshot_pdf:
+                digest_attachments.append((f"BOOPPA-Status-Snapshot-{vendor_id}.pdf", snapshot_pdf))
+
+        attachments_note = (
+            '<p style="font-size:13px;color:#334155;margin:16px 0 0;">📎 <strong>Attached to this email:</strong> '
+            'your offline evidence PDFs — Badge Certificate, Priority Placement Report, and Bid-Timing Report. '
+            'File them, forward them, or attach them to a tender. '
+            '<a href="https://www.booppa.io/vendor/dashboard" style="color:#10b981;">Competitor Activity reports</a> '
+            'are available on demand from your dashboard.</p>'
+            if digest_attachments else ""
+        )
+
         # 3. Single consolidated digest / welcome email
         if is_first_cycle:
             subject = f"Welcome to {plan_label} — here's everything included"
@@ -2880,6 +2910,7 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
                   <p style="margin:4px 0;"><strong>Profile Views (30d):</strong> {profile_views}</p>
                 </div>
                 {snapshot_cta}
+                {attachments_note}
                 {pro_note}
                 {gebiz_section}
                 {features_section}
@@ -2896,6 +2927,7 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
               </div>
             </body></html>
             """,
+            attachments=digest_attachments or None,
         ))
         logger.info(f"Vendor digest ({plan_label}, first_cycle={is_first_cycle}) sent for vendor {vendor_id}")
     except Exception as exc:
