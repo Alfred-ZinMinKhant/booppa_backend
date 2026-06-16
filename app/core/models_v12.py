@@ -63,6 +63,11 @@ class PendingRfpIntake(Base):
     bundle_source = Column(String(64), nullable=False)     # rfp_accelerator / enterprise_bid_kit / compliance_evidence_pack
     vendor_url = Column(String(500), nullable=True)
     company_name = Column(String(255), nullable=True)
+    # Singapore UEN (Business Registration No.) — collected at intake and required
+    # before generation; the field GeBIZ procurement officers check first.
+    uen = Column(String(50), nullable=True)
+    # status: pending → submitted (queued) ; needs_more_info when a generated kit
+    # was blocked at the placeholder gate and the buyer must complete missing facts.
     status = Column(String(20), nullable=False, default="pending", server_default="pending")
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     submitted_at = Column(DateTime, nullable=True)

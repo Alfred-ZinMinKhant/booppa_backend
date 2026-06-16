@@ -214,11 +214,15 @@ async def test_rfp_complete_builds_pdf_with_15_questions(
 
 
 @pytest.mark.asyncio
-async def test_rfp_express_falls_back_to_template_when_ai_fails(
+async def test_rfp_express_blocks_when_ai_fails_and_template_has_placeholders(
     _rfp_mocks, mocker, s3_bucket, email_capture
 ):
-    """If AI raises, the builder still completes using the canned template
-    answers — the result flags `answer_source: template`."""
+    """Audit hard gate: if AI raises and the canned template fallback still
+    contains [FILL IN] / [Verify:] placeholders (no intake supplied them), the
+    kit is BLOCKED, not delivered — a GeBIZ-bound document must be complete.
+    The builder returns a non-delivering `blocked` result with the missing
+    fields, and never builds/anchors/emails a placeholder-laden kit.
+    """
     async def _ai_boom(self, messages):
         raise RuntimeError("AI provider down")
     from app.services.booppa_ai_service import BooppaAIService
@@ -233,16 +237,15 @@ async def test_rfp_express_falls_back_to_template_when_ai_fails(
     result = await builder.generate_express_package(
         vendor_url="https://acme.test",
         company_name="Acme Pte Ltd",
-        rfp_details={"description": "Test fallback"},
+        rfp_details={"description": "Test fallback"},  # no intake facts → placeholders remain
         db=None,
         product_type="rfp_express",
     )
 
-    assert result["success"] is True
-    assert result["answer_source"] == "template"
-    assert result["qa_answers_count"] == 5
-    # The fallback answers are tagged with a "[Standard template — review …]" prefix
-    assert any(
-        qa["answer"].startswith("[Standard template")
-        for qa in result["qa_answers"]
-    )
+    assert result["success"] is False
+    assert result["blocked"] is True
+    assert result["residual_placeholders"] > 0
+    assert result["missing_fields"]  # the buyer is told exactly what to complete
+    # Nothing was delivered: no download URL, no kit email.
+    assert "download_url" not in result
+    assert not any("RFP Kit" in m["subject"] for m in email_capture)

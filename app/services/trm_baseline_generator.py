@@ -34,7 +34,12 @@ logger = logging.getLogger(__name__)
 #     and baseline gap) + an optional Configuration & Provisioning Status section
 #     (Pro Suite evidence of what's provisioned). Closes the audit gaps "no
 #     initial gap analysis report" and "zero evidence of active configuration".
-TRM_BASELINE_SCHEMA_VERSION = 2
+# v3: assessed entity now rendered as an explicit, unambiguous "Assessed Entity"
+#     line (the CUSTOMER); Booppa demoted to a clear "Prepared by" attribution so
+#     the header can never be read as "Booppa" being the assessed organisation
+#     (audit: baselines were headed "Booppa", not the customer — "unacceptable"
+#     for MAS use).
+TRM_BASELINE_SCHEMA_VERSION = 3
 
 # Per-domain initial gap framework — what each MAS TRM domain requires + its
 # supervisory priority. Used to render a real starting gap analysis on day one
@@ -121,9 +126,14 @@ def generate_trm_baseline_pdf(data: Dict[str, Any]) -> bytes:
     story: list = []
 
     story.append(Paragraph("MAS TRM Baseline Assessment", s["title"]))
-    story.append(Paragraph(_xml_escape(company), s["sub"]))
+    # The assessed entity is ALWAYS the customer — label it explicitly so the
+    # header cannot be mistaken for Booppa (audit fix).
     story.append(Paragraph(
-        f"{_xml_escape(plan_label)} &middot; Generated {gen_at} &middot; {COMPANY_NAME}",
+        f"<b>Assessed Entity:</b> {_xml_escape(company)}", s["sub"]))
+    story.append(Paragraph(
+        f"{_xml_escape(plan_label)} &middot; Generated {gen_at}", s["small"]))
+    story.append(Paragraph(
+        f"Prepared by {_xml_escape(COMPANY_NAME)} on behalf of {_xml_escape(company)}",
         s["small"]))
     story.append(Spacer(1, 10))
 

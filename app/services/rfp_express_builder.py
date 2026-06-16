@@ -172,6 +172,35 @@ class RFPExpressBuilder:
         # audit: supplied facts were still shipping as "[Verify: …]".)
         qa_answers = self._apply_intake_substitutions(qa_answers, intake)
 
+        # 2a-gate. HARD pre-delivery gate (audit fix). An RFP kit that still
+        # contains ANY [Verify:] / [FILL IN] placeholder after intake substitution
+        # is NOT delivered. GeBIZ-bound documents must be complete — a kit with
+        # unfilled verification markers is unusable, and previously it shipped
+        # anyway (forensic audit: 14-15 unfilled [Verify:] delivered, UEN "Not
+        # provided", empty checklist → REJECT). Rather than build / anchor / upload
+        # / email an unusable kit, we return a `blocked` result so the caller routes
+        # the buyer back to the intake form to supply the missing facts, then
+        # regenerates. A fuller intake both feeds the AI prompt (fewer placeholders
+        # generated) and the substitution pass (placeholders filled).
+        residual_placeholders = self._count_residual_placeholders(qa_answers)
+        if residual_placeholders:
+            missing_fields = self._residual_placeholder_details(qa_answers)
+            logger.warning(
+                "[RFP] BLOCKED delivery for %s — %d residual placeholder(s) remain "
+                "(used_template=%s)", company_name, residual_placeholders, self.used_template,
+            )
+            return {
+                "success": False,
+                "blocked": True,
+                "residual_placeholders": residual_placeholders,
+                "used_template": self.used_template,
+                "missing_fields": missing_fields,
+                "qa_answers": qa_answers,
+                "company_name": company_name,
+                "product_type": product_type,
+                "warnings": self.warnings,
+            }
+
         # 2b. Post-AI validation pass — catch AI hallucinations against intake.
         # LLMs over-confidently fill in DPO names, ISO certifications, hosting
         # regions, etc. even when the intake declared otherwise. We surface
@@ -226,41 +255,10 @@ class RFPExpressBuilder:
         # 4c. Write CertificateLog audit row (4.11)
         await self._write_certificate_log(pdf_bytes, download_url, db)
 
-        # 4d. Pre-delivery quality gate — count placeholders the buyer still has
-        # to fill after intake substitution. We deliver regardless (the kit is a
-        # buyer-completable draft), but a kit that is mostly placeholders, or one
-        # that fell back to the canned template, means the AI/intake produced
-        # little of value — alert the team so a human can follow up instead of it
-        # silently shipping an empty-looking document (forensic-audit finding:
-        # 17-25 unfilled placeholders delivered with no flag).
-        residual_placeholders = self._count_residual_placeholders(qa_answers)
-        if residual_placeholders:
-            self.warnings.append(
-                f"{residual_placeholders} field(s) still need the buyer's input "
-                f"([FILL IN] / [Verify: …]) after intake substitution."
-            )
-        _PLACEHOLDER_ALERT_THRESHOLD = 5
-        if self.used_template or residual_placeholders >= _PLACEHOLDER_ALERT_THRESHOLD:
-            try:
-                from app.api.stripe_webhook import _alert_payment_fulfillment_issue
-                await _alert_payment_fulfillment_issue(
-                    reason=(
-                        "RFP kit delivered with low completeness — "
-                        + ("AI fell back to canned template; " if self.used_template else "")
-                        + f"{residual_placeholders} placeholder field(s) remain after intake fill"
-                    ),
-                    product_type=product_type,
-                    customer_email=self.vendor_email,
-                    session_id=self.session_id,
-                    extra={
-                        "residual_placeholders": residual_placeholders,
-                        "used_template": self.used_template,
-                        "company_name": company_name,
-                    },
-                    notify_customer=False,
-                )
-            except Exception as gate_err:
-                logger.warning(f"[RFP] Quality-gate alert failed (non-blocking): {gate_err}")
+        # NOTE: the residual-placeholder check is now a HARD gate executed earlier
+        # (section "2a-gate"): if any [Verify:]/[FILL IN] marker survives intake
+        # substitution the kit is blocked before this point and never reaches
+        # build/anchor/upload/email. By here, qa_answers is placeholder-free.
 
         # 5. Send email
         await self._send_email(company_name, download_url, product_type, docx_url=docx_url)
@@ -1045,6 +1043,26 @@ class RFPExpressBuilder:
             for v in qa_answers.values()
             if isinstance(v, str)
         )
+
+    def _residual_placeholder_details(self, qa_answers: Dict[str, str]) -> list[str]:
+        """Return the distinct surviving placeholder marker strings, in order.
+
+        The marker text itself names the fact the buyer must supply (e.g.
+        "[Verify: ISO 27001 cert number and expiry]"), so it doubles as the
+        guidance shown to the buyer when delivery is blocked and they are routed
+        back to complete the intake.
+        """
+        if not isinstance(qa_answers, dict):
+            return []
+        seen: list[str] = []
+        for v in qa_answers.values():
+            if not isinstance(v, str):
+                continue
+            for marker in self._PLACEHOLDER_RE.findall(v):
+                label = " ".join(marker.split()).strip()
+                if label and label not in seen:
+                    seen.append(label)
+        return seen
 
     async def _anchor_to_blockchain(self) -> Optional[str]:
         try:
