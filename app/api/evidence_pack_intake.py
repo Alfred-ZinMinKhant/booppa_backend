@@ -1,0 +1,147 @@
+"""Evidence Pack intake endpoints for Compliance Evidence Pack buyers.
+
+The `compliance_evidence_pack` SKU now produces the BCEP 7-document governance
+pack, which needs a structured intake (org, sector, DPO, approver, systems, data
+types, cross-border). Generation is deferred until the buyer submits that intake
+— mirroring the RFP deferral pattern: at webhook time an EvidencePack row is
+created with status='intake_pending' and the buyer is emailed a link here.
+
+  GET  /evidence-pack-intake/pending        → buyer's outstanding intakes
+  GET  /evidence-pack-intake/{id}           → one intake (status + prefill)
+  POST /evidence-pack-intake/{id}/submit    → store intake, queue generation
+"""
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Security
+from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.orm import Session
+
+from app.core.auth import verify_access_token
+from app.core.db import get_db
+from app.core.models import User
+from app.core.models_v13 import EvidencePack
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token", auto_error=False)
+
+# Fields the buyer must supply before the 7-document pack can be generated.
+_REQUIRED_INTAKE = ["org_name", "uen", "sector", "employee_count", "approver_name", "approver_role"]
+_REQUIRED_LISTS = ["data_types", "systems"]
+
+
+def _resolve_user(token: str | None, db: Session) -> User:
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    payload = verify_access_token(token)
+    if not payload or not payload.get("sub"):
+        raise HTTPException(status_code=401, detail="Invalid token")
+    user = db.query(User).filter(User.email == payload.get("sub")).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+@router.get("/pending")
+def list_pending(
+    token: str | None = Security(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    user = _resolve_user(token, db)
+    rows = (
+        db.query(EvidencePack)
+        .filter(EvidencePack.user_id == user.id, EvidencePack.status == "intake_pending")
+        .order_by(EvidencePack.created_at.desc())
+        .all()
+    )
+    return {
+        "items": [
+            {
+                "id": str(r.id),
+                "pack_id": r.pack_id,
+                "session_id": r.session_id,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.get("/{pack_row_id}")
+def get_intake(
+    pack_row_id: str,
+    token: str | None = Security(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    user = _resolve_user(token, db)
+    row = (
+        db.query(EvidencePack)
+        .filter(EvidencePack.id == pack_row_id, EvidencePack.user_id == user.id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Evidence pack not found")
+    return {
+        "id": str(row.id),
+        "pack_id": row.pack_id,
+        "status": row.status,
+        "session_id": row.session_id,
+        # Prefill hints from the user profile so the form is fast to complete.
+        "prefill": {
+            "org_name": getattr(user, "company", "") or "",
+            "uen": getattr(user, "uen", "") or "",
+            "domain": getattr(user, "website", "") or "",
+        },
+        "download_urls": row.download_urls or {},
+    }
+
+
+@router.post("/{pack_row_id}/submit")
+def submit_intake(
+    pack_row_id: str,
+    body: dict,
+    token: str | None = Security(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    """Validate + store the structured intake, then queue pack generation.
+
+    Required: org_name, uen, sector, employee_count, approver_name, approver_role,
+    data_types (list), systems (list). Optional: dpo_name, dpo_email, cloud_provider,
+    customer_types, other_markets, it_contact, domain.
+    """
+    user = _resolve_user(token, db)
+    row = (
+        db.query(EvidencePack)
+        .filter(EvidencePack.id == pack_row_id, EvidencePack.user_id == user.id)
+        .with_for_update()
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Evidence pack not found")
+    if row.status not in ("intake_pending", "error"):
+        raise HTTPException(status_code=409, detail="This evidence pack has already been submitted")
+
+    intake = dict(body.get("intake") or body)
+    # Fall back to the profile where the buyer left a field blank.
+    intake.setdefault("org_name", (getattr(user, "company", "") or "").strip())
+    intake.setdefault("uen", (getattr(user, "uen", "") or "").strip())
+    intake.setdefault("domain", (getattr(user, "website", "") or "").strip())
+
+    missing = [f for f in _REQUIRED_INTAKE if not str(intake.get(f) or "").strip()]
+    missing += [f for f in _REQUIRED_LISTS if not isinstance(intake.get(f), list) or not intake.get(f)]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Missing required intake fields: {', '.join(missing)}",
+        )
+
+    row.intake = intake
+    row.organisation = intake.get("org_name")
+    row.status = "queued"
+    db.commit()
+
+    from app.workers.tasks import fulfill_evidence_pack_task
+    fulfill_evidence_pack_task.delay(str(row.id))
+
+    return {"status": "queued", "id": str(row.id), "session_id": row.session_id}
