@@ -759,8 +759,11 @@ async def checkout_verify(session_id: str | None = None):
                                 .order_by(PendingRfpIntake.created_at.desc())
                                 .first()
                             )
-                            if session_intake and session_intake.status == "pending":
+                            if session_intake and session_intake.status in ("pending", "needs_more_info"):
                                 # Brief still owed for THIS purchase — show CTA.
+                                # "needs_more_info" = a generated kit was blocked at
+                                # the placeholder gate and the buyer must complete the
+                                # missing facts before we regenerate.
                                 pending_rfp_intake_id = str(session_intake.id)
                                 brief_satisfied = False
                                 # Backfill requires_brief so frontend logic is consistent

@@ -146,7 +146,9 @@ def submit_intake(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Intake not found")
-    if row.status != "pending":
+    # "needs_more_info" means a prior submission was blocked at the placeholder
+    # gate and the buyer is completing the missing facts — allow resubmission.
+    if row.status not in ("pending", "needs_more_info"):
         raise HTTPException(status_code=409, detail="This RFP has already been submitted")
 
     rfp_description = (body.get("rfp_description") or "").strip()
@@ -177,10 +179,29 @@ def submit_intake(
     if not company_name:
         raise HTTPException(status_code=422, detail="company_name is required.")
 
+    # UEN is mandatory before generation (audit fix): it is the field GeBIZ
+    # procurement officers check first, and kits previously shipped with UEN
+    # "Not provided". Accept it from the intake_data, the body, the row, or the
+    # user profile — but refuse if we still have nothing.
+    uen = (
+        ((intake_data or {}).get("uen") or "").strip()
+        or (body.get("uen") or "").strip()
+        or (getattr(row, "uen", "") or "")
+        or (getattr(user, "uen", "") or "")
+    ).strip()
+    if not uen:
+        raise HTTPException(
+            status_code=422,
+            detail="uen is required — your Singapore UEN (Business Registration No.) must appear on a GeBIZ-ready RFP Kit.",
+        )
+    # Ensure the UEN reaches the builder via intake_data (it reads intake['uen']).
+    intake_data = {**(intake_data or {}), "uen": uen}
+
     # Persist on the row so the worker reads the latest values (the row's
     # original fields may be stale if the buyer changed them in the form).
     row.vendor_url = vendor_url
     row.company_name = company_name
+    row.uen = uen
     row.status = "submitted"
     row.submitted_at = datetime.utcnow()
     db.commit()
