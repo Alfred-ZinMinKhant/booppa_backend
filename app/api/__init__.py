@@ -39,6 +39,8 @@ from .vendor_features import router as vendor_features_router
 # v17 Hardened — Legal consent endpoint
 from .legal_consent import router as legal_consent_router
 from .rfp_intake import router as rfp_intake_router
+from .ropa_intake import router as ropa_intake_router
+from .pdpa_declaration_intake import router as pdpa_declaration_intake_router
 
 router = APIRouter()
 
@@ -66,6 +68,10 @@ router.include_router(
 )
 # Deferred RFP intake for bundle buyers (rfp_accelerator / enterprise_bid_kit / compliance_evidence_pack)
 router.include_router(rfp_intake_router, prefix="/rfp-intake", tags=["rfp-intake"])
+# Sprint 5 — ROPA Lite intake (compliance_evidence_pack PDPC Level 2)
+router.include_router(ropa_intake_router, prefix="/ropa", tags=["ropa"])
+# §7 — PDPA Level-2 self-declaration intake
+router.include_router(pdpa_declaration_intake_router, prefix="/pdpa-declaration", tags=["pdpa-declaration"])
 from .evidence_pack_intake import router as evidence_pack_intake_router
 router.include_router(evidence_pack_intake_router, prefix="/evidence-pack-intake", tags=["evidence-pack-intake"])
 # V10 — Marketplace & Vendor Directory

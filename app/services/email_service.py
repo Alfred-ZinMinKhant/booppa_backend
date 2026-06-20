@@ -188,3 +188,69 @@ class EmailService:
         return await self.send_html_email(
             to_email, f"BOOPPA Audit Report Ready - {report_id}", body_html
         )
+
+    async def send_monitor_report_email(
+        self,
+        to_email: str,
+        company_name: str,
+        month_label: str,
+        body_html: str,
+        pdf_s3_key: str | None = None,
+        report_url: str | None = None,
+    ) -> bool:
+        """
+        Send the PDPA Monitor monthly report email with the PDF attached.
+
+        PDF is fetched from S3 using pdf_s3_key (preferred) and attached
+        directly to the email. Falls back to link-only if S3 fetch fails.
+        """
+        from datetime import datetime
+
+        attachments: list[Attachment] = []
+        if pdf_s3_key:
+            try:
+                from app.services.storage import S3Service
+
+                s3 = S3Service()
+                pdf_bytes = s3.s3_client.get_object(
+                    Bucket=s3.bucket, Key=pdf_s3_key
+                )["Body"].read()
+                filename = f"PDPA_Monitor_Report_{datetime.now().strftime('%Y%m%d')}.pdf"
+                attachments = [(filename, pdf_bytes)]
+                logger.info(
+                    "[MonitorReport] Attaching PDF (%d bytes) to email for %s",
+                    len(pdf_bytes), to_email,
+                )
+            except Exception as e:
+                # Non-fatal: degrade gracefully to link-only email
+                logger.warning(
+                    "[MonitorReport] Could not fetch PDF from S3 key=%s: %s. "
+                    "Sending link-only email.", pdf_s3_key, e,
+                )
+                attachments = []
+
+        return await self.send_html_email(
+            to_email=to_email,
+            subject=f"Your PDPA Monitor Report — {month_label}",
+            body_html=body_html,
+            attachments=attachments or None,
+        )
+
+    async def send_with_pdf_attachment(
+        self,
+        to_email: str,
+        subject: str,
+        body_html: str,
+        pdf_bytes: bytes,
+        filename: str,
+    ) -> bool:
+        """
+        Generic helper: send an email with a PDF attached directly from bytes.
+        Avoids an S3 round-trip when the caller already has the PDF in memory.
+        """
+        return await self.send_html_email(
+            to_email=to_email,
+            subject=subject,
+            body_html=body_html,
+            attachments=[(filename, pdf_bytes)],
+        )

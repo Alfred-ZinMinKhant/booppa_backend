@@ -2085,7 +2085,7 @@ def fulfill_cover_sheet_task(
         rfp_tx_hash: str | None = None
         signed_cs_tx: str | None = None
         signed_cs_hash: str | None = None
-        explorer_base = settings.POLYGON_EXPLORER_URL.rstrip("/")
+        explorer_base = settings.active_polygon_explorer_url.rstrip("/")
         pdpa_details: dict = {}
         rfp_details: dict = {}
         db = SessionLocal()
@@ -2095,6 +2095,125 @@ def fulfill_cover_sheet_task(
                 if customer_email else None
             )
             if user:
+                # ── ROPA Lite generation + anchoring (idempotent) ──────────
+                # Generate + anchor the buyer's ROPA Lite BEFORE the
+                # CYCLE_FRAMEWORKS query below runs, so the new ropa_lite Report
+                # row is picked up as the bundle's 4th anchored document with no
+                # changes to that query's logic. No-op if the buyer hasn't
+                # submitted any ROPA rows, or if a ropa_lite Report already
+                # exists (idempotent across retries).
+                from app.core.ropa_models import RopaActivities
+                existing_ropa_report = (
+                    db.query(Report)
+                    .filter(
+                        Report.owner_id == user.id,
+                        Report.framework == "ropa_lite",
+                        Report.tx_hash.isnot(None),
+                    )
+                    .first()
+                )
+                if not existing_ropa_report:
+                    ropa_rows = (
+                        db.query(RopaActivities)
+                        .filter(
+                            RopaActivities.user_id == user.id,
+                            RopaActivities.status == "submitted",
+                        )
+                        .all()
+                    )
+                    if ropa_rows:
+                        try:
+                            from app.services.ropa_generator import generate_ropa_lite_pdf
+
+                            ropa_dicts = [{
+                                "processing_purpose": r.processing_purpose,
+                                "data_categories": r.data_categories,
+                                "data_subjects": r.data_subjects,
+                                "retention_period": r.retention_period,
+                                "cross_border_transfer": r.cross_border_transfer,
+                                "legal_basis": r.legal_basis,
+                            } for r in ropa_rows]
+
+                            ropa_uen = getattr(user, "uen", None) or "Not provided"
+                            # DPO name/email live on the most recent rfp_complete
+                            # Report's assessment_data["intake_data"] (collected at
+                            # RFP intake), not on the User model. Independent of
+                            # ROPA's own intake — ROPA may be submitted before RFP.
+                            rfp_report_for_dpo = (
+                                db.query(Report)
+                                .filter(
+                                    Report.owner_id == user.id,
+                                    Report.framework == "rfp_complete",
+                                )
+                                .order_by(Report.created_at.desc())
+                                .first()
+                            )
+                            rfp_ad_for_dpo = (
+                                rfp_report_for_dpo.assessment_data
+                                if rfp_report_for_dpo and isinstance(rfp_report_for_dpo.assessment_data, dict)
+                                else {}
+                            )
+                            rfp_intake_for_dpo = rfp_ad_for_dpo.get("intake_data") or {}
+
+                            ropa_pdf_bytes = generate_ropa_lite_pdf(
+                                company_name=company_name or "Your Organisation",
+                                uen=ropa_uen,
+                                rows=ropa_dicts,
+                                dpo_name=rfp_intake_for_dpo.get("dpo_name"),
+                                dpo_email=rfp_intake_for_dpo.get("dpo_email"),
+                            )
+                            ropa_file_hash = hashlib.sha256(ropa_pdf_bytes).hexdigest()
+
+                            ropa_s3 = S3Service()
+                            ropa_report_id = f"ropa-lite-{user.id}"
+                            ropa_s3_key = f"ropa/{ropa_report_id}.pdf"
+                            ropa_s3.s3_client.put_object(
+                                Bucket=ropa_s3.bucket, Key=ropa_s3_key,
+                                Body=ropa_pdf_bytes, ContentType="application/pdf",
+                            )
+
+                            from app.services.blockchain import BlockchainService
+                            ropa_tx_hash = asyncio.run(
+                                BlockchainService().anchor_evidence(
+                                    ropa_file_hash, metadata=f"ropa_lite:{ropa_report_id}",
+                                )
+                            )
+
+                            ropa_report = Report(
+                                owner_id=user.id,
+                                framework="ropa_lite",
+                                company_name=company_name or "Your Organisation",
+                                status="completed",
+                                tx_hash=ropa_tx_hash,
+                                audit_hash=ropa_file_hash,
+                                completed_at=datetime.now(timezone.utc),
+                                assessment_data={
+                                    "file_hash": ropa_file_hash,
+                                    "s3_key": ropa_s3_key,
+                                    "row_count": len(ropa_dicts),
+                                    "original_filename": f"ROPA_Lite_{user.id}.pdf",
+                                    "blockchain_anchored_at": datetime.now(timezone.utc).isoformat(),
+                                },
+                            )
+                            db.add(ropa_report)
+                            db.commit()
+                            logger.info(
+                                "[ROPA] Generated + anchored for %s (rows=%d, tx=%s)",
+                                customer_email, len(ropa_dicts),
+                                (ropa_tx_hash[:10] + "…") if ropa_tx_hash else "none",
+                            )
+                        except Exception as ropa_err:
+                            # Non-fatal: deliver PDPA + RFP + Cover Sheet without
+                            # ROPA rather than failing the whole cycle. Logged
+                            # loudly — a missing ROPA on a paid bundle is a real
+                            # gap to investigate, not something to swallow.
+                            logger.error(
+                                "[ROPA] Generation/anchoring FAILED for %s: %s. "
+                                "Bundle delivered WITHOUT ROPA — investigate and re-trigger.",
+                                customer_email, ropa_err,
+                            )
+                            db.rollback()
+
                 # Anchored Compliance Documents is scoped to THIS cycle's
                 # bundle artifacts only — PDPA scan PDF, RFP kit PDF, the
                 # Cover Sheet itself (referenced below as the current report),
@@ -2112,6 +2231,7 @@ def fulfill_cover_sheet_task(
                     "pdpa_quick_scan",
                     "rfp_complete",
                     "compliance_evidence_signed_sheet",
+                    "ropa_lite",
                 )
                 cycle_rows = (
                     db.query(Report)
@@ -2130,6 +2250,7 @@ def fulfill_cover_sheet_task(
                     "pdpa_quick_scan": "PDPA Quick Scan Report",
                     "rfp_complete": "RFP Complete Kit",
                     "compliance_evidence_signed_sheet": "Signed Cover Sheet",
+                    "ropa_lite": "Record of Processing Activities (ROPA Lite)",
                 }
                 for r in cycle_rows:
                     if r.framework in seen_frameworks:
@@ -2466,7 +2587,7 @@ def fulfill_cover_sheet_task(
             "notarization_count": len(anchored_documents),
             "anchored_documents": anchored_documents,
             "tx_hash": "—",
-            "network": settings.POLYGON_NETWORK_NAME,
+            "network": settings.active_polygon_network_name,
             "recommendations": recommendations,
             "trm_domains": [],
         }
@@ -2591,7 +2712,7 @@ def fulfill_cover_sheet_task(
                 return
 
             email_svc = EmailService()
-            explorer = settings.POLYGON_EXPLORER_URL.rstrip("/")
+            explorer = settings.active_polygon_explorer_url.rstrip("/")
 
             def _tx_link(label: str, tx: str | None) -> str:
                 if not tx or tx == "—":
@@ -2632,7 +2753,7 @@ def fulfill_cover_sheet_task(
                         f"<div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;'>"
                         f"<h2 style='color:#0f172a;'>Compliance Evidence Pack — complete</h2>"
                         f"<p style='color:#334155;'>Your signed Cover Sheet is anchored on "
-                        f"{settings.POLYGON_NETWORK_NAME}. Download the regenerated cover sheet — "
+                        f"{settings.active_polygon_network_name}. Download the regenerated cover sheet — "
                         f"Section 5 now lists every blockchain anchor below.</p>"
                         f"<p><a href='{email_download_url}' style='background:#10b981;color:#fff;padding:12px 24px;"
                         f"text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;'>"
@@ -2658,7 +2779,7 @@ def fulfill_cover_sheet_task(
                         f"<div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;'>"
                         f"<h2 style='color:#0f172a;'>Cover Sheet ready — final step inside</h2>"
                         f"<p style='color:#334155;'>Your PDPA Snapshot and RFP Complete kit are anchored on "
-                        f"{settings.POLYGON_NETWORK_NAME}. The 9-section regulator-ready Cover Sheet below "
+                        f"{settings.active_polygon_network_name}. The 9-section regulator-ready Cover Sheet below "
                         f"summarises both and is itself anchored on-chain.</p>"
                         f"<p><a href='{email_download_url}' style='background:#10b981;color:#fff;padding:12px 24px;"
                         f"text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;'>"
@@ -4877,6 +4998,43 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
             )
         subscribers = sub_query.all()
 
+        # ── BID/WATCH/PASS — Block A (once per run) ──────────────────────────
+        # Fetch the live open tenders ONCE. Identical for every recipient, so it
+        # must NOT be re-fetched inside the subscriber loop. The per-subscriber
+        # classification (Block B) happens inside the loop, because each vendor's
+        # sector + history differs.
+        from app.core.models_gebiz import GebizTender
+        from app.core.models_v6 import VendorSector
+        from app.services.tender_service_bid_classifier import (
+            build_vendor_history,
+            enrich_tender_digest_with_classifications,
+            bid_label_to_html_badge,
+        )
+
+        _live_tenders = (
+            db.query(GebizTender)
+            .filter(
+                GebizTender.status == "Open",
+                GebizTender.closing_date >= datetime.now(timezone.utc),
+            )
+            .order_by(GebizTender.closing_date.asc())
+            .limit(10)
+            .all()
+        )
+        _live_tender_dicts = [
+            {
+                "tender_no": t.tender_no,
+                "title": t.title,
+                "agency": t.agency,
+                "closing_date": t.closing_date,
+                "estimated_value": t.estimated_value,
+                "sector": getattr(t, "sector", None),
+                "status": t.status,
+                "url": t.url,
+            }
+            for t in _live_tenders
+        ]
+
         if not subscribers:
             logger.info(
                 "[TenderIntelDigest] No matching subscribers (target=%s) — skipping send",
@@ -4890,6 +5048,59 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
         for sub in subscribers:
             try:
                 subject = f"Tender Intelligence — {len(rows)} GeBIZ awards ({period_label})"
+
+                # ── BID/WATCH/PASS — Block B (per subscriber) ────────────────
+                # THIS subscriber's sector + history. Must stay inside the loop —
+                # hoisting it out is the v1 cross-contamination bug (every vendor
+                # got the IT-sector recommendation).
+                _sub_sector_row = (
+                    db.query(VendorSector).filter(VendorSector.vendor_id == sub.id).first()
+                )
+                _sub_sector = (_sub_sector_row.sector or "IT").upper() if _sub_sector_row else "IT"
+                _vendor_history = build_vendor_history(db, str(sub.id), sector=_sub_sector)
+                _classified_tenders = enrich_tender_digest_with_classifications(
+                    _live_tender_dicts, vendor_history=_vendor_history,
+                )
+
+                disclaimer_placeholder = (
+                    '<p style="font-size:11px;color:#737373;margin-top:6px;">'
+                    'BID/WATCH/PASS is a rule-based estimate using sector averages and your '
+                    'self-reported history (if provided at signup) — not a guarantee of '
+                    'outcome. <a href="https://www.booppa.io/vendor/profile" style="color:#7c3aed;">'
+                    'Update your win-rate history</a> to improve accuracy.</p>'
+                )
+
+                bid_rows_html = ""
+                for _t in _classified_tenders:
+                    _badge = bid_label_to_html_badge(_t["bid_label"])
+                    _close_str = _t["closing_date"].strftime("%d %b") if _t.get("closing_date") else "—"
+                    _val_str = f"S${_t['estimated_value']:,.0f}" if _t.get("estimated_value") else "—"
+                    _tender_url = _t.get("url") or "https://www.gebiz.gov.sg"
+                    _title_cell = f'<a href="{_tender_url}" style="color:#a78bfa;">{(_t.get("title") or "")[:60]}</a>'
+                    bid_rows_html += f"""
+                        <tr>
+                          <td style="padding:8px;border-bottom:1px solid #262626;font-size:13px;">{_title_cell}</td>
+                          <td style="padding:8px;border-bottom:1px solid #262626;font-size:12px;color:#a3a3a3;">{(_t.get("agency") or "")[:20]}</td>
+                          <td style="padding:8px;border-bottom:1px solid #262626;font-size:12px;text-align:right;">{_val_str}</td>
+                          <td style="padding:8px;border-bottom:1px solid #262626;font-size:12px;text-align:right;">{_close_str}</td>
+                          <td style="padding:8px;border-bottom:1px solid #262626;text-align:center;">{_badge}</td>
+                        </tr>"""
+
+                bid_table_html = "" if not bid_rows_html else f"""
+                  <h3 style="color:#ffffff;margin-top:32px;font-size:1.05em;">Live tenders — your recommendation</h3>
+                  <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
+                    <thead><tr style="border-bottom:1px solid #404040;">
+                      <th style="padding:8px;text-align:left;color:#737373;">Tender</th>
+                      <th style="padding:8px;text-align:left;color:#737373;">Agency</th>
+                      <th style="padding:8px;text-align:right;color:#737373;">Value</th>
+                      <th style="padding:8px;text-align:right;color:#737373;">Closes</th>
+                      <th style="padding:8px;text-align:center;color:#737373;">Action</th>
+                    </tr></thead>
+                    <tbody>{bid_rows_html}</tbody>
+                  </table>
+                  <p style="font-size:12px;color:#525252;">BID = strong fit · WATCH = monitor · PASS = skip this cycle</p>
+                  {disclaimer_placeholder}"""
+
                 body_html = f"""
                 <html><body style="font-family:Arial,sans-serif;background:#0a0a0a;color:#e5e5e5;padding:32px;">
                 <div style="max-width:640px;margin:0 auto;">
@@ -4923,6 +5134,7 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                     <tbody>{agency_rows}</tbody>
                   </table>
                   {extra_sections_html}
+                  {bid_table_html}
 
                   <div style="margin:32px 0;display:flex;gap:12px;flex-wrap:wrap;">
                     <a href="https://www.booppa.io/tender-intelligence"
@@ -4952,6 +5164,190 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
         db.close()
 
     logger.info(f"[TenderIntelDigest] Sent={sent} Failed={failed}")
+
+
+@celery_app.task(name="fulfill_pdpa_declaration_task")
+def fulfill_pdpa_declaration_task(user_id: str, customer_email: str | None = None):
+    """Render + anchor + deliver a buyer's PDPA Level-2 self-declaration.
+
+    Reads the user's submitted PdpaSelfDeclaration rows, generates a PDF,
+    SHA-256 hashes it, uploads to S3, anchors the hash, creates a Report with
+    framework="pdpa_self_declaration", and emails the PDF. Idempotent: skips if
+    a pdpa_self_declaration Report with a tx_hash already exists.
+    """
+    from app.core.models import User, Report
+    from app.core.pdpa_declaration_models import PdpaSelfDeclaration
+    from app.services.pdpa_declaration_generator import generate_pdpa_declaration_pdf
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            logger.warning("[PDPADeclaration] no user for id=%s", user_id)
+            return
+        email = customer_email or user.email
+
+        existing = (
+            db.query(Report)
+            .filter(
+                Report.owner_id == user.id,
+                Report.framework == "pdpa_self_declaration",
+                Report.tx_hash.isnot(None),
+            )
+            .first()
+        )
+        if existing:
+            logger.info("[PDPADeclaration] already fulfilled for %s", email)
+            return
+
+        rows = (
+            db.query(PdpaSelfDeclaration)
+            .filter(
+                PdpaSelfDeclaration.user_id == user.id,
+                PdpaSelfDeclaration.status == "submitted",
+            )
+            .all()
+        )
+        if not rows:
+            logger.info("[PDPADeclaration] no submitted rows for %s", email)
+            return
+
+        keys = ["processing_purpose", "lawful_basis", "data_categories", "data_subjects",
+                "recipients", "retention_period", "safeguards"]
+        dicts = [{k: getattr(r, k) for k in keys} for r in rows]
+        company_name = (getattr(user, "company", "") or "").strip() or "Your Organisation"
+        uen = getattr(user, "uen", None) or "Not provided"
+
+        pdf_bytes = generate_pdpa_declaration_pdf(
+            company_name=company_name, uen=uen, rows=dicts,
+        )
+        file_hash = hashlib.sha256(pdf_bytes).hexdigest()
+
+        s3 = S3Service()
+        report_id = f"pdpa-self-declaration-{user.id}"
+        s3_url = asyncio.run(s3.upload_pdf(pdf_bytes, report_id))
+
+        tx_hash = None
+        try:
+            tx_hash = asyncio.run(
+                BlockchainService().anchor_evidence(file_hash, metadata=f"pdpa_self_declaration:{report_id}")
+            )
+        except Exception as anchor_err:
+            logger.warning("[PDPADeclaration] anchor failed for %s: %s", email, anchor_err)
+
+        report = Report(
+            owner_id=user.id,
+            framework="pdpa_self_declaration",
+            company_name=company_name,
+            status="completed",
+            tx_hash=tx_hash,
+            audit_hash=file_hash,
+            completed_at=datetime.now(timezone.utc),
+            assessment_data={
+                "file_hash": file_hash,
+                "s3_key": f"reports/{report_id}.pdf",
+                "s3_url": s3_url,
+                "row_count": len(dicts),
+                "original_filename": f"PDPA_Level2_Declaration_{user.id}.pdf",
+                "blockchain_anchored_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        report.s3_url = s3_url
+        report.file_key = f"reports/{report_id}.pdf"
+        db.add(report)
+        db.commit()
+        logger.info("[PDPADeclaration] Generated + anchored for %s (rows=%d)", email, len(dicts))
+
+        if email:
+            body_html = f"""
+            <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
+              <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
+                <h1 style="color:#10b981;margin:0;font-size:20px;">PDPA Level-2 Self-Declaration Ready</h1>
+              </div>
+              <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
+                <p>Hello <strong>{company_name}</strong>,</p>
+                <p>Your PDPA Level-2 self-declaration ({len(dicts)} processing activities) is attached
+                   as a tamper-evident, blockchain-anchored PDF — it complements your PDPA Quick Scan
+                   (Level 1) to demonstrate PDPC Level 2 accountability.</p>
+                <p style="color:#64748b;font-size:12px;">Booppa · PDPA Level 2 · booppa.io</p>
+              </div>
+            </body></html>"""
+            try:
+                ok = asyncio.run(EmailService().send_with_pdf_attachment(
+                    to_email=email,
+                    subject="Your PDPA Level-2 Self-Declaration",
+                    body_html=body_html,
+                    pdf_bytes=pdf_bytes,
+                    filename=f"PDPA_Level2_Declaration_{company_name}.pdf".replace(" ", "_"),
+                ))
+                if not ok:
+                    logger.error("[PDPADeclaration] delivery email rejected for %s", email)
+            except Exception as mail_err:
+                logger.error("[PDPADeclaration] email failed for %s: %s", email, mail_err)
+    except Exception as exc:
+        logger.error("[PDPADeclaration] Fulfillment error for %s: %s", user_id, exc)
+        db.rollback()
+    finally:
+        db.close()
+
+
+@celery_app.task(name="send_vendor_pro_monthly_competitor_signals")
+def send_vendor_pro_monthly_competitor_signals():
+    """
+    Monthly competitor awareness signals for Vendor Pro subscribers.
+    Generates a 1-page PDF with 3 GeBIZ-sourced signals and emails it as attachment.
+
+    Anniversary-day cron — fires daily, processes subscribers whose anniversary
+    matches today, keeping cadence consistent with other monthly deliverables.
+    """
+    from app.core.models import User, Subscription as SubModel
+    from app.services.competitor_signals_generator import generate_and_deliver_competitor_signals
+
+    db = SessionLocal()
+    sent = 0
+    failed = 0
+    try:
+        active_subs = (
+            db.query(SubModel)
+            .filter(
+                SubModel.product_type.in_([
+                    "vendor_pro_monthly", "vendor_pro_annual", "vendor_pro",
+                ]),
+                SubModel.status.in_(("active", "trialing")),
+            )
+            .all()
+        )
+        user_ids = {s.user_id for s in active_subs if s.user_id}
+        subscribers = (
+            db.query(User)
+            .filter(
+                User.id.in_(user_ids),
+                _anniversary_match_filter(User.subscription_anniversary_day),
+            )
+            .all()
+            if user_ids else []
+        )
+        for user in subscribers:
+            if not user.email:
+                continue
+            company = (getattr(user, "company", "") or "").strip() or user.email
+            try:
+                ok = asyncio.run(generate_and_deliver_competitor_signals(
+                    vendor_id=str(user.id),
+                    vendor_email=user.email,
+                    company_name=company,
+                    db=db,
+                ))
+                if ok:
+                    sent += 1
+                else:
+                    failed += 1
+            except Exception as exc:
+                logger.error("[CompetitorSignals] Failed for %s: %s", user.email, exc)
+                failed += 1
+    finally:
+        db.close()
+    logger.info("[CompetitorSignals] Monthly digest: sent=%d failed=%d", sent, failed)
 
 
 @celery_app.task(name="send_vendor_pro_daily_alerts")

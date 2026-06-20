@@ -757,8 +757,8 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     # NOT a substitute for a notarized legal record. Don't oversell.
     story += _section("Evidence Integrity Anchors", _STYLES, page_break=True)
     from app.core.config import settings
-    network = data.get("network", settings.POLYGON_NETWORK_NAME)
-    explorer = settings.POLYGON_EXPLORER_URL.rstrip("/")
+    network = data.get("network", settings.active_polygon_network_name)
+    explorer = settings.active_polygon_explorer_url.rstrip("/")
     mono = ParagraphStyle("mono", fontSize=7.5, leading=10, textColor=colors.HexColor("#334155"), fontName="Courier")
 
     def _anchor_row(label: str, tx: str | None) -> tuple[str, Any]:

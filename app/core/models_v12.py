@@ -76,6 +76,91 @@ class PendingRfpIntake(Base):
 Index("ix_pending_rfp_user_status", PendingRfpIntake.user_id, PendingRfpIntake.status)
 
 
+class RopaActivities(Base):
+    """One row per declared processing activity for a buyer's ROPA Lite.
+
+    PDPC Level 2 evidence for compliance_evidence_pack. Mirrors
+    PendingRfpIntake's draft → submitted lifecycle and user_id-based
+    identification (no bundle FK — the bundle isn't a row). A buyer typically
+    declares 3–8 activities (payroll, marketing, CCTV, …). Rows are created in
+    'draft' as the multi-row form is filled, then flipped to 'submitted' as a
+    batch on Generate, which queues the ROPA PDF into the next Cover Sheet cycle.
+
+    The six ROPA_INTAKE_SCHEMA fields (ropa_generator.py) get one column each —
+    not a JSON blob — so the data stays queryable/auditable per-field, which is
+    the whole point of a record that must survive a PDPC records request.
+    """
+
+    __tablename__ = "ropa_activities"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    bundle_source = Column(String(64), nullable=False, default="compliance_evidence_pack")
+    status = Column(String(20), nullable=False, default="draft", server_default="draft")
+
+    processing_purpose = Column(String(200), nullable=False)
+    data_categories = Column(String(500), nullable=False)
+    data_subjects = Column(String(200), nullable=False)
+    retention_period = Column(String(300), nullable=False)
+    cross_border_transfer = Column(String(400), nullable=False)
+    legal_basis = Column(String(100), nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    submitted_at = Column(DateTime, nullable=True)
+
+
+Index("ix_ropa_activities_user_status", RopaActivities.user_id, RopaActivities.status)
+
+
+class PdpaSelfDeclaration(Base):
+    """One row per declared processing activity for a PDPA Level-2 self-declaration.
+
+    Elevates the automated PDPA Quick Scan (Level 1) to PDPC Level 2 by letting
+    the organisation self-declare its processing activities and accountability
+    measures. Mirrors RopaActivities' draft → submitted lifecycle and user_id
+    identification; the submitted set is rendered to an anchored PDF Report with
+    framework="pdpa_self_declaration".
+
+    Fields are one column each (not JSON) so the declaration is queryable and
+    auditable per-field for a PDPC records request.
+    """
+
+    __tablename__ = "pdpa_self_declarations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source = Column(String(64), nullable=False, default="pdpa_quick_scan")
+    status = Column(String(20), nullable=False, default="draft", server_default="draft")
+
+    processing_purpose = Column(String(200), nullable=False)
+    lawful_basis = Column(String(100), nullable=False)
+    data_categories = Column(String(500), nullable=False)
+    data_subjects = Column(String(200), nullable=False)
+    recipients = Column(String(400), nullable=False)
+    retention_period = Column(String(300), nullable=False)
+    safeguards = Column(String(500), nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    submitted_at = Column(DateTime, nullable=True)
+
+
+Index(
+    "ix_pdpa_self_declarations_user_status",
+    PdpaSelfDeclaration.user_id,
+    PdpaSelfDeclaration.status,
+)
+
+
 class VendorEvaluationFramework(Base):
     """A buyer's vendor-scoring weight profile.
 

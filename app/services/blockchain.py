@@ -10,8 +10,8 @@ class BlockchainService:
     """Polygon blockchain service for evidence anchoring"""
 
     def __init__(self):
-        self.w3 = Web3(Web3.HTTPProvider(settings.POLYGON_RPC_URL))
-        self.contract_address = settings.ANCHOR_CONTRACT_ADDRESS
+        self.w3 = Web3(Web3.HTTPProvider(settings.active_polygon_rpc_url))
+        self.contract_address = settings.active_anchor_contract_address
 
         # ABI for EvidenceAnchorV3 contract
         self.contract_abi = [

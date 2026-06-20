@@ -677,9 +677,9 @@ class PDFService:
             url_display = "Pending — scan to verify"
         else:
             try:
-                qr_target = f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{tx_hash}"
+                qr_target = f"{settings.active_polygon_explorer_url.rstrip('/')}/tx/{tx_hash}"
             except Exception:
-                qr_target = f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{tx_hash}"
+                qr_target = f"{settings.active_polygon_explorer_url.rstrip('/')}/tx/{tx_hash}"
             url_display = qr_target
 
         # QR code
@@ -721,7 +721,7 @@ class PDFService:
             ),
             Spacer(1, 5),
             Paragraph("ANCHORED ON", s["Label"]),
-            Paragraph(f"{settings.POLYGON_NETWORK_NAME}  ·  Immutable blockchain record", s["Body"]),
+            Paragraph(f"{settings.active_polygon_network_name}  ·  Immutable blockchain record", s["Body"]),
         ]
 
         qr_items = [
@@ -1407,9 +1407,9 @@ class PDFService:
                 f"The output must exactly match: <font face='Courier'>{audit_hash}</font>",
             ),
             (
-                f"Step 4 — Confirm the Transaction Hash on {settings.POLYGON_EXPLORER_URL}.",
+                f"Step 4 — Confirm the Transaction Hash on {settings.active_polygon_explorer_url}.",
                 f"Search <font face='Courier'>{tx_hash}</font> on "
-                f'<a href="{settings.POLYGON_EXPLORER_URL}"><font color="#10b981">{settings.POLYGON_EXPLORER_URL}</font></a>. '
+                f'<a href="{settings.active_polygon_explorer_url}"><font color="#10b981">{settings.active_polygon_explorer_url}</font></a>. '
                 "The block timestamp proves the earliest possible existence date of this document. "
                 "No login or account required.",
             ),
@@ -1736,7 +1736,7 @@ class PDFService:
                 ))
                 story.append(Spacer(1, 4))
                 story.append(Paragraph(
-                    f"The audit was conducted on {scan_date_str} and anchored on the {settings.POLYGON_NETWORK_NAME} blockchain "
+                    f"The audit was conducted on {scan_date_str} and anchored on the {settings.active_polygon_network_name} blockchain "
                     f"for evidentiary integrity.",
                     s["Body"],
                 ))
@@ -1832,7 +1832,7 @@ class PDFService:
                 story.append(Spacer(1, 6))
                 if findings:
                     story.append(Paragraph(
-                        f"The following artifacts must be anchored on the {settings.POLYGON_NETWORK_NAME} blockchain to create "
+                        f"The following artifacts must be anchored on the {settings.active_polygon_network_name} blockchain to create "
                         "an immutable, court-admissible compliance trail:",
                         s["Body"],
                     ))
@@ -2138,10 +2138,10 @@ class PDFService:
         items.append(Spacer(1, 6))
         tx = d.get("tx_hash") or "—"
         poly_url = d.get("polygonscan_url") or (
-            f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{tx}" if tx != "—" else "—"
+            f"{settings.active_polygon_explorer_url.rstrip('/')}/tx/{tx}" if tx != "—" else "—"
         )
         items.append(self._meta_table([
-            ("NETWORK", d.get("network") or settings.POLYGON_NETWORK_NAME),
+            ("NETWORK", d.get("network") or settings.active_polygon_network_name),
             ("TRANSACTION HASH", tx),
             ("EXPLORER URL", poly_url),
             ("ANCHORED AT", d.get("created_at", "")[:19] or "—"),
@@ -2172,7 +2172,7 @@ class PDFService:
              f"The resulting hash must exactly match the Evidence Hash printed above:\n"
              f"{d.get('audit_hash') or d.get('file_hash') or '(see Cryptographic Proof section)'}"),
             ("Step 4 — Confirm the blockchain anchor",
-             f"Search the Transaction Hash on {settings.POLYGON_EXPLORER_URL}. "
+             f"Search the Transaction Hash on {settings.active_polygon_explorer_url}. "
              f"The block timestamp proves the earliest possible existence date of this document. "
              f"No login or account required."),
         ]

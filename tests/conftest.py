@@ -39,6 +39,14 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 # NOT use Base.metadata.create_all — see comment in `test_db`.
 _TRUNCATABLE_TABLES = [
     "pending_rfp_intakes",
+    "ropa_activities",
+    "pdpa_self_declarations",
+    "trm_evidence",
+    "trm_controls",
+    "organisation_members",
+    "organisations",
+    "vendor_scores",
+    "vendor_status_snapshots",
     "subscriptions",
     "processed_webhook_events",
     "activity_logs",

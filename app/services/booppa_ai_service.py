@@ -272,7 +272,7 @@ VIOLATION_META: Dict = {
         "recommended_tools": [
             "Cookiebot, OneTrust, or Osano (managed consent platforms)",
             "If self-built: use a cookie audit tool first (e.g. cookieserve.com) to enumerate all cookies set.",
-            f"Blockchain anchoring: Booppa Evidence Anchor smart contract on {settings.POLYGON_NETWORK_NAME}.",
+            f"Blockchain anchoring: Booppa Evidence Anchor smart contract on {settings.active_polygon_network_name}.",
         ],
     },
     "marketing_violation": {
@@ -294,7 +294,7 @@ VIOLATION_META: Dict = {
         ],
         "recommended_tools": [
             "PDPC DNC Guidelines: https://www.pdpc.gov.sg/guidelines-and-consultation/guidelines/dnc-provisions",
-            f"Anchor the privacy policy update hash on {settings.POLYGON_NETWORK_NAME} via Booppa.",
+            f"Anchor the privacy policy update hash on {settings.active_polygon_network_name} via Booppa.",
         ],
     },
     "security_violation": {
@@ -837,8 +837,8 @@ BLOCKCHAIN EVIDENCE:
                 scan_date=scan_data.get(
                     "scan_date", datetime.now().strftime("%Y-%m-%d")
                 ),
-                polygon_network_name=settings.POLYGON_NETWORK_NAME,
-                polygon_explorer_url=settings.POLYGON_EXPLORER_URL.rstrip("/"),
+                polygon_network_name=settings.active_polygon_network_name,
+                polygon_explorer_url=settings.active_polygon_explorer_url.rstrip("/"),
             )
         else:
             # Fallback to generic AI generation if no template
@@ -1075,7 +1075,7 @@ Note: Consult legal counsel for specific compliance requirements."""
 
 This document summarizes a PDPA Quick Scan compliance audit performed by Booppa on the {company_name} website, translated into English and enriched with developer implementation tasks. It is intended to be forwarded directly to the development team.
 
-The audit was conducted on {scan_date} and anchored on the {settings.POLYGON_NETWORK_NAME} blockchain for evidentiary integrity.
+The audit was conducted on {scan_date} and anchored on the {settings.active_polygon_network_name} blockchain for evidentiary integrity.
 
 2. Audit Findings Summary
 
@@ -1161,7 +1161,7 @@ Consult legal counsel for interpretation of regulatory requirements."""
         """Generate blockchain evidence instructions"""
         return {
             "purpose": "Create court-admissible evidence of compliance actions",
-            "blockchain": f"{settings.POLYGON_NETWORK_NAME} (Proof-of-Stake)",
+            "blockchain": f"{settings.active_polygon_network_name} (Proof-of-Stake)",
             "steps": [
                 "1. Generate SHA-256 hash of compliance action documentation",
                 "2. Submit hash to Booppa EvidenceAnchor smart contract",
@@ -1170,7 +1170,7 @@ Consult legal counsel for interpretation of regulatory requirements."""
                 "5. Include Polygonscan QR code in audit reports",
             ],
             "verification": {
-                "url_format": f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{{transaction_hash}}",
+                "url_format": f"{settings.active_polygon_explorer_url.rstrip('/')}/tx/{{transaction_hash}}",
                 "qr_code": "Generate QR code for mobile verification",
                 "court_admissibility": "Recognized under Singapore Evidence Act",
                 "timestamp_proof": "Immutable timestamp on blockchain",

@@ -35,14 +35,31 @@ class Settings(BaseSettings):
     # Resend (preferred over SES — set RESEND_API_KEY to enable)
     RESEND_API_KEY: Optional[str] = None
 
-    # Blockchain
+    # ── Blockchain — Testnet (default, cost-free) ─────────────────────────
+    # Today: Polygon Amoy Testnet. Gas = zero. Suitable for all customers.
+    # Set USE_MAINNET=true in .env only after completing the mainnet migration
+    # checklist (see docs/mainnet_migration.md).
     POLYGON_RPC_URL: str = "https://rpc-amoy.polygon.technology"
     POLYGON_EXPLORER_URL: str = "https://amoy.polygonscan.com"
     POLYGON_NETWORK_NAME: str = "Polygon Amoy Testnet"
-    POLYGON_TESTNET_NOTICE: str = "Anchored on Polygon Amoy Testnet."
+    POLYGON_TESTNET_NOTICE: str = (
+        "Anchored on Polygon Amoy Testnet — tamper-evident hash record. "
+        "Note: Amoy is a public test network; it provides proof-of-existence "
+        "suitable for audit readiness but does not carry the finality guarantees "
+        "of Polygon Mainnet. Mainnet anchoring is available on request."
+    )
     ANCHOR_CONTRACT_ADDRESS: str = "0x0000000000000000000000000000000000000000"
     PRIVATE_KEY_ENCRYPTED: Optional[str] = None
     BLOCKCHAIN_PRIVATE_KEY: Optional[str] = None
+
+    # ── Blockchain — Mainnet (future, requires MATIC balance) ─────────────
+    # Cost: ~0.001–0.01 MATIC per tx. Enable only after the mainnet migration
+    # checklist and 20+ active Enterprise clients (see docs/mainnet_migration.md).
+    USE_MAINNET: bool = False  # SAFE DEFAULT: False = testnet
+    POLYGON_MAINNET_RPC_URL: str = "https://polygon-rpc.com"
+    POLYGON_MAINNET_EXPLORER_URL: str = "https://polygonscan.com"
+    POLYGON_MAINNET_CONTRACT_ADDRESS: Optional[str] = None
+    POLYGON_MAINNET_NETWORK_NAME: str = "Polygon Mainnet"
 
     # AI Services
     DEEPSEEK_API_KEY: Optional[str] = None
@@ -50,7 +67,6 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     # Anthropic / Claude
     ANTHROPIC_API_KEY: Optional[str] = None
-    ANTHROPIC_MODEL: str = "claude-haiku-4-5"
 
     # Security intelligence (free tiers)
     # VirusTotal: free API key from https://www.virustotal.com/gui/join-us
@@ -111,6 +127,40 @@ class Settings(BaseSettings):
     # Auto-activation check interval (seconds)
     AUTO_ACTIVATION_INTERVAL: int = 3600  # 1 hour
 
+    # ── Computed blockchain properties (use these everywhere, not the raw fields) ──
+
+    @property
+    def active_polygon_rpc_url(self) -> str:
+        """Return the correct RPC URL based on USE_MAINNET flag."""
+        return self.POLYGON_MAINNET_RPC_URL if self.USE_MAINNET else self.POLYGON_RPC_URL
+
+    @property
+    def active_polygon_explorer_url(self) -> str:
+        """Return the correct block explorer URL based on USE_MAINNET flag."""
+        return self.POLYGON_MAINNET_EXPLORER_URL if self.USE_MAINNET else self.POLYGON_EXPLORER_URL
+
+    @property
+    def active_polygon_network_name(self) -> str:
+        """Return the human-readable network name for use in PDFs and emails."""
+        return self.POLYGON_MAINNET_NETWORK_NAME if self.USE_MAINNET else self.POLYGON_NETWORK_NAME
+
+    @property
+    def active_anchor_contract_address(self) -> str:
+        """Return the correct contract address for the active network."""
+        if self.USE_MAINNET:
+            return self.POLYGON_MAINNET_CONTRACT_ADDRESS or self.ANCHOR_CONTRACT_ADDRESS
+        return self.ANCHOR_CONTRACT_ADDRESS
+
+    @property
+    def blockchain_notice(self) -> str:
+        """Return the appropriate disclosure notice for PDFs/emails."""
+        if self.USE_MAINNET:
+            return (
+                "Anchored on Polygon Mainnet — permanent, tamper-evident record "
+                "on a public blockchain. Verifiable independently at polygonscan.com."
+            )
+        return self.POLYGON_TESTNET_NOTICE
+
     class Config:
         env_file = ".env"
         case_sensitive = True
@@ -124,3 +174,22 @@ if settings.ENVIRONMENT == "production" and settings.SECRET_KEY == "change-me-in
         "FATAL: SECRET_KEY is still the default value. "
         "Set a strong SECRET_KEY environment variable before running in production."
     )
+
+# ── Mainnet safety guard ──────────────────────────────────────────────────────
+# Warn loudly in logs if mainnet is enabled without a proper contract address or
+# signing key. Prevents silent fall-through to the null-address on Polygon Mainnet
+# (which would burn MATIC anchoring to address 0x000…000).
+if settings.USE_MAINNET:
+    import logging as _logging
+    _guard_log = _logging.getLogger(__name__)
+    if not settings.POLYGON_MAINNET_CONTRACT_ADDRESS:
+        _guard_log.warning(
+            "USE_MAINNET=True but POLYGON_MAINNET_CONTRACT_ADDRESS is not set. "
+            "Blockchain anchoring will target the null address. "
+            "Set POLYGON_MAINNET_CONTRACT_ADDRESS in .env before enabling mainnet."
+        )
+    if not settings.BLOCKCHAIN_PRIVATE_KEY and not settings.PRIVATE_KEY_ENCRYPTED:
+        _guard_log.warning(
+            "USE_MAINNET=True but no BLOCKCHAIN_PRIVATE_KEY is configured. "
+            "Transactions cannot be signed. Set BLOCKCHAIN_PRIVATE_KEY in .env."
+        )
