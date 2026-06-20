@@ -17,6 +17,8 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from app.services.pdf_logo import draw_logo_header
+
 from app.core.company import COMPANY_NAME
 
 logger = logging.getLogger(__name__)
@@ -177,5 +179,5 @@ def generate_pdpa_monitor_report_pdf(data: Dict[str, Any]) -> bytes:
         "accessible website elements at scan time; not a statement of regulatory compliance.",
         s["small"]))
 
-    doc.build(story)
+    doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
     return buf.getvalue()

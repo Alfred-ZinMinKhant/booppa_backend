@@ -23,6 +23,7 @@ try:
     from reportlab.platypus import (
         SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether,
     )
+    from app.services.pdf_logo import draw_logo_header
     _REPORTLAB_OK = True
 except ImportError:  # pragma: no cover
     _REPORTLAB_OK = False
@@ -174,5 +175,5 @@ def generate_vendor_proof_certificate(
         foot_style,
     ))
 
-    doc.build(story)
+    doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
     return buf.getvalue()

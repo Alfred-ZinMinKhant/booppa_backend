@@ -25,6 +25,7 @@ try:
     from reportlab.lib import colors
     from reportlab.lib.units import inch
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from app.services.pdf_logo import draw_logo_header
     _REPORTLAB_OK = True
 except ImportError:
     _REPORTLAB_OK = False
@@ -270,7 +271,7 @@ def generate_competitor_signals_pdf(signals: dict, company_name: str) -> bytes:
         body_style,
     ))
 
-    doc.build(story)
+    doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
     return buf.getvalue()
 
 

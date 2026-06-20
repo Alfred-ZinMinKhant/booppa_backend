@@ -40,6 +40,7 @@ class EvidencePack(Base):
     organisation = Column(String(255), nullable=True)
 
     intake = Column(JSONB, nullable=True)          # structured intake form
+    scan_evidence = Column(JSONB, nullable=True)   # observed website/PDPA-scan signals used to ground docs
     documents = Column(JSONB, nullable=True)       # {doc_type: doc_json}
     hashes = Column(JSONB, nullable=True)          # {doc_type: sha256}
     master_hash = Column(String(64), nullable=True)

@@ -26,6 +26,7 @@ from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from app.core.company import COMPANY_NAME
+from app.services.pdf_logo import draw_logo_header
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +180,7 @@ def generate_badge_certificate_pdf(data: Dict[str, Any]) -> bytes:
     story.append(Spacer(1, 16))
     story.append(_footer(s, company))
 
-    _doc(buf, f"Verification Badge Certificate — {company}").build(story)
+    _doc(buf, f"Verification Badge Certificate — {company}").build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
     return buf.getvalue()
 
 
@@ -222,7 +223,7 @@ def generate_priority_placement_pdf(data: Dict[str, Any]) -> bytes:
     story.append(Spacer(1, 16))
     story.append(_footer(s, company))
 
-    _doc(buf, f"Priority Placement Report — {company}").build(story)
+    _doc(buf, f"Priority Placement Report — {company}").build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
     return buf.getvalue()
 
 
@@ -274,7 +275,7 @@ def generate_competitor_signals_pdf(data: Dict[str, Any]) -> bytes:
     story.append(Spacer(1, 16))
     story.append(_footer(s, company))
 
-    _doc(buf, f"Competitor Activity Report — {company}").build(story)
+    _doc(buf, f"Competitor Activity Report — {company}").build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
     return buf.getvalue()
 
 
@@ -325,5 +326,5 @@ def generate_bid_timing_pdf(data: Dict[str, Any]) -> bytes:
     story.append(Spacer(1, 16))
     story.append(_footer(s, company))
 
-    _doc(buf, f"Bid-Timing Report — {company}").build(story)
+    _doc(buf, f"Bid-Timing Report — {company}").build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
     return buf.getvalue()
