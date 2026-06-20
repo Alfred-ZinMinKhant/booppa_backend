@@ -1183,11 +1183,11 @@ async def scan_verification_log(
         .order_by(VendorScanLedger.created_at.desc())
         .all()
     )
-    explorer = (getattr(_settings, "POLYGON_EXPLORER_URL", "") or "https://amoy.polygonscan.com").rstrip("/")
+    explorer = _settings.active_polygon_explorer_url.rstrip("/")
 
     return {
         "vendor": {"company": vendor.company, "slug": vendor_slug},
-        "network": getattr(_settings, "POLYGON_NETWORK_NAME", "Polygon Amoy"),
+        "network": _settings.active_polygon_network_name,
         "periodMonths": months,
         "scans": [
             {
