@@ -89,6 +89,35 @@ def test_submit_without_draft_is_422(client, test_db):
     assert r.status_code == 422
 
 
+def test_status_reflects_lifecycle(client, test_db):
+    """status: empty → draft → completed (once the anchored Report exists)."""
+    from app.core.models import Report
+    from app.core.pdpa_declaration_models import PdpaSelfDeclaration
+
+    user = make_user(test_db, email="pdpa-l2-status@booppa.io", company="Acme")
+    headers = auth_headers(user)
+
+    empty = client.get("/api/pdpa-declaration/status", headers=headers).json()
+    assert empty["completed"] is False and empty["submitted"] is False
+
+    # Submitted declaration but no Report yet → submitted, not completed.
+    test_db.add(PdpaSelfDeclaration(user_id=user.id, source="pdpa_quick_scan",
+                                    status="submitted", **_VALID_ROW))
+    test_db.commit()
+    mid = client.get("/api/pdpa-declaration/status", headers=headers).json()
+    assert mid["submitted"] is True and mid["completed"] is False
+
+    # Anchored Report present → completed with tx_hash surfaced.
+    test_db.add(Report(owner_id=user.id, framework="pdpa_self_declaration",
+                       company_name="Acme", status="completed", tx_hash="0xpdpa",
+                       audit_hash="a" * 64,
+                       assessment_data={"s3_key": "reports/x.pdf",
+                                        "blockchain_anchored_at": "2026-06-20T00:00:00+00:00"}))
+    test_db.commit()
+    done = client.get("/api/pdpa-declaration/status", headers=headers).json()
+    assert done["completed"] is True and done["tx_hash"] == "0xpdpa"
+
+
 # ── Fulfillment task ─────────────────────────────────────────────────────────
 
 def test_fulfillment_creates_anchored_report(test_db, mocker):
