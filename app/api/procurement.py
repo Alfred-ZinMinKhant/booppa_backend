@@ -856,11 +856,12 @@ async def export_pdf(
         from reportlab.lib import colors
         from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
         from reportlab.lib.styles import getSampleStyleSheet
+        from app.services.pdf_logo import draw_logo_header
     except ImportError:
         raise HTTPException(status_code=501, detail="PDF export requires reportlab. Install with: pip install reportlab")
 
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), topMargin=30, bottomMargin=30)
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), topMargin=48, bottomMargin=30)
     styles = getSampleStyleSheet()
     elements = []
 
@@ -910,7 +911,7 @@ async def export_pdf(
     snap_hash = hashlib.sha256(json.dumps([r["Company"] for r in rows], sort_keys=True).encode()).hexdigest()[:16]
     elements.append(Paragraph(f"Snapshot hash: {snap_hash} | booppa.io", styles["Normal"]))
 
-    doc.build(elements)
+    doc.build(elements, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
     buf.seek(0)
 
     return StreamingResponse(

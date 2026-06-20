@@ -1354,12 +1354,17 @@ async def _fulfill_compliance_evidence_pack(
     session_id: str | None,
     metadata: dict,
     is_test: bool,
-) -> None:
+    send_email: bool = True,
+):
     """Create the EvidencePack intake for a Compliance Evidence Pack purchase.
 
     Real purchases defer to the structured intake at /evidence-pack-intake/{id}.
     Admin test simulations auto-build an intake from the profile/test identity and
     queue generation immediately (so the test harness yields a pack end-to-end).
+
+    Returns the created EvidencePack row (or None if no owner). When `send_email`
+    is False the standalone intake email is suppressed so the caller can fold the
+    intake CTA into the single consolidated bundle email instead.
     """
     import uuid as _uuid
     from datetime import datetime as _dt
@@ -1373,7 +1378,7 @@ async def _fulfill_compliance_evidence_pack(
             customer_email=customer_email,
             session_id=session_id,
         )
-        return
+        return None
 
     org = (company_name or "").strip() or "Your Organisation"
     pack_id = f"BCEP-{org.upper().replace(' ', '')[:8]}-{_dt.utcnow().strftime('%Y%m%d%H%M%S')}"
@@ -1416,7 +1421,7 @@ async def _fulfill_compliance_evidence_pack(
         from app.workers.tasks import fulfill_evidence_pack_task
         fulfill_evidence_pack_task.delay(str(row.id))
         logger.info("[Bundle:compliance_evidence_pack] test_simulation — auto-queued pack %s", pack_id)
-        return
+        return row
 
     # Subscription renewal: reuse the buyer's most recent completed intake so they
     # don't re-fill the form every month — regenerate against last cycle's facts.
@@ -1438,11 +1443,12 @@ async def _fulfill_compliance_evidence_pack(
             from app.workers.tasks import fulfill_evidence_pack_task
             fulfill_evidence_pack_task.delay(str(row.id))
             logger.info("[Bundle:compliance_evidence_pack] cycle — reused prior intake, queued %s", pack_id)
-            return
+            return row
 
     # Real purchase (or first cycle with no prior intake) — email the buyer a link
-    # to complete the structured intake.
-    if customer_email:
+    # to complete the structured intake. Suppressed when the caller will fold the
+    # intake CTA into the consolidated bundle email (send_email=False).
+    if send_email and customer_email:
         intake_url = f"https://www.booppa.io/evidence-pack-intake/{row.id}"
         body_html = f"""
         <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:620px;margin:0 auto;">
@@ -1471,6 +1477,7 @@ async def _fulfill_compliance_evidence_pack(
         if not sent:
             logger.error("[Bundle:compliance_evidence_pack] intake email rejected for %s", customer_email)
     logger.info("[Bundle:compliance_evidence_pack] Created intake-pending pack %s for %s", pack_id, customer_email)
+    return row
 
 
 async def _fulfill_bundle(
@@ -1541,8 +1548,14 @@ async def _fulfill_bundle(
         # Security Review Log), which closes PDPC Levels 2-6. Generation needs a
         # structured intake, so we defer exactly like the RFP flow: create an
         # EvidencePack row (status=intake_pending) and email the buyer a brief link.
+        # CE creates the BCEP 7-document intake here, then FALLS THROUGH to the
+        # generic fan-out below so the declared PDPA scan + RFP Complete kit +
+        # cover-sheet credit are also delivered (BUNDLE_COMPONENTS). The standalone
+        # intake email is suppressed (send_email=False) — its CTA is folded into the
+        # single consolidated bundle email to avoid double-emailing the buyer.
+        evidence_pack_row = None
         if product_type == "compliance_evidence_pack":
-            await _fulfill_compliance_evidence_pack(
+            evidence_pack_row = await _fulfill_compliance_evidence_pack(
                 db=db,
                 owner_id=owner_id,
                 customer_email=customer_email,
@@ -1551,8 +1564,8 @@ async def _fulfill_bundle(
                 session_id=session_id,
                 metadata=metadata,
                 is_test=_is_test,
+                send_email=False,
             )
-            return
 
         def _make_stub(framework: str) -> str:
             return _create_stub_report(
@@ -1739,6 +1752,23 @@ async def _fulfill_bundle(
         if components.get("cover_sheet"):
             sections.append("""
                       <p style="color:#334155;font-size:14px;">🔗 Your <strong>Compliance Cover Sheet</strong> is generated once your PDPA scan and RFP kit are ready; we'll email you to sign &amp; anchor it.</p>""")
+
+        # Evidence Pack intake CTA — only when an intake is still outstanding
+        # (real purchase / first cycle). Test + cycle-reuse paths auto-queue the
+        # pack and have no pending intake, so no CTA is shown for them.
+        if (
+            product_type == "compliance_evidence_pack"
+            and evidence_pack_row is not None
+            and getattr(evidence_pack_row, "status", None) == "intake_pending"
+            and customer_email
+        ):
+            ep_intake_url = f"https://www.booppa.io/evidence-pack-intake/{evidence_pack_row.id}"
+            sections.append(f"""
+                      <div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;padding:16px;margin:16px 0;">
+                        <p style="margin:0 0 8px;font-weight:bold;color:#065f46;">Start your PDPA Evidence Pack (7 documents)</p>
+                        <p style="margin:0 0 12px;color:#334155;font-size:14px;">Complete a short structured intake (about 5 minutes) — org details, DPO, systems, data types — and we'll generate your DPMP, ROPA, Data Inventory, Vendor/DPA Register, Breach Runbook, Training Register, and Security Review Log.</p>
+                        <a href="{ep_intake_url}" style="display:inline-block;background:#10b981;color:#fff;padding:11px 22px;border-radius:8px;text-decoration:none;font-weight:bold;">Complete your intake →</a>
+                      </div>""")
 
         # The RFP brief CTA is the one required action — it gates the RFP kit.
         brief_cta = ""

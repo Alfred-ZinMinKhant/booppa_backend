@@ -156,7 +156,64 @@ Rules:
 - Do NOT include placeholder text like [INSERT HERE] — generate realistic, specific content
 - Output ONLY valid JSON, no markdown, no preamble
 - Base all content on the specific organisation data provided — not generic templates
+- When OBSERVED EVIDENCE from a website/PDPA scan is provided, reflect it in the
+  document: acknowledge gaps the scan surfaced (e.g. missing cookie-consent banner,
+  no HTTPS, absent privacy policy) and record them as open items / remediation
+  actions rather than asserting compliance the evidence contradicts
 """
+
+
+def _evidence_context(scan_evidence: dict | None) -> str:
+    """Render observed website/PDPA-scan signals into a compact grounding block
+    appended to the relevant prompts. Returns '' when no evidence is available so
+    intake-only generation is unchanged.
+    """
+    if not scan_evidence or not isinstance(scan_evidence, dict):
+        return ""
+
+    lines: list[str] = []
+
+    web = scan_evidence.get("website_scan") or {}
+    if isinstance(web, dict) and web:
+        url = web.get("website_url", "the website")
+        score = web.get("score")
+        level = web.get("risk_level")
+        header = f"Website scan of {url}"
+        if score is not None:
+            header += f" — risk score {score}/100 ({level})" if level else f" — risk score {score}/100"
+        lines.append(header + ":")
+        findings = web.get("findings") or []
+        if not findings and web.get("free_finding"):
+            findings = [web["free_finding"]]
+        for f in findings[:12]:
+            if not isinstance(f, dict):
+                continue
+            sev = f.get("severity", "")
+            title = f.get("title", "")
+            cat = f.get("category", "")
+            lines.append(f"  - [{sev}] {title}{f' ({cat})' if cat else ''}")
+        if not findings:
+            lines.append("  - No specific findings returned by the scanner.")
+
+    pdpa = scan_evidence.get("pdpa_report") or {}
+    if isinstance(pdpa, dict) and pdpa:
+        pf = pdpa.get("findings") or []
+        if pf:
+            lines.append("Prior PDPA Quick Scan findings:")
+            for f in pf[:12]:
+                if isinstance(f, dict):
+                    lines.append(f"  - [{f.get('severity','')}] {f.get('title','')}")
+                elif isinstance(f, str):
+                    lines.append(f"  - {f}")
+
+    if not lines:
+        return ""
+
+    return (
+        "\n\nOBSERVED EVIDENCE (incorporate into this document; flag gaps as open "
+        "remediation items — do NOT claim compliance the evidence contradicts):\n"
+        + "\n".join(lines)
+    )
 
 # ── DOCUMENT PROMPTS ─────────────────────────────────────────────────────
 
@@ -597,10 +654,14 @@ def _wrap_with_draft_status(doc: dict, doc_type: str) -> dict:
 
 # ── CORE GENERATOR ───────────────────────────────────────────────────────
 
-def generate_document(doc_type: str, intake: dict) -> dict:
+def generate_document(doc_type: str, intake: dict, scan_evidence: dict | None = None) -> dict:
     """
     Generate a single compliance document via DeepSeek-V3.
     Returns parsed JSON dict wrapped with draft status.
+
+    `scan_evidence` (optional) carries observed website/PDPA-scan signals; when
+    present its grounding block is appended to the documents where observed
+    evidence is most material. Passing None preserves intake-only behaviour.
     """
     prompts = {
         "dpmp":            _prompt_dpmp(intake),
@@ -630,12 +691,18 @@ def generate_document(doc_type: str, intake: dict) -> dict:
             "do NOT invent one."
         )
 
-    raw = _deepseek_chat(SYSTEM_PROMPT, prompts[doc_type] + uen_ctx)
+    # Ground the evidence-sensitive documents in observed scan signals. The
+    # other documents (training, breach templates) are intake-driven only.
+    evidence_ctx = ""
+    if doc_type in ("dpmp", "data_inventory", "vendor_register", "breach_runbook", "review_log"):
+        evidence_ctx = _evidence_context(scan_evidence)
+
+    raw = _deepseek_chat(SYSTEM_PROMPT, prompts[doc_type] + uen_ctx + evidence_ctx)
     doc = json.loads(raw)
     return _wrap_with_draft_status(doc, doc_type)
 
 
-def generate_evidence_pack(intake: dict) -> dict:
+def generate_evidence_pack(intake: dict, scan_evidence: dict | None = None) -> dict:
     """
     Generate all 7 documents for an Evidence Pack (BCEP-v1.1).
 
@@ -683,6 +750,7 @@ def generate_evidence_pack(intake: dict) -> dict:
         "framework":      "BCEP-v1.1",
         "status":         "generated",
         "legal_status":   "DRAFT — requires client verification and signature before evidentiary use",
+        "evidence_grounded": bool(scan_evidence),
         "documents":      {},
         "hashes":         {},
         "errors":         [],
@@ -691,7 +759,7 @@ def generate_evidence_pack(intake: dict) -> dict:
     for doc_type in doc_types:
         try:
             print(f"  Generating {doc_type}...")
-            doc      = generate_document(doc_type, intake)
+            doc      = generate_document(doc_type, intake, scan_evidence)
             doc_json = json.dumps(doc, sort_keys=True)
             doc_hash = hashlib.sha256(doc_json.encode()).hexdigest()
 

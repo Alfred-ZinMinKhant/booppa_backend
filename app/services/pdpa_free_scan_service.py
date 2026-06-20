@@ -508,6 +508,10 @@ def _build_response(website_url: str, findings: list[dict], score: int) -> dict[
         "total_findings": len(issue_findings),
         "free_finding": free_finding,
         "locked_findings": locked_findings,
+        # Full, untruncated finding list for internal consumers that need to
+        # ground on every observed signal (e.g. Evidence Pack document grounding).
+        # Additive — the teaser still uses free_finding/locked_findings above.
+        "findings": issue_findings,
         "unlock_cta": {
             "product_type": "pdpa_quick_scan",
             "price": "SGD 79",

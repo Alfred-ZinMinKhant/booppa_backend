@@ -4694,6 +4694,7 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
     from reportlab.lib import colors
     from reportlab.lib.units import inch
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from app.services.pdf_logo import draw_logo_header
 
     db = SessionLocal()
     sent = 0
@@ -4911,7 +4912,7 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                 body_style,
             ))
 
-            doc.build(story)
+            doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
             pdf_bytes = buf.getvalue()
 
             from app.services.storage import S3Service
@@ -6066,9 +6067,46 @@ def fulfill_evidence_pack_task(self, evidence_pack_id: str):
             row.status = "error"; row.error = "Missing intake"; db.commit()
             return
 
-        # 1. Generate the 7 documents.
+        # 0. Gather observed evidence so the documents reflect real signals, not
+        #    just the intake form. Best-effort — a scan failure never blocks the
+        #    pack; generation proceeds with whatever evidence is available.
+        scan_evidence: dict = {}
+        try:
+            from app.core.models import Report
+            domain = (intake.get("domain") or "").strip()
+            if not domain:
+                buyer_for_domain = db.query(User).filter(User.id == row.user_id).first()
+                domain = (getattr(buyer_for_domain, "website", "") or "").strip()
+            if domain:
+                from app.services.pdpa_free_scan_service import run_free_scan
+                try:
+                    scan_evidence["website_scan"] = run_free_scan(domain)
+                except Exception as se:
+                    logger.warning("[EvidencePack] website scan failed for %s: %s", domain, se)
+            # Reuse the buyer's most recent completed PDPA scan report if present.
+            prior_pdpa = (
+                db.query(Report)
+                .filter(
+                    Report.owner_id == row.user_id,
+                    Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
+                    Report.status == "completed",
+                )
+                .order_by(Report.created_at.desc())
+                .first()
+            )
+            if prior_pdpa and isinstance(prior_pdpa.assessment_data, dict):
+                pf = prior_pdpa.assessment_data.get("findings")
+                if isinstance(pf, list) and pf:
+                    scan_evidence["pdpa_report"] = {"findings": pf}
+        except Exception as ee:
+            logger.warning("[EvidencePack] evidence gathering error for %s: %s", evidence_pack_id, ee)
+        if scan_evidence:
+            row.scan_evidence = scan_evidence
+            db.commit()
+
+        # 1. Generate the 7 documents (grounded in scan_evidence when available).
         row.status = "generating"; db.commit()
-        pack = generate_evidence_pack(intake)
+        pack = generate_evidence_pack(intake, scan_evidence=scan_evidence or None)
         if pack.get("errors"):
             logger.warning("[EvidencePack] %s generation errors: %s", evidence_pack_id, pack["errors"])
 

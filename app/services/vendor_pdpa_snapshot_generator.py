@@ -26,6 +26,7 @@ from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from app.core.company import COMPANY_NAME
+from app.services.pdf_logo import draw_logo_header
 
 logger = logging.getLogger(__name__)
 
@@ -204,5 +205,5 @@ def generate_vendor_pdpa_snapshot_pdf(data: Dict[str, Any]) -> bytes:
         f"Prepared by {_xml_escape(COMPANY_NAME)} for {_xml_escape(company)} for informational "
         "purposes only. Not a statement of regulatory compliance.", s["small"]))
 
-    doc.build(story)
+    doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
     return buf.getvalue()

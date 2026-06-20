@@ -26,6 +26,7 @@ from reportlab.platypus import (
 )
 
 from app.core.company import COMPANY_NAME
+from app.services.pdf_logo import draw_logo_header
 
 logger = logging.getLogger(__name__)
 
@@ -301,5 +302,5 @@ def generate_trm_baseline_pdf(data: Dict[str, Any]) -> bytes:
         "purposes only and does not constitute legal or regulatory advice or a statement of MAS "
         "compliance.", s["small"]))
 
-    doc.build(story)
+    doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
     return buf.getvalue()

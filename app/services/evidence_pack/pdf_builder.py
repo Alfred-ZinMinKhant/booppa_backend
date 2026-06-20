@@ -21,6 +21,7 @@ from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 
 from app.core.config import settings
 from app.core.company import COMPANY_NAME
+from app.services.pdf_logo import LOGO_PATH
 
 
 try:
@@ -101,9 +102,22 @@ def _header_footer(canvas, doc):
     # Header bar
     canvas.setFillColor(INK)
     canvas.rect(0, H - 14*mm, W, 14*mm, fill=1, stroke=0)
-    canvas.setFillColor(TEAL)
-    canvas.setFont("Helvetica-Bold", 8)
-    canvas.drawString(MARGIN, H - 8*mm, "BOOPPA INTELLIGENCE")
+    # Logo (falls back to wordmark text if the asset is unavailable)
+    logo_drawn = False
+    if LOGO_PATH:
+        try:
+            logo_h = 7*mm
+            canvas.drawImage(
+                LOGO_PATH, MARGIN, H - 14*mm + (14*mm - logo_h) / 2,
+                height=logo_h, preserveAspectRatio=True, mask="auto",
+            )
+            logo_drawn = True
+        except Exception:
+            logo_drawn = False
+    if not logo_drawn:
+        canvas.setFillColor(TEAL)
+        canvas.setFont("Helvetica-Bold", 8)
+        canvas.drawString(MARGIN, H - 8*mm, "BOOPPA INTELLIGENCE")
     canvas.setFillColor(colors.white)
     canvas.setFont("Helvetica", 7)
     canvas.drawRightString(W - MARGIN, H - 8*mm, "PDPA Compliance Evidence Pack · BCEP-v1.1")

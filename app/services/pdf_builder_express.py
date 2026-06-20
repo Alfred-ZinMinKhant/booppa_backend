@@ -10,6 +10,7 @@ from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 import qrcode
 from io import BytesIO
+from app.services.pdf_logo import draw_logo_header
 import logging
 
 logger = logging.getLogger(__name__)
@@ -70,5 +71,5 @@ class RFPKitPDFBuilder:
         # ... (rest of PDF builder logic follows same pattern as prepared in exploration folder)
         # For migration, I'll ensure the content is rebranded correctly.
         
-        doc.build(story)
+        doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
         logger.info(f"✓ RFP Kit Evidence certificate created: {output_path}")
