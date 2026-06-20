@@ -6053,7 +6053,7 @@ def fulfill_evidence_pack_task(self, evidence_pack_id: str):
     from app.services.storage import S3Service
     from app.services.blockchain import BlockchainService
 
-    explorer = (getattr(settings, "POLYGON_EXPLORER_URL", "") or "https://amoy.polygonscan.com").rstrip("/")
+    explorer = settings.active_polygon_explorer_url.rstrip("/")
     db = SessionLocal()
     try:
         row = db.query(EvidencePack).filter(EvidencePack.id == evidence_pack_id).first()

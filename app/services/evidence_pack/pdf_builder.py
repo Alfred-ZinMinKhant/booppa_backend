@@ -22,8 +22,6 @@ from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 from app.core.config import settings
 from app.core.company import COMPANY_NAME
 
-# Explorer base for the anchoring network (Amoy testnet under Lean Mode).
-_EXPLORER_BASE = (getattr(settings, "POLYGON_EXPLORER_URL", "") or "https://amoy.polygonscan.com").rstrip("/")
 
 try:
     import qrcode  # optional — QR is a nice-to-have, not required
@@ -165,8 +163,9 @@ def _cover_page(pack: dict, doc_meta: dict) -> list:
     anchor = pack.get("anchoring", {}).get(doc_meta["doc_type"], {})
     tx_hash   = anchor.get("tx_hash", "PENDING")
     doc_hash  = pack.get("hashes", {}).get(doc_meta["doc_type"], "")
+    explorer_base = settings.active_polygon_explorer_url.rstrip("/")
     verify_url = anchor.get("verification_url") or (
-        f"{_EXPLORER_BASE}/tx/{tx_hash}" if tx_hash and tx_hash != "PENDING" else "Pending"
+        f"{explorer_base}/tx/{tx_hash}" if tx_hash and tx_hash != "PENDING" else "Pending"
     )
 
     chain_data = [
