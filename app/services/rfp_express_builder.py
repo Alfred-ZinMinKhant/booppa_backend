@@ -94,6 +94,7 @@ class RFPExpressBuilder:
         rfp_details: Optional[Dict] = None,
         db=None,
         product_type: str = "rfp_express",
+        allow_incomplete: bool = False,
     ) -> Dict[str, Any]:
         logger.info(f"RFP Kit Express: starting for {company_name} ({vendor_url})")
 
@@ -183,7 +184,16 @@ class RFPExpressBuilder:
         # regenerates. A fuller intake both feeds the AI prompt (fewer placeholders
         # generated) and the substitution pass (placeholders filled).
         residual_placeholders = self._count_residual_placeholders(qa_answers)
-        if residual_placeholders:
+        if residual_placeholders and allow_incomplete:
+            # Admin test-checkout / test_simulation path: a thin or empty brief
+            # would normally block delivery, but the end-to-end test must still
+            # yield a kit. Degrade the hard gate to a warning and build/anchor/
+            # deliver anyway, leaving the surviving placeholders in qa_answers.
+            logger.warning(
+                "[RFP] allow_incomplete=True — delivering %s with %d residual "
+                "placeholder(s) (test path)", company_name, residual_placeholders,
+            )
+        elif residual_placeholders:
             missing_fields = self._residual_placeholder_details(qa_answers)
             logger.warning(
                 "[RFP] BLOCKED delivery for %s — %d residual placeholder(s) remain "
