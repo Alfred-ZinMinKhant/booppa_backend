@@ -718,6 +718,10 @@ async def checkout_verify(session_id: str | None = None):
             "rfp_accelerator", "enterprise_bid_kit", "compliance_evidence_pack",
         }
         pending_rfp_intake_id = None
+        # Compliance Evidence Pack also defers the BCEP 7-document intake. Surface
+        # it so the success page can prompt the buyer to start the pack they paid
+        # for (not just the RFP brief). Always defined for the metadata-stripped path.
+        pending_evidence_pack_intake_id = None
         # `brief_satisfied` starts True for non-RFP products; gets cleared if
         # we discover a pending intake row for this session below. The intake
         # lookup runs unconditionally so a broken/missing product_type in
@@ -748,6 +752,27 @@ async def checkout_verify(session_id: str | None = None):
                     try:
                         _user = _db.query(_U).filter(_U.email == customer_email).first()
                         if _user:
+                            # Compliance Evidence Pack: surface the outstanding BCEP
+                            # intake for THIS session (session-scoped only, never
+                            # "latest regardless of status" — a prior cycle's row
+                            # would mislead the success page).
+                            try:
+                                from app.core.models_v13 import EvidencePack
+                                _ep = (
+                                    _db.query(EvidencePack)
+                                    .filter(
+                                        EvidencePack.user_id == _user.id,
+                                        EvidencePack.session_id == session_id,
+                                        EvidencePack.status == "intake_pending",
+                                    )
+                                    .order_by(EvidencePack.created_at.desc())
+                                    .first()
+                                )
+                                if _ep:
+                                    pending_evidence_pack_intake_id = str(_ep.id)
+                            except Exception as _ee:
+                                logger.warning("[checkout/verify] EvidencePack lookup failed: %s", _ee)
+
                             # Priority 1: a row tied to THIS session — authoritative
                             # for the current purchase, never overridden by prior cycles.
                             session_intake = (
@@ -830,6 +855,7 @@ async def checkout_verify(session_id: str | None = None):
                 "requires_brief": requires_brief,
                 "brief_satisfied": brief_satisfied,
                 "pending_rfp_intake_id": pending_rfp_intake_id,
+                "pending_evidence_pack_intake_id": pending_evidence_pack_intake_id,
             },
             # The pending-intake state flips as the webhook fires. Any
             # intermediate cache would serve a stale "no intake" response
