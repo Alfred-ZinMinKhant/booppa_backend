@@ -267,7 +267,7 @@ class RFPExpressBuilder:
         logger.info(f"RFP Kit Express complete in {elapsed:.1f}s for {company_name}")
 
         from app.core.config import settings
-        explorer_base = settings.POLYGON_EXPLORER_URL.rstrip("/")
+        explorer_base = settings.active_polygon_explorer_url.rstrip("/")
 
         is_complete = product_type == "rfp_complete"
         # Build labelled Q&A for frontend display, with verification source +
@@ -297,8 +297,8 @@ class RFPExpressBuilder:
             "qa_answers_count": len(qa_display),
             "tx_hash":        tx_hash,
             "polygonscan_url": f"{explorer_base}/tx/{tx_hash}" if tx_hash else None,
-            "network":        settings.POLYGON_NETWORK_NAME,
-            "testnet_notice": settings.POLYGON_TESTNET_NOTICE,
+            "network":        settings.active_polygon_network_name,
+            "testnet_notice": settings.blockchain_notice,
             "upsell_available": not is_complete,
             "upsell_product": None if is_complete else "rfp_kit_complete",
             "upsell_price":   None if is_complete else "SGD 599",
@@ -1083,7 +1083,7 @@ class RFPExpressBuilder:
                 evidence_hash,
                 metadata=f"rfp_express:vendor:{self.vendor_id}",
             )
-            logger.info(f"RFP Express anchored on {settings.POLYGON_NETWORK_NAME}: {tx}")
+            logger.info(f"RFP Express anchored on {settings.active_polygon_network_name}: {tx}")
             return tx
         except Exception as e:
             logger.warning(f"Blockchain anchor failed for RFP Express (non-blocking): {e}")
@@ -1557,7 +1557,7 @@ class RFPExpressBuilder:
             doc.add_paragraph(f"Generated: {datetime.now(timezone.utc).strftime('%d %b %Y %H:%M UTC')}")
             doc.add_paragraph(f"Report ID: {self.report_id}")
             if tx_hash:
-                doc.add_paragraph(f"Blockchain TX: {tx_hash} ({settings.POLYGON_NETWORK_NAME})")
+                doc.add_paragraph(f"Blockchain TX: {tx_hash} ({settings.active_polygon_network_name})")
             doc.add_paragraph("")
             scope_para = doc.add_paragraph(
                 "Scope of Assessment: This compliance pack is based on information provided by the "

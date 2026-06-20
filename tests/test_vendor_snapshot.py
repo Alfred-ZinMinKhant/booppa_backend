@@ -46,7 +46,7 @@ def test_first_cycle_digest_is_single_consolidated_welcome(test_db, mocker):
     async def fake_upload(self, pdf_bytes, report_id):
         return f"https://s3.example/{report_id}.pdf"
 
-    async def fake_email(self, to_email, subject, body_html):
+    async def fake_email(self, to_email, subject, body_html, **kwargs):
         captured["subject"] = subject
         captured["body"] = body_html
         return True
@@ -91,7 +91,7 @@ def test_health_check_links_snapshot_pdf(test_db, mocker):
         captured["report_id"] = report_id
         return f"https://s3.example/{report_id}.pdf"
 
-    async def fake_email(self, to_email, subject, body_html):
+    async def fake_email(self, to_email, subject, body_html, **kwargs):
         captured["to"] = to_email
         captured["body"] = body_html
         return True

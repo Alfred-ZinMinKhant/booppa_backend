@@ -1897,7 +1897,7 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
         # Step 2: Build verify URL
         verify_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/verify/{file_hash}"
         polygonscan_url = (
-            f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{tx_hash}"
+            f"{settings.active_polygon_explorer_url.rstrip('/')}/tx/{tx_hash}"
             if tx_hash
             else None
         )
@@ -1927,8 +1927,8 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                 "polygonscan_url": polygonscan_url,
                 "proof_header": "BOOPPA-PROOF-SG",
                 "schema_version": "1.0",
-                "network": settings.POLYGON_NETWORK_NAME,
-                "testnet_notice": settings.POLYGON_TESTNET_NOTICE,
+                "network": settings.active_polygon_network_name,
+                "testnet_notice": settings.blockchain_notice,
                 "payment_confirmed": True,
                 "tier": "pro",
                 "contact_email": contact_email,
@@ -1988,7 +1988,7 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                   {download_section}
                   <p style="color:#64748b;font-size:12px;">
                     Certificate ID: {report_id}<br>
-                    Network: {settings.POLYGON_NETWORK_NAME}
+                    Network: {settings.active_polygon_network_name}
                   </p>
                   <p>Thank you for using BOOPPA.</p>
                 </body></html>
@@ -2505,54 +2505,11 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         company_name = report.company_name or "Vendor"
         verify_url = f"https://www.booppa.io/verify/{report_id}"
 
-        # Step 1: Create or upsert VerifyRecord
-        verify = (
-            db.query(VerifyRecord).filter(VerifyRecord.vendor_id == vendor_id).first()
-        )
-        if verify:
-            verify.lifecycle_status = LifecycleStatus.ACTIVE
-            verify.compliance_score = max(verify.compliance_score or 0, 30)
-            verify.verification_level = VerificationLevel.BASIC
-            verify.last_refreshed_at = datetime.now(timezone.utc)
-            verify.company_name = company_name
-        else:
-            verify = VerifyRecord(
-                vendor_id=vendor_id,
-                company_name=company_name,
-                compliance_score=30,
-                verification_level=VerificationLevel.BASIC,
-                lifecycle_status=LifecycleStatus.ACTIVE,
-                correlation_id=str(report_id),
-            )
-            db.add(verify)
-        db.flush()
-
-        # Step 1b: Seed VendorSector from report metadata or assessment data
-        sector = (
-            (report.assessment_data or {}).get("sector")
-            or (report.assessment_data or {}).get("industry")
-            or (report.assessment_data or {}).get("business_sector")
-        )
-        if sector:
-            existing_sector = (
-                db.query(VendorSector)
-                .filter(
-                    VendorSector.vendor_id == vendor_id,
-                    VendorSector.sector == sector,
-                )
-                .first()
-            )
-            if not existing_sector:
-                db.add(VendorSector(vendor_id=vendor_id, sector=sector))
-                db.flush()
-
-        # ── Honest procurement readiness (audit integrity finding) ──────────
-        # Vendor Proof previously flat-awarded procurement_readiness=CONDITIONAL
-        # + confidence 30 + a green "Verified" badge to EVERY buyer, even one
-        # whose PDPA scan showed critical gaps — misleading procurement officers
-        # into reading the badge as a compliance endorsement. Derive the standing
-        # from the vendor's ACTUAL latest PDPA scan when one exists; otherwise
-        # mark it explicitly as identity-verified-only (compliance not assessed).
+        # ── Honest score, computed BEFORE we persist it ─────────────────────
+        # Derive the standing from the vendor's ACTUAL latest PDPA scan when one
+        # exists; otherwise it stays the identity-verified-only floor (30). This
+        # value (vp_confidence) is the single source for VerifyRecord, the
+        # snapshot, and VendorScore below — no more hardcoded 30s.
         from app.core.models import Report as _Report
 
         _latest_pdpa = (
@@ -2592,6 +2549,75 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             vp_readiness_label = "Action required — critical compliance gaps"
             vp_score_display = f"{_pdpa_compliance}/100"
 
+        _vp_score_int = int(round(vp_confidence))
+
+        # ── ACRA registry lookup (identity attestation) ─────────────────────
+        # Match the buyer's UEN against the imported ACRA registry so the
+        # certificate can state real registration details instead of nothing.
+        acra_info: dict = {"matched": False}
+        _uen = (report.assessment_data or {}).get("uen")
+        if _uen:
+            try:
+                from app.core.models_v10 import DiscoveredVendor
+
+                _dv = (
+                    db.query(DiscoveredVendor)
+                    .filter(DiscoveredVendor.uen == _uen)
+                    .first()
+                )
+                if _dv:
+                    acra_info = {
+                        "matched": True,
+                        "entity_type": _dv.entity_type,
+                        "registration_date": _dv.registration_date,
+                        "industry": _dv.industry,
+                        "source": _dv.source,
+                        "registry_company_name": _dv.company_name,
+                    }
+            except Exception as _acra_err:
+                logger.warning("[VendorProof] ACRA lookup failed for UEN %s: %s", _uen, _acra_err)
+
+        # Step 1: Create or upsert VerifyRecord
+        verify = (
+            db.query(VerifyRecord).filter(VerifyRecord.vendor_id == vendor_id).first()
+        )
+        if verify:
+            verify.lifecycle_status = LifecycleStatus.ACTIVE
+            verify.compliance_score = _vp_score_int
+            verify.verification_level = VerificationLevel.BASIC
+            verify.last_refreshed_at = datetime.now(timezone.utc)
+            verify.company_name = company_name
+        else:
+            verify = VerifyRecord(
+                vendor_id=vendor_id,
+                company_name=company_name,
+                compliance_score=_vp_score_int,
+                verification_level=VerificationLevel.BASIC,
+                lifecycle_status=LifecycleStatus.ACTIVE,
+                correlation_id=str(report_id),
+            )
+            db.add(verify)
+        db.flush()
+
+        # Step 1b: Seed VendorSector from report metadata or assessment data
+        sector = (
+            (report.assessment_data or {}).get("sector")
+            or (report.assessment_data or {}).get("industry")
+            or (report.assessment_data or {}).get("business_sector")
+        )
+        if sector:
+            existing_sector = (
+                db.query(VendorSector)
+                .filter(
+                    VendorSector.vendor_id == vendor_id,
+                    VendorSector.sector == sector,
+                )
+                .first()
+            )
+            if not existing_sector:
+                db.add(VendorSector(vendor_id=vendor_id, sector=sector))
+                db.flush()
+
         # Step 2: Create or upsert VendorStatusSnapshot
         snapshot = (
             db.query(VendorStatusSnapshot)
@@ -2624,23 +2650,77 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             db.query(VendorScore).filter(VendorScore.vendor_id == vendor_id).first()
         )
         if score_row:
-            if (score_row.compliance_score or 0) < 30:
-                score_row.compliance_score = 30
-            if (score_row.total_score or 0) < 30:
-                score_row.total_score = 30
+            if (score_row.compliance_score or 0) < _vp_score_int:
+                score_row.compliance_score = _vp_score_int
+            if (score_row.total_score or 0) < _vp_score_int:
+                score_row.total_score = _vp_score_int
             score_row.updated_at = datetime.now(timezone.utc)
         else:
             score_row = VendorScore(
                 vendor_id=vendor_id,
-                compliance_score=30,
-                total_score=30,
+                compliance_score=_vp_score_int,
+                total_score=_vp_score_int,
             )
             db.add(score_row)
+
+        # Step 3b: Generate the Vendor Proof certificate PDF → S3 → anchor.
+        # Non-fatal: a failure here still leaves the vendor verified; we just
+        # don't attach a downloadable certificate.
+        cert_url: str | None = None
+        cert_tx_hash: str | None = None
+        try:
+            from app.services.vendor_proof_generator import generate_vendor_proof_certificate
+            from app.services.storage import S3Service
+            import hashlib as _hashlib
+
+            cert_pdf = generate_vendor_proof_certificate(
+                company_name=company_name,
+                uen=_uen,
+                acra_data=acra_info,
+                score=(_pdpa_compliance if _pdpa_compliance is not None else "Identity verified only"),
+                verification_level="BASIC",
+                readiness_label=vp_readiness_label,
+                verified_on=datetime.now(timezone.utc).strftime("%d %B %Y"),
+                verify_url=verify_url,
+                network_name=settings.active_polygon_network_name,
+                explorer_url=settings.active_polygon_explorer_url,
+            )
+            cert_hash = _hashlib.sha256(cert_pdf).hexdigest()
+
+            s3 = S3Service()
+            cert_report_id = f"vendor-proof-{report_id}"
+            cert_url = await s3.upload_pdf(cert_pdf, cert_report_id)
+
+            try:
+                from app.services.blockchain import BlockchainService
+
+                cert_tx_hash = await BlockchainService().anchor_evidence(
+                    cert_hash, metadata=f"vendor_proof:{report_id}",
+                )
+            except Exception as _anchor_err:
+                logger.warning("[VendorProof] Anchor failed for %s: %s", report_id, _anchor_err)
+
+            report.s3_url = cert_url
+            report.file_key = f"reports/{cert_report_id}.pdf"
+            report.audit_hash = cert_hash
+            if cert_tx_hash:
+                report.tx_hash = cert_tx_hash
+        except Exception as _cert_err:
+            logger.error("[VendorProof] Certificate generation failed for %s: %s", report_id, _cert_err)
 
         # Mark report complete
         ad = report.assessment_data or {}
         ad["vendor_proof_fulfilled"] = True
         ad["verify_url"] = verify_url
+        ad["compliance_score"] = _vp_score_int
+        ad["acra_verified"] = acra_info.get("matched", False)
+        if acra_info.get("matched"):
+            ad["acra_entity_type"] = acra_info.get("entity_type")
+            ad["acra_registration_date"] = acra_info.get("registration_date")
+        if cert_url:
+            ad["certificate_url"] = cert_url
+        if cert_tx_hash:
+            ad["certificate_tx_hash"] = cert_tx_hash
         report.assessment_data = ad
         flag_modified(report, "assessment_data")
         report.status = "completed"
@@ -2700,6 +2780,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                   {badge_html.replace('<', '&lt;').replace('>', '&gt;')}
                 </div>
                 <div style="margin-top:16px;">{badge_html}</div>
+                {("<p style='margin-top:20px;'><a href='" + cert_url + "' style='background:#0f172a;color:#fff;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;'>Download your Vendor Proof certificate (PDF) ↓</a></p>") if cert_url else ""}
                 <p style="margin-top:24px;">
                   <a href="https://www.booppa.io/vendor/dashboard" style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">
                     Go to Dashboard →

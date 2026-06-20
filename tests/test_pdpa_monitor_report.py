@@ -40,7 +40,7 @@ def test_task_builds_delta_from_two_reports(test_db, mocker):
         captured["report_id"] = report_id
         return f"https://s3.example/{report_id}.pdf"
 
-    async def fake_email(self, to_email, subject, body_html):
+    async def fake_email(self, to_email, subject, body_html, **kwargs):
         captured["to"] = to_email
         captured["subject"] = subject
         captured["body"] = body_html
@@ -83,7 +83,9 @@ def test_task_builds_delta_from_two_reports(test_db, mocker):
     assert captured.get("pdf", b"").startswith(b"%PDF")
     assert captured["to"] == "monitor+report@booppa.io"
     assert "Monitor Report" in captured["subject"]
-    assert "Download your Monitor Report" in captured["body"]
+    # The report PDF now ships as an email attachment (Fix 1), so the body
+    # references the attached PDF rather than an expiring download link.
+    assert "attached to this email" in captured["body"]
     # The report compares the two scans (61 current vs 54 previous).
     txt = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(captured["pdf"])).pages)
     assert "61" in txt and "54" in txt

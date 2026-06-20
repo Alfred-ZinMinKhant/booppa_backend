@@ -61,7 +61,7 @@ def _build_verify_payload(report: Report) -> dict:
 
     qr_image = _build_qr_image(verify_url) if verify_url else None
     polygonscan_url = (
-        f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{tx_hash}" if tx_hash else None
+        f"{settings.active_polygon_explorer_url.rstrip('/')}/tx/{tx_hash}" if tx_hash else None
     )
 
     return {

@@ -737,7 +737,7 @@ async def get_certificate(report_id: str, session_id: str | None = None, backgro
         verification = None
         if report.audit_hash:
             verify_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/verify/{report.audit_hash}"
-            polygonscan_url = f"{settings.POLYGON_EXPLORER_URL.rstrip('/')}/tx/{real_tx}" if real_tx else None
+            polygonscan_url = f"{settings.active_polygon_explorer_url.rstrip('/')}/tx/{real_tx}" if real_tx else None
 
             anchored = bool(assessment.get("blockchain_anchored", False))
             anchored_at = assessment.get("blockchain_anchored_at")
@@ -750,8 +750,8 @@ async def get_certificate(report_id: str, session_id: str | None = None, backgro
                 "schema_version": "1.0",
                 "anchored": anchored,
                 "anchored_at": anchored_at,
-                "network": settings.POLYGON_NETWORK_NAME,
-                "testnet_notice": settings.POLYGON_TESTNET_NOTICE,
+                "network": settings.active_polygon_network_name,
+                "testnet_notice": settings.blockchain_notice,
             }
 
         return {

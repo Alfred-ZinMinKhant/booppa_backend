@@ -348,7 +348,7 @@ async def upload_evidence(
     except Exception as exc:
         logger.warning("Blockchain anchor failed for evidence upload (will retry later): %s", exc)
 
-    explorer_base = settings.POLYGON_EXPLORER_URL.rstrip("/")
+    explorer_base = settings.active_polygon_explorer_url.rstrip("/")
     verify_url = (
         f"{explorer_base}/tx/{tx_hash}"
         if tx_hash else None
@@ -365,8 +365,8 @@ async def upload_evidence(
             "status": anchor_status,
             "tx_hash": tx_hash,
             "verify_url": verify_url,
-            "network": settings.POLYGON_NETWORK_NAME,
-            "testnet_notice": settings.POLYGON_TESTNET_NOTICE,
+            "network": settings.active_polygon_network_name,
+            "testnet_notice": settings.blockchain_notice,
         }
     )
     db.add(proof)
@@ -384,8 +384,8 @@ async def upload_evidence(
         "created_at": proof.created_at.isoformat(),
         "tx_hash": proof.metadata_json.get("tx_hash"),
         "verify_url": proof.metadata_json.get("verify_url"),
-        "network": settings.POLYGON_NETWORK_NAME,
-        "testnet_notice": settings.POLYGON_TESTNET_NOTICE,
+        "network": settings.active_polygon_network_name,
+        "testnet_notice": settings.blockchain_notice,
         "anchor_status": anchor_status,
     }
 

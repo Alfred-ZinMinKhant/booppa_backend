@@ -102,6 +102,14 @@ celery_app.conf.update(
             "task": "send_vendor_pro_daily_alerts",
             "schedule": crontab(hour=0, minute=0),
         },
+        # Vendor Pro: monthly Competitor Awareness Signals. Fires daily at
+        # 08:30 UTC; the task filters to subscribers whose anniversary day
+        # matches today (same per-subscriber anniversary pattern as the other
+        # monthly deliverables), so each subscriber receives it once a month.
+        "send-vendor-pro-competitor-signals-monthly": {
+            "task": "send_vendor_pro_monthly_competitor_signals",
+            "schedule": crontab(day_of_month="*", hour=8, minute=30),
+        },
         # Vendor Pro subscribers: quarterly PDPA rescans on the 1st of
         # Jan/Apr/Jul/Oct at 03:30 UTC (30 minutes after PDPA Monitor's
         # monthly rescan window so the worker queue doesn't double-spike).

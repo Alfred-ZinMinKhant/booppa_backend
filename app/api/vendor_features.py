@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel, Field, EmailStr
 from sqlalchemy.orm import Session
 
@@ -627,6 +627,16 @@ def get_trm(
             return 999
     rows.sort(key=lambda r: _num(r.control_ref))
 
+    # Evidence counts per control (single grouped query, avoids N+1).
+    from app.core.models_enterprise import TrmEvidence
+    from sqlalchemy import func as _func
+    _ev_counts = dict(
+        db.query(TrmEvidence.control_id, _func.count(TrmEvidence.id))
+        .filter(TrmEvidence.control_id.in_([r.id for r in rows] or [None]))
+        .group_by(TrmEvidence.control_id)
+        .all()
+    )
+
     # Roll-up: 13 statuses → compact summary
     by_status = {"not_started": 0, "in_progress": 0, "compliant": 0, "gap": 0}
     by_risk = {"low": 0, "medium": 0, "high": 0, "critical": 0}
@@ -653,6 +663,7 @@ def get_trm(
                 "status": r.status,
                 "risk_rating": r.risk_rating,
                 "gap_analysis": r.gap_analysis,
+                "evidence_count": int(_ev_counts.get(r.id, 0)),
                 "updated_at": r.updated_at.isoformat() if r.updated_at else None,
             }
             for r in rows
@@ -733,3 +744,165 @@ async def run_trm_gap_analysis(
         "gap_analysis": ctrl.gap_analysis,
         "updated_at": ctrl.updated_at.isoformat() if ctrl.updated_at else None,
     }
+
+
+# ── MAS TRM — per-control evidence (upload / list / delete) ────────────────────
+
+_TRM_EVIDENCE_EXTS = {".pdf", ".docx", ".doc", ".png", ".jpg", ".jpeg", ".txt", ".csv", ".xlsx"}
+_TRM_EVIDENCE_MAX_BYTES = 50 * 1024 * 1024  # 50 MB, matches notarize.py
+
+
+def _owned_trm_control(db: Session, user: User, control_id: str):
+    """Resolve a TrmControl scoped to the caller's org, or raise 404/422."""
+    import uuid as _uuid
+    from app.core.models_enterprise import TrmControl
+    try:
+        cid = _uuid.UUID(control_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid control id")
+    org = _get_or_create_org(db, user)
+    ctrl = (
+        db.query(TrmControl)
+        .filter(TrmControl.id == cid, TrmControl.organisation_id == org.id)
+        .first()
+    )
+    if not ctrl:
+        raise HTTPException(status_code=404, detail="Control not found")
+    return org, ctrl
+
+
+@router.post("/trm/{control_id}/evidence")
+async def upload_trm_evidence(
+    control_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Attach an evidence file to a TRM control: validate → S3 → hash → row."""
+    from app.core.models_enterprise import TrmEvidence
+    from app.services.storage import S3Service
+
+    _require_feature(current_user, "dashboard", "MAS TRM dashboard")
+    org, ctrl = _owned_trm_control(db, current_user, control_id)
+
+    filename = (file.filename or "evidence").replace("/", "-")
+    ext = ("." + filename.rsplit(".", 1)[1].lower()) if "." in filename else ""
+    if ext not in _TRM_EVIDENCE_EXTS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported file type '{ext or 'none'}'. Allowed: {', '.join(sorted(_TRM_EVIDENCE_EXTS))}",
+        )
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=422, detail="Empty file.")
+    if len(data) > _TRM_EVIDENCE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds the 50 MB limit.")
+
+    file_hash = hashlib.sha256(data).hexdigest()
+    s3 = S3Service()
+    s3_key = f"trm-evidence/{org.id}/{ctrl.id}/{file_hash[:12]}-{filename}"
+    try:
+        s3.s3_client.put_object(
+            Bucket=s3.bucket, Key=s3_key, Body=data,
+            ContentType=file.content_type or "application/octet-stream",
+            Metadata={"org-id": str(org.id), "control-id": str(ctrl.id), "file-hash": file_hash},
+        )
+    except Exception as e:
+        logger.error("[TRMEvidence] S3 upload failed for control %s: %s", ctrl.id, e)
+        raise HTTPException(status_code=502, detail="Evidence upload failed. Please retry.")
+
+    ev = TrmEvidence(control_id=ctrl.id, file_name=filename, s3_key=s3_key, hash_value=file_hash)
+    db.add(ev)
+    db.commit()
+    db.refresh(ev)
+    return {
+        "id": str(ev.id),
+        "file_name": ev.file_name,
+        "hash_value": ev.hash_value,
+        "uploaded_at": ev.uploaded_at.isoformat() if ev.uploaded_at else None,
+    }
+
+
+@router.get("/trm/{control_id}/evidence")
+def list_trm_evidence(
+    control_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List evidence files for a control, with short-lived download URLs."""
+    from app.core.models_enterprise import TrmEvidence
+    from app.services.storage import S3Service
+
+    _require_feature(current_user, "dashboard", "MAS TRM dashboard")
+    _org, ctrl = _owned_trm_control(db, current_user, control_id)
+
+    rows = (
+        db.query(TrmEvidence)
+        .filter(TrmEvidence.control_id == ctrl.id)
+        .order_by(TrmEvidence.uploaded_at.desc())
+        .all()
+    )
+    s3 = S3Service()
+
+    def _url(key: str | None) -> str | None:
+        if not key:
+            return None
+        try:
+            return s3.s3_client.generate_presigned_url(
+                "get_object", Params={"Bucket": s3.bucket, "Key": key}, ExpiresIn=3600,
+            )
+        except Exception:
+            return None
+
+    return {
+        "items": [
+            {
+                "id": str(r.id),
+                "file_name": r.file_name,
+                "hash_value": r.hash_value,
+                "tx_hash": r.tx_hash,
+                "uploaded_at": r.uploaded_at.isoformat() if r.uploaded_at else None,
+                "download_url": _url(r.s3_key),
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.delete("/trm/{control_id}/evidence/{evidence_id}")
+def delete_trm_evidence(
+    control_id: str,
+    evidence_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Remove an evidence file (DB row + S3 object)."""
+    import uuid as _uuid
+    from app.core.models_enterprise import TrmEvidence
+    from app.services.storage import S3Service
+
+    _require_feature(current_user, "dashboard", "MAS TRM dashboard")
+    _org, ctrl = _owned_trm_control(db, current_user, control_id)
+    try:
+        eid = _uuid.UUID(evidence_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid evidence id")
+
+    ev = (
+        db.query(TrmEvidence)
+        .filter(TrmEvidence.id == eid, TrmEvidence.control_id == ctrl.id)
+        .first()
+    )
+    if not ev:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+
+    if ev.s3_key:
+        try:
+            import asyncio as _asyncio
+            _asyncio.run(S3Service().delete_file(ev.s3_key))
+        except Exception as e:
+            logger.warning("[TRMEvidence] S3 delete failed for %s: %s", ev.s3_key, e)
+
+    db.delete(ev)
+    db.commit()
+    return {"deleted": True, "id": evidence_id}
