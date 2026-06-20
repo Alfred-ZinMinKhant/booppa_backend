@@ -50,6 +50,60 @@ def get_schema():
     }
 
 
+@router.get("/status")
+def get_status(token: str | None = Security(oauth2_scheme), db: Session = Depends(get_db)):
+    """Level-2 standing for the PDPA report page: whether the declaration is
+    drafted/submitted, and once fulfilled, the anchored record (fresh download
+    URL + blockchain tx) so the report can present it as part of the deliverable."""
+    from app.core.models import Report
+    from app.core.config import settings
+
+    user = _resolve_user(token, db)
+    decls = (
+        db.query(PdpaSelfDeclaration)
+        .filter(PdpaSelfDeclaration.user_id == user.id)
+        .all()
+    )
+    has_draft = any(d.status == "draft" for d in decls)
+    submitted = any(d.status == "submitted" for d in decls)
+
+    report = (
+        db.query(Report)
+        .filter(Report.owner_id == user.id, Report.framework == "pdpa_self_declaration")
+        .order_by(Report.created_at.desc())
+        .first()
+    )
+
+    download_url = None
+    tx_hash = None
+    anchored_at = None
+    if report:
+        tx_hash = report.tx_hash
+        ad = report.assessment_data if isinstance(report.assessment_data, dict) else {}
+        anchored_at = ad.get("blockchain_anchored_at")
+        s3_key = ad.get("s3_key")
+        if s3_key:
+            try:
+                from app.services.storage import S3Service
+                s3 = S3Service()
+                download_url = s3.s3_client.generate_presigned_url(
+                    "get_object", Params={"Bucket": s3.bucket, "Key": s3_key}, ExpiresIn=604800,
+                )
+            except Exception:
+                download_url = ad.get("s3_url")
+
+    return {
+        "has_draft": has_draft,
+        "submitted": submitted,
+        "completed": report is not None,
+        "download_url": download_url,
+        "tx_hash": tx_hash,
+        "anchored_at": anchored_at,
+        "network": settings.active_polygon_network_name,
+        "explorer_url": settings.active_polygon_explorer_url.rstrip("/"),
+    }
+
+
 @router.get("/intake")
 def get_draft(token: str | None = Security(oauth2_scheme), db: Session = Depends(get_db)):
     user = _resolve_user(token, db)
