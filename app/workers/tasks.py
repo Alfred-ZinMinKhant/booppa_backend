@@ -1895,6 +1895,7 @@ def fulfill_rfp_task(
     rfp_description: str | None = None,
     session_id: str | None = None,
     intake_data: dict | None = None,
+    allow_incomplete: bool = False,
 ):
     """Celery task: generate and deliver the RFP Kit evidence package."""
     try:
@@ -1908,6 +1909,7 @@ def fulfill_rfp_task(
             rfp_description=rfp_description,
             session_id=session_id,
             intake_data=intake_data,
+            allow_incomplete=allow_incomplete,
         ))
         logger.info(f"RFP package fulfilled for vendor {vendor_id} session {session_id}")
     except Exception as exc:
@@ -6194,6 +6196,7 @@ def fulfill_evidence_pack_task(self, evidence_pack_id: str):
                 f'{DOC_META.get(dt, {}).get("title", dt)}</a></li>'
                 for dt, u in download_urls.items()
             )
+            network = settings.active_polygon_network_name
             body_html = f"""
             <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:620px;margin:0 auto;">
               <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
@@ -6206,7 +6209,10 @@ def fulfill_evidence_pack_task(self, evidence_pack_id: str):
                    authorised representative must review, correct, and sign it before it carries
                    evidentiary value.</p>
                 <ul style="font-size:14px;padding-left:20px;">{links}</ul>
-                <p style="color:#64748b;font-size:12px;">Anchored on the Polygon Amoy testnet for
+                <p style="color:#334155;font-size:14px;">Your Compliance Evidence Pack also includes a
+                   <strong>PDPA Snapshot scan</strong> and an <strong>RFP Complete kit</strong>. These
+                   arrive in their own emails as each finishes generating.</p>
+                <p style="color:#64748b;font-size:12px;">Anchored on the {network} for
                    tamper-checking. A testnet timestamp evidences existence; it is not a mainnet or
                    RFC 3161 timestamp. Not legal advice; does not certify PDPA compliance.</p>
               </div>

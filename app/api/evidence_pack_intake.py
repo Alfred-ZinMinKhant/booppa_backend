@@ -68,6 +68,59 @@ def list_pending(
     }
 
 
+# Document-type → display title, mirrors DOC_META in
+# app/services/evidence_pack/pdf_builder.py. Kept here so the workflow hub can
+# render the 7-document list with stable ordering even before generation.
+_DOC_ORDER = [
+    ("dpmp", "Data Protection Management Programme"),
+    ("ropa", "Record of Processing Activities (ROPA)"),
+    ("data_inventory", "Data Inventory & Retention Schedule"),
+    ("vendor_register", "Third-Party Processor Register & DPA Checklist"),
+    ("breach_runbook", "Data Breach Response Runbook"),
+    ("training", "Staff Training Register & Completion Evidence"),
+    ("review_log", "Periodic Security Review Log"),
+]
+
+
+@router.get("/latest")
+def latest_pack(
+    token: str | None = Security(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    """The buyer's most recent Evidence Pack (any status) for the workflow hub.
+
+    Powers the 7-document section on /compliance/cover-sheet so buyers can see
+    the BCEP pack's progress (intake_pending → generating → ready) and download
+    each document inline. Returns {pack: null} when the account has none.
+    """
+    user = _resolve_user(token, db)
+    row = (
+        db.query(EvidencePack)
+        .filter(EvidencePack.user_id == user.id)
+        .order_by(EvidencePack.created_at.desc())
+        .first()
+    )
+    if not row:
+        return {"pack": None, "documents": [d[1] for d in _DOC_ORDER]}
+    urls = row.download_urls or {}
+    return {
+        "pack": {
+            "id": str(row.id),
+            "pack_id": row.pack_id,
+            "status": row.status,
+            "organisation": row.organisation,
+            "session_id": row.session_id,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            # Ordered list so the UI renders the 7 docs consistently whether or
+            # not generation has produced download URLs yet.
+            "documents": [
+                {"doc_type": dt, "title": title, "download_url": urls.get(dt)}
+                for dt, title in _DOC_ORDER
+            ],
+        }
+    }
+
+
 @router.get("/{pack_row_id}")
 def get_intake(
     pack_row_id: str,

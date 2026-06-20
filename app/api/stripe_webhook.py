@@ -1715,6 +1715,10 @@ async def _fulfill_bundle(
                     rfp_description=rfp_desc,
                     session_id=session_id,
                     intake_data=None,
+                    # This branch is admin test checkout only — ship a kit even
+                    # when the canned brief is thin/empty (don't block on
+                    # residual placeholders), so the e2e test yields an RFP.
+                    allow_incomplete=True,
                 )
                 logger.info(
                     f"[Bundle:{product_type}] Queued fulfill_rfp_task ({rfp_product}) "
@@ -1749,9 +1753,20 @@ async def _fulfill_bundle(
             sections.append("""
                       <p style="color:#334155;font-size:14px;">📄 Your <strong>PDPA Snapshot</strong> scan is running now — the report arrives by email shortly.</p>""")
 
-        if components.get("cover_sheet"):
+        # RFP Complete kit is part of the Compliance Evidence Pack. The brief CTA
+        # below is only shown when an intake is still outstanding (real purchase);
+        # on the test/auto path the kit generates straight away, so announce it
+        # here too rather than leaving RFP unmentioned in the bundle email.
+        if product_type == "compliance_evidence_pack" and components.get("rfp") and not pending_intake_id:
             sections.append("""
-                      <p style="color:#334155;font-size:14px;">🔗 Your <strong>Compliance Cover Sheet</strong> is generated once your PDPA scan and RFP kit are ready; we'll email you to sign &amp; anchor it.</p>""")
+                      <p style="color:#334155;font-size:14px;">📑 Your <strong>RFP Complete kit</strong> is being generated — the GeBIZ-ready kit arrives by email shortly.</p>""")
+
+        # NOTE: the legacy Compliance Cover Sheet line was removed here. The
+        # cover-sheet flow is retired for compliance_evidence_pack — the SKU now
+        # ships the BCEP 7-document governance pack (announced via its own intake
+        # CTA below) instead of a signed cover sheet. `cover_sheet` lingers in
+        # BUNDLE_COMPONENTS for the credit-pool bookkeeping above, not for an
+        # actual sheet, so announcing one here misled buyers.
 
         # Evidence Pack intake CTA — only when an intake is still outstanding
         # (real purchase / first cycle). Test + cycle-reuse paths auto-queue the
@@ -2180,6 +2195,7 @@ async def _fulfill_rfp_package(
     rfp_description: str | None = None,
     session_id: str | None = None,
     intake_data: dict | None = None,
+    allow_incomplete: bool = False,
 ) -> None:
     """Background task: generate and deliver the RFP Kit package after payment."""
     db = SessionLocal()
@@ -2198,6 +2214,7 @@ async def _fulfill_rfp_package(
             rfp_details=rfp_details,
             db=db,
             product_type=product_type,
+            allow_incomplete=allow_incomplete,
         )
         # HARD GATE (audit fix): the builder blocks delivery when any
         # [Verify:]/[FILL IN] placeholder survives intake substitution. Do NOT

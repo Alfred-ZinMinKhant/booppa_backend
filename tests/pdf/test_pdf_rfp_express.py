@@ -249,3 +249,41 @@ async def test_rfp_express_blocks_when_ai_fails_and_template_has_placeholders(
     # Nothing was delivered: no download URL, no kit email.
     assert "download_url" not in result
     assert not any("RFP Kit" in m["subject"] for m in email_capture)
+
+
+@pytest.mark.asyncio
+async def test_rfp_allow_incomplete_delivers_despite_placeholders(
+    _rfp_mocks, mocker, s3_bucket, email_capture
+):
+    """Admin test-checkout bypass: with `allow_incomplete=True` a thin/empty
+    brief that leaves residual placeholders no longer blocks — the kit is built,
+    anchored, uploaded and emailed anyway so the end-to-end test yields an RFP.
+    Mirrors the block test above but flips only the flag.
+    """
+    async def _ai_boom(self, messages):
+        raise RuntimeError("AI provider down")
+    from app.services.booppa_ai_service import BooppaAIService
+    mocker.patch.object(BooppaAIService, "_call_deepseek", _ai_boom)
+
+    from app.services.rfp_express_builder import RFPExpressBuilder
+    builder = RFPExpressBuilder(
+        vendor_id="rfp_testco@example.test",
+        vendor_email="rfp_testco@example.test",
+        session_id="cs_test_allow_incomplete",
+    )
+    result = await builder.generate_express_package(
+        vendor_url="https://acme.test",
+        company_name="Acme Pte Ltd",
+        rfp_details={"description": "Test fallback"},  # no intake facts → placeholders remain
+        db=None,
+        product_type="rfp_express",
+        allow_incomplete=True,
+    )
+
+    # Delivered, not blocked.
+    assert result.get("blocked") is not True
+    assert result["success"] is True
+    assert result["download_url"].startswith("https://")
+    assert result["tx_hash"] == _FAKE_TX_HASH
+    # The kit email was sent.
+    assert any("RFP Kit" in m["subject"] for m in email_capture)
