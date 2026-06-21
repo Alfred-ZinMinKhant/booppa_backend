@@ -83,9 +83,14 @@ async def vendor_insights(
     from app.services.vendor_active_insights import (
         get_score_trend, get_sector_benchmark, get_tender_matches,
     )
+    from app.billing.enforcement import VENDOR_PRO_PLAN_KEYS
     vendor_id = str(current_user.id)
-    matches = get_tender_matches(db, vendor_id, limit=5)
+    is_pro = (getattr(current_user, "plan", "") or "").lower().strip() in VENDOR_PRO_PLAN_KEYS
+    matches = get_tender_matches(
+        db, vendor_id, limit=8 if is_pro else 5, with_win_probability=is_pro
+    )
     return {
+        "isPro": is_pro,
         "trend": get_score_trend(db, vendor_id),
         "sectorBenchmark": get_sector_benchmark(db, vendor_id),
         "tenderMatches": [
@@ -98,6 +103,7 @@ async def vendor_insights(
                 "label": m.get("bid_label"),
                 "reason": m.get("bid_reason"),
                 "confidence": m.get("bid_confidence"),
+                "winProbability": m.get("win_probability"),
             }
             for m in matches
         ],

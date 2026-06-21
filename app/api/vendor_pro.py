@@ -38,6 +38,29 @@ def require_vendor_pro(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+@router.get("/monthly-report.pdf")
+def monthly_report(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_vendor_pro),
+):
+    """Stream the consolidated Vendor Pro Monthly Intelligence Report on demand.
+
+    Reuses `build_pro_report_pdf` — the same assembler behind the email digest —
+    so the download never diverges from the emailed copy. 403 for non-Pro.
+    """
+    from io import BytesIO
+    from fastapi.responses import StreamingResponse
+    from app.services.vendor_pro_report_generator import build_pro_report_pdf
+
+    pdf = build_pro_report_pdf(db, str(user.id), company=getattr(user, "company", None))
+    safe = (getattr(user, "company", None) or "report").replace("/", "-").replace(" ", "-")
+    return StreamingResponse(
+        BytesIO(pdf),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="BOOPPA-Vendor-Pro-Report-{safe}.pdf"'},
+    )
+
+
 @router.get("/competitor-signals")
 def competitor_signals(
     tenderNo: str = Query(..., description="GeBIZ tender number"),
