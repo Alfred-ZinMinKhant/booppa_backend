@@ -1019,9 +1019,20 @@ class RFPExpressBuilder:
                 re.compile(r"\[\s*Verify:[^\]]*(?:BCP|business continuity|DR plan|last test(?:ed)?)[^\]]*\]", re.I),
                 f"last tested {_v('bcp_last_tested')}",
             ))
-        if _v("training_frequency"):
+        # New-hire training window — must precede the generic training-cadence
+        # pattern below so "[Verify: new-hire training window]" is not consumed by
+        # the cadence rule.
+        if _v("training_newhire_window"):
             subs.append((
-                re.compile(r"\[\s*Verify:[^\]]*(?:cadence|training|frequency)[^\]]*\]", re.I),
+                re.compile(r"\[\s*Verify:[^\]]*(?:new[- ]?hire|new[- ]?joiner|onboarding)[^\]]*\]", re.I),
+                f"new-hire training within {_v('training_newhire_window')}",
+            ))
+        if _v("training_frequency"):
+            # Anchor cadence/frequency right after "Verify:" (optionally prefixed
+            # with "training") so this does NOT swallow other cadence placeholders
+            # like "[Verify: scan cadence]" or "[Verify: access review cadence]".
+            subs.append((
+                re.compile(r"\[\s*Verify:\s*(?:training\s+)?(?:cadence|frequency|awareness training)[^\]]*\]", re.I),
                 str(_v("training_frequency")),
             ))
         if _v("key_processors"):
@@ -1029,6 +1040,68 @@ class RFPExpressBuilder:
                 re.compile(r"\[\s*Verify:[^\]]*(?:sub-?processors?|processors?)[^\]]*\]", re.I),
                 str(_v("key_processors")),
             ))
+
+        # ── Remaining categories (audit fix: full placeholder coverage) ──────
+        # Each fills the [Verify: …] marker the AI emits for that fact so the
+        # hard gate is satisfiable once the buyer supplies it in intake.
+        if _v("soc2_status"):
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*SOC[\s-]?2[^\]]*\]", re.I),
+                         f"SOC 2 status: {_v('soc2_status')}"))
+        _dpo_name, _dpo_email, _dpo_reg = _v("dpo_name"), _v("dpo_email"), _v("dpo_pdpc_reg")
+        if _dpo_reg:
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*PDPC[^\]]*\]", re.I),
+                         f"PDPC registration {_dpo_reg}"))
+        if _dpo_name or _dpo_email:
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*(?:DPO|data protection officer)[^\]]*\]", re.I),
+                         "; ".join(p for p in [_dpo_name, _dpo_email] if p)))
+        if _v("bcp_rto"):
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*RTO[^\]]*\]", re.I), f"RTO {_v('bcp_rto')}"))
+        if _v("bcp_rpo"):
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*RPO[^\]]*\]", re.I), f"RPO {_v('bcp_rpo')}"))
+        if _v("access_review_cadence"):
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*(?:access review|privileged access|review cadence)[^\]]*\]", re.I),
+                         f"privileged access reviewed {_v('access_review_cadence')}"))
+        if _v("mfa_privileged"):
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*(?:MFA|multi[- ]?factor)[^\]]*\]", re.I),
+                         str(_v("mfa_privileged"))))
+        if _v("patch_sla"):
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*(?:patch|remediation)[^\]]*\]", re.I),
+                         f"critical patches within {_v('patch_sla')}"))
+        if _v("scan_cadence"):
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*(?:scan|vulnerability)[^\]]*\]", re.I),
+                         f"vulnerability scans {_v('scan_cadence')}"))
+        # Encryption — specific (at rest / in transit / key mgmt) before generic.
+        if _v("encryption_at_rest"):
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*(?:encryption at rest|at[- ]rest)[^\]]*\]", re.I),
+                         f"{_v('encryption_at_rest')} at rest"))
+        if _v("encryption_in_transit"):
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*(?:encryption in transit|in[- ]transit)[^\]]*\]", re.I),
+                         f"{_v('encryption_in_transit')} in transit"))
+        if _v("key_management"):
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*(?:key management|key[- ]mgmt)[^\]]*\]", re.I),
+                         str(_v("key_management"))))
+        if _v("encryption_at_rest") or _v("encryption_in_transit"):
+            _enc = " / ".join(p for p in [
+                (f"{_v('encryption_at_rest')} at rest" if _v("encryption_at_rest") else ""),
+                (f"{_v('encryption_in_transit')} in transit" if _v("encryption_in_transit") else ""),
+            ] if p)
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*encryption[^\]]*\]", re.I), _enc))
+        if _v("log_retention"):
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*(?:retention|audit log|log retention)[^\]]*\]", re.I),
+                         f"logs retained {_v('log_retention')}"))
+        if _v("log_monitoring"):
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*(?:monitoring|anomaly)[^\]]*\]", re.I),
+                         str(_v("log_monitoring"))))
+        if _v("incident_notification_window"):
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*(?:notification window|internal notification|incident)[^\]]*\]", re.I),
+                         f"internal notification within {_v('incident_notification_window')}"))
+        if _v("cross_border_mechanism"):
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*(?:cross[- ]border|data cent(?:re|er)|hosting region|transfer mechanism)[^\]]*\]", re.I),
+                         str(_v("cross_border_mechanism"))))
+        if _v("subcontracting"):
+            subs.append((re.compile(r"\[\s*Verify:[^\]]*(?:subcontract|offshor)[^\]]*\]", re.I),
+                         str(_v("subcontracting"))))
+
         if not subs:
             return qa_answers
 
@@ -1409,18 +1482,39 @@ class RFPExpressBuilder:
             attach("iso_certifications", "website", "SOC 2 referenced on your website")
         if ws.get("iso_27701_mentioned"):
             attach("iso_certifications", "website", "ISO 27701 referenced on your website")
+        if intake.get("soc2_status") not in _empty:
+            attach("iso_certifications", "intake", f"Intake: soc2_status={intake['soc2_status']}")
+
+        # ── dpo PDPC registration ──────────────────────────────────────────
+        if intake.get("dpo_pdpc_reg") not in _empty:
+            attach("dpo_appointed", "intake", f"DPO PDPC registration: {intake['dpo_pdpc_reg']}")
 
         # ── business_continuity ────────────────────────────────────────────
         if intake.get("bcp_last_tested") not in _empty:
             attach("business_continuity", "intake", f"BCP last tested: {intake['bcp_last_tested']}")
+        if intake.get("bcp_rto") not in _empty:
+            attach("business_continuity", "intake", f"RTO target: {intake['bcp_rto']}")
+        if intake.get("bcp_rpo") not in _empty:
+            attach("business_continuity", "intake", f"RPO target: {intake['bcp_rpo']}")
 
         # ── staff_training ─────────────────────────────────────────────────
         if intake.get("training_frequency") not in _empty:
             attach("staff_training", "intake", f"Training frequency: {intake['training_frequency']}")
+        if intake.get("training_newhire_window") not in _empty:
+            attach("staff_training", "intake", f"New-hire training window: {intake['training_newhire_window']}")
 
-        # ── access_controls — generally no direct evidence; skip unless intake supplied
+        # ── access_controls — intake-only when supplied
+        if intake.get("access_review_cadence") not in _empty:
+            attach("access_controls", "intake", f"Privileged access review cadence: {intake['access_review_cadence']}")
+        if intake.get("mfa_privileged") not in _empty:
+            attach("access_controls", "intake", f"MFA on privileged accounts: {intake['mfa_privileged']}")
 
-        # ── vulnerability_mgmt — same; intake-only when present
+        # ── vulnerability_mgmt — intake-only when supplied
+        if intake.get("patch_sla") not in _empty:
+            attach("vulnerability_mgmt", "intake", f"Critical patch SLA: {intake['patch_sla']}")
+        if intake.get("scan_cadence") not in _empty:
+            attach("vulnerability_mgmt", "intake", f"Vulnerability scan cadence: {intake['scan_cadence']}")
+
         # ── encryption_standards ───────────────────────────────────────────
         if ssl_result and ssl_result.get("grade"):
             attach("encryption_standards", "ssl", f"SSL Labs grade {ssl_result['grade']}")
@@ -1430,18 +1524,32 @@ class RFPExpressBuilder:
             if ws.get("tls_mentioned"): terms.append("TLS")
             attach("encryption_standards", "website",
                    f"{', '.join(terms)} mentioned on your website")
+        if intake.get("encryption_at_rest") not in _empty:
+            attach("encryption_standards", "intake", f"Encryption at rest: {intake['encryption_at_rest']}")
+        if intake.get("encryption_in_transit") not in _empty:
+            attach("encryption_standards", "intake", f"Encryption in transit: {intake['encryption_in_transit']}")
+        if intake.get("key_management") not in _empty:
+            attach("encryption_standards", "intake", f"Key management: {intake['key_management']}")
 
-        # ── audit_logging — intake-only
+        # ── audit_logging — intake-only when supplied
+        if intake.get("log_retention") not in _empty:
+            attach("audit_logging", "intake", f"Audit log retention: {intake['log_retention']}")
+        if intake.get("log_monitoring") not in _empty:
+            attach("audit_logging", "intake", f"Log monitoring: {intake['log_monitoring']}")
 
         # ── incident_response ──────────────────────────────────────────────
         if ws.get("breach_policy_mentioned"):
             attach("incident_response", "website", "Incident response / breach policy referenced on your website")
+        if intake.get("incident_notification_window") not in _empty:
+            attach("incident_response", "intake", f"Internal notification window: {intake['incident_notification_window']}")
 
         # ── data_residency ─────────────────────────────────────────────────
         if intake.get("data_hosting") not in _empty:
             attach("data_residency", "intake", f"Intake hosting: {intake['data_hosting']}")
         if intake.get("primary_cloud") not in _empty:
             attach("data_residency", "intake", f"Primary cloud: {intake['primary_cloud']}")
+        if intake.get("cross_border_mechanism") not in _empty:
+            attach("data_residency", "intake", f"Cross-border transfer mechanism: {intake['cross_border_mechanism']}")
         if ws.get("singapore_residency_mentioned"):
             attach("data_residency", "website", "Singapore data residency referenced on your website")
         clouds = []
@@ -1459,6 +1567,8 @@ class RFPExpressBuilder:
         # ── subcontracting ─────────────────────────────────────────────────
         if intake.get("key_processors") not in _empty:
             attach("subcontracting", "intake", f"Processors listed: {intake['key_processors']}")
+        if intake.get("subcontracting") not in _empty:
+            attach("subcontracting", "intake", f"Subcontracting: {intake['subcontracting']}")
         if acra_live and acra_live.get("found"):
             attach("subcontracting", "acra", "Entity verified on ACRA")
         if ctx.get("gebiz_supplier"):
@@ -1496,13 +1606,32 @@ class RFPExpressBuilder:
         if intake.get("breach_history") not in _empty or (domain_rep and domain_rep.get("checked")):
             backed.add("breach_history")
         # BCP / staff training — backed if vendor provided specific dates/frequency
-        if intake.get("bcp_last_tested") not in _empty:
+        if any(intake.get(k) not in _empty for k in ("bcp_last_tested", "bcp_rto", "bcp_rpo")):
             backed.add("business_continuity")
-        if intake.get("training_frequency") not in _empty:
+        if intake.get("training_frequency") not in _empty or intake.get("training_newhire_window") not in _empty:
             backed.add("staff_training")
+        # SOC 2 strengthens iso_certifications
+        if intake.get("soc2_status") not in _empty:
+            backed.add("iso_certifications")
+        # Access controls / vuln mgmt / encryption / audit logging / incident
+        # response — intake-only categories; backed once the buyer supplies them.
+        if any(intake.get(k) not in _empty for k in ("access_review_cadence", "mfa_privileged")):
+            backed.add("access_controls")
+        if any(intake.get(k) not in _empty for k in ("patch_sla", "scan_cadence")):
+            backed.add("vulnerability_mgmt")
+        if any(intake.get(k) not in _empty for k in ("encryption_at_rest", "encryption_in_transit", "key_management")):
+            backed.add("encryption_standards")
+        if any(intake.get(k) not in _empty for k in ("log_retention", "log_monitoring")):
+            backed.add("audit_logging")
+        if intake.get("incident_notification_window") not in _empty:
+            backed.add("incident_response")
+        if intake.get("cross_border_mechanism") not in _empty:
+            backed.add("data_residency")
         # Third-party — backed if key processors listed
         if intake.get("key_processors") not in _empty:
             backed.add("third_party")
+        if intake.get("subcontracting") not in _empty:
+            backed.add("subcontracting")
         # Data policy — backed by ACRA/UEN (entity verification)
         if ctx.get("uen") or intake.get("uen"):
             backed.add("data_policy")

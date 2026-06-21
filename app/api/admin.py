@@ -931,6 +931,11 @@ async def simulate_purchase(
                 rfp_description=rfp_description,
                 session_id=sim_id,
                 intake_data=None,
+                # Admin test-checkout only: ship the kit with any residual
+                # [Verify: …] placeholders instead of blocking on the canned
+                # brief and routing to /rfp-intake. Mirrors the bundle test path
+                # (stripe_webhook.py). Real purchases never set this.
+                allow_incomplete=True,
             )
             details = {"session_id": sim_id, "queued": "fulfill_rfp_task"}
         else:
