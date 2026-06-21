@@ -208,12 +208,14 @@ def _draw_page(canvas, doc):
 
     if _LOGO_PATH:
         try:
+            # Explicit width required — canvas.drawImage silently drops the PNG
+            # when given only height + preserveAspectRatio (logo is ~2.79:1).
             canvas.drawImage(
                 _LOGO_PATH,
                 MARGIN,
                 logo_y,
+                width=logo_h * 2.79,
                 height=logo_h,
-                preserveAspectRatio=True,
                 mask="auto",
             )
         except Exception:
