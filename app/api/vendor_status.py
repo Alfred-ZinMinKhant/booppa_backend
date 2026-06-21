@@ -70,6 +70,40 @@ async def vendor_status(
     return status
 
 
+@router.get("/insights")
+async def vendor_insights(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Vendor Active/Pro dashboard insights: score trend vs last cycle, sector
+    benchmark, and personalised BID/WATCH/PASS tender matches. Reuses the same
+    helpers behind the monthly digest + snapshot PDF so all three stay in sync.
+    Every block is best-effort and may be null/empty.
+    """
+    from app.services.vendor_active_insights import (
+        get_score_trend, get_sector_benchmark, get_tender_matches,
+    )
+    vendor_id = str(current_user.id)
+    matches = get_tender_matches(db, vendor_id, limit=5)
+    return {
+        "trend": get_score_trend(db, vendor_id),
+        "sectorBenchmark": get_sector_benchmark(db, vendor_id),
+        "tenderMatches": [
+            {
+                "tenderNo": m.get("tender_no"),
+                "title": m.get("title"),
+                "agency": m.get("agency"),
+                "closingDate": m["closing_date"].isoformat() if hasattr(m.get("closing_date"), "isoformat") else None,
+                "url": m.get("url"),
+                "label": m.get("bid_label"),
+                "reason": m.get("bid_reason"),
+                "confidence": m.get("bid_confidence"),
+            }
+            for m in matches
+        ],
+    }
+
+
 @router.get("/sector-pressure")
 async def sector_pressure(
     db: Session = Depends(get_db),

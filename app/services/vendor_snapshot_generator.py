@@ -66,6 +66,9 @@ def generate_vendor_snapshot_pdf(data: Dict[str, Any]) -> bytes:
       profile_views_30d: int|None
       verification_level: str|None
       extra_rows:   list of (label, value) appended to the details table (optional)
+      trend:        {total_delta, compliance_delta} (optional) — vs last cycle
+      sector_benchmark: {sector, percentile} (optional)
+      tender_matches: list of {title, closing_date, bid_label} (optional)
     """
     s = _styles()
     company = data.get("company_name") or "Your Company"
@@ -107,7 +110,67 @@ def generate_vendor_snapshot_pdf(data: Dict[str, Any]) -> bytes:
         ("LEFTPADDING", (0, 0), (-1, -1), 14),
     ]))
     story.append(card_table)
-    story.append(Spacer(1, 18))
+    story.append(Spacer(1, 12))
+
+    # Trend vs last cycle + sector standing — turns flat numbers into signal.
+    def _delta_txt(d, label):
+        if d is None:
+            return None
+        if d > 0:
+            return f'<font color="#16a34a">▲ {d}</font> {label} vs last cycle'
+        if d < 0:
+            return f'<font color="#dc2626">▼ {abs(d)}</font> {label} vs last cycle'
+        return f'{label}: no change vs last cycle'
+
+    trend = data.get("trend") or {}
+    bench = data.get("sector_benchmark") or {}
+    trend_bits = [
+        t for t in (
+            _delta_txt(trend.get("total_delta"), "Trust"),
+            _delta_txt(trend.get("compliance_delta"), "Compliance"),
+        ) if t
+    ]
+    if bench.get("percentile") is not None and bench.get("sector"):
+        pct = int(bench["percentile"])
+        trend_bits.append(
+            f'Sector standing: <b>top {max(1, 100 - pct)}%</b> in '
+            f'{_xml_escape(bench["sector"])} (ahead of {pct}% of peers)'
+        )
+    if trend_bits:
+        story.append(Paragraph(" &nbsp;·&nbsp; ".join(trend_bits), s["body"]))
+        story.append(Spacer(1, 14))
+
+    # Personalised tender matches (BID/WATCH/PASS).
+    matches = data.get("tender_matches") or []
+    if matches:
+        story.append(Paragraph("Tender matches — should you bid?", s["h2"]))
+        m_rows = [["Tender", "Closes", "Signal"]]
+        for m in matches[:5]:
+            cd = m.get("closing_date")
+            close = cd.strftime("%d %b %Y") if hasattr(cd, "strftime") else (str(cd) if cd else "—")
+            m_rows.append([
+                Paragraph(_xml_escape((m.get("title") or "")[:80]), s["body"]),
+                Paragraph(close, s["body"]),
+                Paragraph(_xml_escape(m.get("bid_label") or "—"), s["body"]),
+            ])
+        m_tbl = Table(m_rows, colWidths=[3.9 * inch, 1.4 * inch, 1.1 * inch])
+        m_tbl.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 9),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        story.append(m_tbl)
+        story.append(Spacer(1, 8))
+        story.append(Paragraph(
+            "Signals are data-driven guidance from real GeBIZ history, not guarantees.", s["small"]))
+        story.append(Spacer(1, 14))
 
     story.append(Paragraph("Profile Details", s["h2"]))
     rows: List[Tuple[str, str]] = [

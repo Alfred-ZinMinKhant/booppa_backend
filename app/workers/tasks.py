@@ -2858,6 +2858,16 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
                 ProofView.created_at >= thirty_days_ago,
             ).count()
 
+        # 2a-insights. Trend, sector benchmark, and personalised tender matches —
+        # the substance that makes the digest worth the subscription. All
+        # best-effort (helpers swallow their own errors and return None/[]).
+        from app.services.vendor_active_insights import (
+            get_score_trend, get_sector_benchmark, get_tender_matches,
+        )
+        trend = get_score_trend(db, vendor_id)
+        benchmark = get_sector_benchmark(db, vendor_id)
+        tender_matches = get_tender_matches(db, vendor_id, limit=5)
+
         # 2b. Render a one-page status snapshot PDF so the monthly email links a
         # real, fileable/forwardable artifact instead of being email-only.
         plan = (getattr(user, "plan", "") or "")
@@ -2875,6 +2885,9 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
                 "compliance_score": getattr(score_record, "compliance_score", None),
                 "profile_views_30d": profile_views,
                 "verification_level": getattr(verify, "verification_level", None),
+                "trend": trend,
+                "sector_benchmark": benchmark,
+                "tender_matches": tender_matches,
             })
             snapshot_url = asyncio.run(
                 S3Service().upload_pdf(snapshot_pdf, f"vendor-snapshot-{vendor_id}")
@@ -2896,42 +2909,44 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
         def _esc(s) -> str:
             return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-        # 2c. GeBIZ tender alerts — the "real-time GeBIZ alerts" feature, rendered
-        # as a fileable list of open tenders closing soonest (top 5).
+        # 2c. Personalised tender matches — the "real-time GeBIZ alerts" feature
+        # upgraded to per-vendor BID/WATCH/PASS recommendations (reuses the
+        # Tender Intelligence classifier). Falls back to a plain closing-soon
+        # list when the vendor has no sector/history (label None).
         gebiz_section = ""
         try:
-            from app.core.models_gebiz import GebizTender
+            from app.services.tender_service_bid_classifier import bid_label_to_html_badge
 
-            _now = datetime.now(timezone.utc)
-            tenders = (
-                db.query(GebizTender)
-                .filter(GebizTender.status == "Open", GebizTender.closing_date >= _now)
-                .order_by(GebizTender.closing_date.asc())
-                .limit(5)
-                .all()
-            )
-            if tenders:
+            if tender_matches:
                 rows = ""
-                for t in tenders:
-                    close = t.closing_date.strftime("%d %b %Y") if t.closing_date else "—"
-                    title = _esc((t.title or "")[:90])
-                    cell = f'<a href="{_esc(t.url)}" style="color:#0ea5e9;text-decoration:none;">{title}</a>' if t.url else title
+                for t in tender_matches:
+                    cd = t.get("closing_date")
+                    close = cd.strftime("%d %b %Y") if cd else "—"
+                    title = _esc((t.get("title") or "")[:90])
+                    url = t.get("url")
+                    cell = f'<a href="{_esc(url)}" style="color:#0ea5e9;text-decoration:none;">{title}</a>' if url else title
+                    label = t.get("bid_label")
+                    badge = bid_label_to_html_badge(label) if label else ""
                     rows += (
                         f'<tr><td style="padding:7px 8px;border-bottom:1px solid #eef2f7;font-size:13px;">{cell}</td>'
-                        f'<td style="padding:7px 8px;border-bottom:1px solid #eef2f7;white-space:nowrap;font-size:12px;color:#475569;">{close}</td></tr>'
+                        f'<td style="padding:7px 8px;border-bottom:1px solid #eef2f7;white-space:nowrap;font-size:12px;color:#475569;">{close}</td>'
+                        f'<td style="padding:7px 8px;border-bottom:1px solid #eef2f7;white-space:nowrap;text-align:right;">{badge}</td></tr>'
                     )
+                heading = ("Tender matches — should you bid?" if any(t.get("bid_label") for t in tender_matches)
+                           else "GeBIZ tender alerts — closing soon")
                 gebiz_section = f"""
-                <h3 style="color:#0f172a;font-size:15px;margin:24px 0 8px;">GeBIZ tender alerts — closing soon</h3>
+                <h3 style="color:#0f172a;font-size:15px;margin:24px 0 8px;">{heading}</h3>
                 <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #eef2f7;border-radius:8px;overflow:hidden;">
-                  <tr style="background:#f8fafc;"><th style="text-align:left;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Tender</th><th style="text-align:left;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Closes</th></tr>
+                  <tr style="background:#f8fafc;"><th style="text-align:left;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Tender</th><th style="text-align:left;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Closes</th><th style="text-align:right;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Signal</th></tr>
                   {rows}
                 </table>
                 <p style="font-size:12px;color:#64748b;margin:6px 0 0;">
-                  <a href="https://www.booppa.io/vendor/dashboard" style="color:#0ea5e9;">See all GeBIZ alerts in your dashboard →</a>
+                  Signals are data-driven guidance from real GeBIZ history, not guarantees.
+                  <a href="https://www.booppa.io/vendor/dashboard" style="color:#0ea5e9;">See all tender alerts →</a>
                 </p>
                 """
         except Exception as gebiz_err:
-            logger.warning(f"[VendorDigest] GeBIZ alerts section failed for {vendor_id}: {gebiz_err}")
+            logger.warning(f"[VendorDigest] tender matches section failed for {vendor_id}: {gebiz_err}")
 
         # 2d. Feature checklist — evidence of what the tier unlocks (some are
         # in-app entitlements, not files: badge, search priority, dashboards).
@@ -3015,23 +3030,37 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
             header = f"Monthly {plan_label} Digest"
             intro = "Here is your BOOPPA profile activity and tender intelligence for the past 30 days:"
 
-        email_svc = EmailService()
-        asyncio.run(email_svc.send_html_email(
-            to_email=vendor_email,
-            subject=subject,
-            body_html=f"""
-            <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
-              <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-                <h1 style="color:#10b981;margin:0;font-size:20px;">{header}</h1>
-              </div>
-              <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
+        # Trend deltas vs last cycle + sector standing — the "is it improving?"
+        # signal that makes the scores meaningful.
+        def _delta_html(d) -> str:
+            if d is None:
+                return ""
+            if d > 0:
+                return f' <span style="color:#10b981;font-size:12px;font-weight:bold;">▲ {d}</span>'
+            if d < 0:
+                return f' <span style="color:#ef4444;font-size:12px;font-weight:bold;">▼ {abs(d)}</span>'
+            return ' <span style="color:#94a3b8;font-size:12px;">no change</span>'
+
+        trust_delta = _delta_html(trend.get("total_delta")) if trend else ""
+        comp_delta = _delta_html(trend.get("compliance_delta")) if trend else ""
+        benchmark_line = (
+            f'<p style="margin:10px 0 0;font-size:13px;color:#334155;">📊 <strong>Sector standing:</strong> '
+            f'top {max(1, 100 - benchmark["percentile"])}% in {_esc(benchmark["sector"])} '
+            f'— ahead of {benchmark["percentile"]}% of peers.</p>'
+            if benchmark else ""
+        )
+        scores_box = f"""
+                <div style="background:#f8fafc;border-radius:8px;padding:20px;margin:20px 0;">
+                  <p style="margin:4px 0;"><strong>Trust Score:</strong> {score_record.total_score}/100{trust_delta}</p>
+                  <p style="margin:4px 0;"><strong>Compliance Score:</strong> {score_record.compliance_score}/100{comp_delta}</p>
+                  <p style="margin:4px 0;"><strong>Profile Views (30d):</strong> {profile_views}</p>
+                  {benchmark_line}
+                </div>"""
+
+        body_inner = f"""
                 <p>Hello <strong>{company}</strong>,</p>
                 <p>{intro}</p>
-                <div style="background:#f8fafc;border-radius:8px;padding:20px;margin:20px 0;">
-                  <p style="margin:4px 0;"><strong>Trust Score:</strong> {score_record.total_score}/100</p>
-                  <p style="margin:4px 0;"><strong>Compliance Score:</strong> {score_record.compliance_score}/100</p>
-                  <p style="margin:4px 0;"><strong>Profile Views (30d):</strong> {profile_views}</p>
-                </div>
+                {scores_box}
                 {snapshot_cta}
                 {attachments_note}
                 {pro_note}
@@ -3043,13 +3072,15 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
                             border-radius:8px;font-weight:bold;display:inline-block;">
                     View Full Dashboard →
                   </a>
-                </p>
-                <p style="color:#64748b;font-size:12px;margin-top:24px;">
-                  {plan_label} · booppa.io
-                </p>
-              </div>
-            </body></html>
-            """,
+                </p>"""
+
+        from app.services.email_layout import branded_email_html
+        email_svc = EmailService()
+        asyncio.run(email_svc.send_html_email(
+            to_email=vendor_email,
+            subject=subject,
+            body_html=branded_email_html(body_inner, title=header,
+                                         preheader=f"{plan_label} · Trust {score_record.total_score}/100"),
             attachments=digest_attachments or None,
         ))
         logger.info(f"Vendor digest ({plan_label}, first_cycle={is_first_cycle}) sent for vendor {vendor_id}")
