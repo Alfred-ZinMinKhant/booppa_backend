@@ -2906,6 +2906,19 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
 
         is_pro = (plan == "vendor_pro")
 
+        # Vendor Pro: upgrade matches to include win-probability, and pull the
+        # premium-only competitor pulse + PDPA drift for the email + attachments.
+        competitor_pulse = None
+        pdpa_drift = None
+        if is_pro:
+            from app.services.vendor_active_insights import get_competitor_pulse, get_pdpa_drift
+            try:
+                tender_matches = get_tender_matches(db, vendor_id, limit=8, with_win_probability=True)
+            except Exception:
+                pass
+            competitor_pulse = get_competitor_pulse(db, vendor_id)
+            pdpa_drift = get_pdpa_drift(db, vendor_id)
+
         def _esc(s) -> str:
             return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -2918,6 +2931,7 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
             from app.services.tender_service_bid_classifier import bid_label_to_html_badge
 
             if tender_matches:
+                show_wp = any(t.get("win_probability") is not None for t in tender_matches)
                 rows = ""
                 for t in tender_matches:
                     cd = t.get("closing_date")
@@ -2927,17 +2941,22 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
                     cell = f'<a href="{_esc(url)}" style="color:#0ea5e9;text-decoration:none;">{title}</a>' if url else title
                     label = t.get("bid_label")
                     badge = bid_label_to_html_badge(label) if label else ""
+                    wp = t.get("win_probability")
+                    wp_td = (f'<td style="padding:7px 8px;border-bottom:1px solid #eef2f7;white-space:nowrap;text-align:right;font-size:12px;color:#0f172a;font-weight:bold;">{wp}%</td>'
+                             if show_wp else "")
                     rows += (
                         f'<tr><td style="padding:7px 8px;border-bottom:1px solid #eef2f7;font-size:13px;">{cell}</td>'
                         f'<td style="padding:7px 8px;border-bottom:1px solid #eef2f7;white-space:nowrap;font-size:12px;color:#475569;">{close}</td>'
-                        f'<td style="padding:7px 8px;border-bottom:1px solid #eef2f7;white-space:nowrap;text-align:right;">{badge}</td></tr>'
+                        f'<td style="padding:7px 8px;border-bottom:1px solid #eef2f7;white-space:nowrap;text-align:right;">{badge}</td>{wp_td}</tr>'
                     )
+                wp_th = ('<th style="text-align:right;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Win %</th>'
+                         if show_wp else "")
                 heading = ("Tender matches — should you bid?" if any(t.get("bid_label") for t in tender_matches)
                            else "GeBIZ tender alerts — closing soon")
                 gebiz_section = f"""
                 <h3 style="color:#0f172a;font-size:15px;margin:24px 0 8px;">{heading}</h3>
                 <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #eef2f7;border-radius:8px;overflow:hidden;">
-                  <tr style="background:#f8fafc;"><th style="text-align:left;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Tender</th><th style="text-align:left;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Closes</th><th style="text-align:right;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Signal</th></tr>
+                  <tr style="background:#f8fafc;"><th style="text-align:left;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Tender</th><th style="text-align:left;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Closes</th><th style="text-align:right;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Signal</th>{wp_th}</tr>
                   {rows}
                 </table>
                 <p style="font-size:12px;color:#64748b;margin:6px 0 0;">
@@ -2991,6 +3010,28 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
             {scan_line}
             """
 
+        # 2e-pro. Competitor pulse — Pro-only sector intelligence in the email.
+        competitor_section = ""
+        if is_pro and competitor_pulse and competitor_pulse.get("top_suppliers"):
+            sup_rows = ""
+            for sup in competitor_pulse["top_suppliers"][:5]:
+                name = _esc(sup.get("name") or sup.get("supplier") or "—")
+                wins = sup.get("count") or sup.get("wins") or "—"
+                sup_rows += (
+                    f'<tr><td style="padding:6px 8px;border-bottom:1px solid #eef2f7;font-size:13px;">{name}</td>'
+                    f'<td style="padding:6px 8px;border-bottom:1px solid #eef2f7;text-align:right;font-size:12px;color:#475569;">{wins}</td></tr>'
+                )
+            direction = _esc((competitor_pulse.get("sector_trend") or {}).get("direction") or "stable")
+            competitor_section = f"""
+            <h3 style="color:#0f172a;font-size:15px;margin:24px 0 8px;">Competitor pulse — {_esc(competitor_pulse.get('sector') or 'your sector')}</h3>
+            <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #eef2f7;border-radius:8px;overflow:hidden;">
+              <tr style="background:#f8fafc;"><th style="text-align:left;padding:6px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Top suppliers</th><th style="text-align:right;padding:6px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Wins</th></tr>
+              {sup_rows}
+            </table>
+            <p style="font-size:12px;color:#64748b;margin:6px 0 0;">Sector award activity is <strong>{direction}</strong>
+              over the last {competitor_pulse.get('period_days', 90)} days ({competitor_pulse.get('total_awards', 0)} awards analysed).</p>
+            """
+
         # 2f. Offline evidence artefacts — attach the exportable PDFs directly to
         # the digest (audit: vendors need these in the inbox, not only on the
         # dashboard). Badge Certificate + Priority Placement + Bid-Timing are
@@ -3011,11 +3052,56 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
             if snapshot_pdf:
                 digest_attachments.append((f"BOOPPA-Status-Snapshot-{vendor_id}.pdf", snapshot_pdf))
 
+            # Vendor Pro premium attachments: the consolidated monthly intelligence
+            # report (flagship), the sector competitor signals report, and the PDPA
+            # drift report. Each best-effort — never blocks the digest.
+            if is_pro:
+                _safe_co = (company or "report").replace("/", "-").replace(" ", "-")
+                try:
+                    from app.services.vendor_pro_report_generator import build_pro_report_pdf
+                    rep = build_pro_report_pdf(
+                        db, vendor_id, company=company, plan_label=plan_label,
+                        trust_score=getattr(score_record, "total_score", None),
+                        compliance_score=getattr(score_record, "compliance_score", None),
+                        profile_views_30d=profile_views,
+                    )
+                    if rep:
+                        digest_attachments.append((f"BOOPPA-Vendor-Pro-Report-{_safe_co}.pdf", rep))
+                except Exception as rep_err:
+                    logger.warning("[VendorDigest] pro report failed for %s: %s", vendor_id, rep_err)
+                if competitor_pulse:
+                    try:
+                        from app.services.competitor_signals_generator import generate_competitor_signals_pdf
+                        cs = generate_competitor_signals_pdf(competitor_pulse, company)
+                        if cs:
+                            digest_attachments.append((f"BOOPPA-Competitor-Signals-{_safe_co}.pdf", cs))
+                    except Exception as cs_err:
+                        logger.warning("[VendorDigest] competitor signals PDF failed for %s: %s", vendor_id, cs_err)
+                if pdpa_drift and pdpa_drift.get("current_score") is not None:
+                    try:
+                        from app.services.pdpa_monitor_delta_generator import generate_pdpa_monitor_report_pdf
+                        drift_pdf = generate_pdpa_monitor_report_pdf({
+                            "company_name": company,
+                            "current_score": pdpa_drift.get("current_score"),
+                            "previous_score": pdpa_drift.get("previous_score"),
+                            "scanned_url": pdpa_drift.get("scanned_url"),
+                            "dimension_changes": pdpa_drift.get("dimension_changes") or [],
+                        })
+                        if drift_pdf:
+                            digest_attachments.append((f"BOOPPA-PDPA-Drift-{_safe_co}.pdf", drift_pdf))
+                    except Exception as dr_err:
+                        logger.warning("[VendorDigest] PDPA drift PDF failed for %s: %s", vendor_id, dr_err)
+
+        _pro_attach_note = (
+            ' Your <strong>Vendor Pro Monthly Intelligence Report</strong> (consolidated), '
+            'Competitor Signals, and PDPA Drift report are attached too.'
+            if is_pro else ""
+        )
         attachments_note = (
             '<p style="font-size:13px;color:#334155;margin:16px 0 0;">📎 <strong>Attached to this email:</strong> '
             'your offline evidence PDFs — Badge Certificate, Priority Placement Report, and Bid-Timing Report. '
-            'File them, forward them, or attach them to a tender. '
-            '<a href="https://www.booppa.io/vendor/dashboard" style="color:#10b981;">Competitor Activity reports</a> '
+            'File them, forward them, or attach them to a tender.' + _pro_attach_note +
+            ' <a href="https://www.booppa.io/vendor/dashboard" style="color:#10b981;">Competitor Activity reports</a> '
             'are available on demand from your dashboard.</p>'
             if digest_attachments else ""
         )
@@ -3065,6 +3151,7 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
                 {attachments_note}
                 {pro_note}
                 {gebiz_section}
+                {competitor_section}
                 {features_section}
                 <p style="margin-top:24px;">
                   <a href="https://www.booppa.io/vendor/dashboard"
