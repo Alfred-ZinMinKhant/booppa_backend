@@ -6372,9 +6372,11 @@ def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | 
                 .filter(TrmControl.organisation_id == org.id)
                 .all()
             )
-            # Order by the canonical domain sequence for a stable, readable doc.
-            order = {d: i for i, d in enumerate(MAS_TRM_DOMAINS)}
-            rows.sort(key=lambda r: order.get(r.domain, 99))
+            # Order by sector criticality (fintech/healthcare lead with their
+            # material domains) so the doc reads as sector-specific to a MAS
+            # supervisor, falling back to canonical order when sector is unset.
+            from app.services.trm_sector_override import reorder_controls_by_sector
+            rows = reorder_controls_by_sector(rows, getattr(org, "sector", None))
             controls = [
                 {
                     "domain": r.domain,
@@ -6388,8 +6390,12 @@ def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | 
         if not controls:
             # Controls not yet seeded (race) — fall back to the canonical domains
             # so the buyer still receives a complete baseline.
-            controls = [{"domain": d, "control_ref": f"TRM-{i}", "status": "not_started"}
-                        for i, d in enumerate(MAS_TRM_DOMAINS, 1)]
+            from app.services.trm_sector_override import reorder_controls_by_sector
+            _seed = [{"domain": d, "control_ref": f"TRM-{i}", "status": "not_started"}
+                     for i, d in enumerate(MAS_TRM_DOMAINS, 1)]
+            controls = reorder_controls_by_sector(
+                _seed, getattr(org, "sector", None) if org else None
+            )
 
         # Assessed entity is the CUSTOMER. Prefer the test-harness override (so the
         # admin test-checkout never stamps the real account's company, e.g. "Booppa",

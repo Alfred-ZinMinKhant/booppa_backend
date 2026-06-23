@@ -78,10 +78,15 @@ def _get_or_create_org(db: Session, user: User) -> Organisation:
         suffix += 1
         slug = f"{base_slug}-{suffix}"
     tier = "pro" if (user.plan or "").startswith("pro") else "standard"
+    # Seed sector from the user's industry (normalised to a known TRM sector key)
+    # so the TRM baseline + workspace order domains by sector criticality without
+    # needing a separate intake step.
+    from app.services.trm_sector_override import normalise_sector
     org = Organisation(
         name=user.company or user.full_name or user.email,
         slug=slug,
         tier=tier,
+        sector=normalise_sector(getattr(user, "industry", None)),
         owner_user_id=user.id,
     )
     db.add(org)
@@ -617,15 +622,11 @@ def get_trm(
         .filter(TrmControl.organisation_id == org.id)
         .all()
     )
-    # Natural numeric sort: "TRM-2" < "TRM-10" (string sort would give "TRM-10" < "TRM-2")
-    def _num(ref: str | None) -> int:
-        if not ref:
-            return 999
-        try:
-            return int(ref.split("-", 1)[1])
-        except (IndexError, ValueError):
-            return 999
-    rows.sort(key=lambda r: _num(r.control_ref))
+    # Order by sector criticality so the dashboard leads with the domains a MAS
+    # supervisor weights most for this org's sector; with no sector set this is
+    # the canonical TRM-1..TRM-13 order.
+    from app.services.trm_sector_override import reorder_controls_by_sector
+    rows = reorder_controls_by_sector(rows, getattr(org, "sector", None))
 
     # Evidence counts per control (single grouped query, avoids N+1).
     from app.core.models_enterprise import TrmEvidence

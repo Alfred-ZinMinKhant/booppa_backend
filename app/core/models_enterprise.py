@@ -21,6 +21,9 @@ class Organisation(Base):
     name = Column(String(255), nullable=False)
     slug = Column(String(100), unique=True, nullable=False)
     tier = Column(String(50), default="standard")          # standard | pro | custom
+    # Business sector (fintech | healthcare | …). Drives sector-priority ordering
+    # of the 13 MAS TRM domains in the baseline + workspace. NULL → canonical order.
+    sector = Column(String(50), nullable=True)
     owner_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     is_active = Column(Boolean, default=True)
     # Seat cap. NULL = unlimited (Suites + legacy Enterprise + Buyer Enterprise).
