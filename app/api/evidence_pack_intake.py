@@ -11,6 +11,7 @@ created with status='intake_pending' and the buyer is emailed a link here.
   POST /evidence-pack-intake/{id}/submit    → store intake, queue generation
 """
 import logging
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Security
 from fastapi.security import OAuth2PasswordBearer
@@ -29,6 +30,26 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token", auto_error=F
 # Fields the buyer must supply before the 7-document pack can be generated.
 _REQUIRED_INTAKE = ["org_name", "uen", "sector", "employee_count", "approver_name", "approver_role"]
 _REQUIRED_LISTS = ["data_types", "systems"]
+
+# Singapore UEN formats (ACRA / data.gov.sg):
+#   • Businesses (ROB):           8 digits + 1 letter      e.g. 52912345A
+#   • Local companies (ROC):      9 digits + 1 letter      e.g. 201912345A
+#   • Other entities (new UEN):   [TSR] + 2 digits + 2 letters + 4 digits + letter  e.g. T09LL0001B
+# A BCEP document presented to a PDPC inspector with "UEN: Not provided" loses
+# immediate credibility, so the gate rejects malformed/blank UENs at intake.
+_UEN_PATTERNS = (
+    re.compile(r"^\d{8}[A-Z]$"),
+    re.compile(r"^\d{9}[A-Z]$"),
+    re.compile(r"^[TSR]\d{2}[A-Z]{2}\d{4}[A-Z]$"),
+)
+
+
+def _normalise_uen(raw: str) -> str:
+    return re.sub(r"\s+", "", str(raw or "")).upper()
+
+
+def _is_valid_uen(uen: str) -> bool:
+    return any(p.match(uen) for p in _UEN_PATTERNS)
 
 
 def _resolve_user(token: str | None, db: Session) -> User:
@@ -188,6 +209,19 @@ def submit_intake(
             status_code=422,
             detail=f"Missing required intake fields: {', '.join(missing)}",
         )
+
+    # UEN gate — must be a well-formed Singapore UEN, not just non-empty.
+    uen = _normalise_uen(intake.get("uen"))
+    if not _is_valid_uen(uen):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "UEN is invalid. Enter your Singapore Unique Entity Number exactly as it "
+                "appears on your ACRA bizfile certificate (e.g. 201912345A or T09LL0001B). "
+                "Find it at bizfile.gov.sg."
+            ),
+        )
+    intake["uen"] = uen  # store the normalised value the documents will render
 
     row.intake = intake
     row.organisation = intake.get("org_name")

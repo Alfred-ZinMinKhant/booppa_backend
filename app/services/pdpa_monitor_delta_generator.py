@@ -23,11 +23,43 @@ from app.core.company import COMPANY_NAME
 
 logger = logging.getLogger(__name__)
 
-PDPA_MONITOR_REPORT_SCHEMA_VERSION = 1
+PDPA_MONITOR_REPORT_SCHEMA_VERSION = 2  # +drift chart, +urgency alert box
 
 
 def _xml_escape(s: str) -> str:
     return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _drift_chart(score_history: List[Dict[str, Any]]):
+    """A compliance-score-over-time line chart (Drawing) or None.
+
+    `score_history` is an ordered list of {"label": "Apr", "score": 53}. Needs at
+    least 2 points to plot a trend; the DPO attaches this to board updates.
+    """
+    pts = [(h.get("label") or "", h.get("score")) for h in (score_history or [])
+           if isinstance(h.get("score"), (int, float))]
+    if len(pts) < 2:
+        return None
+    try:
+        from reportlab.graphics.shapes import Drawing
+        from reportlab.graphics.charts.linecharts import HorizontalLineChart
+
+        d = Drawing(440, 170)
+        lc = HorizontalLineChart()
+        lc.x, lc.y, lc.width, lc.height = 35, 25, 390, 125
+        lc.data = [[p[1] for p in pts]]
+        lc.categoryAxis.categoryNames = [str(p[0]) for p in pts]
+        lc.valueAxis.valueMin = 0
+        lc.valueAxis.valueMax = 100
+        lc.valueAxis.valueStep = 20
+        lc.lines[0].strokeColor = colors.HexColor("#1d4ed8")
+        lc.lines[0].strokeWidth = 2
+        lc.lines.symbol = None
+        d.add(lc)
+        return d
+    except Exception as exc:  # pragma: no cover - chart is best-effort
+        logger.warning("[MonitorReport] drift chart render failed: %s", exc)
+        return None
 
 
 def _styles():
@@ -63,6 +95,9 @@ def generate_pdpa_monitor_report_pdf(data: Dict[str, Any]) -> bytes:
       findings_count: int|None
       dimension_changes: list of {dimension_name, previous_status, current_status}
       full_report_url: str|None
+      urgent_findings: list of {label, days_open, severity} — HIGH findings open
+                       >14 days (rendered as a red alert box at the top)
+      score_history: ordered list of {label, score} for the drift line chart
     """
     s = _styles()
     company = data.get("company_name") or "Your Organisation"
@@ -89,6 +124,36 @@ def generate_pdpa_monitor_report_pdf(data: Dict[str, Any]) -> bytes:
         meta = f"Scanned {_xml_escape(url)} &middot; " + meta
     story.append(Paragraph(meta, s["small"]))
     story.append(Spacer(1, 16))
+
+    # ── Urgency alert (6c) — HIGH findings open >14 days, at the top ──────────
+    urgent: List[Dict[str, Any]] = data.get("urgent_findings") or []
+    if urgent:
+        alert_lines = []
+        for u in urgent[:6]:
+            days = int(u.get("days_open") or 0)
+            label = _xml_escape(u.get("label") or "Finding")
+            esc = ("After 30+ days, PDPC inspections typically begin with a review of "
+                   "findings reported in prior scans.") if days >= 30 else ""
+            alert_lines.append(
+                f'<b>{label}</b> — open for <b>{days} days</b> — action overdue. {esc}'
+            )
+        alert_html = "<br/>".join(alert_lines)
+        alert_tbl = Table(
+            [[Paragraph(
+                f'<font color="#991b1b"><b>URGENT — UNRESOLVED HIGH-RISK FINDINGS</b></font><br/>{alert_html}',
+                s["body"])]],
+            colWidths=[6.4 * inch],
+        )
+        alert_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fef2f2")),
+            ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#dc2626")),
+            ("TOPPADDING", (0, 0), (-1, -1), 10),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+            ("LEFTPADDING", (0, 0), (-1, -1), 12),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+        ]))
+        story.append(alert_tbl)
+        story.append(Spacer(1, 14))
 
     # Score + change
     cur_disp = "—" if cur is None else str(int(cur))
@@ -165,6 +230,25 @@ def generate_pdpa_monitor_report_pdf(data: Dict[str, Any]) -> bytes:
         story.append(Paragraph(
             "No dimension status changes detected since the previous scan." if prev is not None
             else "Dimension-level change tracking begins from your next scan.",
+            s["body"]))
+    story.append(Spacer(1, 14))
+
+    # ── Compliance trend (6b) — line chart from month 2 onward ───────────────
+    story.append(Paragraph("Compliance Trend", s["h2"]))
+    _chart = _drift_chart(data.get("score_history"))
+    if _chart is not None:
+        story.append(_chart)
+        if prev is not None and cur is not None:
+            _d = int(cur) - int(prev)
+            if _d > 0:
+                story.append(Paragraph(
+                    f'<font color="#065f46">Score improved by {_d} point(s) since last month.</font>', s["body"]))
+            elif _d < 0:
+                story.append(Paragraph(
+                    f'<font color="#dc2626">Score declined by {abs(_d)} point(s) since last month — see findings.</font>', s["body"]))
+    else:
+        story.append(Paragraph(
+            "Baseline established — your compliance trend chart appears from next month's scan.",
             s["body"]))
     story.append(Spacer(1, 14))
 
