@@ -51,12 +51,17 @@ def generate_vendor_proof_certificate(
     tx_hash: str | None = None,
     network_name: str | None = None,
     explorer_url: str | None = None,
+    entity_status: str | None = None,
+    expires_on: str | None = None,
 ) -> bytes:
     """Render the Vendor Proof certificate. Returns PDF bytes.
 
     `acra_data` (optional) may carry: entity_type, registration_date, industry,
     source, matched(bool). `score` is the honest compliance score (int) or a
     display string; when no PDPA scan exists this is "identity verified only".
+    `entity_status` is the ACRA live status (e.g. "LIVE", "STRUCK OFF"); when it
+    is anything other than live it is rendered as a prominent warning. `expires_on`
+    is the certificate validity date.
     """
     if not _REPORTLAB_OK:
         raise RuntimeError("ReportLab is required for Vendor Proof certificate generation")
@@ -138,16 +143,29 @@ def generate_vendor_proof_certificate(
             reg_rows.append(("Registration date", _xml_escape(acra_data.get("registration_date"))))
         if acra_data.get("industry"):
             reg_rows.append(("Industry", _xml_escape(acra_data.get("industry"))))
+    # ACRA live entity status — flag non-live entities prominently (a struck-off
+    # or ceased UEN must not read as a clean verification to a procurement officer).
+    _status = (entity_status or "").strip()
+    if _status:
+        _is_live = "LIVE" in _status.upper() or _status.upper() == "REGISTERED"
+        reg_rows.append((
+            "Entity status",
+            _xml_escape(_status) if _is_live
+            else f'<font color="#b91c1c"><b>{_xml_escape(_status)} — verify entity is active before relying on this certificate</b></font>',
+        ))
     story.append(Paragraph("Registration", sec_style))
     story.append(_kv(reg_rows))
 
     # Verification standing
     story.append(Paragraph("Verification standing", sec_style))
-    story.append(_kv([
+    _standing_rows = [
         ("Verification level", _xml_escape(verification_level)),
         ("Compliance score", score_display),
         ("Procurement readiness", _xml_escape(readiness_label)),
-    ]))
+    ]
+    if expires_on:
+        _standing_rows.append(("Certificate valid until", _xml_escape(expires_on)))
+    story.append(_kv(_standing_rows))
 
     # Blockchain anchor
     if tx_hash:

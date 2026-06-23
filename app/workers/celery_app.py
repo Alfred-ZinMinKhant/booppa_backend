@@ -122,6 +122,12 @@ celery_app.conf.update(
             "task": "send_weekly_vendor_scores",
             "schedule": crontab(day_of_week="monday", hour=8, minute=0),
         },
+        # Vendor Proof: daily expiry sweep at 04:00 UTC — marks lapsed
+        # certificates EXPIRED and emails a renewal reminder 30 days out.
+        "check-vendor-proof-expiry-daily": {
+            "task": "check_vendor_proof_expiry",
+            "schedule": crontab(hour=4, minute=0),
+        },
         # Vendor Active: daily anniversary cron at 06:00 UTC. Task filters
         # subscribers whose subscription_anniversary_day matches today.
         "vendor-active-daily-anniversary-checks": {

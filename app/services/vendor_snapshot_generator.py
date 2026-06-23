@@ -30,6 +30,19 @@ def _xml_escape(s: str) -> str:
     return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _verification_label(value: Any) -> str:
+    """Human-readable verification level.
+
+    The source may pass a ``VerificationLevel`` enum (whose ``str()`` is the
+    code artifact ``VerificationLevel.PREMIUM``), the raw value ``"PREMIUM"``,
+    or ``None``. Normalise all of these to a title-cased label, e.g. ``Premium``.
+    """
+    if value is None:
+        return "Standard"
+    raw = getattr(value, "value", value)  # enum -> "PREMIUM"; str -> str
+    return str(raw).replace("_", " ").strip().title() or "Standard"
+
+
 def _styles():
     base = getSampleStyleSheet()
     return {
@@ -174,7 +187,7 @@ def generate_vendor_snapshot_pdf(data: Dict[str, Any]) -> bytes:
 
     story.append(Paragraph("Profile Details", s["h2"]))
     rows: List[Tuple[str, str]] = [
-        ("Verification Level", str(data.get("verification_level") or "Standard")),
+        ("Verification Level", _verification_label(data.get("verification_level"))),
         ("Plan", plan_label),
         ("Snapshot Date", gen_at),
     ]

@@ -158,7 +158,7 @@ async def verify_report(audit_hash: str):
         except Exception as e:
             logger.warning(f"[Verify] Could not schedule QR scan notification: {e}")
 
-        return {
+        resp = {
             "verify_id": audit_hash,
             "report_id": str(report.id),
             "framework": report.framework,
@@ -176,5 +176,36 @@ async def verify_report(audit_hash: str):
                 "imply regulatory approval."
             ),
         }
+
+        # Vendor Proof enrichment (additive) — a procurement officer scanning the
+        # QR needs the ACRA standing, compliance score, and certificate validity,
+        # not just document metadata. Only attached for vendor_proof records.
+        ad = report.assessment_data if isinstance(report.assessment_data, dict) else {}
+        if report.framework == "vendor_proof" or ad.get("vendor_proof_fulfilled"):
+            expires_at = ad.get("certificate_expires_at")
+            expired = None
+            if expires_at:
+                try:
+                    from datetime import datetime as _dt, timezone as _tz
+                    expired = _dt.fromisoformat(expires_at) < _dt.now(_tz.utc)
+                except Exception:
+                    expired = None
+            resp["vendor_proof"] = {
+                "compliance_score": ad.get("compliance_score"),
+                "procurement_readiness": ad.get("procurement_readiness"),
+                "verification_level": ad.get("verification_level") or "BASIC",
+                "acra": {
+                    "verified": ad.get("acra_verified", False),
+                    "entity_type": ad.get("acra_entity_type"),
+                    "registration_date": ad.get("acra_registration_date"),
+                    "entity_status": ad.get("acra_entity_status"),
+                    "entity_live": ad.get("acra_entity_live"),
+                },
+                "validity": {
+                    "expires_at": expires_at,
+                    "expired": expired,
+                },
+            }
+        return resp
     finally:
         db.close()
