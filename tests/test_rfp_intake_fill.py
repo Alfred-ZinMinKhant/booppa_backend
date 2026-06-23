@@ -61,3 +61,23 @@ def test_residual_placeholder_count():
     # [Verify: SLA target], [FILL IN], [Verify: retention period] = 3
     assert b._count_residual_placeholders(qa) == 3
     assert b._count_residual_placeholders({"x": "all good"}) == 0
+
+
+def test_residual_details_carry_instructional_guidance():
+    """Surviving placeholders shown to the blocked buyer must include a
+    where-to-find + format hint, not just the bare marker (Sprint 5a)."""
+    b = _builder()
+    qa = {
+        "iso": "We hold [Verify: ISO 27001 cert number].",
+        "enc": "Data is [Verify: encryption standard].",
+        "dpo": "Our [Verify: DPO name and email].",
+    }
+    details = b._residual_placeholder_details(qa)
+    joined = "\n".join(details)
+    # Each marker is preserved AND enriched with guidance.
+    assert any(d.startswith("[Verify: ISO 27001 cert number]") and "—" in d for d in details)
+    assert "ISO/IEC 27001" in joined          # ISO format hint
+    assert "Security Hub" in joined           # encryption where-to-find hint
+    assert "Data Protection Officer" in joined  # DPO hint
+    # Distinct markers only.
+    assert len(details) == 3
