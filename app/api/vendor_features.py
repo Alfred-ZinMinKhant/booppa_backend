@@ -464,6 +464,103 @@ def add_subsidiary(
     }
 
 
+@router.get("/trm/subsidiary-comparison")
+def trm_subsidiary_comparison(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Pro Suite: roll up MAS TRM control status across the parent tenant and all
+    its subsidiaries, so a group CISO sees one consolidated, per-domain view.
+
+    This is the concrete Pro-vs-Standard differentiator (Standard has no
+    multi-entity rollup). Each entity reports overall progress, open high/critical
+    controls, and a per-domain status map for a side-by-side matrix; we also flag
+    subsidiaries materially behind the group leader.
+    """
+    _require_feature(current_user, "multi_vendor", "Multi-subsidiary TRM comparison")
+    if current_user.parent_user_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Only the parent tenant can view the subsidiary comparison.",
+        )
+    from app.core.models_enterprise import (
+        MAS_TRM_DOMAINS, Organisation, TrmControl,
+    )
+
+    entities = [current_user] + (
+        db.query(User)
+        .filter(User.parent_user_id == current_user.id)
+        .order_by(User.created_at.asc())
+        .all()
+    )
+    total_domains = len(MAS_TRM_DOMAINS)
+
+    def _summary(u: User, is_parent: bool) -> dict:
+        org = db.query(Organisation).filter(Organisation.owner_user_id == u.id).first()
+        by_status = {"not_started": 0, "in_progress": 0, "compliant": 0, "gap": 0}
+        domain_status = {d: "not_started" for d in MAS_TRM_DOMAINS}
+        critical_open = 0
+        last_updated = None
+        controls_total = 0
+        if org:
+            rows = (
+                db.query(TrmControl)
+                .filter(TrmControl.organisation_id == org.id)
+                .all()
+            )
+            controls_total = len(rows)
+            for r in rows:
+                st = (r.status or "not_started").lower()
+                by_status[st] = by_status.get(st, 0) + 1
+                if r.domain in domain_status:
+                    domain_status[r.domain] = st
+                if (r.risk_rating or "").lower() in ("high", "critical") and st != "compliant":
+                    critical_open += 1
+                if r.updated_at and (last_updated is None or r.updated_at > last_updated):
+                    last_updated = r.updated_at
+        denom = controls_total or total_domains
+        return {
+            "user_id": str(u.id),
+            "name": u.company or u.full_name or u.email,
+            "is_parent": is_parent,
+            "sector": getattr(org, "sector", None) if org else None,
+            "domains_complete": by_status["compliant"],
+            "domains_total": denom,
+            "compliant_pct": round(100 * by_status["compliant"] / denom) if denom else 0,
+            "critical_open": critical_open,
+            "by_status": by_status,
+            "domain_status": domain_status,
+            "last_updated": last_updated.isoformat() if last_updated else None,
+        }
+
+    summaries = [_summary(u, i == 0) for i, u in enumerate(entities)]
+
+    # Lag alerts — subsidiaries materially behind the group's best performer.
+    alerts: list[str] = []
+    if len(summaries) > 1:
+        best = max(summaries, key=lambda s: s["compliant_pct"])
+        for s in summaries:
+            if s["user_id"] == best["user_id"]:
+                continue
+            if best["compliant_pct"] - s["compliant_pct"] >= 30:
+                alerts.append(
+                    f"{s['name']} is significantly behind {best['name']} on MAS TRM "
+                    f"({s['compliant_pct']}% vs {best['compliant_pct']}% complete) — "
+                    "risk of inconsistent group-wide MAS response."
+                )
+            if s["critical_open"] > 0:
+                alerts.append(
+                    f"{s['name']} has {s['critical_open']} open high/critical control(s)."
+                )
+
+    return {
+        "entity_count": len(summaries),
+        "domains": MAS_TRM_DOMAINS,
+        "entities": summaries,
+        "alerts": alerts,
+    }
+
+
 @router.delete("/subsidiaries/{sub_id}", status_code=204)
 def detach_subsidiary(
     sub_id: str,
