@@ -2080,6 +2080,7 @@ def fulfill_cover_sheet_task(
         # In the new compliance-evidence-pack flow, anchored_documents will be empty
         # at issue time — the user signs and notarizes the cover sheet AFTER receiving it.
         anchored_documents: list[dict] = []
+        bcep_pack_id: str | None = None
         pdpa_score = metadata.get("pdpa_score", "—")
         pdpa_status = "Pending"
         rfp_status = "Pending"
@@ -2268,6 +2269,50 @@ def fulfill_cover_sheet_task(
                         "anchored_at": ad.get("blockchain_anchored_at")
                             or (r.completed_at.isoformat() if r.completed_at else None),
                     })
+                # ── BCEP (Compliance Evidence Pack) — fold the 7 governance
+                # documents into the anchored list so DOCUMENTS ANCHORED reflects
+                # the full evidence set (forensic-audit finding: the 7 BCEP docs
+                # were generated but never connected to the cover sheet).
+                try:
+                    from app.core.models_v13 import EvidencePack
+
+                    _pack = (
+                        db.query(EvidencePack)
+                        .filter(
+                            EvidencePack.user_id == user.id,
+                            EvidencePack.status == "ready",
+                        )
+                        .order_by(EvidencePack.created_at.desc())
+                        .first()
+                    )
+                    if _pack and isinstance(_pack.anchoring, dict):
+                        bcep_pack_id = _pack.pack_id
+                        BCEP_LABELS = {
+                            "dpmp": "Data Protection Management Programme",
+                            "ropa": "Record of Processing Activities (ROPA)",
+                            "data_inventory": "Data Inventory & Retention Schedule",
+                            "vendor_register": "Third-Party Processor Register & DPA Checklist",
+                            "breach_runbook": "Data Breach Response Runbook",
+                            "training": "Staff Training Register",
+                            "review_log": "Periodic Security Review Log",
+                        }
+                        _bh = _pack.hashes if isinstance(_pack.hashes, dict) else {}
+                        for dt, label in BCEP_LABELS.items():
+                            _anc = _pack.anchoring.get(dt) if isinstance(_pack.anchoring.get(dt), dict) else {}
+                            _tx = _anc.get("tx_hash")
+                            if not _tx:
+                                continue  # only include confirmed-anchored docs
+                            anchored_documents.append({
+                                "filename": f"{label} ({_pack.pack_id})",
+                                "descriptor": label,
+                                "file_hash": _bh.get(dt) or "—",
+                                "tx_hash": _tx,
+                                "tx_url": f"{explorer_base}/tx/{_tx}",
+                                "anchored_at": _anc.get("anchored_at"),
+                            })
+                except Exception as _bcep_err:
+                    logger.warning("[CoverSheet] BCEP link failed (non-blocking): %s", _bcep_err)
+
                 # PDPA + VP status from latest matching reports
                 pdpa_report = (
                     db.query(Report)
@@ -2592,6 +2637,14 @@ def fulfill_cover_sheet_task(
             "network": settings.active_polygon_network_name,
             "recommendations": recommendations,
             "trm_domains": [],
+            "bcep_pack_id": bcep_pack_id,
+            # Explicit PDPC coverage statement (forensic-audit finding: the bundle
+            # must state which PDPC levels it covers for the auditor/buyer/inspector).
+            "pdpc_coverage": (
+                "This bundle covers PDPC Compliance Levels 1 and 2 — automated website "
+                "evidence (Level 1) and documented data-processing activities / ROPA "
+                "(Level 2). For Levels 3–6, see the Compliance Evidence Pack."
+            ),
         }
 
         # 3. Anchor the cover sheet itself (digest of the included evidence).
@@ -2651,6 +2704,7 @@ def fulfill_cover_sheet_task(
                         "s3_key": s3_key,
                         "schema_version": COVER_SHEET_SCHEMA_VERSION,
                         "anchored_count": len(anchored_documents),
+                        "bcep_pack_id": bcep_pack_id,
                         "pdpa_status": pdpa_status,
                         "pdpa_score": pdpa_score if isinstance(pdpa_score, int) else None,
                         "rfp_status": rfp_status,

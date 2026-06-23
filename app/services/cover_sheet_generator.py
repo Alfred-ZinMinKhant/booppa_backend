@@ -88,7 +88,7 @@ for _c in _LOGO_CANDIDATES:
 #     value persisted on the report (no more 53-vs-54 drift between the cover
 #     sheet and the PDPA report). Flags existing customers' copies as outdated
 #     so they get the corrected, internally-consistent cover sheet.
-COVER_SHEET_SCHEMA_VERSION = 9
+COVER_SHEET_SCHEMA_VERSION = 10  # +PDPC level coverage statement, +BCEP docs in anchored list
 
 PAGE_W, PAGE_H = A4
 MARGIN = 0.75 * inch
@@ -488,6 +488,13 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     ]))
     story.append(hero)
     story.append(Spacer(1, 0.12 * inch))
+
+    # Explicit PDPC level coverage — the auditor / enterprise buyer / inspector
+    # needs to know which PDPC compliance levels this bundle attests to.
+    _pdpc_coverage = data.get("pdpc_coverage")
+    if _pdpc_coverage:
+        story.append(Paragraph(f"<b>Coverage:</b> {_xml_escape(_pdpc_coverage)}", _STYLES["caption"]))
+        story.append(Spacer(1, 0.1 * inch))
 
     # Verify QR — page 1 trust signal. Procurer scans with their phone,
     # lands on booppa.io/verify/cover-sheet/{report_id}, sees the green
