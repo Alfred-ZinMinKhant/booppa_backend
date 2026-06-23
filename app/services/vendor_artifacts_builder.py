@@ -87,15 +87,35 @@ def build_priority_placement(db: Session, user: User, company_override: str | No
     return "BOOPPA-Priority-Placement-Report.pdf", pdf
 
 
+def _vendor_sectors(db: Session, vendor_id) -> list[str]:
+    """The vendor's registered sectors (lowercased), or [] if none set."""
+    from app.core.models import VendorSector
+
+    rows = db.query(VendorSector).filter(VendorSector.vendor_id == vendor_id).all()
+    return [r.sector.strip().lower() for r in rows if (r.sector or "").strip()]
+
+
 def build_bid_timing(db: Session, user: User, months_back: int = 12, company_override: str | None = None) -> tuple[str, bytes]:
+    from sqlalchemy import func
+
     from app.core.models_gebiz import GebizAwardHistory
 
     since = (datetime.now(timezone.utc) - timedelta(days=30 * months_back)).date()
-    rows = (
+    q = (
         db.query(GebizAwardHistory)
         .filter(GebizAwardHistory.awarded_date != None, GebizAwardHistory.awarded_date >= since)  # noqa: E711
-        .all()
     )
+    # Sector-relevant intelligence: an IT vendor should not receive a report
+    # dominated by Facilities/Construction awards. Filter to the vendor's
+    # registered sector(s) when available; otherwise show the full market.
+    sectors = _vendor_sectors(db, user.id)
+    sector_scoped = False
+    if sectors:
+        scoped = q.filter(func.lower(GebizAwardHistory.sector).in_(sectors))
+        if scoped.count() > 0:  # don't blank the report if the sector has no awards
+            q = scoped
+            sector_scoped = True
+    rows = q.all()
 
     buckets: "OrderedDict[str, dict]" = OrderedDict()
     for r in sorted(rows, key=lambda x: x.awarded_date):
@@ -109,9 +129,10 @@ def build_bid_timing(db: Session, user: User, months_back: int = 12, company_ove
 
     months = list(buckets.values())
     busiest = max(months, key=lambda m: m["awards"])["month"] if months else "—"
+    scope = f"{sectors[0].title()} sector" if sector_scoped else "all sectors"
     period_label = (
-        f"GeBIZ awards, {months[0]['month']} – {months[-1]['month']}"
-        if months else "GeBIZ award history"
+        f"GeBIZ awards ({scope}), {months[0]['month']} – {months[-1]['month']}"
+        if months else f"GeBIZ award history ({scope})"
     )
     pdf = generate_bid_timing_pdf({
         "company_name": (company_override or "").strip() or company_of(user),

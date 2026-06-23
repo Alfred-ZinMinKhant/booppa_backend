@@ -3307,6 +3307,82 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
         db.close()
 
 
+# Generic fallback briefing — used when an org has no open findings, or when the
+# LLM is unavailable, so Monitor delivery never blocks on the AI call.
+_GENERIC_MONITOR_BRIEFING = [
+    "Confirm your data-breach notification path meets PDPA §26D (notify PDPC within 3 calendar days).",
+    "Verify your DPO contact details are current and published.",
+    "Check that third-party processors have signed up-to-date data-processing agreements.",
+]
+
+
+def _pdpa_monitor_briefing_bullets(company, sector, findings, current_score, previous_score):
+    """Three personalised regulatory action items for the Monitor briefing.
+
+    Keyed on the org's actual open findings + sector via DeepSeek (BooppaAIService).
+    Falls back to the generic checklist when there are no findings or the model is
+    unavailable. Returned strings are XML-escaped and safe to drop into <li> tags.
+    """
+    def _xe(s):
+        return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    flist = findings if isinstance(findings, list) else []
+    if not flist:
+        return _GENERIC_MONITOR_BRIEFING
+
+    lines = []
+    for f in flist[:8]:
+        if not isinstance(f, dict):
+            continue
+        sev = (f.get("severity") or "").upper()
+        dim = f.get("dimension") or f.get("type") or f.get("category") or "finding"
+        desc = f.get("title") or f.get("description") or ""
+        lines.append(f"- [{sev}] {dim}: {desc}".strip())
+    findings_blob = "\n".join(lines) or "(no structured findings)"
+
+    if isinstance(current_score, int) and isinstance(previous_score, int):
+        delta = f" Compliance score moved {previous_score} -> {current_score}/100."
+    elif isinstance(current_score, int):
+        delta = f" Current compliance score {current_score}/100."
+    else:
+        delta = ""
+
+    try:
+        import json as _json
+        import re as _re
+
+        from app.services.booppa_ai_service import BooppaAIService
+        ai = BooppaAIService()
+        system = (
+            "You are a Singapore PDPA compliance advisor. Given an organisation's open "
+            "findings, produce EXACTLY 3 specific, actionable regulatory items. Each item: "
+            "the concrete action, the relevant PDPA section reference, and an estimated "
+            "remediation time. Be specific to the findings — no generic advice. Return ONLY "
+            "a JSON array of 3 short strings, no prose, no code fences."
+        )
+        user = (
+            f"Organisation: {company}\nSector: {sector or 'unknown'}\n"
+            f"Open findings:\n{findings_blob}\n{delta}\n"
+            "Return 3 action items as a JSON array of strings."
+        )
+        raw = asyncio.run(ai._call_deepseek([
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]))
+        if raw:
+            txt = _re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=_re.MULTILINE).strip()
+            cand = _json.loads(txt)
+            if isinstance(cand, dict):
+                cand = next((v for v in cand.values() if isinstance(v, list)), None)
+            if isinstance(cand, list):
+                bullets = [_xe(str(x)) for x in cand if str(x).strip()][:3]
+                if bullets:
+                    return bullets
+    except Exception as exc:
+        logger.warning("[MonitorReport] personalised briefing failed: %s — using generic", exc)
+    return _GENERIC_MONITOR_BRIEFING
+
+
 @celery_app.task(bind=True, max_retries=2, name="run_pdpa_monitor_report_for_user")
 def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | None = None, override_company: str | None = None):
     """Generate + deliver the month-over-month PDPA Monitor Report PDF.
@@ -3374,6 +3450,69 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
         )
         scanned_url = cur_ad.get("display_url") or cur_ad.get("website_url") or current.company_website
 
+        # Personalised regulatory briefing — keyed on THIS org's open findings +
+        # sector (replaces the generic 3-bullet checklist that was identical for
+        # every client; forensic-audit finding).
+        from app.core.models import VendorSector
+        _sec_row = db.query(VendorSector).filter(VendorSector.vendor_id == user.id).first()
+        _sector = _sec_row.sector if _sec_row else None
+        briefing_bullets = _pdpa_monitor_briefing_bullets(
+            company, _sector, findings, _compliance(current),
+            _compliance(previous) if previous else None,
+        )
+        briefing_html = "".join(f"<li>{b}</li>" for b in briefing_bullets)
+
+        # ── Compliance trend (6b) + finding age for urgency counter (6c) ──────
+        history_reports = (
+            db.query(Report)
+            .filter(
+                Report.owner_id == user.id,
+                Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
+                Report.status == "completed",
+            )
+            .order_by(Report.completed_at.asc().nullsfirst())
+            .limit(12)
+            .all()
+        )
+
+        def _fkey(f: dict) -> str:
+            return str((f.get("type") or f.get("dimension") or f.get("title") or "")).strip().lower()
+
+        score_history = []
+        first_seen: dict[str, datetime] = {}
+        for r in history_reports:  # ascending → earliest occurrence wins
+            when = r.completed_at or r.created_at
+            sc = _compliance(r)
+            if sc is not None and when is not None:
+                score_history.append({"label": when.strftime("%b"), "score": sc})
+            if when is None:
+                continue
+            rad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
+            rfs = rad.get("detailed_findings") or rad.get("findings") or []
+            for f in (rfs if isinstance(rfs, list) else []):
+                if isinstance(f, dict):
+                    k = _fkey(f)
+                    if k and k not in first_seen:
+                        first_seen[k] = when
+
+        urgent_findings = []
+        _now_naive = datetime.utcnow()
+        for f in (findings if isinstance(findings, list) else []):
+            if not isinstance(f, dict) or (f.get("severity") or "").upper() != "HIGH":
+                continue
+            seen = first_seen.get(_fkey(f))
+            if not seen:
+                continue
+            seen_n = seen.replace(tzinfo=None) if getattr(seen, "tzinfo", None) else seen
+            days_open = (_now_naive - seen_n).days
+            if days_open > 14:
+                urgent_findings.append({
+                    "label": (f.get("title") or f.get("type") or _fkey(f)).replace("_", " ").title(),
+                    "days_open": days_open,
+                    "severity": "HIGH",
+                })
+        urgent_findings.sort(key=lambda x: x["days_open"], reverse=True)
+
         pdf_bytes = generate_pdpa_monitor_report_pdf({
             "company_name": company,
             "current_score": _compliance(current),
@@ -3382,6 +3521,8 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
             "findings_count": len(findings) if isinstance(findings, list) else None,
             "dimension_changes": dimension_changes,
             "full_report_url": f"https://api.booppa.io/api/v1/reports/{current.id}/download",
+            "urgent_findings": urgent_findings,
+            "score_history": score_history,
         })
 
         report_url = None
@@ -3415,9 +3556,7 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
                 {link_block}
                 <h3 style="color:#0f172a;font-size:15px;margin:24px 0 6px;">This month's regulatory briefing</h3>
                 <ul style="font-size:13px;color:#334155;margin:0 0 8px;padding-left:18px;">
-                  <li>Confirm your data-breach notification path meets PDPA §26D (notify PDPC within 3 calendar days).</li>
-                  <li>Verify your DPO contact details are current and published.</li>
-                  <li>Check that third-party processors have signed up-to-date data-processing agreements.</li>
+                  {briefing_html}
                 </ul>
                 <p style="color:#64748b;font-size:12px;">PDPA Monitor — monthly compliance tracking + regulatory briefing · booppa.io</p>
               </div>
@@ -3743,6 +3882,99 @@ def _anniversary_match_filter(model_attr, now=None):
     # Last day of this month — sweep up anyone whose nominal anniversary
     # falls on a day this month doesn't have.
     return model_attr >= now.day
+
+
+@celery_app.task(name="check_vendor_proof_expiry")
+def check_vendor_proof_expiry():
+    """Daily sweep for Vendor Proof certificate expiry.
+
+    (1) Marks lapsed VerifyRecords EXPIRED so the public verify page reports
+        "Expired" instead of a stale "active" badge.
+    (2) Emails a renewal reminder 30 calendar days before expiry (one-day match
+        window → each record reminded once).
+
+    Expiry dates are stored as naive UTC (the models_v6 convention), so all
+    comparisons here use naive `datetime.utcnow()`.
+    """
+    from app.core.models import User
+    from app.core.models_v6 import VerifyRecord, LifecycleStatus
+
+    db = SessionLocal()
+    reminded = 0
+    expired = 0
+    try:
+        now = datetime.utcnow()
+
+        # (1) Mark lapsed certificates expired.
+        lapsed = (
+            db.query(VerifyRecord)
+            .filter(
+                VerifyRecord.expires_at != None,  # noqa: E711
+                VerifyRecord.expires_at < now,
+                VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE,
+            )
+            .all()
+        )
+        for v in lapsed:
+            v.lifecycle_status = LifecycleStatus.EXPIRED
+            expired += 1
+        if lapsed:
+            db.commit()
+
+        # (2) Renewal reminders for certificates expiring in exactly 30 days.
+        target = (now + timedelta(days=30)).date()
+        active = (
+            db.query(VerifyRecord)
+            .filter(
+                VerifyRecord.expires_at != None,  # noqa: E711
+                VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE,
+            )
+            .all()
+        )
+        email_svc = EmailService()
+        for v in active:
+            if not v.expires_at or v.expires_at.date() != target:
+                continue
+            user = db.query(User).filter(User.id == v.vendor_id).first()
+            if not user or not user.email:
+                continue
+            company = v.company_name or getattr(user, "company", None) or "your company"
+            exp_str = v.expires_at.strftime("%d %B %Y")
+            body_html = f"""
+            <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
+              <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
+                <h1 style="color:#10b981;margin:0;font-size:20px;">Your Vendor Proof expires in 30 days</h1>
+              </div>
+              <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
+                <p>Hello <strong>{company}</strong>,</p>
+                <p>Your Booppa Vendor Proof certificate is valid until <strong>{exp_str}</strong>.
+                   Renew now to keep your verification active — a renewal reruns your PDPA
+                   scan so the certificate reflects your current compliance standing.</p>
+                <p style="margin-top:20px;">
+                  <a href="https://www.booppa.io/vendor/dashboard" style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">Renew Vendor Proof →</a>
+                </p>
+                <p style="color:#64748b;font-size:12px;margin-top:24px;">
+                  After {exp_str}, your public verification page will show "Expired" until you renew. · booppa.io
+                </p>
+              </div>
+            </body></html>"""
+            try:
+                ok = asyncio.run(email_svc.send_html_email(
+                    to_email=user.email,
+                    subject=f"Your Vendor Proof expires {exp_str} — renew to stay verified",
+                    body_html=body_html,
+                ))
+                if ok:
+                    reminded += 1
+                else:
+                    logger.error("[VendorProofExpiry] reminder rejected for %s", user.email)
+            except Exception as _e:
+                logger.warning("[VendorProofExpiry] reminder failed for %s: %s", user.email, _e)
+    except Exception as exc:
+        logger.error("[VendorProofExpiry] sweep failed: %s", exc)
+    finally:
+        db.close()
+    logger.info("[VendorProofExpiry] reminded=%d expired=%d", reminded, expired)
 
 
 @celery_app.task(name="run_vendor_active_monthly_checks")
@@ -4860,189 +5092,192 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
         # Aggregate top sectors and agencies by award count + total value.
         import statistics as _stats
 
-        sector_stats: dict[str, dict] = {}
-        agency_stats: dict[str, dict] = {}
-        supplier_stats: dict[str, dict] = {}   # supplier benchmarking
-        month_stats: dict[str, dict] = {}      # bid-timing (awards per month)
-        sector_amounts: dict[str, list] = {}   # price history per sector
-        total_value = 0.0
-        for r in rows:
-            amt = float(r.award_amt) if r.award_amt is not None else 0.0
-            total_value += amt
-            sec = (r.sector or "OTHER").upper()
-            ag = (r.procuring_entity or "UNKNOWN").upper()
-            for bucket, key in ((sector_stats, sec), (agency_stats, ag)):
-                e = bucket.setdefault(key, {"count": 0, "value": 0.0})
-                e["count"] += 1
-                e["value"] += amt
-            # Supplier benchmarking — which firms win, and their average ticket.
-            sup = (r.supplier_name or "").strip().upper() or "UNDISCLOSED"
-            se = supplier_stats.setdefault(sup, {"count": 0, "value": 0.0})
-            se["count"] += 1
-            se["value"] += amt
-            # Bid-timing — award volume by calendar month.
-            if r.awarded_date:
-                mk = r.awarded_date.strftime("%Y-%m")
-                me = month_stats.setdefault(mk, {"count": 0, "value": 0.0})
-                me["count"] += 1
-                me["value"] += amt
-            # Price history — collect non-zero award amounts per sector.
-            if amt > 0:
-                sector_amounts.setdefault(sec, []).append(amt)
-
-        top_sectors = sorted(sector_stats.items(), key=lambda kv: kv[1]["count"], reverse=True)[:5]
-        top_agencies = sorted(agency_stats.items(), key=lambda kv: kv[1]["count"], reverse=True)[:5]
-
-        # Supplier benchmarking — top awardees + average award size (so a vendor
-        # sees who they're up against and at what contract sizes).
-        top_suppliers = sorted(
-            supplier_stats.items(), key=lambda kv: kv[1]["count"], reverse=True
-        )[:5]
-
-        # Price history — typical contract size per top sector (low / median / high).
-        price_by_sector = []
-        for _sec_name, _v in top_sectors:
-            _amts = sorted(sector_amounts.get(_sec_name, []))
-            if _amts:
-                price_by_sector.append(
-                    (_sec_name, _amts[0], _stats.median(_amts), _amts[-1])
-                )
-
-        # Bid-timing — awards by month + the busiest window as a "when to bid" cue.
-        timing_rows = sorted(month_stats.items(), key=lambda kv: kv[0])
-        busiest_month = (
-            max(month_stats.items(), key=lambda kv: kv[1]["count"])[0]
-            if month_stats else None
-        )
-
         def _fmt_month(mk: str) -> str:
             try:
                 return datetime.strptime(mk, "%Y-%m").strftime("%b %Y")
             except Exception:
                 return mk
 
-        busiest_label = _fmt_month(busiest_month) if busiest_month else None
+        # Skip rows with no real supplier — null/empty/"UNKNOWN" rows otherwise
+        # surface as a top supplier with S$0 awards and destroy the table's
+        # credibility (forensic-audit finding: "UNKNOWN — 24 wins — S$0").
+        _BAD_SUPPLIERS = {"", "UNKNOWN", "UNDISCLOSED", "N/A", "NA", "NULL", "-"}
 
-        # ── Build PDF once and upload to S3 (link is shared by every subscriber) ──
-        pdf_url: str | None = None
-        try:
-            buf = BytesIO()
-            doc = SimpleDocTemplate(
-                buf, pagesize=A4,
-                leftMargin=0.6 * inch, rightMargin=0.6 * inch,
-                topMargin=0.6 * inch, bottomMargin=0.6 * inch,
+        def _aggregate(award_rows: list) -> dict:
+            """All digest stats for a set of award rows. Pure aggregation so it can
+            be run once market-wide and again per-subscriber for their sector."""
+            sector_stats: dict[str, dict] = {}
+            agency_stats: dict[str, dict] = {}
+            supplier_stats: dict[str, dict] = {}
+            month_stats: dict[str, dict] = {}
+            sector_amounts: dict[str, list] = {}
+            total = 0.0
+            for r in award_rows:
+                amt = float(r.award_amt) if r.award_amt is not None else 0.0
+                total += amt
+                sec = (r.sector or "OTHER").upper()
+                ag = (r.procuring_entity or "UNKNOWN").upper()
+                for bucket, key in ((sector_stats, sec), (agency_stats, ag)):
+                    e = bucket.setdefault(key, {"count": 0, "value": 0.0})
+                    e["count"] += 1
+                    e["value"] += amt
+                # Supplier benchmarking — real awardees only.
+                sup = (r.supplier_name or "").strip().upper()
+                if sup not in _BAD_SUPPLIERS:
+                    se = supplier_stats.setdefault(sup, {"count": 0, "value": 0.0})
+                    se["count"] += 1
+                    se["value"] += amt
+                if r.awarded_date:
+                    mk = r.awarded_date.strftime("%Y-%m")
+                    me = month_stats.setdefault(mk, {"count": 0, "value": 0.0})
+                    me["count"] += 1
+                    me["value"] += amt
+                if amt > 0:
+                    sector_amounts.setdefault(sec, []).append(amt)
+
+            top_sectors = sorted(sector_stats.items(), key=lambda kv: kv[1]["count"], reverse=True)[:5]
+            top_agencies = sorted(agency_stats.items(), key=lambda kv: kv[1]["count"], reverse=True)[:5]
+            top_suppliers = sorted(supplier_stats.items(), key=lambda kv: kv[1]["count"], reverse=True)[:5]
+            price_by_sector = []
+            for _sec_name, _v in top_sectors:
+                _amts = sorted(sector_amounts.get(_sec_name, []))
+                if _amts:
+                    price_by_sector.append((_sec_name, _amts[0], _stats.median(_amts), _amts[-1]))
+            timing_rows = sorted(month_stats.items(), key=lambda kv: kv[0])
+            busiest_month = (
+                max(month_stats.items(), key=lambda kv: kv[1]["count"])[0]
+                if month_stats else None
             )
-            styles = getSampleStyleSheet()
-            h_style = ParagraphStyle(
-                "h", parent=styles["Heading1"], fontSize=18, textColor=colors.HexColor("#0f172a"),
-                spaceAfter=6,
-            )
-            sub_style = ParagraphStyle(
-                "sub", parent=styles["Normal"], fontSize=10,
-                textColor=colors.HexColor("#64748b"), spaceAfter=18,
-            )
-            h2_style = ParagraphStyle(
-                "h2", parent=styles["Heading2"], fontSize=12,
-                textColor=colors.HexColor("#0f172a"), spaceAfter=8, spaceBefore=14,
-            )
-            body_style = ParagraphStyle(
-                "body", parent=styles["Normal"], fontSize=10,
-                textColor=colors.HexColor("#0f172a"), spaceAfter=6,
-            )
+            return {
+                "count": len(award_rows),
+                "total_value": total,
+                "top_sectors": top_sectors,
+                "top_agencies": top_agencies,
+                "top_suppliers": top_suppliers,
+                "price_by_sector": price_by_sector,
+                "timing_rows": timing_rows,
+                "busiest_label": _fmt_month(busiest_month) if busiest_month else None,
+            }
 
-            story: list = []
-            story.append(Paragraph("Tender Intelligence — Monthly Digest", h_style))
-            story.append(Paragraph(
-                f"{period_label} · {len(rows)} awards · "
-                f"Total value S${total_value:,.0f}",
-                sub_style,
-            ))
+        # ── Render + upload the digest PDF for a given aggregation/scope ──────
+        def _render_pdf(agg: dict, scope_label: str) -> str | None:
+            try:
+                buf = BytesIO()
+                doc = SimpleDocTemplate(
+                    buf, pagesize=A4,
+                    leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+                    topMargin=0.6 * inch, bottomMargin=0.6 * inch,
+                )
+                styles = getSampleStyleSheet()
+                h_style = ParagraphStyle(
+                    "h", parent=styles["Heading1"], fontSize=18, textColor=colors.HexColor("#0f172a"),
+                    spaceAfter=6,
+                )
+                sub_style = ParagraphStyle(
+                    "sub", parent=styles["Normal"], fontSize=10,
+                    textColor=colors.HexColor("#64748b"), spaceAfter=18,
+                )
+                h2_style = ParagraphStyle(
+                    "h2", parent=styles["Heading2"], fontSize=12,
+                    textColor=colors.HexColor("#0f172a"), spaceAfter=8, spaceBefore=14,
+                )
+                body_style = ParagraphStyle(
+                    "body", parent=styles["Normal"], fontSize=10,
+                    textColor=colors.HexColor("#0f172a"), spaceAfter=6,
+                )
 
-            def _build_table(rows_data: list[list], header: list[str], colWidths=None) -> Table:
-                t = Table([header] + rows_data, hAlign="LEFT", colWidths=colWidths or [3.2 * inch, 1.2 * inch, 1.8 * inch])
-                t.setStyle(TableStyle([
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f1f5f9")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#475569")),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 9),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#fafafa")]),
-                    ("LINEBELOW", (0, 0), (-1, 0), 0.5, colors.HexColor("#cbd5e1")),
-                    ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-                    ("TOPPADDING", (0, 0), (-1, -1), 6),
-                ]))
-                return t
-
-            story.append(Paragraph("Top sectors", h2_style))
-            story.append(_build_table(
-                [[k, str(v["count"]), f"S${v['value']:,.0f}"] for k, v in top_sectors],
-                ["Sector", "Awards", "Total value"],
-            ))
-
-            story.append(Paragraph("Top procuring entities", h2_style))
-            story.append(_build_table(
-                [[k, str(v["count"]), f"S${v['value']:,.0f}"] for k, v in top_agencies],
-                ["Agency", "Awards", "Total value"],
-            ))
-
-            # ── Supplier benchmarking ───────────────────────────────────────
-            if top_suppliers:
-                story.append(Paragraph("Top suppliers — who's winning", h2_style))
-                story.append(_build_table(
-                    [[k[:38], str(v["count"]),
-                      f"S${(v['value'] / v['count'] if v['count'] else 0):,.0f}",
-                      f"S${v['value']:,.0f}"]
-                     for k, v in top_suppliers],
-                    ["Supplier", "Wins", "Avg award", "Total"],
-                    colWidths=[2.7 * inch, 0.8 * inch, 1.4 * inch, 1.3 * inch],
+                story: list = []
+                story.append(Paragraph("Tender Intelligence — Monthly Digest", h_style))
+                story.append(Paragraph(
+                    f"{period_label} · {scope_label} · {agg['count']} awards · "
+                    f"Total value S${agg['total_value']:,.0f}",
+                    sub_style,
                 ))
 
-            # ── Price history (typical contract size per sector) ────────────
-            if price_by_sector:
-                story.append(Paragraph("Typical contract size by sector", h2_style))
+                def _build_table(rows_data: list[list], header: list[str], colWidths=None) -> Table:
+                    t = Table([header] + rows_data, hAlign="LEFT", colWidths=colWidths or [3.2 * inch, 1.2 * inch, 1.8 * inch])
+                    t.setStyle(TableStyle([
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f1f5f9")),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#475569")),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTSIZE", (0, 0), (-1, -1), 9),
+                        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#fafafa")]),
+                        ("LINEBELOW", (0, 0), (-1, 0), 0.5, colors.HexColor("#cbd5e1")),
+                        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                        ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ]))
+                    return t
+
+                story.append(Paragraph("Top sectors", h2_style))
                 story.append(_build_table(
-                    [[s[:30], f"S${lo:,.0f}", f"S${med:,.0f}", f"S${hi:,.0f}"]
-                     for s, lo, med, hi in price_by_sector],
-                    ["Sector", "Low", "Median", "High"],
-                    colWidths=[2.7 * inch, 1.1 * inch, 1.2 * inch, 1.2 * inch],
+                    [[k, str(v["count"]), f"S${v['value']:,.0f}"] for k, v in agg["top_sectors"]],
+                    ["Sector", "Awards", "Total value"],
                 ))
 
-            # ── Bid timing ──────────────────────────────────────────────────
-            if timing_rows:
-                story.append(Paragraph("When awards land — bid timing", h2_style))
-                if busiest_label:
-                    story.append(Paragraph(
-                        f"Busiest award month in this window: <b>{busiest_label}</b>. "
-                        "Line up submissions to land ahead of peak procurement cycles.",
-                        body_style,
+                story.append(Paragraph("Top procuring entities", h2_style))
+                story.append(_build_table(
+                    [[k, str(v["count"]), f"S${v['value']:,.0f}"] for k, v in agg["top_agencies"]],
+                    ["Agency", "Awards", "Total value"],
+                ))
+
+                if agg["top_suppliers"]:
+                    story.append(Paragraph("Top suppliers — who's winning", h2_style))
+                    story.append(_build_table(
+                        [[k[:38], str(v["count"]),
+                          f"S${(v['value'] / v['count'] if v['count'] else 0):,.0f}",
+                          f"S${v['value']:,.0f}"]
+                         for k, v in agg["top_suppliers"]],
+                        ["Supplier", "Wins", "Avg award", "Total"],
+                        colWidths=[2.7 * inch, 0.8 * inch, 1.4 * inch, 1.3 * inch],
                     ))
-                story.append(_build_table(
-                    [[_fmt_month(mk), str(v["count"]), f"S${v['value']:,.0f}"]
-                     for mk, v in timing_rows],
-                    ["Month", "Awards", "Value"],
+
+                if agg["price_by_sector"]:
+                    story.append(Paragraph("Typical contract size by sector", h2_style))
+                    story.append(_build_table(
+                        [[s[:30], f"S${lo:,.0f}", f"S${med:,.0f}", f"S${hi:,.0f}"]
+                         for s, lo, med, hi in agg["price_by_sector"]],
+                        ["Sector", "Low", "Median", "High"],
+                        colWidths=[2.7 * inch, 1.1 * inch, 1.2 * inch, 1.2 * inch],
+                    ))
+
+                if agg["timing_rows"]:
+                    story.append(Paragraph("When awards land — bid timing", h2_style))
+                    if agg["busiest_label"]:
+                        story.append(Paragraph(
+                            f"Busiest award month in this window: <b>{agg['busiest_label']}</b>. "
+                            "Line up submissions to land ahead of peak procurement cycles.",
+                            body_style,
+                        ))
+                    story.append(_build_table(
+                        [[_fmt_month(mk), str(v["count"]), f"S${v['value']:,.0f}"]
+                         for mk, v in agg["timing_rows"]],
+                        ["Month", "Awards", "Value"],
+                    ))
+
+                story.append(Spacer(1, 0.3 * inch))
+                story.append(Paragraph(
+                    "Source: GeBIZ / data.gov.sg Government Procurement Awards. "
+                    "Supplier benchmarking, contract-size bands, and bid-timing are "
+                    "computed from the published award history for the window shown. "
+                    "Open the live dashboard for current-tender bid/watch/pass signals.",
+                    body_style,
                 ))
 
-            story.append(Spacer(1, 0.3 * inch))
-            story.append(Paragraph(
-                "Source: GeBIZ / data.gov.sg Government Procurement Awards. "
-                "Supplier benchmarking, contract-size bands, and bid-timing are "
-                "computed from the published award history for the window shown. "
-                "Open the live dashboard for current-tender bid/watch/pass signals.",
-                body_style,
-            ))
+                doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
+                pdf_bytes = buf.getvalue()
 
-            doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
-            pdf_bytes = buf.getvalue()
-
-            from app.services.storage import S3Service
-            s3 = S3Service()
-            digest_id = f"tender-intel-digest-{since.strftime('%Y-%m')}"
-            pdf_url = _asyncio.run(s3.upload_pdf(pdf_bytes, digest_id))
-            logger.info(f"[TenderIntelDigest] PDF uploaded: {digest_id}")
-        except Exception as exc:
-            logger.warning(f"[TenderIntelDigest] PDF generation/upload failed: {exc} — falling back to email-only")
-            pdf_url = None
+                from app.services.storage import S3Service
+                s3 = S3Service()
+                _scope_slug = "".join(c for c in scope_label.lower() if c.isalnum()) or "all"
+                digest_id = f"tender-intel-digest-{since.strftime('%Y-%m')}-{_scope_slug}"
+                url = _asyncio.run(s3.upload_pdf(pdf_bytes, digest_id))
+                logger.info(f"[TenderIntelDigest] PDF uploaded: {digest_id}")
+                return url
+            except Exception as exc:
+                logger.warning(f"[TenderIntelDigest] PDF generation/upload failed: {exc} — falling back to email-only")
+                return None
 
         def _row(label: str, e: dict) -> str:
             return f"""
@@ -5052,10 +5287,6 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
               <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#a3a3a3;text-align:right;">S${e['value']:,.0f}</td>
             </tr>"""
 
-        sector_rows = "".join(_row(k, v) for k, v in top_sectors)
-        agency_rows = "".join(_row(k, v) for k, v in top_agencies)
-
-        # ── Extra email sections: supplier benchmarking, price history, timing ──
         def _row4(c0, c1, c2, c3) -> str:
             return f"""
             <tr>
@@ -5079,32 +5310,37 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                     <tbody>{rows_html}</tbody>
                   </table>"""
 
-        supplier_rows_html = "".join(
-            _row4(k[:38], v["count"],
-                  f"S${(v['value'] / v['count'] if v['count'] else 0):,.0f}",
-                  f"S${v['value']:,.0f}")
-            for k, v in top_suppliers
-        )
-        price_rows_html = "".join(
-            _row4(s[:30], f"S${lo:,.0f}", f"S${med:,.0f}", f"S${hi:,.0f}")
-            for s, lo, med, hi in price_by_sector
-        )
-        timing_rows_html = "".join(_row(_fmt_month(mk), v) for mk, v in timing_rows)
-
-        extra_sections_html = ""
-        if busiest_label:
-            extra_sections_html += (
-                f'<p style="color:#a3a3a3;margin-top:32px;">⏱ '
-                f'<strong style="color:#fff;">Bid timing:</strong> the busiest award month in this '
-                f'window was <strong style="color:#60a5fa;">{busiest_label}</strong> — plan submissions '
-                f'to land ahead of peak procurement cycles.</p>'
+        # ── Email HTML sections for a given aggregation ──────────────────────
+        def _render_email_sections(agg: dict) -> tuple[str, str, str]:
+            sector_rows = "".join(_row(k, v) for k, v in agg["top_sectors"])
+            agency_rows = "".join(_row(k, v) for k, v in agg["top_agencies"])
+            supplier_rows_html = "".join(
+                _row4(k[:38], v["count"],
+                      f"S${(v['value'] / v['count'] if v['count'] else 0):,.0f}",
+                      f"S${v['value']:,.0f}")
+                for k, v in agg["top_suppliers"]
             )
-        extra_sections_html += _email_section(
-            "Top suppliers — who's winning", ["Supplier", "Wins", "Avg award", "Total"], supplier_rows_html)
-        extra_sections_html += _email_section(
-            "Typical contract size by sector", ["Sector", "Low", "Median", "High"], price_rows_html)
-        extra_sections_html += _email_section(
-            "Awards by month", ["Month", "Awards", "Value"], timing_rows_html)
+            price_rows_html = "".join(
+                _row4(s[:30], f"S${lo:,.0f}", f"S${med:,.0f}", f"S${hi:,.0f}")
+                for s, lo, med, hi in agg["price_by_sector"]
+            )
+            timing_rows_html = "".join(_row(_fmt_month(mk), v) for mk, v in agg["timing_rows"])
+
+            extra = ""
+            if agg["busiest_label"]:
+                extra += (
+                    f'<p style="color:#a3a3a3;margin-top:32px;">⏱ '
+                    f'<strong style="color:#fff;">Bid timing:</strong> the busiest award month in this '
+                    f'window was <strong style="color:#60a5fa;">{agg["busiest_label"]}</strong> — plan submissions '
+                    f'to land ahead of peak procurement cycles.</p>'
+                )
+            extra += _email_section(
+                "Top suppliers — who's winning", ["Supplier", "Wins", "Avg award", "Total"], supplier_rows_html)
+            extra += _email_section(
+                "Typical contract size by sector", ["Sector", "Low", "Median", "High"], price_rows_html)
+            extra += _email_section(
+                "Awards by month", ["Month", "Awards", "Value"], timing_rows_html)
+            return sector_rows, agency_rows, extra
 
         sub_query = db.query(User).filter(
             User.is_active == True,  # noqa: E712
@@ -5166,18 +5402,48 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
         email_svc = EmailService()
         period = period_label
 
+        # Per-subscriber sector-scoped digest, cached by sector signature so we
+        # aggregate + render at most once per distinct sector set. An IT vendor
+        # must not receive a digest dominated by Facilities/Construction awards
+        # (forensic-audit finding: sector filter not applied).
+        _digest_cache: dict[tuple, tuple] = {}
+
+        def _digest_for(sectors: list[str]):
+            key = tuple(sorted(s.lower() for s in sectors)) if sectors else ()
+            if key in _digest_cache:
+                return _digest_cache[key]
+            if key:
+                subset = [r for r in rows if (r.sector or "").strip().lower() in key]
+                if subset:
+                    scope = f"{sectors[0].title()} sector"
+                else:  # vendor's sector has no awards in window — show full market
+                    subset, scope = rows, "all sectors"
+            else:
+                subset, scope = rows, "all sectors"
+            agg = _aggregate(subset)
+            result = (agg, _render_pdf(agg, scope), _render_email_sections(agg), scope)
+            _digest_cache[key] = result
+            return result
+
         for sub in subscribers:
             try:
-                subject = f"Tender Intelligence — {len(rows)} GeBIZ awards ({period_label})"
-
                 # ── BID/WATCH/PASS — Block B (per subscriber) ────────────────
                 # THIS subscriber's sector + history. Must stay inside the loop —
                 # hoisting it out is the v1 cross-contamination bug (every vendor
                 # got the IT-sector recommendation).
-                _sub_sector_row = (
-                    db.query(VendorSector).filter(VendorSector.vendor_id == sub.id).first()
-                )
-                _sub_sector = (_sub_sector_row.sector or "IT").upper() if _sub_sector_row else "IT"
+                _sub_sectors = [
+                    (r.sector or "").strip()
+                    for r in db.query(VendorSector).filter(VendorSector.vendor_id == sub.id).all()
+                    if (r.sector or "").strip()
+                ]
+                _sub_sector = (_sub_sectors[0].upper() if _sub_sectors else "IT")
+
+                # Sector-scoped benchmarking digest for this subscriber.
+                _agg, pdf_url, (sector_rows, agency_rows, extra_sections_html), _scope = _digest_for(_sub_sectors)
+                total_value = _agg["total_value"]
+                _award_count = _agg["count"]
+                subject = f"Tender Intelligence — {_award_count} GeBIZ awards ({period_label})"
+
                 _vendor_history = build_vendor_history(db, str(sub.id), sector=_sub_sector)
                 _classified_tenders = enrich_tender_digest_with_classifications(
                     _live_tender_dicts, vendor_history=_vendor_history,
@@ -5231,7 +5497,7 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                   <h2 style="color:#ffffff;margin-top:0;">Monthly Sector Trends — {period}</h2>
                   <p style="color:#a3a3a3;">
                     Hi {sub.full_name or sub.company or sub.email},<br>
-                    Across {period_label}, GeBIZ awarded <strong style="color:#ffffff;">{len(rows)} contracts</strong>
+                    Across {period_label} ({_scope}), GeBIZ awarded <strong style="color:#ffffff;">{_award_count} contracts</strong>
                     totalling <strong style="color:#60a5fa;">S${total_value:,.0f}</strong>.
                   </p>
 
