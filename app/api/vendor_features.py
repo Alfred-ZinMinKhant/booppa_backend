@@ -701,6 +701,66 @@ def _ensure_trm_controls(db: Session, org_id) -> int:
     return len(rows)
 
 
+@router.get("/trm/board-report/latest")
+def get_latest_trm_board_report(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Latest monthly MAS TRM board report for the Suite user, with a freshly
+    re-presigned download URL (the stored one expires after 7 days)."""
+    from app.core.models import Report
+
+    _require_feature(current_user, "dashboard", "MAS TRM board report")
+    row = (
+        db.query(Report)
+        .filter(
+            Report.owner_id == current_user.id,
+            Report.framework == "trm_board_report",
+            Report.status == "completed",
+        )
+        .order_by(Report.completed_at.desc().nullslast())
+        .first()
+    )
+    if not row:
+        return {"available": False}
+
+    ad = row.assessment_data if isinstance(row.assessment_data, dict) else {}
+    key = row.file_key or ad.get("s3_key")
+    download_url = row.s3_url or ad.get("s3_url")
+    if key:
+        try:
+            from app.services.storage import S3Service
+            s3 = S3Service()
+            download_url = s3.s3_client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": s3.bucket, "Key": key},
+                ExpiresIn=604800,  # 7 days
+            )
+        except Exception as exc:  # fall back to the stored (maybe-expired) URL
+            logger.warning("[TRMBoard] re-presign failed for %s: %s", current_user.id, exc)
+
+    return {
+        "available": True,
+        "download_url": download_url,
+        "generated_at": row.completed_at.isoformat() if row.completed_at else None,
+        "compliant_pct": ad.get("compliant_pct"),
+        "plan_label": ad.get("plan_label"),
+    }
+
+
+@router.post("/trm/board-report/generate", status_code=202)
+def generate_trm_board_report(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Generate this month's MAS TRM board report on demand (also emailed)."""
+    _require_feature(current_user, "dashboard", "MAS TRM board report")
+    from app.workers.tasks import run_trm_board_report_for_user
+
+    run_trm_board_report_for_user.delay(str(current_user.id))
+    return {"status": "queued", "message": "Your board report is being generated and will be emailed shortly."}
+
+
 @router.get("/trm")
 def get_trm(
     db: Session = Depends(get_db),

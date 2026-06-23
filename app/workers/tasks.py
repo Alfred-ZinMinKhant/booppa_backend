@@ -6574,8 +6574,12 @@ def run_trm_board_report_for_user(self, user_id: str, override_company: str | No
 
         month_label = datetime.now(timezone.utc).strftime("%B %Y")
         report_url = None
+        # Stable S3 key so the self-serve endpoint can re-presign (presigned URLs
+        # expire after 7 days; the report is fetched on demand months later).
+        board_report_id = f"trm-board-{user.id}-{datetime.now(timezone.utc):%Y%m}"
+        board_file_key = f"reports/{board_report_id}.pdf"
         try:
-            report_url = asyncio.run(S3Service().upload_pdf(pdf_bytes, f"trm-board-{user.id}-{datetime.now(timezone.utc):%Y%m}"))
+            report_url = asyncio.run(S3Service().upload_pdf(pdf_bytes, board_report_id))
         except Exception as up_err:
             logger.error("[TRMBoard] S3 upload failed for %s: %s", user.email, up_err)
 
@@ -6608,9 +6612,12 @@ def run_trm_board_report_for_user(self, user_id: str, override_company: str | No
                     "compliant_pct": board["compliant_pct"],
                     "schema_version": TRM_BOARD_REPORT_SCHEMA_VERSION,
                     "s3_url": report_url,
+                    "s3_key": board_file_key,
+                    "plan_label": plan_label,
                 },
                 status="completed",
                 s3_url=report_url,
+                file_key=board_file_key,
                 completed_at=datetime.now(timezone.utc),
             ))
             db.commit()
