@@ -1127,24 +1127,74 @@ class RFPExpressBuilder:
             if isinstance(v, str)
         )
 
-    def _residual_placeholder_details(self, qa_answers: Dict[str, str]) -> list[str]:
-        """Return the distinct surviving placeholder marker strings, in order.
+    # Instructional guidance per placeholder topic — tells the buyer exactly
+    # WHERE to find the fact and in what FORMAT to enter it, instead of leaving
+    # them with a bare "[Verify: encryption standard]" marker (forensic-audit
+    # finding: placeholders gave no guidance). Matched against the marker text;
+    # first hit wins, so order most-specific → generic.
+    _PLACEHOLDER_GUIDANCE: list[tuple[re.Pattern, str]] = [
+        (re.compile(r"ISO", re.I),
+         "Check your ISO certificate. Format: ISO/IEC 27001:2022 — Certificate No. [number] — valid until [date]."),
+        (re.compile(r"SOC[\s-]?2", re.I),
+         "Check your SOC 2 report cover page. Format: SOC 2 Type II — report period [dates]."),
+        (re.compile(r"PDPC", re.I),
+         "Your DPO's PDPC registration reference, if filed with the PDPC."),
+        (re.compile(r"DPO|data protection officer", re.I),
+         "Your appointed Data Protection Officer. Format: [name] — [email]."),
+        (re.compile(r"encryption|at[- ]rest|in[- ]transit|key management|key[- ]mgmt", re.I),
+         "Check AWS Console > Security Hub (or your IT manager's encryption policy). Format: AES-256 at rest / TLS 1.2+ in transit; keys in [AWS KMS / customer-managed]."),
+        (re.compile(r"RTO|RPO|BCP|business continuity|DR plan|last test", re.I),
+         "From your BCP/DR test report. Format: last tested [date]; RTO [hours]; RPO [hours]."),
+        (re.compile(r"patch|remediation", re.I),
+         "From your patch-management policy. Format: critical patches applied within [N] days."),
+        (re.compile(r"scan|vulnerabilit", re.I),
+         "From your vulnerability-management policy. Format: vulnerability scans [monthly/quarterly]."),
+        (re.compile(r"new[- ]?hire|new[- ]?joiner|onboarding", re.I),
+         "From your training records. Format: new-hire security training within [N] days of joining."),
+        (re.compile(r"training|awareness", re.I),
+         "From your training records. Format: staff security-awareness training [annually/quarterly]."),
+        (re.compile(r"access review|privileged access|review cadence|MFA|multi[- ]?factor", re.I),
+         "From your IAM/access-review log. Format: privileged access reviewed [quarterly]; MFA enforced on privileged accounts [yes/no]."),
+        (re.compile(r"retention|audit log|log retention|monitoring|anomaly", re.I),
+         "From your logging policy. Format: logs retained [N months]; monitored via [SIEM/tool]."),
+        (re.compile(r"notification window|internal notification|incident", re.I),
+         "From your incident-response plan. Format: internal breach notification within [N hours]."),
+        (re.compile(r"cross[- ]border|data cent(?:re|er)|hosting region|transfer mechanism", re.I),
+         "From your cloud config. Format: data hosted in [region]; cross-border transfers under [SCCs / other mechanism]."),
+        (re.compile(r"sub-?processor|processor|subcontract|offshor", re.I),
+         "From your vendor list. Format: key sub-processors [names]; subcontracting/offshoring [yes/no + where]."),
+    ]
 
-        The marker text itself names the fact the buyer must supply (e.g.
-        "[Verify: ISO 27001 cert number and expiry]"), so it doubles as the
-        guidance shown to the buyer when delivery is blocked and they are routed
-        back to complete the intake.
+    def _guidance_for_marker(self, marker: str) -> str | None:
+        """Where-to-find + expected-format hint for a placeholder marker, if any."""
+        for pattern, hint in self._PLACEHOLDER_GUIDANCE:
+            if pattern.search(marker):
+                return hint
+        return None
+
+    def _residual_placeholder_details(self, qa_answers: Dict[str, str]) -> list[str]:
+        """Return the distinct surviving placeholder markers, each enriched with
+        instructional guidance, in order.
+
+        The marker names the fact the buyer must supply (e.g.
+        "[Verify: ISO 27001 cert number and expiry]"); we append a where-to-find
+        + format hint so the buyer knows exactly how to complete it when delivery
+        is blocked and they are routed back to the intake.
         """
         if not isinstance(qa_answers, dict):
             return []
         seen: list[str] = []
+        seen_markers: set[str] = set()
         for v in qa_answers.values():
             if not isinstance(v, str):
                 continue
             for marker in self._PLACEHOLDER_RE.findall(v):
                 label = " ".join(marker.split()).strip()
-                if label and label not in seen:
-                    seen.append(label)
+                if not label or label in seen_markers:
+                    continue
+                seen_markers.add(label)
+                hint = self._guidance_for_marker(label)
+                seen.append(f"{label} — {hint}" if hint else label)
         return seen
 
     async def _anchor_to_blockchain(self) -> Optional[str]:

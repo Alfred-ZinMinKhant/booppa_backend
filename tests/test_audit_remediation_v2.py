@@ -88,10 +88,12 @@ def test_residual_placeholder_details_are_distinct_and_descriptive():
         "c": "All good.",
     }
     details = b._residual_placeholder_details(qa)
-    assert "[Verify: ISO 27001 cert number]" in details
+    # Each entry preserves the marker and now appends instructional guidance
+    # (Sprint 5a), e.g. "[Verify: ISO 27001 cert number] — Check your ISO ...".
+    assert any(d.startswith("[Verify: ISO 27001 cert number]") for d in details)
     assert any("FILL IN" in d for d in details)
     # Distinct: the repeated ISO marker appears once.
-    assert details.count("[Verify: ISO 27001 cert number]") == 1
+    assert sum(1 for d in details if d.startswith("[Verify: ISO 27001 cert number]")) == 1
 
 
 # ── Fix 2: TRM baseline assessed entity ─────────────────────────────────────
