@@ -134,6 +134,11 @@ celery_app.conf.update(
             "task": "run_vendor_active_monthly_checks",
             "schedule": crontab(hour=6, minute=0),
         },
+        # Standard/Pro Suite: monthly MAS TRM board report on the 1st at 05:00 UTC.
+        "trm-monthly-board-reports": {
+            "task": "run_trm_monthly_board_reports",
+            "schedule": crontab(day_of_month=1, hour=5, minute=0),
+        },
         # Pre-seed notarization credit rows for active suite/enterprise subscribers
         # on the 1st of each month at 00:30 UTC. Lazy creation in notarize.py
         # remains the source of truth — this just makes allocations visible early.
