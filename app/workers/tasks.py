@@ -6482,6 +6482,173 @@ def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | 
             db.close()
 
 
+@celery_app.task(bind=True, max_retries=2, name="run_trm_board_report_for_user")
+def run_trm_board_report_for_user(self, user_id: str, override_company: str | None = None):
+    """Generate + email the monthly MAS TRM board report for one Suite user.
+
+    Standard Suite → Booppa co-brand; Pro Suite → white-label (the org's
+    WhiteLabelConfig colours/header/footer + logo). Month-over-month delta comes
+    from the prior 'trm_board_report' Report snapshot; a new snapshot is persisted
+    each run. PDF is delivered as a direct email attachment.
+    """
+    from app.core.models import Report, User
+    from app.core.models_enterprise import (
+        MAS_TRM_DOMAINS, Organisation, TrmControl, WhiteLabelConfig,
+    )
+    from app.services.trm_board_report_generator import (
+        TRM_BOARD_REPORT_SCHEMA_VERSION, board_data_from_controls,
+        generate_trm_board_report_pdf,
+    )
+    from app.services.storage import S3Service
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or not user.email:
+            return
+        plan = (user.plan or "").lower()
+        is_pro = plan.startswith("pro")
+        plan_label = "Pro Suite" if is_pro else "Standard Suite"
+        company_name = (
+            (override_company or "").strip()
+            or (getattr(user, "company", "") or "").strip()
+            or "Your Organisation"
+        )
+        org = (
+            db.query(Organisation)
+            .filter(Organisation.owner_user_id == user.id)
+            .order_by(Organisation.created_at.asc())
+            .first()
+        )
+        if org:
+            controls = db.query(TrmControl).filter(TrmControl.organisation_id == org.id).all()
+        else:
+            controls = [{"domain": d, "status": "not_started"} for d in MAS_TRM_DOMAINS]
+        board = board_data_from_controls(controls, getattr(org, "sector", None) if org else None)
+
+        # Month-over-month delta from the most recent prior board snapshot.
+        prev_report = (
+            db.query(Report)
+            .filter(Report.owner_id == user.id, Report.framework == "trm_board_report",
+                    Report.status == "completed")
+            .order_by(Report.completed_at.desc().nullslast())
+            .first()
+        )
+        prev_pct = None
+        if prev_report and isinstance(prev_report.assessment_data, dict):
+            _p = prev_report.assessment_data.get("compliant_pct")
+            prev_pct = int(_p) if isinstance(_p, (int, float)) else None
+
+        # Pro white-label config (colours/header/footer + optional logo bytes).
+        white_label = None
+        if is_pro and org:
+            wl = db.query(WhiteLabelConfig).filter(WhiteLabelConfig.organisation_id == org.id).first()
+            if wl:
+                logo_bytes = None
+                if wl.logo_s3_key:
+                    try:
+                        _s3 = S3Service()
+                        logo_bytes = _s3.s3_client.get_object(
+                            Bucket=_s3.bucket, Key=wl.logo_s3_key
+                        )["Body"].read()
+                    except Exception:
+                        logo_bytes = None
+                white_label = {
+                    "primary_color": wl.secondary_color or "#0f172a",
+                    "secondary_color": wl.primary_color or "#10b981",
+                    "footer_text": wl.footer_text,
+                    "report_header_text": wl.report_header_text or company_name,
+                    "logo_bytes": logo_bytes,
+                }
+
+        pdf_bytes = generate_trm_board_report_pdf({
+            "company_name": company_name,
+            "plan_label": plan_label,
+            "domains": board["domains"],
+            "compliant_pct": board["compliant_pct"],
+            "previous_pct": prev_pct,
+            "top_risks": board["top_risks"],
+            "next_focus": board["next_focus"],
+            "white_label": white_label,
+        })
+
+        month_label = datetime.now(timezone.utc).strftime("%B %Y")
+        report_url = None
+        try:
+            report_url = asyncio.run(S3Service().upload_pdf(pdf_bytes, f"trm-board-{user.id}-{datetime.now(timezone.utc):%Y%m}"))
+        except Exception as up_err:
+            logger.error("[TRMBoard] S3 upload failed for %s: %s", user.email, up_err)
+
+        _safe = (company_name or "report").replace("/", "-").replace(" ", "-")
+        sent = asyncio.run(EmailService().send_html_email(
+            to_email=user.email,
+            subject=f"Your MAS TRM Board Report — {month_label} ({plan_label})",
+            body_html=(
+                f"<html><body style=\"font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;\">"
+                f"<p>Hello <strong>{company_name}</strong>,</p>"
+                f"<p>Your monthly MAS TRM board report for {month_label} is "
+                f"<strong>attached as a PDF</strong> — overall compliance {board['compliant_pct']}%, "
+                f"RAG status per domain, top open risks, and next month's focus.</p>"
+                f"<p style=\"color:#64748b;font-size:12px;\">Open your "
+                f"<a href=\"https://www.booppa.io/vendor/trm\">TRM workspace</a> to update controls.</p>"
+                f"</body></html>"
+            ),
+            attachments=[(f"MAS-TRM-Board-Report-{_safe}-{month_label}.pdf", pdf_bytes)],
+        ))
+        if not sent:
+            logger.error("[TRMBoard] delivery email rejected for %s", user.email)
+
+        # Persist this month's snapshot for next month's delta.
+        try:
+            db.add(Report(
+                owner_id=user.id,
+                framework="trm_board_report",
+                company_name=company_name,
+                assessment_data={
+                    "compliant_pct": board["compliant_pct"],
+                    "schema_version": TRM_BOARD_REPORT_SCHEMA_VERSION,
+                    "s3_url": report_url,
+                },
+                status="completed",
+                s3_url=report_url,
+                completed_at=datetime.now(timezone.utc),
+            ))
+            db.commit()
+        except Exception as persist_err:
+            logger.warning("[TRMBoard] snapshot persist failed for %s: %s", user.email, persist_err)
+            db.rollback()
+    except Exception as exc:
+        logger.error("[TRMBoard] Failed for %s: %s", user_id, exc)
+        raise self.retry(exc=exc, countdown=120)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="run_trm_monthly_board_reports")
+def run_trm_monthly_board_reports():
+    """Monthly fan-out: enqueue the TRM board report for every active Suite user."""
+    db = SessionLocal()
+    queued = 0
+    try:
+        from app.core.models import User, Subscription as SubModel
+        subs = db.query(SubModel).filter(
+            SubModel.product_type.in_([
+                "standard_suite", "standard_suite_monthly", "standard_suite_annual",
+                "pro_suite", "pro_suite_monthly", "pro_suite_annual",
+            ]),
+            SubModel.status.in_(("active", "trialing")),
+        ).all()
+        user_ids = {s.user_id for s in subs if s.user_id}
+        for uid in user_ids:
+            run_trm_board_report_for_user.delay(str(uid))
+            queued += 1
+    except Exception as exc:
+        logger.error("[TRMBoard] monthly fan-out failed: %s", exc)
+    finally:
+        db.close()
+    logger.info("[TRMBoard] queued %d monthly board report(s)", queued)
+
+
 @celery_app.task(bind=True, max_retries=2, name="fulfill_evidence_pack_task")
 def fulfill_evidence_pack_task(self, evidence_pack_id: str):
     """Generate + deliver the BCEP PDPA Compliance Evidence Pack (7 documents).
