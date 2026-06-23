@@ -9,7 +9,7 @@ from app.services.storage import S3Service
 from app.services.email_service import EmailService
 from app.billing.enforcement import enforce_tier
 from app.core.models_v10 import Referral
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import stripe
 import logging
 import json
@@ -2624,7 +2624,33 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             except Exception as _acra_err:
                 logger.warning("[VendorProof] ACRA lookup failed for UEN %s: %s", _uen, _acra_err)
 
+            # Live data.gov.sg fallback — gives us the entity's current status
+            # (LIVE / struck-off / ceased) and fills registration details when the
+            # imported registry has no row. A non-live status is surfaced on the
+            # certificate + verify page rather than blocking (the sale is already
+            # paid by the time this webhook runs).
+            try:
+                from app.services.evidence_enricher import fetch_acra_status
+
+                _live = await fetch_acra_status(_uen)
+                if _live.get("found"):
+                    acra_info.setdefault("entity_type", _live.get("entity_type"))
+                    acra_info.setdefault("registration_date", _live.get("registration_date"))
+                    acra_info["entity_status"] = _live.get("entity_status")
+                    acra_info["entity_live"] = _live.get("live")
+                    if not acra_info.get("matched"):
+                        acra_info["matched"] = True
+                        acra_info["source"] = "data.gov.sg (live)"
+                        if _live.get("registered_name"):
+                            acra_info["registry_company_name"] = _live.get("registered_name")
+            except Exception as _live_err:
+                logger.warning("[VendorProof] live ACRA lookup failed for UEN %s: %s", _uen, _live_err)
+
         # Step 1: Create or upsert VerifyRecord
+        # Vendor Proof certificates are valid for 12 months; expiry drives the
+        # renewal reminder (check_vendor_proof_expiry) and the active/expired
+        # badge on the public verify page.
+        _vp_expires_at = datetime.now(timezone.utc) + timedelta(days=365)
         verify = (
             db.query(VerifyRecord).filter(VerifyRecord.vendor_id == vendor_id).first()
         )
@@ -2633,6 +2659,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             verify.compliance_score = _vp_score_int
             verify.verification_level = VerificationLevel.BASIC
             verify.last_refreshed_at = datetime.now(timezone.utc)
+            verify.expires_at = _vp_expires_at
             verify.company_name = company_name
         else:
             verify = VerifyRecord(
@@ -2641,6 +2668,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                 compliance_score=_vp_score_int,
                 verification_level=VerificationLevel.BASIC,
                 lifecycle_status=LifecycleStatus.ACTIVE,
+                expires_at=_vp_expires_at,
                 correlation_id=str(report_id),
             )
             db.add(verify)
@@ -2715,6 +2743,8 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         # don't attach a downloadable certificate.
         cert_url: str | None = None
         cert_tx_hash: str | None = None
+        cert_pdf: bytes | None = None
+        _vp_expires_display = _vp_expires_at.strftime("%d %B %Y")
         try:
             from app.services.vendor_proof_generator import generate_vendor_proof_certificate
             from app.services.storage import S3Service
@@ -2731,6 +2761,8 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                 verify_url=verify_url,
                 network_name=settings.active_polygon_network_name,
                 explorer_url=settings.active_polygon_explorer_url,
+                entity_status=acra_info.get("entity_status"),
+                expires_on=_vp_expires_display,
             )
             cert_hash = _hashlib.sha256(cert_pdf).hexdigest()
 
@@ -2760,10 +2792,16 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         ad["vendor_proof_fulfilled"] = True
         ad["verify_url"] = verify_url
         ad["compliance_score"] = _vp_score_int
+        ad["procurement_readiness"] = vp_readiness
+        ad["verification_level"] = "BASIC"
+        ad["certificate_expires_at"] = _vp_expires_at.isoformat()
         ad["acra_verified"] = acra_info.get("matched", False)
         if acra_info.get("matched"):
             ad["acra_entity_type"] = acra_info.get("entity_type")
             ad["acra_registration_date"] = acra_info.get("registration_date")
+        if acra_info.get("entity_status"):
+            ad["acra_entity_status"] = acra_info.get("entity_status")
+            ad["acra_entity_live"] = acra_info.get("entity_live")
         if cert_url:
             ad["certificate_url"] = cert_url
         if cert_tx_hash:
@@ -2827,7 +2865,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                   {badge_html.replace('<', '&lt;').replace('>', '&gt;')}
                 </div>
                 <div style="margin-top:16px;">{badge_html}</div>
-                {("<p style='margin-top:20px;'><a href='" + cert_url + "' style='background:#0f172a;color:#fff;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;'>Download your Vendor Proof certificate (PDF) ↓</a></p>") if cert_url else ""}
+                {("<p style='margin-top:20px;color:#475569;font-size:13px;'>Your Vendor Proof certificate (valid until " + _vp_expires_display + ") is <strong>attached to this email as a PDF</strong>." + ("<br>You can also <a href='" + cert_url + "'>download it here</a>." if cert_url else "") + "</p>") if cert_pdf else ""}
                 <p style="margin-top:24px;">
                   <a href="https://www.booppa.io/vendor/dashboard" style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">
                     Go to Dashboard →
@@ -2843,11 +2881,20 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             """
             try:
                 email_svc = EmailService()
-                await email_svc.send_html_email(
+                # Deliver the certificate as a direct PDF attachment (not just an
+                # expiring S3 link) so it is immediately fileable/forwardable.
+                _attachments = None
+                if cert_pdf:
+                    _safe_co = (company_name or "certificate").replace("/", "-").replace(" ", "-")
+                    _attachments = [(f"Vendor-Proof-Certificate-{_safe_co}.pdf", cert_pdf)]
+                _ok = await email_svc.send_html_email(
                     to_email=contact_email,
                     subject=f"Your Vendor Proof is Active — {company_name}",
                     body_html=body_html,
+                    attachments=_attachments,
                 )
+                if not _ok:
+                    logger.error("[VendorProof] delivery email rejected for %s", contact_email)
             except Exception as e:
                 logger.error(f"[VendorProof] Email failed for {contact_email}: {e}")
 
