@@ -212,3 +212,49 @@ def vendor_pro_me(
         },
         "lookup_opt_out": bool(getattr(user, "tender_lookup_opt_out", False)),
     }
+
+
+@router.get("/pdpa-trend")
+def vendor_pro_pdpa_trend(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_vendor_pro),
+):
+    """PDPA compliance score over time for the Vendor Pro dashboard trend chart.
+
+    Returns up to the last 8 completed PDPA scans (oldest → newest) as
+    {label, score}, so the panel can render the quarterly compliance trend the
+    Pro tier promises. Empty list until the first scan completes.
+    """
+    from app.core.models import Report
+
+    rows = (
+        db.query(Report)
+        .filter(
+            Report.owner_id == user.id,
+            func.lower(Report.framework).like("%pdpa%"),
+            Report.status == "completed",
+        )
+        .order_by(Report.completed_at.desc().nullslast())
+        .limit(8)
+        .all()
+    )
+
+    def _score(r) -> int | None:
+        ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
+        cs = ad.get("compliance_score")
+        if isinstance(cs, (int, float)):
+            return max(0, min(100, int(round(cs))))
+        for k in ("overall_risk_score", "score", "risk_score"):
+            v = ad.get(k)
+            if isinstance(v, (int, float)):
+                return max(0, min(100, 100 - int(round(v))))
+        return None
+
+    points = []
+    for r in reversed(rows):  # oldest → newest
+        sc = _score(r)
+        when = r.completed_at or r.created_at
+        if sc is not None and when is not None:
+            points.append({"label": when.strftime("%b %y"), "score": sc})
+
+    return {"points": points}
