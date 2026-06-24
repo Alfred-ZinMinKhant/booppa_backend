@@ -235,6 +235,90 @@ def submit_intake(
     }
 
 
+@router.post("/{intake_id}/resolve")
+def resolve_intake(
+    intake_id: str,
+    body: dict,
+    token: str | None = Security(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    """Resolve a discrepancy on an already-generated RFP kit and regenerate.
+
+    After a kit ships, the result may carry `discrepancies` (e.g. the buyer
+    declared ISO 27001 but no public evidence was found). This lets the buyer
+    supply the corrected fact(s) and regenerate without starting over: we merge
+    the corrected `intake_data` over the prior intake (read from the last kit's
+    Report) and re-queue fulfill_rfp_task on the same session.
+
+    Body: { intake_data: dict (required, the corrected fields),
+            rfp_description?: str (defaults to the prior brief) }
+    """
+    from app.core.models import Report
+
+    user = _resolve_user(token, db)
+    row = (
+        db.query(PendingRfpIntake)
+        .filter(PendingRfpIntake.id == intake_id, PendingRfpIntake.user_id == user.id)
+        .with_for_update()
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Intake not found")
+
+    corrected = body.get("intake_data")
+    if not isinstance(corrected, dict) or not corrected:
+        raise HTTPException(status_code=422, detail="intake_data with the corrected field(s) is required")
+
+    # Recover the prior brief + intake from the most recent generated kit so the
+    # regeneration keeps everything the buyer already provided.
+    prior_report = (
+        db.query(Report)
+        .filter(
+            Report.owner_id == user.id,
+            Report.framework.in_(["rfp_complete", "rfp_express"]),
+            Report.status == "completed",
+        )
+        .order_by(Report.created_at.desc())
+        .first()
+    )
+    prior_ad = prior_report.assessment_data if (prior_report and isinstance(prior_report.assessment_data, dict)) else {}
+    prior_intake = prior_ad.get("intake_data") if isinstance(prior_ad.get("intake_data"), dict) else {}
+    rfp_description = (
+        (body.get("rfp_description") or "").strip()
+        or prior_ad.get("intake_rfp_description")
+        or ""
+    ).strip()
+
+    merged_intake = {**prior_intake, **corrected}
+    # Keep UEN/url/company stable from the row (set at submit time).
+    if row.uen and not merged_intake.get("uen"):
+        merged_intake["uen"] = row.uen
+    vendor_url = (row.vendor_url or (getattr(user, "website", "") or "")).strip()
+    company_name = (row.company_name or (getattr(user, "company", "") or "")).strip()
+    if not rfp_description:
+        raise HTTPException(status_code=422, detail="No prior RFP brief found to regenerate from — submit the intake first.")
+    if not vendor_url:
+        raise HTTPException(status_code=422, detail="vendor_url is required to regenerate.")
+
+    row.status = "submitted"
+    row.submitted_at = datetime.utcnow()
+    db.commit()
+
+    from app.workers.tasks import fulfill_rfp_task
+
+    fulfill_rfp_task.delay(
+        product_type=row.rfp_product_type,
+        vendor_id=str(user.id),
+        vendor_email=user.email,
+        vendor_url=vendor_url,
+        company_name=company_name,
+        rfp_description=rfp_description,
+        session_id=row.session_id,
+        intake_data=merged_intake,
+    )
+    return {"status": "queued", "intake_id": str(row.id), "session_id": row.session_id}
+
+
 # Cap: 10 MB upload, ~15k chars of extracted text downstream. Bigger than that
 # and we're paying for tokens we'll truncate anyway.
 _EXTRACT_MAX_FILE_BYTES = 10 * 1024 * 1024
