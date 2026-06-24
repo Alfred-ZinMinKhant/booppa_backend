@@ -2042,6 +2042,110 @@ def anchor_signed_cover_sheet_task(self, report_id: str, customer_email: str | N
             raise
 
 
+def _build_compliance_bundle_zip(db, user_id, company_name, cover_pdf_bytes):
+    """Single evidence archive for a completed Compliance Bundle.
+
+    Bundles a one-page cover letter + the signed Cover Sheet + the cycle
+    documents (PDPA Snapshot, RFP Complete Kit, ROPA) into one ZIP the buyer can
+    hand to an enterprise/procurement/PDPC reviewer. Best-effort: each document
+    is fetched from S3 by its stored key; any miss is skipped, never fatal.
+    Returns (filename, zip_bytes) or None if nothing could be assembled.
+    """
+    import zipfile
+    from io import BytesIO as _BytesIO
+
+    from app.core.models import Report
+    from app.services.storage import S3Service
+
+    FRAMEWORK_FILES = {
+        "pdpa_quick_scan": "PDPA_Snapshot",
+        "rfp_complete": "RFP_Complete_Kit",
+        "ropa_lite": "ROPA",
+        "compliance_evidence_signed_sheet": "Cover_Sheet_Signed",
+    }
+    safe_co = (company_name or "Company").replace("/", "-").replace(" ", "-")
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    members: list[tuple[str, bytes]] = []
+
+    # 1) Cover letter — what the bundle contains + which PDPC levels it covers.
+    try:
+        from io import BytesIO as _B
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import inch
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+        _buf = _B()
+        _doc = SimpleDocTemplate(_buf, pagesize=A4, leftMargin=0.8 * inch, rightMargin=0.8 * inch,
+                                 topMargin=0.8 * inch, bottomMargin=0.8 * inch)
+        _st = getSampleStyleSheet()
+        _doc.build([
+            Paragraph(f"Compliance Evidence Bundle — {company_name or 'Your Organisation'}", _st["Title"]),
+            Paragraph(f"Generated {date_str} · Booppa", _st["Normal"]),
+            Spacer(1, 16),
+            Paragraph(
+                "This archive contains your blockchain-anchored compliance evidence: the PDPA "
+                "Snapshot, RFP Complete Kit, Record of Processing Activities (ROPA), and the "
+                "signed Cover Sheet that indexes them with their on-chain anchors.", _st["BodyText"]),
+            Spacer(1, 10),
+            Paragraph(
+                "<b>Coverage:</b> PDPC Compliance Levels 1 and 2 — automated website evidence "
+                "(Level 1) and documented data-processing activities / ROPA (Level 2). For "
+                "Levels 3–6, see the Compliance Evidence Pack.", _st["BodyText"]),
+        ])
+        members.append((f"00_Cover_Letter_{safe_co}.pdf", _buf.getvalue()))
+    except Exception as _cl_err:
+        logger.warning("[BundleZip] cover letter render failed: %s", _cl_err)
+
+    # 2) The cover sheet we just generated (bytes already in hand).
+    if cover_pdf_bytes:
+        members.append((f"Cover_Sheet_{safe_co}_{date_str}.pdf", cover_pdf_bytes))
+
+    # 3) Cycle documents — fetch each most-recent anchored Report from S3.
+    try:
+        s3 = S3Service()
+        rows = (
+            db.query(Report)
+            .filter(
+                Report.owner_id == user_id,
+                Report.framework.in_(list(FRAMEWORK_FILES.keys())),
+                Report.tx_hash.isnot(None),
+            )
+            .order_by(Report.created_at.desc())
+            .all()
+        )
+        seen: set[str] = set()
+        for r in rows:
+            if r.framework in seen:
+                continue
+            key = r.file_key
+            if not key and isinstance(r.assessment_data, dict):
+                key = r.assessment_data.get("s3_key")
+            if not key:
+                continue
+            try:
+                data = s3.s3_client.get_object(Bucket=s3.bucket, Key=key)["Body"].read()
+            except Exception as _ferr:
+                logger.warning("[BundleZip] fetch failed for %s (%s): %s", r.framework, key, _ferr)
+                continue
+            seen.add(r.framework)
+            members.append((f"{FRAMEWORK_FILES[r.framework]}_{safe_co}_{date_str}.pdf", data))
+    except Exception as _docs_err:
+        logger.warning("[BundleZip] cycle-document collection failed: %s", _docs_err)
+
+    # Only worth sending once at least one cycle document is in the archive
+    # (cover letter + cover sheet alone aren't a "bundle").
+    cycle_added = {m[0].split("_" + safe_co)[0] for m in members} & {v for v in FRAMEWORK_FILES.values()}
+    if not cycle_added:
+        return None
+
+    zbuf = _BytesIO()
+    with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in members:
+            zf.writestr(name, data)
+    return (f"Booppa_Compliance_Bundle_{safe_co}_{date_str}.zip", zbuf.getvalue())
+
+
 @celery_app.task(bind=True, max_retries=3, name="fulfill_cover_sheet_task")
 def fulfill_cover_sheet_task(
     self,
@@ -2802,9 +2906,21 @@ def fulfill_cover_sheet_task(
 
             if signed_cs_tx:
                 # FINAL receipt: signed cover sheet has been uploaded + anchored.
+                # Bundle every document into a single evidence ZIP the buyer can
+                # forward to a reviewer (best-effort — never blocks the receipt).
+                _zip_attachment = None
+                try:
+                    if user:
+                        _zip = _build_compliance_bundle_zip(db, user.id, company_name, pdf_bytes)
+                        if _zip:
+                            _zip_attachment = [_zip]
+                except Exception as _zip_err:
+                    logger.warning("[CoverSheet] evidence ZIP build failed (non-blocking): %s", _zip_err)
+
                 asyncio.run(email_svc.send_html_email(
                     to_email=customer_email,
                     subject="Your Compliance Evidence Pack — final blockchain receipt",
+                    attachments=_zip_attachment,
                     body_html=(
                         f"<div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;'>"
                         f"<h2 style='color:#0f172a;'>Compliance Evidence Pack — complete</h2>"
@@ -2822,11 +2938,20 @@ def fulfill_cover_sheet_task(
                         f"{_tx_link('Cover Sheet (issued)', cs_anchor_tx)}"
                         f"{_tx_link('Cover Sheet (signed)', signed_cs_tx)}"
                         f"</ul></div>"
-                        f"<p style='color:#64748b;font-size:13px;'>Keep this email — the four anchors above are your full audit trail.</p>"
+                        + (
+                            "<p style='color:#334155;font-size:13px;'>📎 Your complete evidence archive "
+                            "(cover letter + Cover Sheet + PDPA Snapshot + RFP Kit + ROPA) is attached "
+                            "as a single ZIP — forward it to enterprise buyers, procurement teams, or the PDPC.</p>"
+                            if _zip_attachment else ""
+                        )
+                        + f"<p style='color:#64748b;font-size:13px;'>Keep this email — the four anchors above are your full audit trail.</p>"
                         f"</div>"
                     ),
                 ))
-                logger.info(f"[CoverSheet] Final receipt sent to {customer_email} (signed_cs={signed_cs_tx[:10]}…)")
+                logger.info(
+                    f"[CoverSheet] Final receipt sent to {customer_email} "
+                    f"(signed_cs={signed_cs_tx[:10]}…, zip={'yes' if _zip_attachment else 'no'})"
+                )
             else:
                 asyncio.run(email_svc.send_html_email(
                     to_email=customer_email,
