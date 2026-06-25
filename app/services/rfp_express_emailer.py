@@ -20,6 +20,7 @@ class RFPExpressEmailer:
         blockchain_proof: Optional[Dict] = None,
         scan_summary: Optional[Dict] = None,
         product_type: str = "rfp_express",
+        declaration_url: Optional[str] = None,
     ) -> bool:
         try:
             from app.services.email_service import EmailService
@@ -33,6 +34,18 @@ class RFPExpressEmailer:
                     f"<p><strong>Blockchain verification:</strong> "
                     f"<a href=\"{blockchain_proof['verify_url']}\">"
                     f"{blockchain_proof['verify_url']}</a></p>"
+                )
+
+            decl_section = ""
+            if declaration_url:
+                decl_section = (
+                    f"<p><a href=\"{declaration_url}\" "
+                    f"style=\"background:#0f172a;color:#fff;padding:10px 22px;"
+                    f"text-decoration:none;border-radius:6px;font-weight:bold;\">"
+                    f"Download Supplier Compliance Declaration (PDF)</a></p>"
+                    f"<p style=\"color:#64748b;font-size:12px;\">Attach this declaration "
+                    f"alongside your kit and map each item to the matching appendix in "
+                    f"your specific tender.</p>"
                 )
 
             body_html = f"""
@@ -49,6 +62,7 @@ class RFPExpressEmailer:
                 </a>
               </p>
               {bc_section}
+              {decl_section}
               <p>The certificate includes blockchain-verified evidence of your PDPA
                  compliance posture, ready to attach to any GeBIZ or government RFP
                  submission.</p>

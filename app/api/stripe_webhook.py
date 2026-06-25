@@ -2258,6 +2258,7 @@ async def _fulfill_rfp_package(
                             "download_url": download_url,
                             "s3_key": result.get("pdf_s3_key"),
                             "docx_url": result.get("docx_url"),
+                            "declaration_url": result.get("declaration_url"),
                             # Persist the full Q&A list (not just the count) so
                             # the Compliance Cover Sheet can embed it later —
                             # the result cache expires, the Report row doesn't.
@@ -2298,6 +2299,7 @@ async def _fulfill_rfp_package(
                 {
                     "download_url": download_url,
                     "docx_url": result.get("docx_url"),
+                    "declaration_url": result.get("declaration_url"),
                     "product_type": product_type,
                     "company_name": company_name,
                     "vendor_url": vendor_url,
