@@ -81,6 +81,8 @@ def generate_vendor_snapshot_pdf(data: Dict[str, Any]) -> bytes:
       extra_rows:   list of (label, value) appended to the details table (optional)
       trend:        {total_delta, compliance_delta} (optional) — vs last cycle
       sector_benchmark: {sector, percentile} (optional)
+      sector_rank:  {sector, rank, total} (optional)
+      search_impressions_30d: int|None — buyer-search appearances, trailing 30d
       tender_matches: list of {title, closing_date, bid_label} (optional)
     """
     s = _styles()
@@ -196,10 +198,10 @@ def generate_vendor_snapshot_pdf(data: Dict[str, Any]) -> bytes:
                 f"<b>{int(projected)}/100</b>.", s["body"]))
             story.append(Spacer(1, 14))
 
-    # Visibility & ranking — absolute rank among sector peers (4e). The
-    # "appeared in N searches" metric is intentionally omitted: the platform
-    # has no search-impression log, so we show rank + an honest status note
-    # rather than a fabricated number.
+    # Visibility & ranking — absolute rank among sector peers (4e) plus the
+    # real "appeared in N searches this month" count from the search-impression
+    # log. When no impressions have been recorded yet we fall back to an honest
+    # status note rather than a fabricated number.
     rank = data.get("sector_rank") or {}
     rank_bits: List[str] = []
     if rank.get("rank") and rank.get("total") and rank.get("sector"):
@@ -207,10 +209,16 @@ def generate_vendor_snapshot_pdf(data: Dict[str, Any]) -> bytes:
             f'Your position in <b>{_xml_escape(rank["sector"])}</b> vendor searches: '
             f'<b>#{int(rank["rank"])}</b> of {int(rank["total"])} active vendors'
         )
-    if not (data.get("profile_views_30d") or 0):
+    impressions = data.get("search_impressions_30d")
+    if isinstance(impressions, int) and impressions > 0:
         rank_bits.append(
-            "Your profile is live and prioritised — views accumulate as buyer "
-            "traffic grows on the platform."
+            f'Your profile appeared in <b>{impressions}</b> buyer '
+            f'{"search" if impressions == 1 else "searches"} this month.'
+        )
+    elif not (data.get("profile_views_30d") or 0):
+        rank_bits.append(
+            "Your profile is live and prioritised — search appearances and views "
+            "accumulate as buyer traffic grows on the platform."
         )
     bd_top = (breakdown.get("top_actions") or [])
     if bd_top:

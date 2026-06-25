@@ -51,6 +51,7 @@ _TRUNCATABLE_TABLES = [
     "processed_webhook_events",
     "activity_logs",
     "funnel_events",
+    "search_impressions",
     "verify_records",
     "certificate_logs",
     "reports",

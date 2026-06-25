@@ -85,6 +85,40 @@ PROCUREMENT_PRODUCTS = {
 }
 
 
+async def _gate_acra_live(uen: str) -> None:
+    """Pre-payment ACRA gate for Vendor Proof purchases.
+
+    Looks the UEN up in the live data.gov.sg ACRA dataset and blocks the
+    checkout when the entity is not found or not active (struck-off / ceased).
+    Vendor Proof attests an active entity; selling one for a dead UEN produces a
+    certificate no procurement officer will trust. A lookup *error* (network /
+    dataset hiccup) is non-fatal — we let the purchase proceed and fall back to
+    the post-payment warning rather than block a paying customer on our outage.
+    """
+    try:
+        from app.services.evidence_enricher import fetch_acra_status
+
+        status = await fetch_acra_status(uen)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("[checkout] ACRA gate lookup failed for UEN %s: %s", uen, e)
+        return
+
+    if not status.get("found"):
+        raise HTTPException(
+            status_code=422,
+            detail="UEN not found in the ACRA registry — verify your business registration number.",
+        )
+    if not status.get("live"):
+        es = status.get("entity_status") or "not active"
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This UEN is registered as {es} — Vendor Proof is available only "
+                "for active (Live) entities."
+            ),
+        )
+
+
 def get_stripe_client():
     secret = os.environ.get("STRIPE_SECRET_KEY")
     if not secret:
@@ -355,6 +389,18 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
             data["company_name"] = company_name
             if website:
                 data["vendor_url"] = website
+
+            # Pre-payment ACRA gate: when a UEN is supplied, block struck-off /
+            # ceased / not-found entities BEFORE charging (the post-payment webhook
+            # can only warn). UEN stays optional — buyers without one are unaffected.
+            req_uen = (data.get("uen") or "").strip()
+            uen = req_uen or ((getattr(user, "uen", "") or "").strip() if user else "")
+            if uen:
+                await _gate_acra_live(uen)
+                data["uen"] = uen
+                if user and req_uen and not getattr(user, "uen", None):
+                    user.uen = req_uen
+                    _db.commit()
         finally:
             _db.close()
 
@@ -396,6 +442,17 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
             # Inject into data so the metadata block below picks them up
             data["vendor_url"] = website
             data["company_name"] = company_name
+
+            # These bundles include a Vendor Proof component — apply the same
+            # optional pre-payment ACRA gate when a UEN is supplied.
+            req_uen = (data.get("uen") or "").strip()
+            uen = req_uen or ((getattr(user, "uen", "") or "").strip() if user else "")
+            if uen:
+                await _gate_acra_live(uen)
+                data["uen"] = uen
+                if user and req_uen and not getattr(user, "uen", None):
+                    user.uen = req_uen
+                    _db.commit()
         finally:
             _db.close()
 
@@ -488,6 +545,7 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         vendor_url = data.get("vendor_url", "")
         company_name = data.get("company_name", "")
         rfp_description = data.get("rfp_description", "")
+        uen = (data.get("uen") or "").strip()
         intake_data = data.get("intake_data") or {}  # dict of buyer-supplied facts
 
         metadata = {"product_type": product_type or "", "client_ip": client_ip}
@@ -501,6 +559,10 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
             metadata["vendor_url"] = vendor_url
         if company_name:
             metadata["company_name"] = company_name
+        # ACRA-gated UEN (Vendor Proof / bundles) — flows to the fulfillment
+        # webhook so the certificate states the verified registration number.
+        if uen:
+            metadata["uen"] = uen
         if rfp_description:
             metadata["rfp_description"] = rfp_description
         # Buyer-supplied facts indicator

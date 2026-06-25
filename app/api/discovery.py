@@ -42,6 +42,13 @@ async def search_discovered(
     total = query.count()
     vendors = query.order_by(DiscoveredVendor.company_name).offset((page - 1) * per_page).limit(per_page).all()
 
+    # Log search impressions for claimed vendors shown (best-effort, never blocks).
+    from app.services.marketplace import record_search_impressions
+
+    record_search_impressions(
+        db, [v.claimed_by_user_id for v in vendors if v.claimed_by_user_id], "discovery", q
+    )
+
     return {
         "vendors": [
             {

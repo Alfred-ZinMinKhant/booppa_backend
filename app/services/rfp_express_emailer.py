@@ -21,6 +21,7 @@ class RFPExpressEmailer:
         scan_summary: Optional[Dict] = None,
         product_type: str = "rfp_express",
         declaration_url: Optional[str] = None,
+        appendix_d_url: Optional[str] = None,
     ) -> bool:
         try:
             from app.services.email_service import EmailService
@@ -48,6 +49,18 @@ class RFPExpressEmailer:
                     f"your specific tender.</p>"
                 )
 
+            apx_section = ""
+            if appendix_d_url:
+                apx_section = (
+                    f"<p><a href=\"{appendix_d_url}\" "
+                    f"style=\"background:#0f172a;color:#fff;padding:10px 22px;"
+                    f"text-decoration:none;border-radius:6px;font-weight:bold;\">"
+                    f"Download Data Protection Appendix (PDF)</a></p>"
+                    f"<p style=\"color:#64748b;font-size:12px;\">A generic, reusable "
+                    f"data-protection appendix template — renumber its items to match the "
+                    f"appendix of your specific tender before submission.</p>"
+                )
+
             body_html = f"""
             <html><body style="font-family:Arial,sans-serif;color:#0f172a;">
               <h2 style="color:#10b981;">Your RFP Kit Evidence is Ready</h2>
@@ -63,6 +76,7 @@ class RFPExpressEmailer:
               </p>
               {bc_section}
               {decl_section}
+              {apx_section}
               <p>The certificate includes blockchain-verified evidence of your PDPA
                  compliance posture, ready to attach to any GeBIZ or government RFP
                  submission.</p>
