@@ -3042,10 +3042,14 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
         # best-effort (helpers swallow their own errors and return None/[]).
         from app.services.vendor_active_insights import (
             get_score_trend, get_sector_benchmark, get_tender_matches,
+            get_trust_breakdown, get_sector_rank,
         )
         trend = get_score_trend(db, vendor_id)
         benchmark = get_sector_benchmark(db, vendor_id)
         tender_matches = get_tender_matches(db, vendor_id, limit=5)
+        # 4b/4e: per-dimension Trust Score breakdown + absolute sector rank.
+        trust_breakdown = get_trust_breakdown(db, vendor_id)
+        sector_rank = get_sector_rank(db, vendor_id)
 
         # 2b. Render a one-page status snapshot PDF so the monthly email links a
         # real, fileable/forwardable artifact instead of being email-only.
@@ -3066,6 +3070,8 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
                 "verification_level": getattr(verify, "verification_level", None),
                 "trend": trend,
                 "sector_benchmark": benchmark,
+                "trust_breakdown": trust_breakdown,
+                "sector_rank": sector_rank,
                 "tender_matches": tender_matches,
             })
             snapshot_url = asyncio.run(
