@@ -23,7 +23,7 @@ from app.core.company import COMPANY_NAME
 
 logger = logging.getLogger(__name__)
 
-VENDOR_SNAPSHOT_SCHEMA_VERSION = 1
+VENDOR_SNAPSHOT_SCHEMA_VERSION = 2
 
 
 def _xml_escape(s: str) -> str:
@@ -152,6 +152,77 @@ def generate_vendor_snapshot_pdf(data: Dict[str, Any]) -> bytes:
     if trend_bits:
         story.append(Paragraph(" &nbsp;·&nbsp; ".join(trend_bits), s["body"]))
         story.append(Spacer(1, 14))
+
+    # Trust Score breakdown — per-dimension scores with the action that lifts
+    # each and the points it would add (4b). Turns a single number into a plan.
+    breakdown = data.get("trust_breakdown") or {}
+    bd_dims = breakdown.get("dimensions") or []
+    if bd_dims:
+        story.append(Paragraph("Trust Score Breakdown", s["h2"]))
+        bd_rows = [["Dimension", "Score", "Action to improve"]]
+        for d in bd_dims:
+            pts = int(d.get("potential_points") or 0)
+            action = _xml_escape(d.get("action") or "")
+            if pts > 0:
+                action = f'{action} <font color="#16a34a">(+{pts} pts)</font>'
+            else:
+                action = '<font color="#16a34a">Fully scored ✓</font>'
+            bd_rows.append([
+                Paragraph(_xml_escape(d.get("label") or ""), s["body"]),
+                Paragraph(f'{int(d.get("score") or 0)}/100', s["body"]),
+                Paragraph(action, s["body"]),
+            ])
+        bd_tbl = Table(bd_rows, colWidths=[1.4 * inch, 0.9 * inch, 4.1 * inch])
+        bd_tbl.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 9),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        story.append(bd_tbl)
+        story.append(Spacer(1, 8))
+        top_actions = breakdown.get("top_actions") or []
+        projected = breakdown.get("projected_total")
+        if top_actions and projected is not None:
+            story.append(Paragraph(
+                f"With these {len(top_actions)} action"
+                f"{'s' if len(top_actions) != 1 else ''}, your Trust Score reaches "
+                f"<b>{int(projected)}/100</b>.", s["body"]))
+            story.append(Spacer(1, 14))
+
+    # Visibility & ranking — absolute rank among sector peers (4e). The
+    # "appeared in N searches" metric is intentionally omitted: the platform
+    # has no search-impression log, so we show rank + an honest status note
+    # rather than a fabricated number.
+    rank = data.get("sector_rank") or {}
+    rank_bits: List[str] = []
+    if rank.get("rank") and rank.get("total") and rank.get("sector"):
+        rank_bits.append(
+            f'Your position in <b>{_xml_escape(rank["sector"])}</b> vendor searches: '
+            f'<b>#{int(rank["rank"])}</b> of {int(rank["total"])} active vendors'
+        )
+    if not (data.get("profile_views_30d") or 0):
+        rank_bits.append(
+            "Your profile is live and prioritised — views accumulate as buyer "
+            "traffic grows on the platform."
+        )
+    bd_top = (breakdown.get("top_actions") or [])
+    if bd_top:
+        rank_bits.append(
+            f'Highest-impact action this month: {_xml_escape(bd_top[0].get("action") or "")}.'
+        )
+    if rank_bits:
+        story.append(Paragraph("Visibility &amp; Ranking", s["h2"]))
+        for b in rank_bits:
+            story.append(Paragraph(b, s["body"]))
+            story.append(Spacer(1, 4))
+        story.append(Spacer(1, 10))
 
     # Personalised tender matches (BID/WATCH/PASS).
     matches = data.get("tender_matches") or []

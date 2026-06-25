@@ -6,6 +6,8 @@ and the dashboard:
 
   * `get_score_trend`        — Trust/Compliance deltas vs the previous snapshot.
   * `get_sector_benchmark`   — where the vendor sits vs its sector (percentile).
+  * `get_trust_breakdown`    — per-dimension Trust Score + point-attribution.
+  * `get_sector_rank`        — absolute rank (#N of M) among sector peers.
   * `get_tender_matches`     — personalised BID/WATCH/PASS on open GeBIZ tenders.
 
 Every function swallows its own exceptions and returns None / [] so a single
@@ -90,6 +92,119 @@ def get_sector_benchmark(db, vendor_id: str) -> dict | None:
         return {"sector": sector, "percentile": pct}
     except Exception as e:  # pragma: no cover
         logger.warning("[VendorInsights] sector_benchmark failed for %s: %s", vendor_id, e)
+        return None
+
+
+# Actionable Trust Score dimensions (Recency is excluded — it decays
+# automatically and has no clear user action). Each entry: the VendorScore
+# column, the human label, and the single recommended action that lifts it.
+_TRUST_DIMENSIONS = [
+    ("compliance_score", "COMPLIANCE", "Compliance",
+     "Complete a PDPA Snapshot scan to raise your verified compliance score"),
+    ("visibility_score", "VISIBILITY", "Visibility",
+     "Add your company logo and description, and share your verify link"),
+    ("engagement_score", "ENGAGEMENT", "Engagement",
+     "Submit a bid response or upload a new proof in the next 30 days"),
+    ("procurement_interest_score", "PROCUREMENT_INTEREST", "Procurement",
+     "Keep your profile active and complete the PDPA Snapshot to attract buyer interest"),
+]
+
+
+def get_trust_breakdown(db, vendor_id: str) -> dict | None:
+    """Per-dimension Trust Score breakdown with point-attribution.
+
+    Returns:
+      {
+        "total": int,                      # current total trust score (/100)
+        "projected_total": int,            # total after the top-3 actions
+        "dimensions": [
+          {"label", "score", "action", "potential_points"}, ...
+        ],
+        "top_actions": [ ...same shape..., highest impact first ],
+      }
+    `potential_points` is the contribution a dimension would add to the total
+    if raised to 100, i.e. weight * (100 - score) using the live scoring
+    weights. Returns None when the vendor has no VendorScore row.
+    """
+    try:
+        from app.core.models_v6 import VendorScore
+        from app.services.scoring import VendorScoreEngine
+
+        rec = db.query(VendorScore).filter(VendorScore.vendor_id == vendor_id).first()
+        if not rec:
+            return None
+
+        weights = VendorScoreEngine.WEIGHTS
+        dims = []
+        for col, weight_key, label, action in _TRUST_DIMENSIONS:
+            score = int(getattr(rec, col, 0) or 0)
+            weight = float(weights.get(weight_key, 0.0))
+            potential = int(round(weight * max(0, 100 - score)))
+            dims.append({
+                "label": label,
+                "score": score,
+                "action": action,
+                "potential_points": potential,
+            })
+
+        top_actions = sorted(
+            [d for d in dims if d["potential_points"] > 0],
+            key=lambda d: d["potential_points"], reverse=True,
+        )[:3]
+
+        total = int(getattr(rec, "total_score", 0) or 0)
+        projected = min(100, total + sum(d["potential_points"] for d in top_actions))
+        return {
+            "total": total,
+            "projected_total": projected,
+            "dimensions": dims,
+            "top_actions": top_actions,
+        }
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("[VendorInsights] trust_breakdown failed for %s: %s", vendor_id, e)
+        return None
+
+
+def get_sector_rank(db, vendor_id: str) -> dict | None:
+    """Vendor's absolute rank among sector peers by total Trust Score.
+
+    Returns {"sector", "rank", "total"} where rank is 1-based (#1 = highest
+    score). Used for the "Your position in [sector] vendor searches: #N of M"
+    line. Returns None when the vendor has no sector tag or no peers.
+    """
+    try:
+        from app.core.models_v6 import VendorScore, VendorSector
+
+        sector_row = (
+            db.query(VendorSector).filter(VendorSector.vendor_id == vendor_id).first()
+        )
+        sector = sector_row.sector if sector_row else None
+        if not sector:
+            return None
+
+        # All vendors sharing this sector, ranked by total score (desc).
+        peer_scores = (
+            db.query(VendorScore.vendor_id, VendorScore.total_score)
+            .join(VendorSector, VendorSector.vendor_id == VendorScore.vendor_id)
+            .filter(VendorSector.sector == sector)
+            .all()
+        )
+        if not peer_scores:
+            return None
+
+        ordered = sorted(
+            peer_scores, key=lambda r: (r[1] if r[1] is not None else -1), reverse=True
+        )
+        total = len(ordered)
+        rank = next(
+            (i + 1 for i, r in enumerate(ordered) if str(r[0]) == str(vendor_id)),
+            None,
+        )
+        if rank is None:
+            return None
+        return {"sector": sector, "rank": rank, "total": total}
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("[VendorInsights] sector_rank failed for %s: %s", vendor_id, e)
         return None
 
 
