@@ -258,6 +258,7 @@ class RFPExpressBuilder:
         # 4b. For Complete tier, also generate and upload DOCX
         docx_url = None
         declaration_url = None
+        appendix_d_url = None
         if product_type == "rfp_complete":
             docx_bytes = self._build_docx(company_name, vendor_url, qa_answers, vendor_ctx, tx_hash, product_type, intake=intake)
             if docx_bytes:
@@ -291,6 +292,41 @@ class RFPExpressBuilder:
                 logger.warning(f"Supplier declaration generation failed (non-blocking): {decl_err}")
                 self.warnings.append(f"Declaration error: {decl_err}")
 
+            # 4b-iii. "Appendix D" data-protection appendix (best-effort generic).
+            # Reproduces the kit's data-protection Q&A as a numbered D.1..D.n
+            # template the bidder can renumber to match their specific ITT — a
+            # usable answer to the (non-standard) "GeBIZ Appendix D" ask, with a
+            # prominent template disclaimer. Best-effort — never blocks delivery.
+            try:
+                from app.services.rfp_appendix_d_generator import build_appendix_d_pdf
+
+                apx_score = pdpc_result.get("compliance_score") if isinstance(pdpc_result, dict) else None
+                if apx_score is None:
+                    apx_score = vendor_ctx.get("compliance_score")
+                qa_items = [
+                    {
+                        "question": self._q_label(k),
+                        "answer": v,
+                        "verified": (verification_map.get(k) or {}).get("source", "ai_drafted") != "ai_drafted",
+                    }
+                    for k, v in qa_answers.items()
+                ]
+                appendix_d_bytes = build_appendix_d_pdf(
+                    company_name=company_name,
+                    qa_items=qa_items,
+                    vendor_ctx=vendor_ctx,
+                    intake=intake,
+                    acra_live=acra_live,
+                    compliance_score=apx_score,
+                    tx_hash=tx_hash,
+                    report_id=self.report_id,
+                )
+                if appendix_d_bytes:
+                    appendix_d_url = await self._upload_appendix_d(appendix_d_bytes)
+            except Exception as apx_err:
+                logger.warning(f"Appendix D generation failed (non-blocking): {apx_err}")
+                self.warnings.append(f"Appendix D error: {apx_err}")
+
         # 4c. Write CertificateLog audit row (4.11)
         await self._write_certificate_log(pdf_bytes, download_url, db)
 
@@ -300,7 +336,7 @@ class RFPExpressBuilder:
         # build/anchor/upload/email. By here, qa_answers is placeholder-free.
 
         # 5. Send email
-        await self._send_email(company_name, download_url, product_type, docx_url=docx_url, declaration_url=declaration_url)
+        await self._send_email(company_name, download_url, product_type, docx_url=docx_url, declaration_url=declaration_url, appendix_d_url=appendix_d_url)
 
         elapsed = (datetime.now(timezone.utc) - self.generation_start).total_seconds()
         logger.info(f"RFP Kit Express complete in {elapsed:.1f}s for {company_name}")
@@ -333,6 +369,7 @@ class RFPExpressBuilder:
             "pdf_s3_key":     getattr(self, "pdf_s3_key", None),
             "docx_url":       docx_url,
             "declaration_url": declaration_url,
+            "appendix_d_url": appendix_d_url,
             "qa_answers":     qa_display,
             "qa_answers_count": len(qa_display),
             "tx_hash":        tx_hash,
@@ -1906,9 +1943,32 @@ class RFPExpressBuilder:
             self.warnings.append(f"Declaration upload error: {e}")
             return None
 
+    async def _upload_appendix_d(self, appendix_bytes: bytes) -> Optional[str]:
+        try:
+            from app.services.storage import S3Service
+            s3_svc = S3Service()
+            key = f"rfp-complete/{self.report_id}-appendix-d.pdf"
+            s3_svc.s3_client.put_object(
+                Bucket=s3_svc.bucket,
+                Key=key,
+                Body=appendix_bytes,
+                ContentType="application/pdf",
+            )
+            url = s3_svc.s3_client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": s3_svc.bucket, "Key": key},
+                ExpiresIn=7 * 24 * 3600,
+            )
+            logger.info(f"Appendix D uploaded: {key}")
+            return url
+        except Exception as e:
+            logger.error(f"Appendix D upload failed: {e}")
+            self.warnings.append(f"Appendix D upload error: {e}")
+            return None
+
     # ── Step 5: email ─────────────────────────────────────────────────────────
 
-    async def _send_email(self, company_name: str, download_url: str, product_type: str = "rfp_express", docx_url: Optional[str] = None, declaration_url: Optional[str] = None):
+    async def _send_email(self, company_name: str, download_url: str, product_type: str = "rfp_express", docx_url: Optional[str] = None, declaration_url: Optional[str] = None, appendix_d_url: Optional[str] = None):
         try:
             from app.services.rfp_express_emailer import RFPExpressEmailer
             emailer = RFPExpressEmailer()
@@ -1918,6 +1978,7 @@ class RFPExpressBuilder:
                 download_url=download_url,
                 product_type=product_type,
                 declaration_url=declaration_url,
+                appendix_d_url=appendix_d_url,
             )
         except Exception as e:
             logger.warning(f"Email delivery failed (non-blocking): {e}")

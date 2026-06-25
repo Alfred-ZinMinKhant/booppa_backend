@@ -219,6 +219,27 @@ class FunnelEvent(Base):
     )
 
 
+# ── SearchImpression ──────────────────────────────────────────────────────────
+# One row per appearance of a *claimed* vendor in a buyer search result. Powers
+# the Vendor Active "your profile appeared in N searches this month" metric.
+# Written best-effort by the marketplace / discovery search endpoints; a write
+# failure there is swallowed and never blocks search.
+class SearchImpression(Base):
+    __tablename__ = "search_impressions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # The claiming user (vendor) whose profile was shown. Not FK-constrained to
+    # keep the hot search path cheap and resilient to id drift.
+    vendor_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    source = Column(String(20), nullable=False)  # "marketplace" | "discovery"
+    query = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    __table_args__ = (
+        Index("ix_search_impressions_vendor_created", "vendor_id", "created_at"),
+    )
+
+
 # ── RevenueEvent ──────────────────────────────────────────────────────────────
 # Tracks revenue events for MRR calculation, churn detection, cohort analysis.
 class RevenueEvent(Base):

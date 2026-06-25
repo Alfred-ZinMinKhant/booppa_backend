@@ -22,6 +22,38 @@ from app.core.models_v8 import VendorStatusSnapshot
 logger = logging.getLogger(__name__)
 
 
+def record_search_impressions(db: Session, vendor_ids, source: str, query: Optional[str] = None) -> None:
+    """Best-effort: log one SearchImpression per *unique* claimed vendor shown in
+    a buyer search result. Powers Vendor Active's "appeared in N searches" metric.
+
+    Never raises — a logging failure must not break the search response. Commits
+    its own rows and rolls back on error so the caller's session stays clean.
+    """
+    try:
+        from app.core.models_v10 import SearchImpression
+
+        seen = set()
+        rows = []
+        for vid in vendor_ids or []:
+            if not vid:
+                continue
+            key = str(vid)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(SearchImpression(vendor_id=vid, source=source, query=(query or None)))
+        if not rows:
+            return
+        db.add_all(rows)
+        db.commit()
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("record_search_impressions failed (non-blocking): %s", e)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
 def generate_slug(name: str) -> str:
     """Generate URL-safe slug from company name."""
     slug = name.lower().strip()
@@ -214,6 +246,9 @@ def search_marketplace(
             .all()
         )
         verified_set = {str(r.vendor_id) for r in rows}
+
+    # Log search impressions for claimed vendors shown (best-effort, never blocks).
+    record_search_impressions(db, claimed_user_ids, "marketplace", query)
 
     return {
         "vendors": [

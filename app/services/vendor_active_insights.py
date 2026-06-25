@@ -208,6 +208,31 @@ def get_sector_rank(db, vendor_id: str) -> dict | None:
         return None
 
 
+def get_search_impressions_30d(db, vendor_id: str) -> int | None:
+    """Count of buyer-search appearances for this vendor in the trailing 30 days.
+
+    Backs the Vendor Active "your profile appeared in N searches this month"
+    line. Returns None on any failure / when the table isn't present yet, so the
+    snapshot falls back to its honest placeholder note.
+    """
+    try:
+        from datetime import timedelta
+        from app.core.models_v10 import SearchImpression
+
+        since = datetime.now(timezone.utc) - timedelta(days=30)
+        return (
+            db.query(SearchImpression)
+            .filter(
+                SearchImpression.vendor_id == vendor_id,
+                SearchImpression.created_at >= since,
+            )
+            .count()
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("[VendorInsights] search_impressions failed for %s: %s", vendor_id, e)
+        return None
+
+
 def get_tender_matches(db, vendor_id: str, limit: int = 5,
                        with_win_probability: bool = False) -> list[dict]:
     """Personalised BID/WATCH/PASS on the soonest-closing open GeBIZ tenders.

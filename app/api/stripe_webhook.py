@@ -1024,6 +1024,7 @@ def _create_stub_report(
     source: str,
     session_id: str | None = None,
     test_simulation: bool = False,
+    uen: str | None = None,
 ) -> str:
     """Create a synthetic Report row for fulfillment paths that don't have a
     pre-existing report (standalone /pricing purchases, bundle components).
@@ -1040,6 +1041,9 @@ def _create_stub_report(
         "contact_email": customer_email,
         "bundle_source": source,
     }
+    if uen:
+        # ACRA-gated UEN from checkout → certificate shows the verified number.
+        assessment["uen"] = uen
     if session_id:
         # Stored so /api/reports/by-session can resolve the stub even when the
         # Stripe metadata backfill failed.
@@ -1294,6 +1298,7 @@ async def _fulfill_standalone_no_report(
             source=product_type,
             session_id=session_id,
             test_simulation=bool(metadata.get("test_simulation")),
+            uen=(metadata.get("uen") or "").strip() or None,
         )
         db.commit()
 
@@ -2259,6 +2264,7 @@ async def _fulfill_rfp_package(
                             "s3_key": result.get("pdf_s3_key"),
                             "docx_url": result.get("docx_url"),
                             "declaration_url": result.get("declaration_url"),
+                            "appendix_d_url": result.get("appendix_d_url"),
                             # Persist the full Q&A list (not just the count) so
                             # the Compliance Cover Sheet can embed it later —
                             # the result cache expires, the Report row doesn't.
@@ -2300,6 +2306,7 @@ async def _fulfill_rfp_package(
                     "download_url": download_url,
                     "docx_url": result.get("docx_url"),
                     "declaration_url": result.get("declaration_url"),
+                    "appendix_d_url": result.get("appendix_d_url"),
                     "product_type": product_type,
                     "company_name": company_name,
                     "vendor_url": vendor_url,
