@@ -66,6 +66,82 @@ def list_pending(
     }
 
 
+@router.get("/kits")
+def list_kits(
+    token: str | None = Security(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    """The authenticated user's generated RFP kits — a persistent library so a
+    kit isn't a session-only dead-end. Each entry carries its download links and
+    the session_id (for the re-presigning result page)."""
+    user = _resolve_user(token, db)
+    from app.core.models import Report
+
+    rows = (
+        db.query(Report)
+        .filter(
+            Report.owner_id == user.id,
+            Report.framework.in_(["rfp_complete", "rfp_express"]),
+            Report.status == "completed",
+        )
+        .order_by(Report.completed_at.desc().nullslast(), Report.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    items = []
+    for r in rows:
+        ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
+        when = r.completed_at or r.created_at
+        items.append({
+            "reportId": str(r.id),
+            "sessionId": ad.get("session_id"),
+            "companyName": r.company_name or ad.get("company_name"),
+            "vendorUrl": r.company_website or ad.get("vendor_url"),
+            "productType": r.framework,
+            "createdAt": when.isoformat() if when else None,
+            "downloadUrl": r.s3_url or ad.get("download_url"),
+            "docxUrl": ad.get("docx_url"),
+            "declarationUrl": ad.get("declaration_url"),
+            "appendixDUrl": ad.get("appendix_d_url"),
+        })
+    return {"items": items}
+
+
+@router.get("/previous")
+def previous_intake(
+    token: str | None = Security(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    """The user's most recent RFP brief + intake, so a new RFP can be pre-filled
+    instead of re-entering 30+ fields. Returns null fields when none exist."""
+    user = _resolve_user(token, db)
+    from app.core.models import Report
+
+    prior = (
+        db.query(Report)
+        .filter(
+            Report.owner_id == user.id,
+            Report.framework.in_(["rfp_complete", "rfp_express"]),
+            Report.status == "completed",
+        )
+        .order_by(Report.completed_at.desc().nullslast(), Report.created_at.desc())
+        .first()
+    )
+    if not prior:
+        return {"available": False}
+    ad = prior.assessment_data if isinstance(prior.assessment_data, dict) else {}
+    intake = ad.get("intake_data") if isinstance(ad.get("intake_data"), dict) else {}
+    return {
+        "available": bool(intake) or bool(ad.get("intake_rfp_description")),
+        "companyName": prior.company_name or ad.get("company_name"),
+        "vendorUrl": prior.company_website or ad.get("vendor_url"),
+        "uen": (intake or {}).get("uen") or ad.get("uen"),
+        "rfpDescription": ad.get("intake_rfp_description"),
+        "intakeData": intake or {},
+        "generatedAt": (prior.completed_at or prior.created_at).isoformat() if (prior.completed_at or prior.created_at) else None,
+    }
+
+
 @router.get("/{intake_id}")
 def get_intake(
     intake_id: str,
