@@ -135,6 +135,10 @@ router.include_router(
 from .pdpa_free_scan import router as pdpa_free_scan_router
 
 router.include_router(pdpa_free_scan_router, prefix="/pdpa", tags=["pdpa-free-scan"])
+# PDPA Monitor / Compliance Dashboard (in-app)
+from .pdpa_dashboard import router as pdpa_dashboard_router
+
+router.include_router(pdpa_dashboard_router, prefix="/pdpa", tags=["pdpa-dashboard"])
 # GeBIZ — Live Tender Feed
 from .gebiz import router as gebiz_router
 

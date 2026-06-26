@@ -4832,6 +4832,21 @@ def cleanup_old_tasks():
         db.commit()
         logger.info(f"Cleaned up {len(old_reports)} old reports")
 
+        # Prune the append-only search-impression log. The Vendor Active
+        # snapshot only ever reads the trailing 30 days
+        # (get_search_impressions_30d), so 90 days is a generous margin while
+        # keeping the table from growing unbounded.
+        from app.core.models_v10 import SearchImpression
+
+        impression_cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+        deleted_impressions = (
+            db.query(SearchImpression)
+            .filter(SearchImpression.created_at < impression_cutoff)
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+        logger.info(f"Cleaned up {deleted_impressions} old search impressions")
+
     except Exception as e:
         db.rollback()
         logger.error(f"Cleanup failed: {e}")

@@ -253,8 +253,21 @@ def email_capture(monkeypatch):
     """
     captured: list[dict[str, str]] = []
 
-    async def fake_send(self, to_email: str, subject: str, body_html: str) -> bool:
-        captured.append({"to": to_email, "subject": subject, "body": body_html})
+    async def fake_send(
+        self, to_email: str, subject: str, body_html: str, **kwargs
+    ) -> bool:
+        # Production send_html_email accepts attachments= (PDPA monitor, vendor
+        # snapshot, compliance evidence pack all pass it). Accept **kwargs so
+        # attachment-bearing deliverable emails don't raise TypeError, and
+        # record attachments so tests can assert on them.
+        captured.append(
+            {
+                "to": to_email,
+                "subject": subject,
+                "body": body_html,
+                "attachments": kwargs.get("attachments"),
+            }
+        )
         return True
 
     from app.services.email_service import EmailService

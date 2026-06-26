@@ -1242,7 +1242,7 @@ async def _fulfill_standalone_no_report(
                 f"(balance: {current} → {locked.notarization_credits})"
             )
             try:
-                await EmailService().send_html_email(
+                sent = await EmailService().send_html_email(
                     to_email=customer_email,
                     subject=f"Your {count} notarization{'s' if count != 1 else ''} ready to redeem",
                     body_html=f"""
@@ -1268,9 +1268,20 @@ async def _fulfill_standalone_no_report(
                     </div>
                     """,
                 )
-                logger.info(
-                    f"[Notarize:{product_type}] Sent credits-granted email to {customer_email}"
-                )
+                if sent:
+                    logger.info(
+                        f"[Notarize:{product_type}] Sent credits-granted email to {customer_email}"
+                    )
+                else:
+                    # Credits are already on the account, but the buyer was never
+                    # told how to redeem them — surface to ops (and re-notify buyer).
+                    await _alert_payment_fulfillment_issue(
+                        reason="notarization credits-granted email rejected by provider",
+                        product_type=product_type,
+                        customer_email=customer_email,
+                        session_id=session_id,
+                        extra={"credits": count},
+                    )
             except Exception as email_err:
                 logger.warning(
                     f"[Notarize:{product_type}] Credits email failed: {email_err}"
@@ -2043,19 +2054,29 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                   <p>Thank you for using BOOPPA.</p>
                 </body></html>
                 """
-                await email_svc.send_html_email(
+                sent = await email_svc.send_html_email(
                     to_email=contact_email,
                     subject=f"Your Notarization Certificate is Ready — {original_filename}",
                     body_html=body_html,
                 )
-                # Mark email as sent to prevent duplicates on retry
-                assessment["notarization_email_sent"] = True
-                assessment["notarization_email_sent_at"] = datetime.now(
-                    timezone.utc
-                ).isoformat()
-                report.assessment_data = assessment
-                flag_modified(report, "assessment_data")
-                db.commit()
+                if sent:
+                    # Mark email as sent to prevent duplicates on retry. Only on a
+                    # confirmed send — a False return must leave the flag unset so
+                    # the retry path can re-deliver the certificate.
+                    assessment["notarization_email_sent"] = True
+                    assessment["notarization_email_sent_at"] = datetime.now(
+                        timezone.utc
+                    ).isoformat()
+                    report.assessment_data = assessment
+                    flag_modified(report, "assessment_data")
+                    db.commit()
+                else:
+                    await _alert_payment_fulfillment_issue(
+                        reason="notarization certificate email rejected by provider",
+                        product_type="notarization",
+                        customer_email=contact_email,
+                        extra={"report_id": report_id},
+                    )
             except Exception as e:
                 logger.error(f"[Notarize] Email failed for {report_id}: {e}")
 
@@ -2904,6 +2925,12 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                 )
                 if not _ok:
                     logger.error("[VendorProof] delivery email rejected for %s", contact_email)
+                    await _alert_payment_fulfillment_issue(
+                        reason="Vendor Proof activation email rejected by provider",
+                        product_type="vendor_proof",
+                        customer_email=contact_email,
+                        extra={"report_id": report_id},
+                    )
             except Exception as e:
                 logger.error(f"[VendorProof] Email failed for {contact_email}: {e}")
 
@@ -3157,11 +3184,18 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
                 </body></html>
                 """
                 email_svc = EmailService()
-                await email_svc.send_html_email(
+                sent = await email_svc.send_html_email(
                     to_email=contact_email,
                     subject=f"Your PDPA Snapshot Report is Ready — {company_name}",
                     body_html=body_html,
                 )
+                if not sent:
+                    await _alert_payment_fulfillment_issue(
+                        reason="PDPA snapshot report email rejected by provider",
+                        product_type="pdpa_quick_scan",
+                        customer_email=contact_email,
+                        extra={"report_id": report_id},
+                    )
             except Exception as e:
                 logger.error(f"[PDPA] Email failed for {contact_email}: {e}")
 

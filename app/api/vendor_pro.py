@@ -38,6 +38,23 @@ def require_vendor_pro(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+# PDPA Monitor and Vendor Pro both include the in-app PDPA dashboard / trend.
+# Kept separate from `require_vendor_pro` so Monitor subscribers do NOT inherit
+# the Vendor-Pro-only endpoints (competitor signals, opt-out, etc.).
+PDPA_MONITOR_PLAN_KEYS = {"pdpa_monitor_monthly", "pdpa_monitor_annual"}
+PDPA_DASHBOARD_PLAN_KEYS = VENDOR_PRO_PLAN_KEYS | PDPA_MONITOR_PLAN_KEYS
+
+
+def require_pdpa_access(user: User = Depends(get_current_user)) -> User:
+    plan = (getattr(user, "plan", "") or "").lower().strip()
+    if plan not in PDPA_DASHBOARD_PLAN_KEYS:
+        raise HTTPException(
+            status_code=403,
+            detail="PDPA Monitor or Vendor Pro subscription required. Visit /pricing to subscribe.",
+        )
+    return user
+
+
 @router.get("/monthly-report.pdf")
 def monthly_report(
     db: Session = Depends(get_db),
@@ -217,7 +234,7 @@ def vendor_pro_me(
 @router.get("/pdpa-trend")
 def vendor_pro_pdpa_trend(
     db: Session = Depends(get_db),
-    user: User = Depends(require_vendor_pro),
+    user: User = Depends(require_pdpa_access),
 ):
     """PDPA compliance score over time for the Vendor Pro dashboard trend chart.
 
