@@ -11,19 +11,26 @@ superset plan (enterprise_pro, pro_suite).
 """
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import func, and_
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db, get_current_user
 from app.core.models import User
-from app.core.models_gebiz import GebizAwardHistory
-from app.core.models_v10 import TenderShortlist
+from app.core.models_gebiz import GebizAwardHistory, GebizTender
+from app.core.models_v6 import VendorSector
+from app.core.models_v10 import TenderShortlist, VendorTenderIntent
 from app.billing.enforcement import TENDER_INTELLIGENCE_PLAN_KEYS, TENDER_LITE_PLAN_KEYS
 from app.services.tender_service import compute_tender_win_probability
+from app.services.tender_service_bid_classifier import (
+    build_vendor_history,
+    classify_tender,
+    enrich_tender_digest_with_classifications,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -511,7 +518,22 @@ def timing_recommendation(
         raise HTTPException(status_code=404, detail=f"Tender '{tender_no}' not found")
 
     win_pct = float(result.get("currentProbability") or 0.0)
-    if win_pct >= _BID_THRESHOLD:
+
+    # Primary recommendation comes from the SAME rule-based classifier used by
+    # the live feed and the monthly email, so signals are consistent across
+    # surfaces. Falls back to the win-probability thresholds only when the live
+    # tender row isn't available to classify.
+    classifier_reason = None
+    classifier_confidence = None
+    gt = db.query(GebizTender).filter(GebizTender.tender_no == tender_no).first()
+    if gt is not None:
+        sector = _primary_sector(db, user.id)
+        history = build_vendor_history(db, str(user.id), sector=sector)
+        c = classify_tender(_tender_to_dict(gt), history)
+        recommendation = c["label"].lower()
+        classifier_reason = c["reason"]
+        classifier_confidence = c["confidence"]
+    elif win_pct >= _BID_THRESHOLD:
         recommendation = "bid"
     elif win_pct >= _WATCH_THRESHOLD:
         recommendation = "watch"
@@ -553,6 +575,8 @@ def timing_recommendation(
         "tender_no": tender_no,
         "recommendation": recommendation,
         "confidence": confidence,
+        "classifier_reason": classifier_reason,
+        "classifier_confidence": classifier_confidence,
         "win_probability_pct": win_pct,
         "thresholds": {"bid": _BID_THRESHOLD, "watch": _WATCH_THRESHOLD},
         "agency": agency_val,
@@ -568,3 +592,241 @@ def timing_recommendation(
         ],
         "raw": result,
     }
+
+
+# ── Live BID/WATCH/PASS feed + intent tracking ────────────────────────────────
+# Surfaces the SAME classifier the monthly email uses (build_vendor_history +
+# enrich_tender_digest_with_classifications) directly in-app, and lets the
+# vendor act on each tender (bid / watch / pass / not-bidding). Gated to the
+# full Tender Intelligence plan — the live actionable feed is the flagship
+# value of the product (Vendor Pro already sees matches in its insights panel).
+
+_VALID_INTENTS = {"bid", "watch", "pass", "not_bidding"}
+_URGENT_DAYS = 10  # a BID closing within this many days is flagged urgent
+_FEED_LIMIT = 25
+
+
+class IntentRequest(BaseModel):
+    tender_no: str
+    intent: str
+    notes: Optional[str] = None
+
+
+def _primary_sector(db: Session, vendor_id) -> str:
+    """Vendor's primary registered sector (uppercased); 'IT' default — mirrors
+    the monthly digest's sector resolution so in-app == email."""
+    rows = [
+        (r.sector or "").strip()
+        for r in db.query(VendorSector).filter(VendorSector.vendor_id == vendor_id).all()
+        if (r.sector or "").strip()
+    ]
+    return rows[0].upper() if rows else "IT"
+
+
+def _tender_to_dict(t: GebizTender) -> dict:
+    return {
+        "tender_no": t.tender_no,
+        "title": t.title,
+        "agency": t.agency,
+        "closing_date": t.closing_date,
+        "estimated_value": t.estimated_value,
+        "sector": getattr(t, "sector", None),
+        "status": t.status,
+        "url": t.url,
+    }
+
+
+def _days_to_close(closing) -> Optional[int]:
+    if not closing:
+        return None
+    c = closing if closing.tzinfo else closing.replace(tzinfo=timezone.utc)
+    return (c - datetime.now(timezone.utc)).days
+
+
+def _present(t: dict, intent: Optional[str]) -> dict:
+    """Shape a classified tender dict for the API response."""
+    dtc = _days_to_close(t.get("closing_date"))
+    label = t.get("bid_label")
+    return {
+        "tenderNo": t.get("tender_no"),
+        "title": t.get("title"),
+        "agency": t.get("agency"),
+        "sector": t.get("sector"),
+        "estimatedValue": float(t["estimated_value"]) if t.get("estimated_value") is not None else None,
+        "closingDate": t["closing_date"].isoformat() if t.get("closing_date") else None,
+        "daysToClose": dtc,
+        "url": t.get("url"),
+        "bidLabel": label,
+        "bidReason": t.get("bid_reason"),
+        "bidConfidence": t.get("bid_confidence"),
+        "urgent": label == "BID" and dtc is not None and dtc <= _URGENT_DAYS,
+        "intent": intent,
+    }
+
+
+@router.get("/feed")
+def tender_feed(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_tender_intelligence),
+):
+    """Live open tenders classified BID/WATCH/PASS with reasoning + the vendor's
+    saved intent. Uses the exact classifier path behind the monthly email."""
+    live = (
+        db.query(GebizTender)
+        .filter(
+            GebizTender.status == "Open",
+            GebizTender.closing_date >= datetime.now(timezone.utc),
+        )
+        .order_by(GebizTender.closing_date.asc())
+        .limit(_FEED_LIMIT)
+        .all()
+    )
+    tender_dicts = [_tender_to_dict(t) for t in live]
+
+    sector = _primary_sector(db, user.id)
+    history = build_vendor_history(db, str(user.id), sector=sector)
+    classified = enrich_tender_digest_with_classifications(
+        tender_dicts, vendor_history=history, max_classify=_FEED_LIMIT,
+    )
+
+    # Saved intent per tender_no (left join).
+    nos = [t["tender_no"] for t in classified if t.get("tender_no")]
+    intents = {
+        row.tender_no: row.intent
+        for row in db.query(VendorTenderIntent).filter(
+            VendorTenderIntent.vendor_id == user.id,
+            VendorTenderIntent.tender_no.in_(nos),
+        ).all()
+    } if nos else {}
+
+    items = [_present(t, intents.get(t.get("tender_no"))) for t in classified]
+    return {"sector": sector, "items": items}
+
+
+@router.get("/intents")
+def list_intents(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_tender_intelligence),
+):
+    """The vendor's tracked tenders, newest first, re-classified live so badges
+    stay current (falls back to the stored label if the tender has closed)."""
+    rows = (
+        db.query(VendorTenderIntent)
+        .filter(VendorTenderIntent.vendor_id == user.id)
+        .order_by(VendorTenderIntent.updated_at.desc())
+        .all()
+    )
+    if not rows:
+        return {"items": []}
+
+    sector = _primary_sector(db, user.id)
+    history = build_vendor_history(db, str(user.id), sector=sector)
+    live = {
+        t.tender_no: t
+        for t in db.query(GebizTender).filter(
+            GebizTender.tender_no.in_([r.tender_no for r in rows])
+        ).all()
+    }
+
+    items = []
+    for r in rows:
+        gt = live.get(r.tender_no)
+        if gt is not None:
+            c = classify_tender(_tender_to_dict(gt), history)
+            label, reason, conf = c["label"], c["reason"], c["confidence"]
+            closing = gt.closing_date
+        else:
+            label, reason, conf = r.bid_label, None, None
+            closing = r.closing_date
+        dtc = _days_to_close(closing)
+        items.append({
+            "tenderNo": r.tender_no,
+            "title": r.title,
+            "agency": r.agency,
+            "sector": r.sector,
+            "estimatedValue": float(r.estimated_value) if r.estimated_value is not None else None,
+            "closingDate": closing.isoformat() if closing else None,
+            "daysToClose": dtc,
+            "url": r.url,
+            "bidLabel": label,
+            "bidReason": reason,
+            "bidConfidence": conf,
+            "urgent": label == "BID" and dtc is not None and dtc <= _URGENT_DAYS,
+            "intent": r.intent,
+            "notes": r.notes,
+            "closed": gt is None,
+        })
+    return {"items": items}
+
+
+@router.post("/intents")
+def upsert_intent(
+    body: IntentRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_tender_intelligence),
+):
+    """Track / update the vendor's intent for a tender. Snapshots the tender
+    fields + current classifier label so the tracked list survives the tender
+    leaving the live feed."""
+    intent = (body.intent or "").strip().lower()
+    if intent not in _VALID_INTENTS:
+        raise HTTPException(422, f"intent must be one of {sorted(_VALID_INTENTS)}")
+    tender_no = (body.tender_no or "").strip()
+    if not tender_no:
+        raise HTTPException(422, "tender_no is required")
+
+    gt = db.query(GebizTender).filter(GebizTender.tender_no == tender_no).first()
+    bid_label = None
+    if gt is not None:
+        sector = _primary_sector(db, user.id)
+        history = build_vendor_history(db, str(user.id), sector=sector)
+        try:
+            bid_label = classify_tender(_tender_to_dict(gt), history)["label"]
+        except Exception:
+            bid_label = None
+
+    row = (
+        db.query(VendorTenderIntent)
+        .filter(
+            VendorTenderIntent.vendor_id == user.id,
+            VendorTenderIntent.tender_no == tender_no,
+        )
+        .first()
+    )
+    if row is None:
+        row = VendorTenderIntent(vendor_id=user.id, tender_no=tender_no)
+        db.add(row)
+
+    row.intent = intent
+    if body.notes is not None:
+        row.notes = body.notes
+    if gt is not None:
+        row.title = gt.title
+        row.agency = gt.agency
+        row.sector = getattr(gt, "sector", None)
+        row.estimated_value = gt.estimated_value
+        row.closing_date = gt.closing_date
+        row.url = gt.url
+        row.bid_label = bid_label
+    db.commit()
+    db.refresh(row)
+    return {"tenderNo": row.tender_no, "intent": row.intent, "bidLabel": row.bid_label}
+
+
+@router.delete("/intents/{tender_no}")
+def delete_intent(
+    tender_no: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_tender_intelligence),
+):
+    """Untrack a tender for this vendor."""
+    deleted = (
+        db.query(VendorTenderIntent)
+        .filter(
+            VendorTenderIntent.vendor_id == user.id,
+            VendorTenderIntent.tender_no == tender_no,
+        )
+        .delete()
+    )
+    db.commit()
+    return {"deleted": bool(deleted)}

@@ -319,6 +319,46 @@ class TenderShortlist(Base):
     )
 
 
+# ── VendorTenderIntent ────────────────────────────────────────────────────────
+# Per-vendor "I'm bidding / watching / passing" state for a live GeBIZ tender.
+# Powers the in-app Tender Intelligence feed's action loop. Distinct from the
+# global TenderShortlist above (which is a per-tender win-rate calibration row,
+# not a per-vendor save list). Tender fields are snapshotted at save time so the
+# tracked list still renders even after the tender drops out of the live feed.
+class VendorTenderIntent(Base):
+    __tablename__ = "vendor_tender_intents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vendor_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    tender_no = Column(String(100), nullable=False, index=True)
+
+    # Snapshot of the tender at the moment of tracking.
+    title = Column(Text, nullable=True)
+    agency = Column(String(255), nullable=True)
+    sector = Column(String(100), nullable=True)
+    estimated_value = Column(Float, nullable=True)
+    closing_date = Column(DateTime, nullable=True)
+    url = Column(Text, nullable=True)
+
+    intent = Column(String(20), nullable=False, default="watch")
+    # ^ bid | watch | pass | not_bidding
+    bid_label = Column(String(10), nullable=True)  # classifier label at save time
+    notes = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("vendor_id", "tender_no", name="uq_vendor_tender_intent"),
+        Index("ix_vendor_tender_intents_vendor", "vendor_id", "updated_at"),
+    )
+
+
 # ── QuarterlyLeaderboard ──────────────────────────────────────────────────────
 # Immutable quarterly ranking snapshot with trophy badges.
 class QuarterlyLeaderboard(Base):
