@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 import logging
 from app.core.config import settings
 from app.services.ai_provider import DeepSeekProvider
+from app.services.scan_version import scan_version_meta as _scan_version_meta
 
 logger = logging.getLogger(__name__)
 
@@ -617,6 +618,9 @@ BLOCKCHAIN EVIDENCE:
                 "generated_date": datetime.now().strftime("%d %B %Y"),
                 "generated_time": datetime.now().strftime("%H:%M:%S"),
                 "version": "2.0",
+                # Engine version stamps — let a reader attribute a score change
+                # to the engine vs the website (see scan_version.py).
+                **_scan_version_meta(),
                 "ai_model": (
                     "DeepSeek-Chat with Booppa Specialization"
                     if deepseek_payload.get("used_deepseek")

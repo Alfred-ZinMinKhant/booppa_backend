@@ -142,10 +142,22 @@ def generate_vendor_pdpa_snapshot_pdf(data: Dict[str, Any]) -> bytes:
     # Dimension drift
     story.append(Paragraph("Dimension drift since last scan", s["h2"]))
     if is_baseline:
-        story.append(Paragraph(
-            "This is your first PDPA scan on Vendor Pro, so there is no prior period to "
-            "compare against yet. Your next quarterly snapshot will show exactly which PDPA "
-            "dimensions moved — and in which direction — since this baseline.", s["body"]))
+        _bl_score = cur_score
+        _bl_findings = data.get("findings_count")
+        _parts = ["This is your first PDPA scan on Vendor Pro, so there is no prior period to compare against yet."]
+        if isinstance(_bl_score, (int, float)):
+            _findings_txt = (
+                f" across {int(_bl_findings)} finding{'s' if int(_bl_findings) != 1 else ''} identified this scan"
+                if isinstance(_bl_findings, (int, float)) else ""
+            )
+            _parts.append(
+                f"Your baseline compliance score is <b>{int(_bl_score)}/100</b>{_findings_txt}. "
+                "Treat this as your starting line."
+            )
+        _parts.append(
+            "Your next quarterly snapshot will show exactly which PDPA dimensions moved — and in "
+            "which direction — since this baseline.")
+        story.append(Paragraph(" ".join(_parts), s["body"]))
     elif not flips:
         story.append(Paragraph(
             "No PDPA dimension worsened since your last scan. Every dimension held its "

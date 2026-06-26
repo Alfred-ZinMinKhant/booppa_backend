@@ -266,6 +266,46 @@ _TRACKER_DOMAINS: tuple[tuple[str, str], ...] = (
     ("ads-twitter.com", "X (Twitter) Pixel"),
     ("static.ads-twitter.com", "X (Twitter) Pixel"),
     ("bat.bing.com", "Microsoft Advertising / Bing UET"),
+    # ── Extended coverage (deterministic substring → vendor) ──────────────
+    ("googlesyndication.com", "Google AdSense"),
+    ("google.com/ads", "Google Ads"),
+    ("region1.google-analytics.com", "Google Analytics 4"),
+    ("analytics.google.com", "Google Analytics"),
+    ("ct.pinterest.com", "Pinterest Tag"),
+    ("s.pinimg.com", "Pinterest Tag"),
+    ("redditstatic.com/ads", "Reddit Pixel"),
+    ("pixel.reddit.com", "Reddit Pixel"),
+    ("sc-static.net", "Snapchat Pixel"),
+    ("tr.snapchat.com", "Snapchat Pixel"),
+    ("criteo.com", "Criteo"),
+    ("criteo.net", "Criteo"),
+    ("taboola.com", "Taboola"),
+    ("outbrain.com", "Outbrain"),
+    ("quantserve.com", "Quantcast"),
+    ("scorecardresearch.com", "Comscore"),
+    ("yandex.ru/metrika", "Yandex Metrica"),
+    ("mc.yandex.ru", "Yandex Metrica"),
+    ("heapanalytics.com", "Heap"),
+    ("pendo.io", "Pendo"),
+    ("intercom.io", "Intercom"),
+    ("intercomcdn.com", "Intercom"),
+    ("crazyegg.com", "Crazy Egg"),
+    ("optimizely.com", "Optimizely"),
+    ("visualwebsiteoptimizer.com", "VWO"),
+    ("js-agent.newrelic.com", "New Relic"),
+    ("nr-data.net", "New Relic"),
+    ("cloudflareinsights.com", "Cloudflare Web Analytics"),
+    ("hs-analytics.net", "HubSpot"),
+    ("hs-scripts.com", "HubSpot"),
+    ("js.hsforms.net", "HubSpot"),
+    ("pardot.com", "Salesforce Pardot"),
+    ("munchkin.marketo.net", "Marketo"),
+    ("matomo", "Matomo"),
+    ("plausible.io", "Plausible"),
+    ("cdn.segment.com", "Segment"),
+    ("adsrvr.org", "The Trade Desk"),
+    ("adnxs.com", "AppNexus / Xandr"),
+    ("demdex.net", "Adobe Audience Manager"),
 )
 
 
@@ -5220,6 +5260,123 @@ def send_gebiz_alert_newsletter():
         db.close()
 
     logger.info(f"[GeBIZAlert] Tenders={len(tenders)} Sent={sent} Failed={failed}")
+
+
+@celery_app.task(name="send_tender_alerts")
+def send_tender_alerts():
+    """Daily BID-tender alert email for Tender Intelligence subscribers.
+
+    For each subscriber, classify the live open tenders closing within the alert
+    horizon using the SAME classifier as the in-app feed + monthly digest, and
+    email any *new* BID-rated tenders they haven't already been alerted to. The
+    `vendor_tender_alerts_sent` ledger provides dedup (GeBIZ tenders carry no
+    creation timestamp), so an open tender is emailed at most once per vendor.
+    """
+    from app.billing.enforcement import TENDER_INTELLIGENCE_PLAN_KEYS
+    from app.core.models import User, Subscription as SubModel
+    from app.core.models_gebiz import GebizTender
+    from app.core.models_v6 import VendorSector
+    from app.core.models_v10 import VendorTenderAlertSent
+    from app.services.tender_service_bid_classifier import build_vendor_history, classify_tender
+    from datetime import timedelta
+    import asyncio as _asyncio
+
+    _ALERT_MIN_DAYS = 5    # too close to prepare a quality bid → skip
+    _ALERT_MAX_DAYS = 30   # only surface tenders within a month of closing
+
+    db = SessionLocal()
+    sent = 0
+    try:
+        active = db.query(SubModel).filter(
+            SubModel.product_type.in_(list(TENDER_INTELLIGENCE_PLAN_KEYS)),
+            SubModel.status.in_(("active", "trialing")),
+        ).all()
+        user_ids = {s.user_id for s in active if s.user_id}
+        if not user_ids:
+            logger.info("[TenderAlerts] no active Tender Intelligence subscribers — skipping")
+            return
+        subscribers = db.query(User).filter(User.id.in_(user_ids)).all()
+
+        now = datetime.now(timezone.utc)
+        lo = now + timedelta(days=_ALERT_MIN_DAYS)
+        hi = now + timedelta(days=_ALERT_MAX_DAYS)
+        live = (
+            db.query(GebizTender)
+            .filter(
+                GebizTender.status == "Open",
+                GebizTender.closing_date >= lo,
+                GebizTender.closing_date <= hi,
+            )
+            .order_by(GebizTender.closing_date.asc())
+            .limit(50)
+            .all()
+        )
+        if not live:
+            logger.info("[TenderAlerts] no live tenders in alert horizon — skipping")
+            return
+
+        def _tdict(t):
+            return {
+                "tender_no": t.tender_no, "title": t.title, "agency": t.agency,
+                "closing_date": t.closing_date, "estimated_value": t.estimated_value,
+                "sector": getattr(t, "sector", None), "status": t.status, "url": t.url,
+            }
+
+        email_svc = EmailService()
+        for sub in subscribers:
+            if not sub.email:
+                continue
+            try:
+                sec = db.query(VendorSector).filter(VendorSector.vendor_id == sub.id).first()
+                sector = (sec.sector.upper() if sec and sec.sector else "IT")
+                history = build_vendor_history(db, str(sub.id), sector=sector)
+
+                already = {
+                    r[0] for r in db.query(VendorTenderAlertSent.tender_no)
+                    .filter(VendorTenderAlertSent.vendor_id == sub.id).all()
+                }
+                new_bids = []
+                for t in live:
+                    if t.tender_no in already:
+                        continue
+                    c = classify_tender(_tdict(t), history)
+                    if c.get("label") == "BID":
+                        new_bids.append((t, c))
+                if not new_bids:
+                    continue
+
+                rows_html = "".join(
+                    f'<li style="margin-bottom:10px;"><strong>{(t.title or t.tender_no)}</strong>'
+                    f'<br><span style="color:#475569;font-size:13px;">{(t.agency or "")} · closes '
+                    f'{t.closing_date:%d %b %Y}</span>'
+                    f'<br><span style="color:#16a34a;font-size:13px;">BID — {c.get("reason","")}</span>'
+                    + (f'<br><a href="{t.url}" style="color:#7c3aed;font-size:13px;">View on GeBIZ</a>' if t.url else "")
+                    + "</li>"
+                    for t, c in new_bids
+                )
+                body_html = (
+                    '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#0f172a;">'
+                    '<h2 style="color:#7c3aed;">New tenders worth bidding on</h2>'
+                    f'<p>{len(new_bids)} new GeBIZ tender(s) match your profile and are rated <strong>BID</strong>:</p>'
+                    f'<ul style="padding-left:18px;">{rows_html}</ul>'
+                    '<p style="color:#64748b;font-size:12px;">BID/WATCH/PASS is a rule-based estimate from sector '
+                    'averages and your declared history — not a guarantee. Manage these in your '
+                    '<a href="https://www.booppa.io/vendor/tender-intelligence" style="color:#7c3aed;">Tender Intelligence dashboard</a>.</p>'
+                    "</div>"
+                )
+                subject = f"{len(new_bids)} new tender(s) to bid on — Booppa Tender Intelligence"
+                ok = _asyncio.run(email_svc.send_html_email(sub.email, subject, body_html))
+                if ok:
+                    for t, _c in new_bids:
+                        db.add(VendorTenderAlertSent(vendor_id=sub.id, tender_no=t.tender_no))
+                    db.commit()
+                    sent += 1
+            except Exception as exc:  # per-recipient isolation
+                db.rollback()
+                logger.warning("[TenderAlerts] failed for %s: %s", sub.id, exc)
+        logger.info("[TenderAlerts] alert emails sent to %d subscriber(s)", sent)
+    finally:
+        db.close()
 
 
 @celery_app.task(name="send_tender_intelligence_digest")

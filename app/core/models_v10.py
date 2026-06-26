@@ -359,6 +359,29 @@ class VendorTenderIntent(Base):
     )
 
 
+# ── VendorTenderAlertSent ─────────────────────────────────────────────────────
+# Dedup ledger for the daily BID-tender alert email: one row per (vendor,
+# tender) we've already alerted, so a tender that stays open for days is only
+# emailed once. GeBIZ tenders carry no creation timestamp, so this ledger is how
+# "new to this vendor" is determined.
+class VendorTenderAlertSent(Base):
+    __tablename__ = "vendor_tender_alerts_sent"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vendor_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    tender_no = Column(String(100), nullable=False, index=True)
+    sent_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("vendor_id", "tender_no", name="uq_vendor_tender_alert_sent"),
+    )
+
+
 # ── QuarterlyLeaderboard ──────────────────────────────────────────────────────
 # Immutable quarterly ranking snapshot with trophy badges.
 class QuarterlyLeaderboard(Base):

@@ -87,6 +87,25 @@ PRECEDENTS: dict[str, list[dict]] = {
             "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/enforcement-decisions/breach-of-the-protection-obligation-by-redmart",
             "summary": "Customer data was exposed because reasonable security arrangements were not in place.",
         },
+        {
+            # SingHealth / IHiS (Jan 2019) — the largest PDPA enforcement action
+            # on record at the time; facts (parties, S$1m total, §24) are widely
+            # documented. URL points at the official decisions register.
+            "vendor": "Integrated Health Information Systems (IHiS)",
+            "year": 2019,
+            "fine_sgd": 750_000,
+            "section": "§24 Protection Obligation",
+            "url": "https://www.pdpc.gov.sg/all-commissions-decisions",
+            "summary": "Fined S$750,000 after the 2018 SingHealth cyberattack exposed 1.5 million patients' records, citing inadequate security arrangements.",
+        },
+        {
+            "vendor": "Singapore Health Services (SingHealth)",
+            "year": 2019,
+            "fine_sgd": 250_000,
+            "section": "§24 Protection Obligation",
+            "url": "https://www.pdpc.gov.sg/all-commissions-decisions",
+            "summary": "Fined S$250,000 as data controller in the 2018 SingHealth breach for failing to make reasonable security arrangements.",
+        },
     ],
     # Legacy NRIC entries were removed because their old register URLs now
     # redirect away from the original decisions. Re-add only after a live PDPC

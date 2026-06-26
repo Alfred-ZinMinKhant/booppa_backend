@@ -95,6 +95,13 @@ celery_app.conf.update(
             "task": "send_tender_intelligence_digest",
             "schedule": crontab(hour=0, minute=0),
         },
+        # Daily BID-tender alert: emails subscribers any new BID-rated live
+        # tenders closing within the horizon (deduped per vendor) at 01:00 UTC
+        # (09:00 SGT) — after the digest cron, before the working day.
+        "send-tender-alerts-daily": {
+            "task": "send_tender_alerts",
+            "schedule": crontab(hour=1, minute=0),
+        },
         # Vendor Pro subscribers: daily competitor-activity digest at 00:00 UTC
         # (08:00 SGT). Summarises last 24h of TenderCheckLookup activity on
         # tenders each subscriber has tracked.
