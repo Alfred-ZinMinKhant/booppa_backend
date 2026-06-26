@@ -93,6 +93,12 @@ BUNDLE_COMPONENTS = {
     },
 }
 
+# Grace window after which the Compliance Evidence Pack cover sheet fires with
+# PDPA + RFP only, when the buyer never completed the BCEP evidence-pack intake
+# (so the 7-doc pack never reaches status="ready"). Keeps a buyer from being
+# left without any cover sheet. See `_maybe_fire_cover_sheet`.
+_COVER_SHEET_BCEP_GRACE_DAYS = 7
+
 
 # Subscription tier → VerifyRecord.verification_level mapping.
 # Paid plans elevate the compliance multiplier (BASIC 1.0× → STANDARD 1.1× →
@@ -1769,37 +1775,48 @@ async def _fulfill_bundle(
             sections.append("""
                       <p style="color:#334155;font-size:14px;">📄 Your <strong>PDPA Snapshot</strong> scan is running now — the report arrives by email shortly.</p>""")
 
-        # RFP Complete kit is part of the Compliance Evidence Pack. The brief CTA
-        # below is only shown when an intake is still outstanding (real purchase);
-        # on the test/auto path the kit generates straight away, so announce it
-        # here too rather than leaving RFP unmentioned in the bundle email.
-        if product_type == "compliance_evidence_pack" and components.get("rfp") and not pending_intake_id:
-            sections.append("""
+        # RFP Complete kit is part of the Compliance Evidence Pack. Always
+        # announce it; the wording differs by path. When an RFP brief is still
+        # outstanding (real purchase) the kit can't generate until the buyer
+        # completes the brief — the CTA for that renders below. On the test/auto
+        # path it generates straight away.
+        if product_type == "compliance_evidence_pack" and components.get("rfp"):
+            if pending_intake_id:
+                sections.append("""
+                      <p style="color:#334155;font-size:14px;">📑 Your <strong>RFP Complete kit</strong> is included — complete the short brief below to generate the GeBIZ-ready kit.</p>""")
+            else:
+                sections.append("""
                       <p style="color:#334155;font-size:14px;">📑 Your <strong>RFP Complete kit</strong> is being generated — the GeBIZ-ready kit arrives by email shortly.</p>""")
 
-        # NOTE: the legacy Compliance Cover Sheet line was removed here. The
-        # cover-sheet flow is retired for compliance_evidence_pack — the SKU now
-        # ships the BCEP 7-document governance pack (announced via its own intake
-        # CTA below) instead of a signed cover sheet. `cover_sheet` lingers in
-        # BUNDLE_COMPONENTS for the credit-pool bookkeeping above, not for an
-        # actual sheet, so announcing one here misled buyers.
-
-        # Evidence Pack intake CTA — only when an intake is still outstanding
-        # (real purchase / first cycle). Test + cycle-reuse paths auto-queue the
-        # pack and have no pending intake, so no CTA is shown for them.
+        # BCEP 7-document PDPA governance pack — announced on EVERY path. On a real
+        # purchase the buyer must complete the structured intake first (CTA), so it
+        # is intake_pending. On the test/cycle path it auto-queues (status queued/
+        # ready) and generates without a brief — announce that it's on its way so
+        # the deliverable is never silently dropped.
         if (
             product_type == "compliance_evidence_pack"
             and evidence_pack_row is not None
-            and getattr(evidence_pack_row, "status", None) == "intake_pending"
             and customer_email
         ):
-            ep_intake_url = f"https://www.booppa.io/evidence-pack-intake/{evidence_pack_row.id}"
-            sections.append(f"""
+            ep_status = getattr(evidence_pack_row, "status", None)
+            if ep_status == "intake_pending":
+                ep_intake_url = f"https://www.booppa.io/evidence-pack-intake/{evidence_pack_row.id}"
+                sections.append(f"""
                       <div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;padding:16px;margin:16px 0;">
                         <p style="margin:0 0 8px;font-weight:bold;color:#065f46;">Start your PDPA Evidence Pack (7 documents)</p>
                         <p style="margin:0 0 12px;color:#334155;font-size:14px;">Complete a short structured intake (about 5 minutes) — org details, DPO, systems, data types — and we'll generate your DPMP, ROPA, Data Inventory, Vendor/DPA Register, Breach Runbook, Training Register, and Security Review Log.</p>
                         <a href="{ep_intake_url}" style="display:inline-block;background:#10b981;color:#fff;padding:11px 22px;border-radius:8px;text-decoration:none;font-weight:bold;">Complete your intake →</a>
                       </div>""")
+            else:
+                sections.append("""
+                      <p style="color:#334155;font-size:14px;">📚 Your <strong>7-document PDPA Evidence Pack</strong> (DPMP, ROPA, Data Inventory, Vendor/DPA Register, Breach Runbook, Training Register, Security Review Log) is being generated — it arrives by email shortly.</p>""")
+
+        # Compliance Cover Sheet — the centerpiece of the pack. It fires once the
+        # PDPA Snapshot, RFP Complete kit, and the 7-document pack are all ready,
+        # then indexes every one of them (see `_maybe_fire_cover_sheet`).
+        if product_type == "compliance_evidence_pack" and components.get("cover_sheet"):
+            sections.append("""
+                      <p style="color:#334155;font-size:14px;">🛡️ Your signed <strong>Compliance Cover Sheet</strong> is emailed once every component above finishes — it indexes all of them into one blockchain-anchored evidence sheet.</p>""")
 
         # The RFP brief CTA is the one required action — it gates the RFP kit.
         brief_cta = ""
@@ -2459,23 +2476,31 @@ async def _handle_blocked_rfp(
 
 def _maybe_fire_cover_sheet(customer_email: str | None) -> None:
     """
-    Auto-fire the Compliance Evidence Pack cover sheet as soon as the two
-    auto-generated inputs — the PDPA Snapshot and the RFP Complete kit —
-    have finished. The user then signs the emailed cover sheet PDF and
-    uploads it via their 1 included notarization credit.
+    Auto-fire the Compliance Evidence Pack cover sheet once ALL of its inputs
+    have finished. The cover sheet is the centerpiece of the pack: it indexes
+    every deliverable, so it must wait for all three auto-generated components —
+    the PDPA Snapshot, the RFP Complete kit, AND the BCEP 7-document governance
+    pack (`EvidencePack` `status=="ready"`, folded into DOCUMENTS ANCHORED by
+    `fulfill_cover_sheet_task`). The user then signs the emailed cover sheet PDF
+    and uploads it via their 1 included notarization credit.
 
     Notarization is intentionally NOT a precondition here: the cover sheet
     must reach the user *before* they consume the credit, otherwise they
     have nothing to sign and notarize.
 
+    Backstop: a buyer who never completes the evidence-pack intake would block
+    their cover sheet forever. If PDPA + RFP have been ready for more than
+    `_COVER_SHEET_BCEP_GRACE_DAYS` and the pack still isn't ready, fire the sheet
+    anyway (the BCEP-folding block degrades gracefully to PDPA + RFP only).
+
     Idempotent — clears `pending_cover_sheet` once queued so duplicate calls
-    (PDPA finishes after RFP, or vice versa) don't re-fire.
+    (any component finishing after another) don't re-fire.
     """
     if not customer_email:
         return
     db = SessionLocal()
     try:
-        # Lock the user row so two concurrent callers (PDPA + RFP completing
+        # Lock the user row so two concurrent callers (components completing
         # near-simultaneously) can't both pass the pending_cover_sheet check
         # and queue the task twice. The loser blocks until the winner commits
         # the False flip, then exits at the guard below.
@@ -2489,20 +2514,58 @@ def _maybe_fire_cover_sheet(customer_email: str | None) -> None:
             db.commit()
             return
 
-        pdpa_done = (
+        pdpa_report = (
             db.query(Report)
             .filter(
                 Report.owner_id == user.id,
                 Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
                 Report.status == "completed",
             )
+            .order_by(Report.created_at.asc())
             .first()
-            is not None
         )
+        pdpa_done = pdpa_report is not None
         rfp_done = bool(getattr(user, "compliance_evidence_rfp_ready", False))
         if not (pdpa_done and rfp_done):
             db.commit()
             return
+
+        # The BCEP 7-document pack is the third input. It generates only after
+        # the buyer completes the (separate) evidence-pack intake, so it is
+        # usually the last to finish — wait for it unless the grace window has
+        # elapsed (buyer never completed the intake), so nobody is left without
+        # a cover sheet.
+        from app.core.models_v13 import EvidencePack
+
+        bcep_ready = (
+            db.query(EvidencePack)
+            .filter(
+                EvidencePack.user_id == user.id,
+                EvidencePack.status == "ready",
+            )
+            .first()
+            is not None
+        )
+        if not bcep_ready:
+            pdpa_age_ok = False
+            if pdpa_report is not None and pdpa_report.created_at is not None:
+                created = pdpa_report.created_at
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                pdpa_age_ok = (
+                    datetime.now(timezone.utc) - created
+                ) > timedelta(days=_COVER_SHEET_BCEP_GRACE_DAYS)
+            if not pdpa_age_ok:
+                # Pack still pending and within grace — leave pending_cover_sheet
+                # set so the hourly sweep / the pack's own completion re-checks.
+                db.commit()
+                return
+            logger.info(
+                "[CoverSheet] BCEP pack still not ready after %d-day grace for %s "
+                "— firing cover sheet with PDPA + RFP only",
+                _COVER_SHEET_BCEP_GRACE_DAYS,
+                customer_email,
+            )
 
         user.pending_cover_sheet = False
         db.commit()
