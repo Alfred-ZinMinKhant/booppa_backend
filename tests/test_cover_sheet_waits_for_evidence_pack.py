@@ -39,7 +39,10 @@ def _seed_ready_pdpa_and_rfp(test_db, *, pdpa_age_days: int = 0) -> User:
             id=uuid.uuid4(),
             owner_id=user.id,
             framework="pdpa_quick_scan",
+            company_name="Acme Pte Ltd",
+            company_website="https://acme.test",
             status="completed",
+            assessment_data={"overall_risk_score": 46},
             created_at=created,
         )
     )

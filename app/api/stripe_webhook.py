@@ -2537,16 +2537,17 @@ def _maybe_fire_cover_sheet(customer_email: str | None) -> None:
         # a cover sheet.
         from app.core.models_v13 import EvidencePack
 
-        bcep_ready = (
+        # Only *wait* when a non-ready pack row actually exists. A buyer with no
+        # pack row at all is not owed a 7-doc pack (nothing is coming), so the
+        # sheet fires immediately — same as before this change.
+        latest_pack = (
             db.query(EvidencePack)
-            .filter(
-                EvidencePack.user_id == user.id,
-                EvidencePack.status == "ready",
-            )
+            .filter(EvidencePack.user_id == user.id)
+            .order_by(EvidencePack.created_at.desc())
             .first()
-            is not None
         )
-        if not bcep_ready:
+        bcep_pending = latest_pack is not None and latest_pack.status != "ready"
+        if bcep_pending:
             pdpa_age_ok = False
             if pdpa_report is not None and pdpa_report.created_at is not None:
                 created = pdpa_report.created_at
