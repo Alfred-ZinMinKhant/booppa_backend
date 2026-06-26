@@ -297,6 +297,15 @@ async def vendor_badge(
         else verify.compliance_score
     )
 
+    # Expiry / renewal — the certificate is time-boxed (12 months). Surfacing
+    # days-remaining drives in-app renewal before the public /verify page flips
+    # to "Expired" (which a procurement officer would see).
+    expires_at = verify.expires_at
+    days_remaining = None
+    if expires_at:
+        exp = expires_at.replace(tzinfo=None) if getattr(expires_at, "tzinfo", None) else expires_at
+        days_remaining = (exp - datetime.utcnow()).days
+
     return {
         "active":       True,
         "html":         html,
@@ -304,6 +313,9 @@ async def vendor_badge(
         "slug":         slug,
         "compliance_score": compliance_score,
         "verification_level": verify.verification_level.value if hasattr(verify.verification_level, 'value') else str(verify.verification_level),
+        "expires_at":   expires_at.isoformat() if expires_at else None,
+        "days_remaining": days_remaining,
+        "last_refreshed_at": verify.last_refreshed_at.isoformat() if verify.last_refreshed_at else None,
     }
 
 

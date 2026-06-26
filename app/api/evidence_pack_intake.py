@@ -124,6 +124,33 @@ def latest_pack(
     if not row:
         return {"pack": None, "documents": [d[1] for d in _DOC_ORDER]}
     urls = row.download_urls or {}
+    anchoring = row.anchoring if isinstance(row.anchoring, dict) else {}
+
+    def _anchored(dt: str) -> bool:
+        a = anchoring.get(dt)
+        return bool(isinstance(a, dict) and a.get("tx_hash"))
+
+    documents = [
+        {"doc_type": dt, "title": title, "download_url": urls.get(dt), "anchored": _anchored(dt)}
+        for dt, title in _DOC_ORDER
+    ]
+    anchored_count = sum(1 for d in documents if d["anchored"])
+
+    # Monthly tier recurring-value signals: when the pack regenerated, and when
+    # the next anniversary-day refresh is due. anniversary_day is set for monthly
+    # subscribers; one-time buyers have it null → next_refresh stays null.
+    next_refresh = None
+    anniv = getattr(user, "subscription_anniversary_day", None)
+    if anniv:
+        from datetime import date, timedelta
+        today = date.today()
+        day = max(1, min(28, int(anniv)))
+        if today.day < day:
+            nxt = today.replace(day=day)
+        else:
+            nxt = (today.replace(day=1) + timedelta(days=32)).replace(day=day)
+        next_refresh = nxt.isoformat()
+
     return {
         "pack": {
             "id": str(row.id),
@@ -132,12 +159,13 @@ def latest_pack(
             "organisation": row.organisation,
             "session_id": row.session_id,
             "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            "anchored_count": anchored_count,
+            "master_anchored": bool(isinstance(anchoring.get("master"), dict) and anchoring["master"].get("tx_hash")),
+            "next_refresh": next_refresh,
             # Ordered list so the UI renders the 7 docs consistently whether or
             # not generation has produced download URLs yet.
-            "documents": [
-                {"doc_type": dt, "title": title, "download_url": urls.get(dt)}
-                for dt, title in _DOC_ORDER
-            ],
+            "documents": documents,
         }
     }
 

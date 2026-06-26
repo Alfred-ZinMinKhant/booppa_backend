@@ -748,6 +748,42 @@ def get_latest_trm_board_report(
     }
 
 
+@router.get("/trm/progress-history")
+def trm_progress_history(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """MAS TRM compliance % over time, from the persisted monthly board-report
+    snapshots. Surfaces the month-over-month progress that previously lived only
+    in the emailed PDF, so the Suite subscriber sees recurring value in-app."""
+    from app.core.models import Report
+
+    _require_feature(current_user, "dashboard", "MAS TRM progress history")
+    rows = (
+        db.query(Report)
+        .filter(
+            Report.owner_id == current_user.id,
+            Report.framework == "trm_board_report",
+            Report.status == "completed",
+        )
+        .order_by(Report.completed_at.asc().nullsfirst())
+        .limit(24)
+        .all()
+    )
+    points = []
+    for r in rows:
+        ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
+        pct = ad.get("compliant_pct")
+        when = r.completed_at or r.created_at
+        if isinstance(pct, (int, float)) and when is not None:
+            points.append({
+                "label": when.strftime("%b %y"),
+                "compliant_pct": int(round(pct)),
+                "generated_at": when.isoformat(),
+            })
+    return {"points": points}
+
+
 @router.post("/trm/board-report/generate", status_code=202)
 def generate_trm_board_report(
     db: Session = Depends(get_db),
