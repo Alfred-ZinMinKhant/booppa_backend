@@ -275,6 +275,31 @@ async def dashboard(
         },
     }
 
+    # ── 6. Sector search rank — "#N of M in your sector" ─────────────────────
+    # Surfaces the vendor's standing among verified vendors in the same sector,
+    # turning the abstract "priority in searches" promise into a visible metric.
+    sector_rank = None
+    if primary_sector:
+        from app.core.models import User as _User
+        ranked = (
+            db.query(VendorSector.vendor_id, VendorScore.total_score)
+            .join(VendorScore, VendorScore.vendor_id == VendorSector.vendor_id)
+            .join(_User, _User.id == VendorSector.vendor_id)
+            .filter(VendorSector.sector == primary_sector)
+            .filter(_User.is_active == True)
+            .order_by(VendorScore.total_score.desc().nullslast())
+            .all()
+        )
+        total_in_sector = len(ranked)
+        for idx, r in enumerate(ranked, start=1):
+            if str(r.vendor_id) == str(vendor_id):
+                sector_rank = {
+                    "rank":   idx,
+                    "total":  total_in_sector,
+                    "sector": primary_sector,
+                }
+                break
+
     return {
         "stats": {
             "trustScore":                 trust_score,
@@ -283,6 +308,7 @@ async def dashboard(
             "activeProcurements":         active_procurements,
             "activeProcurementsSector":   primary_sector,
             "govAgencies":                len(gov_agency_domains),
+            "sectorRank":                 sector_rank,
         },
         "scoreBreakdown": score_breakdown,
         "chartData":      chart_data,
