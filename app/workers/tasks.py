@@ -7093,6 +7093,20 @@ def fulfill_evidence_pack_task(self, evidence_pack_id: str):
         row.status = "ready"
         db.commit()
 
+        # 4a. The cover sheet is the centerpiece of the Compliance Evidence Pack
+        # and indexes this 7-doc pack. It waits on PDPA + RFP + this pack; now
+        # that the pack is ready, re-check inline so the sheet fires immediately
+        # instead of waiting up to an hour for the `sweep_pending_cover_sheets`
+        # backstop. Best-effort — must never fail the pack delivery.
+        try:
+            from app.api.stripe_webhook import _maybe_fire_cover_sheet
+
+            buyer_for_cs = db.query(User).filter(User.id == row.user_id).first()
+            if buyer_for_cs and buyer_for_cs.email:
+                _maybe_fire_cover_sheet(buyer_for_cs.email)
+        except Exception as cs_err:
+            logger.warning("[EvidencePack] cover-sheet re-fire failed (non-blocking): %s", cs_err)
+
         # 4b. Cache by session so the result page can fetch it (mirrors RFP).
         if row.session_id and download_urls:
             try:
@@ -7177,13 +7191,15 @@ def run_compliance_evidence_cycle_for_user(self, user_id: str, test_simulation: 
             logger.warning("[CEFirstCycle] no user/email for id=%s", user_id)
             return
         website = (override_website or "").strip() or (getattr(user, "website", "") or "").strip()
-        # CE now produces the BCEP evidence pack, which is driven by a structured
-        # intake (not a website scan), so a missing website no longer blocks the
-        # cycle — the buyer supplies the domain in the intake form. The legacy
-        # cover-sheet flags (pending_cover_sheet / compliance_evidence_credits /
-        # signed_cover_sheet_uploaded) are intentionally NOT set: the cover-sheet
-        # flow is retired for CE and setting pending_cover_sheet=True would make
-        # the hourly sweep try to fire a cover sheet that no longer exists.
+        # CE now also produces the BCEP evidence pack, which is driven by a
+        # structured intake (not a website scan), so a missing website no longer
+        # blocks the cycle — the buyer supplies the domain in the intake form.
+        # The cover-sheet flags (pending_cover_sheet / compliance_evidence_credits /
+        # signed_cover_sheet_uploaded) are NOT set here on purpose: the delegated
+        # `fulfill_bundle_task` credit-grant block sets them for every CE path
+        # (see stripe_webhook.py:_fulfill_bundle). The cover sheet is the
+        # centerpiece of the pack and fires once PDPA + RFP + the BCEP pack are all
+        # ready (see `_maybe_fire_cover_sheet`).
         fulfill_bundle_task.delay(
             product_type="compliance_evidence_pack",
             session_id=None,
