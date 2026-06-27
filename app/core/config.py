@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     POLYGON_MAINNET_CONTRACT_ADDRESS: Optional[str] = None
     POLYGON_MAINNET_NETWORK_NAME: str = "Polygon Mainnet"
 
+    # CSP Compliance Pack
+    CSP_MONTHLY_FEE_SGD: float = 299.0  # drives the liability cap (= 12 x monthly fee)
+
     # AI Services
     DEEPSEEK_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None

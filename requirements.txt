@@ -46,6 +46,7 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 bcrypt>=3.2.0,<4.0.0
 cryptography==41.0.7
+jellyfish>=1.0.0          # fuzzy name matching for CSP sanctions screening
 slowapi==0.1.9
 # Enterprise SSO — SAML 2.0 (used by /api/v1/enterprise/sso/saml/*)
 pysaml2==7.5.0

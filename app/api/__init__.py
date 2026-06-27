@@ -74,6 +74,9 @@ router.include_router(ropa_intake_router, prefix="/ropa", tags=["ropa"])
 router.include_router(pdpa_declaration_intake_router, prefix="/pdpa-declaration", tags=["pdpa-declaration"])
 from .evidence_pack_intake import router as evidence_pack_intake_router
 router.include_router(evidence_pack_intake_router, prefix="/evidence-pack-intake", tags=["evidence-pack-intake"])
+# CSP Compliance Pack (router self-prefixes "/csp"; dual-mount yields /api/v1/csp and /api/csp)
+from .csp import router as csp_router
+router.include_router(csp_router, tags=["CSP Compliance Pack"])
 # V10 — Marketplace & Vendor Directory
 router.include_router(marketplace_router, prefix="/marketplace", tags=["marketplace"])
 # V10 — Feature Flags

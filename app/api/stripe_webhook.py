@@ -60,7 +60,13 @@ SUBSCRIPTION_PRODUCT_TYPES = {
     # Batch notarization tiers are recurring monthly allowances.
     "compliance_notarization_10",
     "compliance_notarization_50",
+    # CSP Compliance Pack recurring tiers (one-time grant handled separately).
+    "csp_pack_monthly",
+    "csp_monitoring_monthly",
 }
+
+# CSP one-time pack purchase — grants lifetime pack access (no recurring billing).
+CSP_ONETIME_PRODUCT_TYPES = {"csp_pack_onetime"}
 
 # Bundle → component mapping.
 # Each bundle fans out to multiple fulfillment tasks.
@@ -241,6 +247,18 @@ def _revert_subscription_score_lever(db, vendor_id, remaining_plan: str | None) 
         )
 
 
+def _csp_activation_email_html(plan: str) -> str:
+    """Plain activation email for a CSP Compliance Pack purchase."""
+    label = "CSP Monitoring Add-On" if plan == "csp_monitoring" else "CSP Compliance Pack — Full"
+    return (
+        f"<p>Your <strong>{label}</strong> is now active.</p>"
+        "<p>Sign in and open the CSP Compliance dashboard to accept the Terms of "
+        "Service, set up your CSP profile, and start onboarding clients with full "
+        "AML/CFT, CDD/EDD, sanctions screening, and blockchain-notarized records.</p>"
+        "<p>— The Booppa Team</p>"
+    )
+
+
 async def _activate_subscription(
     product_type: str,
     customer_email: str | None,
@@ -312,8 +330,46 @@ async def _activate_subscription(
             # Batch notarization subscriptions keep their slug as the plan.
             "compliance_notarization_10": "compliance_notarization_10",
             "compliance_notarization_50": "compliance_notarization_50",
+            # CSP Compliance Pack.
+            "csp_pack_monthly": "csp",
+            "csp_monitoring_monthly": "csp_monitoring",
         }
         new_plan = plan_map.get(product_type, "pro")
+
+        # ── CSP Compliance Pack ─────────────────────────────────────────────
+        # CSP is a separate product axis tracked on the CspOrganisation, NOT on
+        # user.plan (overwriting that would clobber a vendor/buyer's platform
+        # plan if they also buy CSP). Activate the org and return early, before
+        # the user.plan assignment + platform feature triggers below.
+        if product_type in ("csp_pack_monthly", "csp_monitoring_monthly"):
+            from app.services.csp_access import activate_csp_access
+
+            if stripe_subscription_id:
+                user.stripe_subscription_id = stripe_subscription_id
+            if stripe_customer_id:
+                user.stripe_customer_id = stripe_customer_id
+            activate_csp_access(
+                db, user=user, plan=new_plan, billing_type="subscription"
+            )
+            logger.info(
+                f"[CSP] Activated {new_plan} access for {customer_email}"
+            )
+            try:
+                sent = await EmailService().send_html_email(
+                    user.email,
+                    "Your CSP Compliance Pack is active",
+                    _csp_activation_email_html(new_plan),
+                )
+                if not sent:
+                    await _alert_payment_fulfillment_issue(
+                        reason="CSP activated but activation email rejected by provider",
+                        product_type=product_type,
+                        customer_email=customer_email,
+                        session_id=stripe_subscription_id,
+                    )
+            except Exception as e:
+                logger.warning(f"[CSP] activation email failed: {e}")
+            return
 
         user.plan = new_plan
         user.subscription_tier = new_plan
@@ -1209,8 +1265,48 @@ async def _fulfill_standalone_no_report(
     """
     if product_type not in (
         PDPA_PRODUCT_TYPES | VENDOR_PROOF_PRODUCT_TYPES | NOTARIZATION_PRODUCT_TYPES
+        | CSP_ONETIME_PRODUCT_TYPES
     ):
         return False
+
+    # CSP one-time pack purchase: grant lifetime pack access on the org.
+    if product_type in CSP_ONETIME_PRODUCT_TYPES:
+        db = SessionLocal()
+        try:
+            user = (
+                db.query(User).filter(User.email == customer_email).first()
+                if customer_email else None
+            )
+            if not user:
+                await _alert_payment_fulfillment_issue(
+                    reason="CSP one-time purchase paid but no user matched customer_email",
+                    product_type=product_type,
+                    customer_email=customer_email,
+                    session_id=session_id,
+                )
+                return True
+            from app.services.csp_access import activate_csp_access
+
+            activate_csp_access(db, user=user, plan="csp", billing_type="one_time")
+            logger.info(f"[CSP] One-time pack access granted to {customer_email}")
+            try:
+                sent = await EmailService().send_html_email(
+                    user.email,
+                    "Your CSP Compliance Pack is active",
+                    _csp_activation_email_html("csp"),
+                )
+                if not sent:
+                    await _alert_payment_fulfillment_issue(
+                        reason="CSP one-time activated but activation email rejected by provider",
+                        product_type=product_type,
+                        customer_email=customer_email,
+                        session_id=session_id,
+                    )
+            except Exception as e:
+                logger.warning(f"[CSP] one-time activation email failed: {e}")
+            return True
+        finally:
+            db.close()
 
     company_name = (metadata.get("company_name") or "").strip()
     website = (metadata.get("vendor_url") or metadata.get("website_url") or "").strip()
