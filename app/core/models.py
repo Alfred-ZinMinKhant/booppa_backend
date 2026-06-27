@@ -283,3 +283,7 @@ from .models_v12 import *
 
 # Import V13 (EvidencePack — BCEP compliance evidence pack) for the same reason.
 from .models_v13 import *
+
+# Import CSP Compliance Pack models (organisations, profiles, clients, CDD/EDD/STR,
+# nominees, UBOs, AML programme, calendar, training, blockchain evidence, v3 legal layer).
+from .models_csp import *

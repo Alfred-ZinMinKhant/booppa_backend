@@ -67,6 +67,11 @@ MODE_MAP = {
     "buyer_pro_annual": "subscription",
     "buyer_enterprise_monthly": "subscription",
     "buyer_enterprise_annual": "subscription",
+    # CSP Compliance Pack. Full + Monitoring are recurring; one-time grants
+    # lifetime pack access (no recurring billing).
+    "csp_pack_monthly": "subscription",
+    "csp_monitoring_monthly": "subscription",
+    "csp_pack_onetime": "payment",
 }
 
 
@@ -210,6 +215,9 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         "buyer_pro_annual": "buyer_pro",
         "buyer_enterprise_monthly": "buyer_enterprise",
         "buyer_enterprise_annual": "buyer_enterprise",
+        # CSP Compliance Pack subscriptions (one-time grant handled separately).
+        "csp_pack_monthly": "csp",
+        "csp_monitoring_monthly": "csp_monitoring",
     }
     if product_type in SUBSCRIPTION_PLAN_MAP and prefill_email:
         from app.core.db import SessionLocal

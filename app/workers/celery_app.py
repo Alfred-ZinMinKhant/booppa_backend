@@ -6,7 +6,7 @@ celery_app = Celery(
     "booppa",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["app.workers.tasks", "app.workers.monthly_credit_reset"],
+    include=["app.workers.tasks", "app.workers.monthly_credit_reset", "app.workers.csp_tasks"],
 )
 
 # Celery configuration
@@ -44,6 +44,9 @@ celery_app.conf.update(
         "pdpa_monitor_monthly_rescan_task": {"queue": "reports"},
         "check_compliance_drift_task": {"queue": "default"},
         "app.workers.tasks.*": {"queue": "default"},
+        # CSP Compliance Pack tasks (csp.generate_documents, csp.notarize_record,
+        # csp.refresh_sanctions_lists, csp.daily_monitoring, csp.run_sanctions_screening)
+        "csp.*": {"queue": "default"},
     },
     # Beat schedule
     beat_schedule={
@@ -196,6 +199,16 @@ celery_app.conf.update(
             "task": "scrape_vendor_contacts_batch",
             "schedule": crontab(hour=3, minute=30),
             "kwargs": {"model": "discovered", "limit": 100},
+        },
+        # CSP Compliance Pack — refresh OFAC/UN sanctions caches at 22:00 UTC (06:00 SGT),
+        # before the daily monitoring scan at 23:00 UTC (07:00 SGT).
+        "csp-refresh-sanctions-daily": {
+            "task": "csp.refresh_sanctions_lists",
+            "schedule": crontab(hour=22, minute=0),
+        },
+        "csp-daily-monitoring": {
+            "task": "csp.daily_monitoring",
+            "schedule": crontab(hour=23, minute=0),
         },
     },
 )
