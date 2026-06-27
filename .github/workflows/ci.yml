@@ -196,6 +196,12 @@ jobs:
           ADMIN_USER: ${{ secrets.ADMIN_USER }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
           CMS_ADMIN_TOKEN: ${{ secrets.CMS_ADMIN_TOKEN }}
+          # CSP Compliance Pack — Stripe price IDs + PII encryption
+          STRIPE_CSP_PACK_ONETIME: ${{ secrets.STRIPE_CSP_PACK_ONETIME }}
+          STRIPE_CSP_PACK_MONTHLY: ${{ secrets.STRIPE_CSP_PACK_MONTHLY }}
+          STRIPE_CSP_MONITORING_MONTHLY: ${{ secrets.STRIPE_CSP_MONITORING_MONTHLY }}
+          CSP_PII_KEY_LOCAL: ${{ secrets.CSP_PII_KEY_LOCAL }}
+          CSP_PII_SEARCH_PEPPER: ${{ secrets.CSP_PII_SEARCH_PEPPER }}
         run: |
           CPU=${APP_CPU:-256}
           MEMORY=${APP_MEMORY:-512}
@@ -278,7 +284,12 @@ jobs:
                   { "name": "CORS_ALLOWED_ORIGINS", "value": "https://api.booppa.io,https://booppa.io,https://www.booppa.io" },
                   { "name": "ADMIN_USER", "value": "${ADMIN_USER}" },
                   { "name": "ADMIN_PASSWORD", "value": "${ADMIN_PASSWORD}" },
-                  { "name": "CMS_ADMIN_TOKEN", "value": "${CMS_ADMIN_TOKEN}" }
+                  { "name": "CMS_ADMIN_TOKEN", "value": "${CMS_ADMIN_TOKEN}" },
+                  { "name": "STRIPE_CSP_PACK_ONETIME", "value": "${STRIPE_CSP_PACK_ONETIME}" },
+                  { "name": "STRIPE_CSP_PACK_MONTHLY", "value": "${STRIPE_CSP_PACK_MONTHLY}" },
+                  { "name": "STRIPE_CSP_MONITORING_MONTHLY", "value": "${STRIPE_CSP_MONITORING_MONTHLY}" },
+                  { "name": "CSP_PII_KEY_LOCAL", "value": "${CSP_PII_KEY_LOCAL}" },
+                  { "name": "CSP_PII_SEARCH_PEPPER", "value": "${CSP_PII_SEARCH_PEPPER}" }
                 ],
                 "secrets": [
                   { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" }
@@ -357,6 +368,12 @@ jobs:
           DB_SECRET_ARN: ${{ secrets.AWS_SECRETSMANAGER_DATABASE_URL_ARN }}
           # Feature flags
           FEATURE_SEO: ${{ secrets.FEATURE_SEO }}
+          # CSP Compliance Pack — worker runs doc-gen, notarization & sanctions (all decrypt PII)
+          STRIPE_CSP_PACK_ONETIME: ${{ secrets.STRIPE_CSP_PACK_ONETIME }}
+          STRIPE_CSP_PACK_MONTHLY: ${{ secrets.STRIPE_CSP_PACK_MONTHLY }}
+          STRIPE_CSP_MONITORING_MONTHLY: ${{ secrets.STRIPE_CSP_MONITORING_MONTHLY }}
+          CSP_PII_KEY_LOCAL: ${{ secrets.CSP_PII_KEY_LOCAL }}
+          CSP_PII_SEARCH_PEPPER: ${{ secrets.CSP_PII_SEARCH_PEPPER }}
         run: |
           # Worker needs more memory than the API — Chromium requires ~512 MB headroom
           CPU=${WORKER_CPU:-512}
@@ -436,7 +453,12 @@ jobs:
                   { "name": "FEATURE_SEO", "value": "${FEATURE_SEO}" },
                   { "name": "SECRET_KEY", "value": "${SECRET_KEY}" },
                   { "name": "ENVIRONMENT", "value": "production" },
-                  { "name": "PLAYWRIGHT_BROWSERS_PATH", "value": "/opt/playwright" }
+                  { "name": "PLAYWRIGHT_BROWSERS_PATH", "value": "/opt/playwright" },
+                  { "name": "STRIPE_CSP_PACK_ONETIME", "value": "${STRIPE_CSP_PACK_ONETIME}" },
+                  { "name": "STRIPE_CSP_PACK_MONTHLY", "value": "${STRIPE_CSP_PACK_MONTHLY}" },
+                  { "name": "STRIPE_CSP_MONITORING_MONTHLY", "value": "${STRIPE_CSP_MONITORING_MONTHLY}" },
+                  { "name": "CSP_PII_KEY_LOCAL", "value": "${CSP_PII_KEY_LOCAL}" },
+                  { "name": "CSP_PII_SEARCH_PEPPER", "value": "${CSP_PII_SEARCH_PEPPER}" }
                 ],
                 "secrets": [
                   { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" }
