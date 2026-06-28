@@ -417,16 +417,18 @@ class TestSanctionsScreening:
 
     def test_screen_individual_returns_result_object(self):
         from app.services.csp_sanctions import screen_individual, ScreeningResult
-        # Mock the list loading to avoid network call in tests
-        with patch("app.services.csp_sanctions.OfacSdnScreener.screen",
-                   return_value=[]):
-            with patch("app.services.csp_sanctions.UnConsolidatedScreener.screen",
-                       return_value=[]):
-                result = screen_individual("John Smith")
+        # Mock every screener to avoid network calls in tests
+        with patch("app.services.csp_sanctions.OfacSdnScreener.screen", return_value=[]), \
+             patch("app.services.csp_sanctions.UnConsolidatedScreener.screen", return_value=[]), \
+             patch("app.services.csp_sanctions.EuConsolidatedScreener.screen", return_value=[]):
+            result = screen_individual("John Smith")
         assert isinstance(result, ScreeningResult)
         assert result.is_clear is True
         assert result.hit_count == 0
         assert isinstance(result.lists_checked, list)
+        # EU is screened live; MAS is only reported when World-Check is configured.
+        assert "EU Consolidated" in result.lists_checked
+        assert "MAS Watchlist" not in result.lists_checked
 
     def test_screen_returns_hit_when_name_matches(self):
         from app.services.csp_sanctions import screen_individual
@@ -434,20 +436,20 @@ class TestSanctionsScreening:
             "list": "OFAC SDN", "entry_id": "12345",
             "name": "John Smith", "type": "individual", "programs": ["SDGT"],
         }]
-        with patch("app.services.csp_sanctions.OfacSdnScreener.screen",
-                   return_value=fake_hit):
-            with patch("app.services.csp_sanctions.UnConsolidatedScreener.screen",
-                       return_value=[]):
-                result = screen_individual("John Smith")
+        with patch("app.services.csp_sanctions.OfacSdnScreener.screen", return_value=fake_hit), \
+             patch("app.services.csp_sanctions.UnConsolidatedScreener.screen", return_value=[]), \
+             patch("app.services.csp_sanctions.EuConsolidatedScreener.screen", return_value=[]):
+            result = screen_individual("John Smith")
         assert result.is_clear is False
         assert result.hit_count == 1
         assert result.hits[0]["list"] == "OFAC SDN"
 
     def test_screen_clear_when_no_matches(self):
         from app.services.csp_sanctions import screen_individual
-        with patch("app.services.csp_sanctions.OfacSdnScreener.screen", return_value=[]):
-            with patch("app.services.csp_sanctions.UnConsolidatedScreener.screen", return_value=[]):
-                result = screen_individual("Very Unique Name XYZ123")
+        with patch("app.services.csp_sanctions.OfacSdnScreener.screen", return_value=[]), \
+             patch("app.services.csp_sanctions.UnConsolidatedScreener.screen", return_value=[]), \
+             patch("app.services.csp_sanctions.EuConsolidatedScreener.screen", return_value=[]):
+            result = screen_individual("Very Unique Name XYZ123")
         assert result.is_clear is True
         assert result.hit_count == 0
 

@@ -5,9 +5,10 @@ FIX #3: Real sanctions screening integration.
 Tiers:
   1. FREE  — OFAC SDN List (US Treasury, public, updated daily)
              UN Consolidated Sanctions List (public)
-             MAS Watchlist (public, scraped/cached)
-  2. PAID  — World-Check / Refinitiv One stub (ready for API key integration)
-             Dow Jones Risk & Compliance stub
+             EU Consolidated Financial Sanctions List / FSF (public)
+  2. PAID  — World-Check / Refinitiv One (ready for API key integration); also the
+             source of MAS prohibition-order, PEP and adverse-media coverage
+             Dow Jones Risk & Compliance (ready for API key integration)
 
 All screening results are cached (Redis) for 24 hours to avoid
 hammering public APIs. Cache invalidated daily when new lists are fetched.
@@ -47,6 +48,31 @@ OFAC_SDN_XML_URL = (
 UN_CONSOLIDATED_URL = (
     "https://scsanctions.un.org/resources/xml/en/consolidated.xml"
 )
+# EU Financial Sanctions File (FSF) — public consolidated list. The endpoint carries an
+# access token that the EU rotates occasionally. We self-heal: try each known-good URL
+# until one returns valid XML, and cache the working one. Ops can pin/override with the
+# EU_SANCTIONS_XML_URL env var (tried first) — no code change or redeploy needed.
+_EU_DEFAULT_URLS = [
+    "https://webgate.ec.europa.eu/fsd/fsf/public/files/xmlFullSanctionsList_1_1/content?token=dG9rZW4tMjAxNw",
+    "https://webgate.ec.europa.eu/fsd/fsf/public/files/xmlFullSanctionsList/content?token=dG9rZW4tMjAxNw",
+    "https://webgate.ec.europa.eu/europeaid/fsd/fsf/public/files/xmlFullSanctionsList_1_1/content?token=dG9rZW4tMjAxNw",
+]
+
+
+def _eu_candidate_urls() -> List[str]:
+    """EU FSF URLs to try, in order: env override first, then known-good defaults."""
+    urls: List[str] = []
+    env = os.environ.get("EU_SANCTIONS_XML_URL")
+    if env:
+        urls.append(env)
+    for u in _EU_DEFAULT_URLS:
+        if u not in urls:
+            urls.append(u)
+    return urls
+
+
+# Back-compat: first candidate (env override if set, else the primary default).
+EU_SANCTIONS_XML_URL = _eu_candidate_urls()[0]
 
 CACHE_TTL = int(os.environ.get("SANCTIONS_CACHE_TTL", 86400))
 
@@ -340,6 +366,127 @@ class UnConsolidatedScreener:
         return hits
 
 
+# ── EU CONSOLIDATED LIST ──────────────────────────────────────────────────────
+
+class EuConsolidatedScreener:
+    """
+    Screens against the EU Consolidated Financial Sanctions List (FSF).
+    Published by the European Commission as public XML; covers persons and
+    entities subject to EU restrictive measures.
+    """
+
+    _entries_cache: Optional[List[Dict]] = None
+    _cache_loaded_at: Optional[datetime] = None
+    _working_url: Optional[str] = None   # last URL that returned valid data
+
+    @staticmethod
+    def _parse(xml_bytes: bytes) -> List[Dict]:
+        """Parse EU FSF XML bytes into our entry dicts. Returns [] if it yields nothing."""
+        root    = ET.fromstring(xml_bytes)
+        entries = []
+
+        # The EU FSF XML namespaces tags; match on the local name so we are
+        # resilient to the exact namespace URI the endpoint serves.
+        def _local(tag: str) -> str:
+            return tag.rsplit("}", 1)[-1]
+
+        for entity in root.iter():
+            if _local(entity.tag) != "sanctionEntity":
+                continue
+
+            eu_ref = entity.get("logicalId") or entity.get("euReferenceNumber") or ""
+            subject_type = ""
+            names: List[str] = []
+
+            for child in entity.iter():
+                lname = _local(child.tag)
+                if lname == "subjectType":
+                    subject_type = (child.get("classificationCode") or "").lower()
+                elif lname == "nameAlias":
+                    whole = child.get("wholeName")
+                    if whole and whole.strip():
+                        names.append(whole.strip())
+                    else:
+                        parts = [
+                            child.get("firstName") or "",
+                            child.get("middleName") or "",
+                            child.get("lastName") or "",
+                        ]
+                        joined = " ".join(p for p in parts if p).strip()
+                        if joined:
+                            names.append(joined)
+
+            names = list(dict.fromkeys(names))  # de-dup, preserve order
+            if not names:
+                continue
+
+            entries.append({
+                "ref":     eu_ref,
+                "name":    names[0],
+                "type":    "entity" if subject_type.startswith("enterprise") else "individual",
+                "aliases": names[1:],
+            })
+
+        return entries
+
+    @classmethod
+    def _load_entries(cls) -> List[Dict]:
+        now = datetime.now(timezone.utc)
+        if (
+            cls._entries_cache is not None
+            and cls._cache_loaded_at is not None
+            and (now - cls._cache_loaded_at).seconds < CACHE_TTL
+        ):
+            return cls._entries_cache
+
+        logger.info("Fetching EU Consolidated Sanctions list...")
+        # Self-heal across token rotation: try the last-known-good URL first, then the
+        # remaining candidates, and keep the first that returns a parseable, non-empty list.
+        candidates = _eu_candidate_urls()
+        if cls._working_url and cls._working_url in candidates:
+            candidates = [cls._working_url] + [u for u in candidates if u != cls._working_url]
+
+        last_exc: Optional[Exception] = None
+        for url in candidates:
+            try:
+                response = httpx.get(url, timeout=30.0, follow_redirects=True)
+                response.raise_for_status()
+                entries = cls._parse(response.content)
+                if not entries:
+                    logger.warning("EU FSF URL returned no entries, trying next: %s", url)
+                    continue
+                cls._entries_cache   = entries
+                cls._cache_loaded_at = now
+                cls._working_url     = url
+                logger.info("EU Consolidated list loaded: %d entries (via %s)", len(entries), url)
+                return entries
+            except Exception as exc:
+                last_exc = exc
+                logger.warning("EU FSF URL failed (%s): %s", url, exc)
+                continue
+
+        logger.error("Failed to load EU Consolidated list from all candidates: %s", last_exc)
+        return cls._entries_cache or []
+
+    @classmethod
+    def screen(cls, name: str) -> List[Dict]:
+        entries = cls._load_entries()
+        hits    = []
+        for entry in entries:
+            all_names = [entry["name"]] + entry.get("aliases", [])
+            for candidate in all_names:
+                if _names_match(name, candidate):
+                    hits.append({
+                        "list":     "EU Consolidated",
+                        "entry_id": entry["ref"],
+                        "name":     entry["name"],
+                        "type":     entry["type"],
+                        "matched_alias": candidate if candidate != entry["name"] else None,
+                    })
+                    break
+        return hits
+
+
 # ── WORLD-CHECK STUB (Refinitiv / LSEG) ──────────────────────────────────────
 
 class WorldCheckScreener:
@@ -468,7 +615,7 @@ def screen_individual(
     Returns:
         ScreeningResult with all hits across all lists
     """
-    cache_key = _cache_key(name, ["ofac","un","worldcheck","mas"])
+    cache_key = _cache_key(name, ["ofac","un","eu","worldcheck","mas"])
     cached    = _cache_get(cache_key)
     if cached:
         logger.debug("Sanctions screening cache hit for '%s'", name)
@@ -477,6 +624,8 @@ def screen_individual(
     all_hits     = []
     lists_checked = []
     names_to_screen = [name] + (also_screen or [])
+
+    worldcheck_active = use_worldcheck and WorldCheckScreener.is_configured()
 
     for screen_name in names_to_screen:
         # OFAC SDN
@@ -493,20 +642,29 @@ def screen_individual(
         if "UN Consolidated" not in lists_checked:
             lists_checked.append("UN Consolidated")
 
-        # World-Check (if configured)
-        if use_worldcheck and WorldCheckScreener.is_configured():
+        # EU Consolidated
+        eu_hits = EuConsolidatedScreener.screen(screen_name)
+        if eu_hits:
+            all_hits.extend(eu_hits)
+        if "EU Consolidated" not in lists_checked:
+            lists_checked.append("EU Consolidated")
+
+        # World-Check (if configured) — also our only source of MAS prohibition-order
+        # and PEP/adverse-media coverage. Only report these lists when it actually ran.
+        if worldcheck_active:
             wc_hits = WorldCheckScreener.screen(screen_name)
             if wc_hits:
                 all_hits.extend(wc_hits)
             if "World-Check One" not in lists_checked:
                 lists_checked.append("World-Check One")
 
-        # MAS Watchlist
-        mas_hits = MasWatchlistScreener.screen(screen_name)
-        if mas_hits:
-            all_hits.extend(mas_hits)
-        if "MAS Watchlist" not in lists_checked:
-            lists_checked.append("MAS Watchlist")
+            # MAS Watchlist — coverage comes via World-Check today. Do NOT claim MAS
+            # was checked unless World-Check is configured (see MasWatchlistScreener).
+            mas_hits = MasWatchlistScreener.screen(screen_name)
+            if mas_hits:
+                all_hits.extend(mas_hits)
+            if "MAS Watchlist" not in lists_checked:
+                lists_checked.append("MAS Watchlist")
 
     result = ScreeningResult(
         is_clear      = len(all_hits) == 0,
@@ -544,13 +702,17 @@ def refresh_sanctions_lists() -> Dict[str, int]:
     OfacSdnScreener._cache_loaded_at  = None
     UnConsolidatedScreener._entries_cache   = None
     UnConsolidatedScreener._cache_loaded_at = None
+    EuConsolidatedScreener._entries_cache   = None
+    EuConsolidatedScreener._cache_loaded_at = None
 
     # Re-load
     ofac_entries = OfacSdnScreener._load_entries()
     un_entries   = UnConsolidatedScreener._load_entries()
+    eu_entries   = EuConsolidatedScreener._load_entries()
 
     return {
         "ofac_entries": len(ofac_entries),
         "un_entries":   len(un_entries),
+        "eu_entries":   len(eu_entries),
         "refreshed_at": datetime.now(timezone.utc).isoformat(),
     }

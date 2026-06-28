@@ -289,7 +289,8 @@ jobs:
                   { "name": "STRIPE_CSP_PACK_MONTHLY", "value": "${STRIPE_CSP_PACK_MONTHLY}" },
                   { "name": "STRIPE_CSP_MONITORING_MONTHLY", "value": "${STRIPE_CSP_MONITORING_MONTHLY}" },
                   { "name": "CSP_PII_KEY_LOCAL", "value": "${CSP_PII_KEY_LOCAL}" },
-                  { "name": "CSP_PII_SEARCH_PEPPER", "value": "${CSP_PII_SEARCH_PEPPER}" }
+                  { "name": "CSP_PII_SEARCH_PEPPER", "value": "${CSP_PII_SEARCH_PEPPER}" },
+                  { "name": "EU_SANCTIONS_XML_URL", "value": "https://webgate.ec.europa.eu/fsd/fsf/public/files/xmlFullSanctionsList_1_1/content?token=dG9rZW4tMjAxNw" }
                 ],
                 "secrets": [
                   { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" }
@@ -458,7 +459,8 @@ jobs:
                   { "name": "STRIPE_CSP_PACK_MONTHLY", "value": "${STRIPE_CSP_PACK_MONTHLY}" },
                   { "name": "STRIPE_CSP_MONITORING_MONTHLY", "value": "${STRIPE_CSP_MONITORING_MONTHLY}" },
                   { "name": "CSP_PII_KEY_LOCAL", "value": "${CSP_PII_KEY_LOCAL}" },
-                  { "name": "CSP_PII_SEARCH_PEPPER", "value": "${CSP_PII_SEARCH_PEPPER}" }
+                  { "name": "CSP_PII_SEARCH_PEPPER", "value": "${CSP_PII_SEARCH_PEPPER}" },
+                  { "name": "EU_SANCTIONS_XML_URL", "value": "https://webgate.ec.europa.eu/fsd/fsf/public/files/xmlFullSanctionsList_1_1/content?token=dG9rZW4tMjAxNw" }
                 ],
                 "secrets": [
                   { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" }
