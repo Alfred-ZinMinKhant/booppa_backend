@@ -678,13 +678,13 @@ class CspBlockchainEvidence(Base):
     )
 
 
-# ── TOS ACCEPTANCE (v3 — Intervento 3) ───────────────────────────────────────
+# ── TOS ACCEPTANCE (v3 — Layer 3) ─────────────────────────────────────────────
 
 class CspTosAcceptance(Base):
     """
-    Registra l'accettazione esplicita dei ToS da parte del CSP
-    incluso il liability cap esplicito e le clausole AI-specific.
-    Notarizzata su Polygon per forza probatoria.
+    Records the CSP's explicit ToS acceptance, including the explicit liability
+    cap and the AI-specific clauses.
+    Notarized on Polygon for evidentiary weight.
     """
     __tablename__ = "csp_tos_acceptances"
 
@@ -700,13 +700,13 @@ class CspTosAcceptance(Base):
     ip_address      = Column(String(45))
     user_agent      = Column(String(500))
 
-    # Checkboxes individuali — ognuna deve essere True
+    # Individual checkboxes — each must be True
     checkbox_ai_disclaimer        = Column(Boolean, nullable=False, default=False)
     checkbox_data_accuracy        = Column(Boolean, nullable=False, default=False)
     checkbox_sanctions_limitation = Column(Boolean, nullable=False, default=False)
     checkbox_regulatory_change    = Column(Boolean, nullable=False, default=False)
     checkbox_liability_cap        = Column(Boolean, nullable=False, default=False)
-    # Testo esplicito del liability cap mostrato e confermato
+    # Explicit liability-cap text shown and confirmed
     liability_cap_amount_sgd      = Column(Float, nullable=False)
     liability_cap_text_shown      = Column(Text(), nullable=False)
 
@@ -725,13 +725,13 @@ class CspTosAcceptance(Base):
     )
 
 
-# ── PROGRAMME APPROVAL ATTESTATION (v3 — Intervento 1) ───────────────────────
+# ── PROGRAMME APPROVAL ATTESTATION (v3 — Layer 1) ────────────────────────────
 
 class CspProgrammeAttestation(Base):
     """
-    Registra l'attestazione esplicita del CSP al momento dell'approvazione
-    del documento AML/CFT Programme. Include le tre dichiarazioni obbligatorie.
-    Non bypassabile: l'approvazione del Programme è bloccata senza questa.
+    Records the CSP's explicit attestation at the time of approving the
+    AML/CFT Programme document. Includes the three mandatory declarations.
+    Non-bypassable: Programme approval is blocked without it.
     """
     __tablename__ = "csp_programme_attestations"
 
@@ -741,12 +741,12 @@ class CspProgrammeAttestation(Base):
     approved_by    = Column(String(255), nullable=False)
     approved_at    = Column(DateTime(timezone=True), nullable=False, default=utcnow)
 
-    # Le tre dichiarazioni — tutte devono essere True
+    # The three declarations — all must be True
     declaration_content_accurate        = Column(Boolean, nullable=False, default=False)
     declaration_legal_advice_considered = Column(Boolean, nullable=False, default=False)
     declaration_sole_responsible        = Column(Boolean, nullable=False, default=False)
 
-    # Testo esatto delle dichiarazioni mostrato all'utente (per prova futura)
+    # Exact text of the declarations shown to the user (for future proof)
     declaration_text_shown = Column(Text(), nullable=False)
 
     # Blockchain proof
@@ -758,15 +758,15 @@ class CspProgrammeAttestation(Base):
     created_at = Column(DateTime(timezone=True), default=utcnow)
 
 
-# ── RISK CLASSIFICATION INPUT NOTARIZATION (v3 — Intervento 2) ────────────────
+# ── RISK CLASSIFICATION INPUT NOTARIZATION (v3 — Layer 2) ─────────────────────
 
 class CspRiskClassificationAudit(Base):
     """
-    Notarizza il momento e il contenuto dell'assegnazione di risk_rating
-    da parte del CSP a un cliente. Prova che la classificazione è stata
-    confermata dal CSP, non generata autonomamente da Booppa.
+    Notarizes the time and content of a risk_rating assignment made by the
+    CSP for a client. Proves the classification was confirmed by the CSP,
+    not generated autonomously by Booppa.
 
-    Creata ogni volta che il CSP modifica il risk_rating di un cliente.
+    Created every time the CSP changes a client's risk_rating.
     """
     __tablename__ = "csp_risk_classification_audits"
 
@@ -780,12 +780,12 @@ class CspRiskClassificationAudit(Base):
     risk_rating_previous     = Column(String(20))
     risk_rationale           = Column(Text())
 
-    # Snapshot dei flag di rischio al momento della classificazione
+    # Snapshot of the risk flags at the time of classification
     is_pep_at_classification      = Column(Boolean, default=False)
     high_risk_country_at_class    = Column(Boolean, default=False)
     sanctions_clear_at_class      = Column(Boolean)
     edd_required_at_class         = Column(Boolean, default=False)
-    # Flag aggiuntivi forniti dal CSP come motivazione
+    # Additional flags provided by the CSP as rationale
     additional_risk_flags         = Column(JSONB)
 
     # Blockchain proof

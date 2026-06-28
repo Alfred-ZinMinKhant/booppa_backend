@@ -1,20 +1,16 @@
 """
 Booppa CSP Compliance Pack — Document Generator (DeepSeek)
-Generates all 12 CSP-specific compliance documents.
+Generates the CSP-specific compliance documents (see CSP_DOCUMENT_CATALOG, 8 documents).
 
 Documents produced:
   1.  AML/CFT/PF Programme (master document)
   2.  CDD Procedures Manual
-  3.  EDD Procedures Manual
-  4.  STR Policy and Decision Framework
-  5.  Nominee Director Assessment Procedure
-  6.  Beneficial Owner Identification Guide
-  7.  Risk-Based Approach Policy
+  3.  STR Policy and Decision Framework
+  4.  Nominee Director Assessment Procedure
+  5.  Risk-Based Approach Policy
+  6.  Client Onboarding Kit (CDD questionnaire + video call checklist)
+  7.  Regulatory Compliance Calendar (all deadlines)
   8.  Record Keeping Policy (5-year retention)
-  9.  Staff AML/CFT Training Programme
-  10. ACRA Registration Preparation Checklist
-  11. CSP Compliance Calendar (all deadlines)
-  12. Client Onboarding Kit (CDD questionnaire + video call checklist)
 
 All reference:
   - CSP Act 2024 + CSP Regulations 2025 (effective 9 June 2025)

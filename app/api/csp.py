@@ -1,18 +1,18 @@
 """
 Booppa CSP Compliance Pack — FastAPI Router (v3)
 
-Fixes rispetto a v2:
-  FIX AUTH:    get_current_user() stub rimosso — sostituito con vera auth JWT
-  FIX ROUTE:   route conflict /clients/bulk-import/template risolto (prefix statico prima)
-  FIX DICT:    _to_dict() ora esclude campi cifrati dal compliance scorer
-  FIX DASHBOARD: 9 query sequenziali → query ottimizzate con selectinload
-  FIX SANCTIONS: screening asincrono via Celery — non più inline nel thread HTTP
-  FIX DATES:   replace(year=+1) → relativedelta(years=1) — sicuro su anni bisestili
+Fixes relative to v2:
+  FIX AUTH:    get_current_user() stub removed — replaced with real JWT auth
+  FIX ROUTE:   route conflict /clients/bulk-import/template resolved (static prefix first)
+  FIX DICT:    _to_dict() now excludes encrypted fields from the compliance scorer
+  FIX DASHBOARD: 9 sequential queries → queries optimised with selectinload
+  FIX SANCTIONS: async screening via Celery — no longer inline in the HTTP thread
+  FIX DATES:   replace(year=+1) → relativedelta(years=1) — safe on leap years
 
-Interventi v3 (da Sicurezza_e_rischi_legali.docx):
-  INTERVENTO 1: Approval attestation non bypassabile per AML/CFT Programme
-  INTERVENTO 2: Risk classification notarizzata su Polygon (customer input audit)
-  INTERVENTO 3: ToS acceptance endpoint con liability cap esplicito + blockchain proof
+v3 layers (from Sicurezza_e_rischi_legali.docx):
+  LAYER 1: Non-bypassable approval attestation for the AML/CFT Programme
+  LAYER 2: Risk classification notarized on Polygon (customer input audit)
+  LAYER 3: ToS acceptance endpoint with explicit liability cap + blockchain proof
 
 Mounted via app/api/__init__.py (the composite api_router is dual-mounted at /api and
 /api/v1 in app/main.py). This router self-prefixes "/csp", so endpoints land at both
@@ -117,7 +117,7 @@ def require_role(required_role: str):
         if required_role not in current_user.get("roles", []):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Ruolo richiesto: {required_role}",
+                detail=f"Role required: {required_role}",
             )
         return current_user
     return _check
@@ -126,7 +126,7 @@ def require_role(required_role: str):
 # ── DATE HELPER — FIX leap year ────────────────────────────────────────────────
 
 def _add_one_year(dt: datetime) -> datetime:
-    """Aggiunge 1 anno a una datetime in modo sicuro (evita crash su 29 feb)."""
+    """Add 1 year to a datetime safely (avoids a crash on 29 Feb)."""
     if _HAS_RELATIVEDELTA:
         return dt + relativedelta(years=1)
     # Fallback sicuro senza dateutil
@@ -144,26 +144,26 @@ def get_pricing():
     return CSP_PACK_CATALOG
 
 
-# ── TOS ACCEPTANCE — INTERVENTO 3 ─────────────────────────────────────────────
+# ── TOS ACCEPTANCE — LAYER 3 ──────────────────────────────────────────────────
 
-@router.get("/tos", summary="Recupera testo completo dei Terms of Service con liability cap")
+@router.get("/tos", summary="Retrieve the full Terms of Service text with liability cap")
 def get_tos(current_user: dict = Depends(get_current_user)):
     """
-    Ritorna le 5 clausole specifiche per AI-generated compliance documents.
-    Il frontend deve mostrarle con checkbox individuali prima di permettere
-    la creazione del profilo o l'accesso al pack.
+    Returns the 5 clauses specific to AI-generated compliance documents.
+    The frontend must display them with individual checkboxes before allowing
+    profile creation or access to the pack.
     """
     return {
         "version": TOS_VERSION_CURRENT,
         "clauses": TOS_CLAUSES,
         "liability_cap_explanation": (
-            "La liability di Booppa è limitata a 12 mesi di fees pagate. "
-            "Per piano S$299/mese: cap massimo S$3.588. "
-            "Questo importo deve essere confermato esplicitamente al momento dell'accettazione."
+            "Booppa's liability is limited to 12 months of fees paid. "
+            "For the S$299/month plan: maximum cap S$3,588. "
+            "This amount must be explicitly confirmed at the time of acceptance."
         ),
         "instruction": (
-            "Il CSP deve accettare tutte e cinque le clausole tramite "
-            "POST /api/v1/csp/tos/accept prima di poter creare il profilo CSP."
+            "The CSP must accept all five clauses via "
+            "POST /api/v1/csp/tos/accept before it can create the CSP profile."
         ),
     }
 
@@ -171,7 +171,7 @@ def get_tos(current_user: dict = Depends(get_current_user)):
 @router.post(
     "/tos/accept",
     status_code=status.HTTP_201_CREATED,
-    summary="Accettazione formale ToS — liability cap esplicito + blockchain notarization",
+    summary="Formal ToS acceptance — explicit liability cap + blockchain notarization",
 )
 def accept_tos(
     payload:      TosAcceptanceCreate,
@@ -180,18 +180,18 @@ def accept_tos(
     db            = Depends(get_db),
 ):
     """
-    Registra l'accettazione dei ToS con firma digitale.
-    Notarizzata su Polygon — prova blockchain della consapevolezza del CSP.
+    Records ToS acceptance with a digital signature.
+    Notarized on Polygon — blockchain proof of the CSP's awareness.
 
-    Tutte e 5 le clausole devono essere True (verificato da Pydantic).
-    Un solo record per versione di ToS per CSP (UniqueConstraint).
+    All 5 clauses must be True (verified by Pydantic).
+    One record per ToS version per CSP (UniqueConstraint).
     """
     # ToS is keyed by organisation (csp_id -> csp_organisations.id) because it is
     # accepted before a CspProfile exists. Always use org_id for consistency.
     profile = _get_profile_optional(db, current_user)
     csp_id_for_tos = uuid.UUID(current_user["org_id"])
 
-    # Controlla se già accettato per questa versione
+    # Check whether already accepted for this version
     existing = db.query(CspTosAcceptance).filter(
         CspTosAcceptance.csp_id == csp_id_for_tos,
         CspTosAcceptance.tos_version == payload.tos_version,
@@ -206,18 +206,18 @@ def accept_tos(
             "notarized":        bool(existing.blockchain_tx_hash),
             "blockchain_tx":    existing.blockchain_tx_hash,
             "polygonscan_url":  existing.polygonscan_url,
-            "message":          "ToS già accettati per questa versione. Record esistente ritornato.",
+            "message":          "ToS already accepted for this version. Existing record returned.",
         }
 
-    # Calcola il liability cap in base al piano (default S$299/mese × 12)
+    # Compute the liability cap based on the plan (default S$299/month × 12)
     monthly_fee     = (profile.monthly_fee_sgd if profile
                        else current_user.get("monthly_fee_sgd", 299.0))
     liability_cap   = round(monthly_fee * 12, 2)
     liability_text  = (
-        f"Confermo di aver letto e accettato i Termini di Servizio, "
-        f"inclusa la limitazione di responsabilità a S${liability_cap:.2f} "
-        f"(12 mesi di fees pagate a S${monthly_fee:.2f}/mese). "
-        f"Il CSP rimane l'unico responsabile della propria conformità normativa."
+        f"I confirm that I have read and accepted the Terms of Service, "
+        f"including the limitation of liability to S${liability_cap:.2f} "
+        f"(12 months of fees paid at S${monthly_fee:.2f}/month). "
+        f"The CSP remains solely responsible for its own regulatory compliance."
     )
 
     now = datetime.now(timezone.utc)
@@ -241,7 +241,7 @@ def accept_tos(
         liability_cap_text_shown=liability_text,
     )
 
-    # Hash deterministico del contenuto
+    # Deterministic hash of the content
     hash_content = {
         "csp_id":     str(csp_id_for_tos),
         "user_id":    current_user["id"],
@@ -259,7 +259,7 @@ def accept_tos(
     db.commit()
     db.refresh(acceptance)
 
-    # Notarizzazione blockchain asincrona
+    # Async blockchain notarization
     from app.workers.csp_tasks import notarize_csp_record
     notarize_csp_record.apply_async(
         args=[str(acceptance.id), "tos_acceptance", str(csp_id_for_tos)], countdown=3
@@ -272,12 +272,12 @@ def accept_tos(
         "accepted_at":       now.isoformat(),
         "liability_cap_sgd": liability_cap,
         "notarized":         True,
-        "blockchain_tx":     None,  # disponibile dopo task async
+        "blockchain_tx":     None,  # available after the async task
         "polygonscan_url":   None,
         "message": (
-            "ToS accettati formalmente. Notarizzazione blockchain in corso. "
-            "Il record di accettazione costituisce prova della consapevolezza "
-            "del CSP riguardo ai termini e al liability cap."
+            "ToS formally accepted. Blockchain notarization in progress. "
+            "The acceptance record constitutes proof of the CSP's awareness "
+            "of the terms and the liability cap."
         ),
     }
 
@@ -285,13 +285,13 @@ def accept_tos(
 # ── PROFILE ────────────────────────────────────────────────────────────────────
 
 @router.post("/profile", status_code=status.HTTP_201_CREATED,
-             summary="Crea profilo CSP — richiede ToS accettati")
+             summary="Create CSP profile — requires accepted ToS")
 def create_profile(
     payload:      CspProfileCreate,
     current_user: dict = Depends(get_current_user),
     db            = Depends(get_db),
 ):
-    # Verifica ToS accettati
+    # Verify ToS accepted
     org_id = uuid.UUID(current_user["org_id"])
     tos_ok = db.query(CspTosAcceptance).filter(
         CspTosAcceptance.csp_id == org_id,
@@ -301,8 +301,8 @@ def create_profile(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                "ToS non accettati. Completare prima POST /api/v1/csp/tos/accept "
-                "con tutte e cinque le clausole confermate."
+                "ToS not accepted. First complete POST /api/v1/csp/tos/accept "
+                "with all five clauses confirmed."
             ),
         )
 
@@ -310,7 +310,7 @@ def create_profile(
         CspProfile.organisation_id == org_id
     ).first()
     if existing:
-        raise HTTPException(409, f"CSP profile già esistente: {existing.id}")
+        raise HTTPException(409, f"CSP profile already exists: {existing.id}")
 
     profile = CspProfile(
         organisation_id=org_id,
@@ -330,19 +330,19 @@ def create_profile(
         "status":      "created",
         "doc_task_id": task.id,
         "message": (
-            "Profilo CSP creato. "
-            "Compliance calendar inizializzato con 15 scadenze regolamentari. "
-            "Generazione 8 documenti AML/CFT via DeepSeek — pronti in ~10 minuti."
+            "CSP profile created. "
+            "Compliance calendar initialised with 15 regulatory deadlines. "
+            "Generating 8 AML/CFT documents via DeepSeek — ready in ~10 minutes."
         ),
     }
 
 
-@router.get("/profile", summary="Recupera profilo CSP e stato registrazione ACRA")
+@router.get("/profile", summary="Retrieve CSP profile and ACRA registration status")
 def get_profile(current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     return _serialize_profile(_get_profile(db, current_user))
 
 
-@router.patch("/profile", summary="Aggiorna profilo (ACRA registration, RQI details)")
+@router.patch("/profile", summary="Update profile (ACRA registration, RQI details)")
 def update_profile(
     payload:      dict,
     current_user: dict = Depends(get_current_user),
@@ -363,9 +363,9 @@ def update_profile(
 
 
 # ── DASHBOARD ─────────────────────────────────────────────────────────────────
-# FIX: query ottimizzate — un solo round-trip per le collection via selectinload
+# FIX: optimised queries — a single round-trip per collection via selectinload
 
-@router.get("/dashboard", summary="Dashboard compliance a 9 pilastri con scoring")
+@router.get("/dashboard", summary="9-pillar compliance dashboard with scoring")
 def get_dashboard(current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     from sqlalchemy.orm import selectinload
 
@@ -385,7 +385,7 @@ def get_dashboard(current_user: dict = Depends(get_current_user), db=Depends(get
     )
     if not profile:
         raise HTTPException(
-            404, "Profilo CSP non trovato. Creare con POST /api/v1/csp/profile"
+            404, "CSP profile not found. Create it with POST /api/v1/csp/profile"
         )
 
     clients      = profile.clients
@@ -395,7 +395,7 @@ def get_dashboard(current_user: dict = Depends(get_current_user), db=Depends(get
     training     = profile.training_records
     aml_prog     = next((p for p in profile.aml_programme if p.is_current), None)
 
-    # CDD/EDD records — query separata (non eager-loaded sulla relazione cliente)
+    # CDD/EDD records — separate query (not eager-loaded on the client relationship)
     from app.core.models_csp import CspCddRecord, CspEddRecord, CspBeneficialOwner
     cdd_records = db.query(CspCddRecord).filter(CspCddRecord.csp_id == profile.id).all()
     edd_records = db.query(CspEddRecord).filter(CspEddRecord.csp_id == profile.id).all()
@@ -453,7 +453,7 @@ def get_dashboard(current_user: dict = Depends(get_current_user), db=Depends(get
 # ── CLIENT REGISTRY ────────────────────────────────────────────────────────────
 
 @router.post("/clients", status_code=status.HTTP_201_CREATED,
-             summary="Registra nuovo cliente — CDD obbligatoria prima di erogare servizi")
+             summary="Register a new client — CDD required before providing services")
 def create_client(
     payload:      CspClientCreate,
     current_user: dict = Depends(get_current_user),
@@ -470,14 +470,14 @@ def create_client(
         "cdd_required":        True,
         "video_call_required": payload.is_remote_onboarding,
         "message": (
-            "Cliente registrato. Completare CDD prima di erogare qualsiasi servizio. "
-            + ("Verifica video call obbligatoria per onboarding remoto (CSP Regulations 2025 s.20)."
+            "Client registered. Complete CDD before providing any service. "
+            + ("Video-call verification is mandatory for remote onboarding (CSP Regulations 2025 s.20)."
                if payload.is_remote_onboarding else "")
         ),
     }
 
 
-@router.get("/clients", summary="Lista clienti con filtri CDD/rischio")
+@router.get("/clients", summary="List clients with CDD/risk filters")
 def list_clients(
     cdd_status:    Optional[str] = Query(None),
     risk_rating:   Optional[str] = Query(None),
@@ -498,7 +498,7 @@ def list_clients(
     return [_serialize_client(c) for c in clients]
 
 
-@router.get("/clients/{client_id}", summary="Dettaglio cliente")
+@router.get("/clients/{client_id}", summary="Client detail")
 def get_client(
     client_id:    uuid.UUID,
     current_user: dict = Depends(get_current_user),
@@ -507,12 +507,12 @@ def get_client(
     return _serialize_client(_get_client(db, client_id, current_user))
 
 
-# ── RISK CLASSIFICATION — INTERVENTO 2 ────────────────────────────────────────
-# FIX: update_client ora obbliga motivazione + notarizza su Polygon
+# ── RISK CLASSIFICATION — LAYER 2 ─────────────────────────────────────────────
+# FIX: update_client now mandates a rationale + notarizes on Polygon
 
 @router.patch(
     "/clients/{client_id}/risk",
-    summary="Aggiorna risk rating cliente — notarizzato su Polygon (customer input audit)",
+    summary="Update client risk rating — notarized on Polygon (customer input audit)",
 )
 def update_client_risk(
     client_id: uuid.UUID,
@@ -521,12 +521,12 @@ def update_client_risk(
     db = Depends(get_db),
 ):
     """
-    INTERVENTO 2: Ogni modifica al risk_rating viene notarizzata su Polygon.
-    Il timestamp blockchain prova che la classificazione è stata confermata
-    dal CSP, non generata autonomamente da Booppa.
+    LAYER 2: Every change to risk_rating is notarized on Polygon.
+    The blockchain timestamp proves the classification was confirmed by the
+    CSP, not generated autonomously by Booppa.
 
-    Questo endpoint sostituisce il generico PATCH /clients/{id} per le
-    modifiche al risk_rating.
+    This endpoint replaces the generic PATCH /clients/{id} for changes to
+    risk_rating.
     """
     client  = _get_client(db, client_id, current_user)
     profile = _get_profile(db, current_user)
@@ -534,11 +534,11 @@ def update_client_risk(
 
     previous_rating = str(client.risk_rating)
 
-    # Aggiorna il cliente
+    # Update the client
     client.risk_rating    = payload.risk_rating
     client.risk_rationale = payload.risk_rationale
 
-    # Snapshot dei flag al momento della classificazione
+    # Snapshot of the flags at the time of classification
     risk_flags = {
         "is_pep":            client.is_pep,
         "high_risk_country": client.high_risk_country,
@@ -548,7 +548,7 @@ def update_client_risk(
     if payload.additional_risk_flags:
         risk_flags.update(payload.additional_risk_flags)
 
-    # Crea audit record
+    # Create audit record
     audit = CspRiskClassificationAudit(
         csp_id=profile.id,
         client_id=client.id,
@@ -564,7 +564,7 @@ def update_client_risk(
         additional_risk_flags=payload.additional_risk_flags,
     )
 
-    # Hash deterministico
+    # Deterministic hash
     hash_content = {
         "record_type":        "risk_classification",
         "client_id":          str(client.id),
@@ -584,7 +584,7 @@ def update_client_risk(
     db.commit()
     db.refresh(audit)
 
-    # Notarizzazione asincrona
+    # Async notarization
     from app.workers.csp_tasks import notarize_csp_record
     notarize_csp_record.apply_async(
         args=[str(audit.id), "risk_classification", str(profile.id)], countdown=3
@@ -598,20 +598,20 @@ def update_client_risk(
         "classified_by":         payload.classified_by,
         "classified_at":         now.isoformat(),
         "notarized":             True,
-        "blockchain_tx":         None,  # disponibile dopo task async
+        "blockchain_tx":         None,  # available after the async task
         "polygonscan_url":       None,
         "legal_note": (
-            "Classificazione di rischio notarizzata su Polygon. "
-            "Il timestamp blockchain certifica che la classificazione "
-            f"'{payload.risk_rating}' è stata confermata dal CSP ({payload.classified_by}) "
-            f"in data {now.strftime('%Y-%m-%d %H:%M UTC')}. "
-            "Qualsiasi contestazione futura sulla classificazione deve confrontarsi "
-            "con questa prova on-chain."
+            "Risk classification notarized on Polygon. "
+            "The blockchain timestamp certifies that the classification "
+            f"'{payload.risk_rating}' was confirmed by the CSP ({payload.classified_by}) "
+            f"on {now.strftime('%Y-%m-%d %H:%M UTC')}. "
+            "Any future dispute over the classification must contend "
+            "with this on-chain proof."
         ),
     }
 
 
-@router.patch("/clients/{client_id}", summary="Aggiorna dati cliente (non risk_rating)")
+@router.patch("/clients/{client_id}", summary="Update client data (not risk_rating)")
 def update_client(
     client_id: uuid.UUID,
     payload:   CspClientUpdate,
@@ -619,12 +619,12 @@ def update_client(
     db = Depends(get_db),
 ):
     """
-    Aggiorna i campi non-critici del cliente.
-    Per modificare risk_rating usare PATCH /clients/{id}/risk (con notarizzazione).
+    Update the client's non-critical fields.
+    To change risk_rating use PATCH /clients/{id}/risk (with notarization).
     """
     client = _get_client(db, client_id, current_user)
     update_data = payload.model_dump(exclude_none=True)
-    # risk_rating deve passare per l'endpoint dedicato
+    # risk_rating must go through the dedicated endpoint
     update_data.pop("risk_rating", None)
     for k, v in update_data.items():
         setattr(client, k, v)
@@ -633,12 +633,12 @@ def update_client(
 
 
 # ── BULK IMPORT — FIX ROUTE CONFLICT ──────────────────────────────────────────
-# CRITICO: questi endpoint devono stare PRIMA di /clients/{client_id}
-# altrimenti FastAPI interpreta "bulk-import" come client_id → UUID parse error → 422
+# CRITICAL: these endpoints must come BEFORE /clients/{client_id}
+# otherwise FastAPI reads "bulk-import" as a client_id → UUID parse error → 422
 
 @router.get(
-    "/bulk-import/template",  # ← prefisso /bulk-import/ — NON sotto /clients/
-    summary="Download template CSV per bulk import clienti",
+    "/bulk-import/template",  # ← prefix /bulk-import/ — NOT under /clients/
+    summary="Download CSV template for client bulk import",
 )
 def download_bulk_import_template():
     from app.services.csp_bulk_import import generate_csv_template
@@ -653,11 +653,11 @@ def download_bulk_import_template():
 @router.post(
     "/bulk-import",
     status_code=status.HTTP_201_CREATED,
-    summary="Bulk import clienti da CSV o Excel (max 500 righe)",
+    summary="Bulk import clients from CSV or Excel (max 500 rows)",
 )
 async def bulk_import_clients(
     file:         UploadFile = File(...),
-    auto_screen:  bool       = Form(False, description="Esegui sanctions screening durante import"),
+    auto_screen:  bool       = Form(False, description="Run sanctions screening during import"),
     current_user: dict       = Depends(get_current_user),
     db                       = Depends(get_db),
 ):
@@ -697,20 +697,20 @@ async def bulk_import_clients(
         },
         "created_client_ids": result.created_ids,
         "message": (
-            f"Importati con successo {result.imported_count} di {result.total_rows} clienti. "
-            + (f"{result.invalid_rows} righe saltate per errori di validazione. "
+            f"Successfully imported {result.imported_count} of {result.total_rows} clients. "
+            + (f"{result.invalid_rows} rows skipped due to validation errors. "
                if result.invalid_rows else "")
-            + ("CDD obbligatoria per tutti i clienti prima di erogare servizi."
+            + ("CDD is mandatory for all clients before providing services."
                if result.imported_count > 0 else "")
         ),
     }
 
 
-# ── SANCTIONS SCREENING — FIX: asincrono via Celery ───────────────────────────
+# ── SANCTIONS SCREENING — FIX: async via Celery ───────────────────────────────
 
 @router.post(
     "/clients/{client_id}/sanctions/screen",
-    summary="Avvia screening sanctions — elaborazione asincrona (non blocca HTTP thread)",
+    summary="Start sanctions screening — async processing (does not block the HTTP thread)",
 )
 def screen_client_sanctions(
     client_id:    uuid.UUID,
@@ -718,9 +718,9 @@ def screen_client_sanctions(
     db = Depends(get_db),
 ):
     """
-    FIX v3: Lo screening non avviene più inline nel thread HTTP.
-    Viene accodato come task Celery — risposta immediata con task_id.
-    Usa GET /clients/{id}/sanctions/result per recuperare il risultato.
+    FIX v3: Screening no longer runs inline in the HTTP thread.
+    It is queued as a Celery task — immediate response with a task_id.
+    Use GET /clients/{id}/sanctions/result to retrieve the result.
     """
     client  = _get_client(db, client_id, current_user)
     profile = _get_profile(db, current_user)
@@ -736,16 +736,16 @@ def screen_client_sanctions(
         "task_id":    task.id,
         "status":     "queued",
         "message": (
-            "Sanctions screening avviato in background. "
-            f"Usare GET /api/v1/csp/clients/{client_id}/sanctions/result?task_id={task.id} "
-            "per verificare il risultato (disponibile in ~5-30 secondi)."
+            "Sanctions screening started in the background. "
+            f"Use GET /api/v1/csp/clients/{client_id}/sanctions/result?task_id={task.id} "
+            "to check the result (available in ~5-30 seconds)."
         ),
     }
 
 
 @router.get(
     "/clients/{client_id}/sanctions/result",
-    summary="Recupera risultato sanctions screening",
+    summary="Retrieve sanctions screening result",
 )
 def get_sanctions_result(
     client_id:    uuid.UUID,
@@ -753,7 +753,7 @@ def get_sanctions_result(
     current_user: dict = Depends(get_current_user),
     db = Depends(get_db),
 ):
-    """Recupera il risultato di un task sanctions screening precedentemente avviato."""
+    """Retrieve the result of a previously started sanctions screening task."""
     client = _get_client(db, client_id, current_user)
 
     try:
@@ -769,7 +769,7 @@ def get_sanctions_result(
         else:
             return {"task_id": task_id, "status": result.state}
     except Exception as e:
-        # Fallback: ritorna dati correnti dal DB
+        # Fallback: return current data from the DB
         return {
             "task_id":           task_id,
             "status":            "unknown",
@@ -785,7 +785,7 @@ def get_sanctions_result(
 
 @router.post("/clients/{client_id}/cdd",
              status_code=status.HTTP_201_CREATED,
-             summary="Sottomette CDD — screening sanctions accodato automaticamente")
+             summary="Submit CDD — sanctions screening queued automatically")
 def submit_cdd(
     client_id: uuid.UUID,
     payload:   CddCreate,
@@ -796,15 +796,15 @@ def submit_cdd(
     client  = _get_client(db, client_id, current_user)
     now     = datetime.now(timezone.utc)
 
-    # Enforce video call per clienti remoti
+    # Enforce video call for remote clients
     if client.is_remote_onboarding and not payload.video_call_completed:
         if payload.id_doc_verified or payload.corp_registration_verified:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(
-                    "Verifica video call obbligatoria per clienti remoti "
+                    "Video-call verification is mandatory for remote clients "
                     "(CSP Regulations 2025 s.20). "
-                    "Impostare video_call_completed=true dopo la video call live."
+                    "Set video_call_completed=true after the live video call."
                 ),
             )
 
@@ -814,7 +814,7 @@ def submit_cdd(
         **{k: v for k, v in payload.model_dump().items() if hasattr(CspCddRecord, k)},
     )
 
-    # Determina status CDD
+    # Determine CDD status
     if payload.failure_reason:
         cdd.status        = CddStatus.FAILED
         client.cdd_status = CddStatus.FAILED
@@ -842,7 +842,7 @@ def submit_cdd(
     db.commit()
     db.refresh(cdd)
 
-    # FIX: sanctions screening asincrono (non più inline nel thread)
+    # FIX: async sanctions screening (no longer inline in the thread)
     screening_task_id = None
     if cdd.status == CddStatus.COMPLETED:
         name = getattr(payload, "individual_full_name", None) or client.legal_name
@@ -864,16 +864,16 @@ def submit_cdd(
         "notarization_queued":   cdd.status == CddStatus.COMPLETED,
         "sanctions_task_id":     screening_task_id,
         "message": (
-            "CDD completata. Notarizzazione blockchain e sanctions screening avviati in background."
+            "CDD completed. Blockchain notarization and sanctions screening started in the background."
             if cdd.status == CddStatus.COMPLETED else
-            "CDD fallita — valutare se presentare STR a STRO prima di procedere."
+            "CDD failed — consider whether to file an STR with the STRO before proceeding."
             if cdd.status == CddStatus.FAILED else
-            "Record CDD salvato."
+            "CDD record saved."
         ),
     }
 
 
-@router.get("/clients/{client_id}/cdd", summary="Storico CDD per un cliente")
+@router.get("/clients/{client_id}/cdd", summary="CDD history for a client")
 def get_cdd_history(
     client_id: uuid.UUID,
     current_user: dict = Depends(get_current_user),
@@ -889,7 +889,7 @@ def get_cdd_history(
 # ── STR ────────────────────────────────────────────────────────────────────────
 
 @router.post("/str", status_code=status.HTTP_201_CREATED,
-             summary="Registra decisione STR — obbligatorio anche quando NON si presenta")
+             summary="Log STR decision — mandatory even when NOT filing")
 def log_str_decision(
     payload:      StrCreate,
     current_user: dict = Depends(get_current_user),
@@ -900,7 +900,7 @@ def log_str_decision(
     report = CspStrReport(
         csp_id=profile.id,
         decision_date=datetime.now(timezone.utc),
-        # client_notified SEMPRE False — tipping-off = reato penale CDSA s.48A
+        # client_notified is ALWAYS False — tipping-off = criminal offence, CDSA s.48A
         client_notified=False,
         **{k: v for k, v in payload.model_dump().items()
            if hasattr(CspStrReport, k) and k != "client_notified"},
@@ -926,16 +926,16 @@ def log_str_decision(
         "decision": str(payload.decision),
         "notarized": True,
         "tipping_off_reminder": (
-            "AVVISO LEGALE: NON informare il cliente che è stato presentato un STR. "
-            "Il tipping-off è un reato penale ai sensi del CDSA s.48A — "
-            "multa fino a S$250.000 e/o reclusione fino a 3 anni."
+            "LEGAL NOTICE: Do NOT inform the client that an STR has been filed. "
+            "Tipping-off is a criminal offence under CDSA s.48A — "
+            "a fine of up to S$250,000 and/or imprisonment of up to 3 years."
             if payload.decision == "filed" else
-            "Motivazione di non presentazione registrata e notarizzata su blockchain."
+            "Rationale for not filing recorded and notarized on the blockchain."
         ),
     }
 
 
-@router.get("/str", summary="Lista tutte le decisioni STR")
+@router.get("/str", summary="List all STR decisions")
 def list_str(
     decision_filter: Optional[str] = Query(None, alias="decision"),
     current_user: dict = Depends(get_current_user),
@@ -952,7 +952,7 @@ def list_str(
 # ── NOMINEES ───────────────────────────────────────────────────────────────────
 
 @router.post("/nominees/directors", status_code=status.HTTP_201_CREATED,
-             summary="Registra nominee director — fit and proper assessment richiesto")
+             summary="Register a nominee director — fit and proper assessment required")
 def create_nominee_director(
     payload:      NomineeDirectorCreate,
     current_user: dict = Depends(get_current_user),
@@ -971,15 +971,15 @@ def create_nominee_director(
         "nominee_id": str(nominee.id),
         "status":     "registered",
         "warning": (
-            "IMPORTANTE: Il fit and proper assessment DEVE essere completato "
-            "prima che questa persona possa agire come nominee director. "
-            "Vedi POST /csp/nominees/directors/{id}/assess"
+            "IMPORTANT: The fit and proper assessment MUST be completed "
+            "before this person can act as a nominee director. "
+            "See POST /csp/nominees/directors/{id}/assess"
         ),
     }
 
 
 @router.post("/nominees/directors/{nominee_id}/assess",
-             summary="Registra risultato fit and proper assessment")
+             summary="Record fit and proper assessment result")
 def assess_nominee(
     nominee_id: uuid.UUID,
     payload:    NomineeAssessmentUpdate,
@@ -992,7 +992,7 @@ def assess_nominee(
         CspNomineeDirector.csp_id == profile.id,
     ).first()
     if not nominee:
-        raise HTTPException(404, "Nominee director non trovato")
+        raise HTTPException(404, "Nominee director not found")
 
     now = datetime.now(timezone.utc)
     nominee.assessment_status      = payload.result
@@ -1017,17 +1017,17 @@ def assess_nominee(
         "notarized":  True,
         "next_review": nominee.next_review.strftime("%Y-%m-%d"),
         "next_action": (
-            "Assessment registrato come IDONEO. "
-            "Comunicare lo status di nominee ad ACRA via BizFile (obbligatorio CLLPMA 2024)."
+            "Assessment recorded as FIT & PROPER. "
+            "Report the nominee status to ACRA via BizFile (mandatory, CLLPMA 2024)."
             if payload.result == "fit_proper" else
-            "Assessment registrato come NON IDONEO. "
-            "Questa persona NON può agire come nominee director (CSP Act s.15). "
-            "Non procedere con l'accordo."
+            "Assessment recorded as NOT FIT. "
+            "This person may NOT act as a nominee director (CSP Act s.15). "
+            "Do not proceed with the arrangement."
         ),
     }
 
 
-@router.get("/nominees/directors", summary="Lista tutti i nominee directors")
+@router.get("/nominees/directors", summary="List all nominee directors")
 def list_nominees(current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     profile = _get_profile(db, current_user)
     dirs    = db.query(CspNomineeDirector).filter(
@@ -1039,7 +1039,7 @@ def list_nominees(current_user: dict = Depends(get_current_user), db=Depends(get
 # ── BENEFICIAL OWNERS ──────────────────────────────────────────────────────────
 
 @router.post("/clients/{client_id}/ubos", status_code=status.HTTP_201_CREATED,
-             summary="Registra Beneficial Owner (soglia ≥25%)")
+             summary="Register a Beneficial Owner (threshold ≥25%)")
 def create_ubo(
     client_id: uuid.UUID,
     payload:   UboCreate,
@@ -1059,7 +1059,7 @@ def create_ubo(
     db.commit()
     db.refresh(ubo)
 
-    # Sanctions screening UBO — asincrono
+    # UBO sanctions screening — async
     screening_task_id = None
     if payload.ubo_full_name:
         from app.workers.csp_tasks import run_sanctions_screening_task
@@ -1076,14 +1076,14 @@ def create_ubo(
         "screening_task_id":  screening_task_id,
         "next_review":        ubo.next_review.strftime("%Y-%m-%d") if ubo.next_review else None,
         "note": (
-            "Sanctions screening UBO avviato in background. "
-            f"Verificare risultato tramite task_id: {screening_task_id}"
+            "UBO sanctions screening started in the background. "
+            f"Check the result via task_id: {screening_task_id}"
             if screening_task_id else None
         ),
     }
 
 
-@router.get("/clients/{client_id}/ubos", summary="Lista UBO per un cliente")
+@router.get("/clients/{client_id}/ubos", summary="List UBOs for a client")
 def list_ubos(client_id: uuid.UUID, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     _get_client(db, client_id, current_user)
     from app.core.models_csp import CspBeneficialOwner
@@ -1094,7 +1094,7 @@ def list_ubos(client_id: uuid.UUID, current_user: dict = Depends(get_current_use
 # ── TRAINING ───────────────────────────────────────────────────────────────────
 
 @router.post("/training", status_code=status.HTTP_201_CREATED,
-             summary="Registra record formazione AML/CFT del personale")
+             summary="Log a staff AML/CFT training record")
 def log_training(
     payload:      TrainingCreate,
     current_user: dict = Depends(get_current_user),
@@ -1123,7 +1123,7 @@ def log_training(
     }
 
 
-@router.get("/training", summary="Lista record formazione personale")
+@router.get("/training", summary="List staff training records")
 def list_training(current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     profile = _get_profile(db, current_user)
     records = db.query(CspStaffTraining).filter(
@@ -1134,7 +1134,7 @@ def list_training(current_user: dict = Depends(get_current_user), db=Depends(get
 
 # ── CALENDAR ───────────────────────────────────────────────────────────────────
 
-@router.get("/calendar", summary="Calendario compliance regolamentare completo")
+@router.get("/calendar", summary="Full regulatory compliance calendar")
 def get_calendar(
     overdue_only: bool = Query(False),
     days_ahead:   int  = Query(90, ge=1, le=365),
@@ -1159,7 +1159,7 @@ def get_calendar(
 
 
 @router.patch("/calendar/{item_id}/complete",
-              summary="Segna un item del calendario come completato")
+              summary="Mark a calendar item as completed")
 def complete_calendar_item(
     item_id:      uuid.UUID,
     completed_by: str,
@@ -1173,7 +1173,7 @@ def complete_calendar_item(
         CspComplianceCalendar.csp_id == profile.id,
     ).first()
     if not item:
-        raise HTTPException(404, "Item calendario non trovato")
+        raise HTTPException(404, "Calendar item not found")
     item.status       = "completed"
     item.completed_at = datetime.now(timezone.utc)
     item.completed_by = completed_by
@@ -1185,7 +1185,7 @@ def complete_calendar_item(
 
 # ── DOCUMENTS ──────────────────────────────────────────────────────────────────
 
-@router.get("/documents", summary="Lista documenti AML/CFT generati")
+@router.get("/documents", summary="List generated AML/CFT documents")
 def list_documents(current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     profile = _get_profile(db, current_user)
     progs   = db.query(CspAmlProgramme).filter(
@@ -1204,17 +1204,17 @@ def list_documents(current_user: dict = Depends(get_current_user), db=Depends(ge
         "generated_at": p.generated_at.isoformat() if p.generated_at else None,
         "requires_attestation": p.status == "draft",
         "attestation_instruction": (
-            "Usare POST /csp/documents/{id}/approve con attestation payload obbligatorio"
+            "Use POST /csp/documents/{id}/approve with the mandatory attestation payload"
             if p.status == "draft" else None
         ),
     } for p in progs]
 
 
-# ── DOCUMENTS APPROVE — INTERVENTO 1 ──────────────────────────────────────────
+# ── DOCUMENTS APPROVE — LAYER 1 ───────────────────────────────────────────────
 
 @router.post(
     "/documents/{programme_id}/approve",
-    summary="Approva AML/CFT Programme — attestation obbligatoria + blockchain",
+    summary="Approve AML/CFT Programme — mandatory attestation + blockchain",
 )
 def approve_programme(
     programme_id: uuid.UUID,
@@ -1223,18 +1223,18 @@ def approve_programme(
     db = Depends(get_db),
 ):
     """
-    INTERVENTO 1: L'approvazione del Programme richiede che il CSP
-    confermi esplicitamente tutte e tre le dichiarazioni di responsabilità.
+    LAYER 1: Approving the Programme requires the CSP to explicitly
+    confirm all three responsibility declarations.
 
-    Non bypassabile: Pydantic valida che tutti e tre i boolean siano True.
-    L'attestazione viene notarizzata su Polygon separatamente dal documento.
-    Questo crea due prove blockchain distinte:
-      1. Il documento approvato (come in v2)
-      2. L'attestazione del CSP (nuova in v3) — prova che il CSP ha confermato
-         di essere l'unico responsabile della conformità
+    Non-bypassable: Pydantic validates that all three booleans are True.
+    The attestation is notarized on Polygon separately from the document.
+    This creates two distinct blockchain proofs:
+      1. The approved document (as in v2)
+      2. The CSP's attestation (new in v3) — proof that the CSP confirmed
+         it is solely responsible for compliance
 
-    Il claim "i documenti erano inadeguati e Booppa ne è responsabile" deve
-    confrontarsi con questa prova on-chain dell'approvazione consapevole del CSP.
+    The claim "the documents were inadequate and Booppa is responsible" must
+    contend with this on-chain proof of the CSP's informed approval.
     """
     profile = _get_profile(db, current_user)
     prog    = db.query(CspAmlProgramme).filter(
@@ -1242,11 +1242,11 @@ def approve_programme(
         CspAmlProgramme.csp_id == profile.id,
     ).first()
     if not prog:
-        raise HTTPException(404, "AML/CFT Programme non trovato")
+        raise HTTPException(404, "AML/CFT Programme not found")
 
     now = datetime.now(timezone.utc)
 
-    # Crea attestazione
+    # Create attestation
     attestation = CspProgrammeAttestation(
         programme_id=programme_id,
         csp_id=profile.id,
@@ -1258,7 +1258,7 @@ def approve_programme(
         declaration_text_shown=ATTESTATION_TEXT,
     )
 
-    # Hash deterministico dell'attestazione
+    # Deterministic hash of the attestation
     hash_content = {
         "record_type":    "programme_attestation",
         "programme_id":   str(programme_id),
@@ -1277,7 +1277,7 @@ def approve_programme(
 
     db.add(attestation)
 
-    # Aggiorna il Programme
+    # Update the Programme
     prog.status          = "approved"
     prog.approved_by     = payload.approved_by
     prog.approved_at     = now
@@ -1289,7 +1289,7 @@ def approve_programme(
     db.commit()
     db.refresh(attestation)
 
-    # Due notarizzazioni distinte: documento + attestazione
+    # Two distinct notarizations: document + attestation
     from app.workers.csp_tasks import notarize_csp_record
     notarize_csp_record.apply_async(
         args=[str(programme_id), "aml_programme_approved", str(profile.id)], countdown=3
@@ -1306,21 +1306,21 @@ def approve_programme(
         "attestation_id": str(attestation.id),
         "next_review":    prog.next_review_date.strftime("%Y-%m-%d"),
         "notarized":      True,
-        "blockchain_tx":  None,  # disponibile dopo task async
+        "blockchain_tx":  None,  # available after the async task
         "polygonscan_url": None,
         "legal_message": (
-            "DOCUMENTO APPROVATO. Due prove blockchain notarizzate su Polygon: "
-            "(1) Il documento AML/CFT Programme approvato. "
-            f"(2) L'attestazione di {payload.approved_by} che conferma di essere "
-            "l'unico responsabile della conformità normativa del CSP. "
-            "Qualsiasi contestazione futura deve confrontarsi con entrambe queste prove on-chain."
+            "DOCUMENT APPROVED. Two blockchain proofs notarized on Polygon: "
+            "(1) The approved AML/CFT Programme document. "
+            f"(2) The attestation by {payload.approved_by} confirming they are "
+            "solely responsible for the CSP's regulatory compliance. "
+            "Any future dispute must contend with both of these on-chain proofs."
         ),
     }
 
 
 # ── EVIDENCE LEDGER ────────────────────────────────────────────────────────────
 
-@router.get("/evidence", summary="Ledger blockchain completo — tutti i record notarizzati")
+@router.get("/evidence", summary="Full blockchain ledger — all notarized records")
 def get_evidence(
     record_type: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
@@ -1358,13 +1358,13 @@ def _get_profile(db, current_user) -> CspProfile:
     if not p:
         raise HTTPException(
             404,
-            "Profilo CSP non trovato. Creare con POST /api/v1/csp/profile"
+            "CSP profile not found. Create it with POST /api/v1/csp/profile"
         )
     return p
 
 
 def _get_profile_optional(db, current_user):
-    """Come _get_profile ma non lancia eccezione se non trovato."""
+    """Like _get_profile but does not raise if not found."""
     try:
         return _get_profile(db, current_user)
     except HTTPException:
@@ -1378,22 +1378,22 @@ def _get_client(db, client_id: uuid.UUID, current_user) -> CspClient:
         CspClient.csp_id == profile.id,
     ).first()
     if not c:
-        raise HTTPException(404, "Cliente non trovato")
+        raise HTTPException(404, "Client not found")
     return c
 
 
 def _to_dict_safe(obj) -> dict:
     """
-    FIX v3: Serializza un ORM object escludendo i campi cifrati (EncryptedString/Text).
-    Evita che valori 'ENC:...' vengano passati al compliance scorer causando
-    confronti silenziosamente errati.
+    FIX v3: Serialize an ORM object excluding encrypted fields (EncryptedString/Text).
+    Prevents 'ENC:...' values from being passed to the compliance scorer, which would
+    cause silently wrong comparisons.
 
-    I campi cifrati non sono usati dalla logica di scoring — solo dall'UI/output.
+    The encrypted fields are not used by the scoring logic — only by the UI/output.
     """
     if obj is None:
         return {}
 
-    # Campi cifrati da escludere dal dict usato nel scorer
+    # Encrypted fields to exclude from the dict used by the scorer
     ENCRYPTED_FIELDS = {
         "individual_nric_or_passport",
         "individual_address",
@@ -1407,7 +1407,7 @@ def _to_dict_safe(obj) -> dict:
     result = {}
     for c in obj.__table__.columns:
         if c.key in ENCRYPTED_FIELDS:
-            continue  # skip campi cifrati
+            continue  # skip encrypted fields
         result[c.key] = getattr(obj, c.key)
     return result
 
@@ -1561,57 +1561,57 @@ def _serialize_calendar(c: CspComplianceCalendar, now: datetime) -> dict:
 
 
 def _seed_compliance_calendar(db, profile: CspProfile):
-    """Inizializza tutte le scadenze regolamentari obbligatorie per un nuovo profilo CSP."""
+    """Initialise all mandatory regulatory deadlines for a new CSP profile."""
     now = datetime.now(timezone.utc)
     items = [
-        ("acra_registration", "Rinnovo Annuale Licenza ACRA CSP",
-         "CSP Act s.7 — rinnovo annuale obbligatorio",
-         "Multa S$50.000 o 2 anni di reclusione",
+        ("acra_registration", "Annual ACRA CSP Licence Renewal",
+         "CSP Act s.7 — mandatory annual renewal",
+         "Fine S$50,000 or 2 years' imprisonment",
          _add_one_year(now), "annual"),
-        ("acra_registration", "Notifica ACRA di Modifiche Materiali",
-         "Entro 14 giorni da qualsiasi modifica materiale a soci, sede o servizi",
-         "Multa fino a S$25.000", now + timedelta(days=14), "triggered"),
-        ("aml_cft_programme", "Revisione Annuale Programma AML/CFT/PF",
-         "CSP Act — programma rivisto annualmente o al cambio normativo",
-         "S$100.000 per breach", _add_one_year(now), "annual"),
-        ("aml_cft_programme", "Approvazione Senior Management Programma AML/CFT",
-         "Approvazione iniziale del senior management obbligatoria",
-         "N/A — prerequisito per registrazione ACRA", now + timedelta(days=30), "once"),
-        ("cdd", "Revisione Trimestrale CDD — Clienti ALTO Rischio",
-         "Approccio basato sul rischio — clienti ALTO richiedono revisione trimestrale",
-         "S$100.000 per breach", now + timedelta(days=90), "quarterly"),
-        ("cdd", "Revisione Semestrale CDD — Clienti MEDIO Rischio",
-         "Approccio basato sul rischio — clienti MEDIO rivisti ogni 6 mesi",
-         "S$100.000 per breach", now + timedelta(days=180), "semi-annual"),
-        ("cdd", "Revisione Annuale CDD — Clienti BASSO Rischio",
-         "Approccio basato sul rischio — clienti BASSO rivisti annualmente",
-         "S$100.000 per breach", _add_one_year(now), "annual"),
-        ("nominee_management", "Revisione Annuale Fit & Proper Nominee Director",
-         "CSP Act s.15 — revisione annuale di tutti i nominee director attivi",
-         "S$100.000 per breach", _add_one_year(now), "annual"),
-        ("nominee_management", "Filing Disclosure Nominee ad ACRA",
-         "CLLPMA 2024 — comunicare status nominee director/shareholder ad ACRA",
-         "Multa fino a S$25.000", now + timedelta(days=30), "triggered"),
-        ("beneficial_ownership", "Aggiornamento Annuale Registro UBO",
-         "Obblighi CDD CSP Act — verificare informazioni UBO annualmente",
-         "S$25.000 per breach", _add_one_year(now), "annual"),
-        ("staff_training", "Formazione Annuale AML/CFT RQI",
-         "CSP Act s.9 — RQI deve completare formazione AML/CFT/PF annuale",
-         "Licenza CSP non valida", _add_one_year(now), "annual"),
-        ("staff_training", "Formazione Annuale AML/CFT Tutto il Personale",
-         "CSP Act — tutto il personale che gestisce servizi regolamentati richiede formazione annuale",
-         "S$100.000 per breach", _add_one_year(now), "annual"),
-        ("pdpa_nric", "Scadenza Divieto Autenticazione NRIC",
-         "PDPA s.13 + Advisory PDPC Set 2024 — rimuovere tutti gli usi di autenticazione NRIC",
-         "S$1.000.000 o 10% del fatturato annuo",
+        ("acra_registration", "Notify ACRA of Material Changes",
+         "Within 14 days of any material change to shareholders, address or services",
+         "Fine up to S$25,000", now + timedelta(days=14), "triggered"),
+        ("aml_cft_programme", "Annual AML/CFT/PF Programme Review",
+         "CSP Act — programme reviewed annually or on regulatory change",
+         "S$100,000 per breach", _add_one_year(now), "annual"),
+        ("aml_cft_programme", "Senior Management Approval of AML/CFT Programme",
+         "Initial senior management approval is mandatory",
+         "N/A — prerequisite for ACRA registration", now + timedelta(days=30), "once"),
+        ("cdd", "Quarterly CDD Review — HIGH-Risk Clients",
+         "Risk-based approach — HIGH-risk clients require quarterly review",
+         "S$100,000 per breach", now + timedelta(days=90), "quarterly"),
+        ("cdd", "Semi-Annual CDD Review — MEDIUM-Risk Clients",
+         "Risk-based approach — MEDIUM-risk clients reviewed every 6 months",
+         "S$100,000 per breach", now + timedelta(days=180), "semi-annual"),
+        ("cdd", "Annual CDD Review — LOW-Risk Clients",
+         "Risk-based approach — LOW-risk clients reviewed annually",
+         "S$100,000 per breach", _add_one_year(now), "annual"),
+        ("nominee_management", "Annual Fit & Proper Review of Nominee Directors",
+         "CSP Act s.15 — annual review of all active nominee directors",
+         "S$100,000 per breach", _add_one_year(now), "annual"),
+        ("nominee_management", "File Nominee Disclosure with ACRA",
+         "CLLPMA 2024 — report nominee director/shareholder status to ACRA",
+         "Fine up to S$25,000", now + timedelta(days=30), "triggered"),
+        ("beneficial_ownership", "Annual UBO Register Update",
+         "CSP Act CDD obligations — verify UBO information annually",
+         "S$25,000 per breach", _add_one_year(now), "annual"),
+        ("staff_training", "Annual RQI AML/CFT Training",
+         "CSP Act s.9 — the RQI must complete annual AML/CFT/PF training",
+         "CSP licence invalid", _add_one_year(now), "annual"),
+        ("staff_training", "Annual AML/CFT Training for All Staff",
+         "CSP Act — all staff handling regulated services require annual training",
+         "S$100,000 per breach", _add_one_year(now), "annual"),
+        ("pdpa_nric", "NRIC Authentication Prohibition Deadline",
+         "PDPA s.13 + PDPC Advisory Sep 2024 — remove all NRIC authentication uses",
+         "S$1,000,000 or 10% of annual turnover",
          datetime(2026, 12, 31, tzinfo=timezone.utc), "once"),
-        ("pdpa_nric", "Revisione Annuale DPMP",
-         "PDPA s.11 — Data Protection Management Programme rivisto annualmente",
-         "S$1.000.000 o 10% del fatturato annuo",
+        ("pdpa_nric", "Annual DPMP Review",
+         "PDPA s.11 — Data Protection Management Programme reviewed annually",
+         "S$1,000,000 or 10% of annual turnover",
          _add_one_year(now), "annual"),
-        ("record_keeping", "Audit Retention 5 Anni",
-         "CSP Act s.27 — verificare records prossimi al limite di retention obbligatoria",
-         "Responsabilità penale per distruzione prematura",
+        ("record_keeping", "5-Year Retention Audit",
+         "CSP Act s.27 — check records approaching the mandatory retention limit",
+         "Criminal liability for premature destruction",
          _add_one_year(now), "annual"),
     ]
     for pillar, title, desc, penalty, due, freq in items:

@@ -227,10 +227,12 @@ def generate_csp_documents(self, profile_id: str) -> dict:
 
         doc_results = generate_all_csp_documents(profile_dict, client_dicts)
 
+        generated_ok = 0
         for dr in doc_results:
             if not dr.get("content"):
                 logger.warning("Skipping failed doc: %s — %s", dr.get("doc_type"), dr.get("error"))
                 continue
+            generated_ok += 1
 
             doc_type = dr["doc_type"]
             content  = dr["content"]
@@ -295,11 +297,41 @@ def generate_csp_documents(self, profile_id: str) -> dict:
             )
             db.add(ev)
 
+        # Guard against a silent empty success: if every document failed (e.g.
+        # DEEPSEEK_API_KEY missing or the provider is down), do NOT mark the
+        # programme as existing. Roll back, alert, and retry — never tell the
+        # buyer their pack is ready when zero documents were produced.
+        if generated_ok == 0:
+            db.rollback()
+            msg = (
+                f"CSP document generation produced 0 documents for {profile.legal_name} "
+                f"({profile_id}). Check DEEPSEEK_API_KEY / provider availability."
+            )
+            logger.error(msg)
+            try:
+                from app.api.stripe_webhook import _alert_payment_fulfillment_issue
+                asyncio.run(_alert_payment_fulfillment_issue(
+                    reason="CSP document generation produced 0 documents",
+                    product_type="csp_pack",
+                    customer_email=None,
+                    extra={"profile_id": profile_id, "legal_name": profile.legal_name},
+                    notify_customer=False,
+                ))
+            except Exception as alert_err:
+                logger.error("Failed to send fulfillment alert: %s", alert_err)
+            raise self.retry(
+                exc=RuntimeError("CSP doc generation produced 0 documents"),
+                countdown=60 * (self.request.retries + 1),
+            )
+
         profile.aml_programme_exists = True
         db.commit()
 
-        logger.info("CSP document generation complete for %s", profile.legal_name)
-        return {"profile_id": profile_id, "docs_generated": len(doc_results)}
+        logger.info(
+            "CSP document generation complete for %s — %d/%d docs",
+            profile.legal_name, generated_ok, len(doc_results)
+        )
+        return {"profile_id": profile_id, "docs_generated": generated_ok}
 
     except Exception as exc:
         logger.error("generate_csp_documents failed for %s: %s", profile_id, exc, exc_info=True)
@@ -636,8 +668,8 @@ def run_sanctions_screening_task(
             "lists_checked": result.lists_checked,
             "screened_at":   result.screened_at,
             "action_required": (
-                f"SANCTIONS HIT su '{name_to_screen}': {result.hit_count} match. "
-                "Valutare rifiuto servizi e presentazione STR."
+                f"SANCTIONS HIT on '{name_to_screen}': {result.hit_count} match(es). "
+                "Consider declining service and filing an STR."
                 if not result.is_clear else None
             ),
         }

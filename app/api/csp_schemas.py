@@ -430,7 +430,7 @@ CSP_PACK_CATALOG: List[CspPackPricing] = [
             "Continuous monitoring of ACRA enforcement decisions",
             "FATF grey/black list updates",
             "PDPC enforcement alerts (relevant to CSP data handling)",
-            "Singapore sanctions list updates (MAS, OFAC, UN, EU)",
+            "Sanctions list updates — OFAC, UN & EU (MAS via World-Check)",
             "Regulatory deadline reminders with escalation",
             "Monthly compliance health report",
         ],
