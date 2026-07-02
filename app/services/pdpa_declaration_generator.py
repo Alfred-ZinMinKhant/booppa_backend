@@ -179,7 +179,7 @@ def generate_pdpa_declaration_pdf(
         Paragraph(
             "This is the organisation's self-declaration of its personal-data processing "
             "activities and accountability measures under the PDPA, complementing the "
-            "automated PDPA Quick Scan (Level 1).",
+            "automated PDPA Snapshot (Level 1).",
             sub_style,
         ),
     ]

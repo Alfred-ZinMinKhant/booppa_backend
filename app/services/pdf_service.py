@@ -1731,7 +1731,7 @@ class PDFService:
                 story.append(self._section_header("2. Context & Purpose of This Document"))
                 story.append(Spacer(1, 6))
                 story.append(Paragraph(
-                    f"This document summarises a PDPA Quick Scan compliance audit performed by Booppa on the "
+                    f"This document summarises a PDPA Snapshot compliance audit performed by Booppa on the "
                     f"{company_name} website, translated into English and enriched with developer implementation tasks. "
                     f"It is intended to be forwarded directly to the development team.",
                     s["Body"],
@@ -1864,7 +1864,7 @@ class PDFService:
                 story.append(self._section_header("8. Important Limitations of This Scan"))
                 story.append(Spacer(1, 6))
                 story.append(Paragraph(
-                    "This Quick Scan has the following limitations — further audit may be needed for:",
+                    "This Snapshot has the following limitations — further audit may be needed for:",
                     s["Body"],
                 ))
                 story.append(Spacer(1, 4))

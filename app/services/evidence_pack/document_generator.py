@@ -199,7 +199,7 @@ def _evidence_context(scan_evidence: dict | None) -> str:
     if isinstance(pdpa, dict) and pdpa:
         pf = pdpa.get("findings") or []
         if pf:
-            lines.append("Prior PDPA Quick Scan findings:")
+            lines.append("Prior PDPA Snapshot findings:")
             for f in pf[:12]:
                 if isinstance(f, dict):
                     lines.append(f"  - [{f.get('severity','')}] {f.get('title','')}")

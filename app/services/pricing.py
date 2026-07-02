@@ -95,7 +95,7 @@ PRODUCTS = {
         "slug": "compliance_evidence_pack",
         "price_sgd": 799,
         "price_cents": 79900,
-        "description": "PDPA Quick Scan + a 7-document PDPA governance pack (DPMP, ROPA, Data Inventory, Vendor/DPA Register, Breach Runbook, Training, Security Review Log) + RFP Complete + blockchain-anchored Cover Sheet — documents grounded in a live scan of your site (10-doc pack on Amoy testnet)",
+        "description": "PDPA Snapshot + a 7-document PDPA governance pack (DPMP, ROPA, Data Inventory, Vendor/DPA Register, Breach Runbook, Training, Security Review Log) + RFP Complete + blockchain-anchored Cover Sheet — documents grounded in a live scan of your site (10-doc pack on Amoy testnet)",
         "type": "bundle",
     },
     # ── Subscriptions ───────────────────────────────────────────────────────

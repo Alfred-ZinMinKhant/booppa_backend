@@ -242,7 +242,7 @@ def main() -> None:
         # No leakage of unrelated notarizations.
         "anchored_documents": [
             {
-                "descriptor": "PDPA Quick Scan Report",
+                "descriptor": "PDPA Snapshot Report",
                 "filename": "pdpa-report-sample.pdf",
                 "file_hash": "1a" * 32,
                 "tx_hash": "0x" + "1a" * 32,

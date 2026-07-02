@@ -12,7 +12,8 @@ Alembic migration.
 import uuid
 from datetime import datetime
 from sqlalchemy import (
-    Column, String, DateTime, ForeignKey, Index, Float, Boolean, UniqueConstraint,
+    Column, String, DateTime, ForeignKey, Index, Float, Boolean, Integer,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from app.core.db import Base
@@ -238,3 +239,47 @@ Index(
     VendorEvaluationFramework.organisation_id,
     VendorEvaluationFramework.framework_type,
 )
+
+
+class PdpaBulkScanBatch(Base):
+    """One admin-uploaded CSV/XLSX of companies to run PDPA free scans against.
+
+    Admin-only testing/prospecting tool: the operator uploads up to ~1,000
+    (company_name, website_url) rows; each row becomes a PdpaBulkScanItem and a
+    rate-limited Celery task on the `reports` queue. No User row, payment, PDF,
+    AI, or blockchain involvement — items call run_free_scan() directly.
+    """
+
+    __tablename__ = "pdpa_bulk_scan_batches"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # Admin username from the admin JWT / basic auth — not a users.id FK, since
+    # admin operators are not application users.
+    created_by = Column(String(120), nullable=True)
+    filename = Column(String(255), nullable=True)
+    total = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class PdpaBulkScanItem(Base):
+    __tablename__ = "pdpa_bulk_scan_items"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    batch_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("pdpa_bulk_scan_batches.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    company_name = Column(String(255), nullable=False)
+    website_url = Column(String(500), nullable=False)
+    # pending → running → done | failed
+    status = Column(String(20), nullable=False, default="pending", server_default="pending")
+    # run_free_scan() response: score, risk_level, findings, …
+    result = Column(JSONB, nullable=True)
+    error = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    finished_at = Column(DateTime, nullable=True)
+
+
+Index("ix_pdpa_bulk_items_batch_status", PdpaBulkScanItem.batch_id, PdpaBulkScanItem.status)
