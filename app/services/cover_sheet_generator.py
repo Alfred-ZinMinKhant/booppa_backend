@@ -88,7 +88,10 @@ for _c in _LOGO_CANDIDATES:
 #     value persisted on the report (no more 53-vs-54 drift between the cover
 #     sheet and the PDPA report). Flags existing customers' copies as outdated
 #     so they get the corrected, internally-consistent cover sheet.
-COVER_SHEET_SCHEMA_VERSION = 10  # +PDPC level coverage statement, +BCEP docs in anchored list
+# v11: "PDPA Quick Scan" renamed to "PDPA Snapshot" in section titles + component
+#      list, matching the standalone report + sales-page rebrand. Flags v10 copies
+#      as outdated so customers get the consistently-named cover sheet.
+COVER_SHEET_SCHEMA_VERSION = 11  # PDPA Snapshot rename (was: PDPA Quick Scan)
 
 PAGE_W, PAGE_H = A4
 MARGIN = 0.75 * inch
@@ -569,7 +572,7 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
         else "Awaiting your signature — sign this PDF and upload at booppa.io/compliance/cover-sheet"
     )
     components = [
-        ("PDPA Quick Scan Report", data.get("pdpa_status", "Queued")),
+        ("PDPA Snapshot Report", data.get("pdpa_status", "Queued")),
         ("RFP Complete Kit", data.get("rfp_status", "Queued")),
         ("Compliance Summary Cover Sheet", "This document — anchored at issue"),
         ("Signed Cover Sheet (1× notarization)", signed_status),
@@ -577,7 +580,7 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     story.append(_kv_table(components))
 
     # ── Section 3: PDPA Full Report ────────────────────────────────────────────
-    story += _section("PDPA Quick Scan — Full Report", _STYLES, page_break=True)
+    story += _section("PDPA Snapshot — Full Report", _STYLES, page_break=True)
     pdpa_score_v = data.get("pdpa_score")
     score_str = f"{pdpa_score_v} / 100" if isinstance(pdpa_score_v, int) else "Pending — scan still running"
     pdpa_d = data.get("pdpa_details") or {}

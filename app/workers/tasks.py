@@ -2394,7 +2394,7 @@ def fulfill_cover_sheet_task(
                 # current cycle's artifact. Anything older is a prior cycle.
                 seen_frameworks: set[str] = set()
                 FRAMEWORK_LABELS = {
-                    "pdpa_quick_scan": "PDPA Quick Scan Report",
+                    "pdpa_quick_scan": "PDPA Snapshot Report",
                     "rfp_complete": "RFP Complete Kit",
                     "compliance_evidence_signed_sheet": "Signed Cover Sheet",
                     "ropa_lite": "Record of Processing Activities (ROPA Lite)",
@@ -6014,7 +6014,7 @@ def fulfill_pdpa_declaration_task(user_id: str, customer_email: str | None = Non
               <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
                 <p>Hello <strong>{company_name}</strong>,</p>
                 <p>Your PDPA Level-2 self-declaration ({len(dicts)} processing activities) is attached
-                   as a tamper-evident, blockchain-anchored PDF — it complements your PDPA Quick Scan
+                   as a tamper-evident, blockchain-anchored PDF — it complements your PDPA Snapshot
                    (Level 1) to demonstrate PDPC Level 2 accountability.</p>
                 <p style="color:#64748b;font-size:12px;">Booppa · PDPA Level 2 · booppa.io</p>
               </div>
@@ -7289,5 +7289,54 @@ def anchor_scan_ledger_task(self, ledger_id: str):
             except Exception:
                 pass
             logger.error("[scan-anchor] failed for %s: %s", ledger_id, exc)
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, max_retries=2, name="bulk_pdpa_scan_item_task", rate_limit="20/m")
+def bulk_pdpa_scan_item_task(self, item_id: str):
+    """Run one PDPA free scan for an admin bulk-scan item.
+
+    rate_limit="20/m" is the throttle that lets a 600-row batch drain in ~30
+    minutes without starving paid work on the `reports` queue. The scan itself
+    is run_free_scan() — HTTP-only, no AI/S3/blockchain — so the only shared
+    resource each task touches is one short-lived DB session per phase.
+    """
+    from app.core.models_v12 import PdpaBulkScanItem
+    from app.services.pdpa_free_scan_service import run_free_scan
+    from datetime import datetime as _bulk_dt
+
+    db = SessionLocal()
+    try:
+        item = db.query(PdpaBulkScanItem).filter(PdpaBulkScanItem.id == item_id).first()
+        if not item or item.status in ("done", "failed"):
+            return
+        item.status = "running"
+        db.commit()
+        website_url = item.website_url
+    finally:
+        db.close()
+
+    try:
+        result = run_free_scan(website_url)
+    except Exception as exc:
+        try:
+            raise self.retry(countdown=60 * (2 ** self.request.retries), exc=exc)
+        except self.MaxRetriesExceededError:
+            result = None
+            error = str(exc)[:500]
+    else:
+        error = None
+
+    db = SessionLocal()
+    try:
+        item = db.query(PdpaBulkScanItem).filter(PdpaBulkScanItem.id == item_id).first()
+        if not item:
+            return
+        item.status = "done" if result is not None else "failed"
+        item.result = result
+        item.error = error
+        item.finished_at = _bulk_dt.utcnow()
+        db.commit()
     finally:
         db.close()

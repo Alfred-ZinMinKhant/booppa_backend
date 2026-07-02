@@ -76,3 +76,4 @@ greenlet==3.0.1
 playwright
 django-ckeditor
 mangum==0.17.0
+openpyxl

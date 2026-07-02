@@ -435,7 +435,7 @@ def run_free_scan(website_url: str) -> dict[str, Any]:
                             "checks may be incomplete. A full scan with browser rendering is recommended."
                         ),
                         "legislation": "N/A",
-                        "action": "Consider upgrading to a full PDPA Quick Scan which uses browser-based rendering.",
+                        "action": "Consider upgrading to a full PDPA Snapshot which uses browser-based rendering.",
                     })
     except httpx.TimeoutException:
         findings.append({
@@ -514,7 +514,7 @@ def _build_response(website_url: str, findings: list[dict], score: int) -> dict[
         "findings": issue_findings,
         "unlock_cta": {
             "product_type": "pdpa_quick_scan",
-            "price": "SGD 79",
+            "price": "SGD 299",
             "description": "Full AI-powered scan with blockchain-anchored evidence report",
         },
     }

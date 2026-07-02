@@ -1396,7 +1396,7 @@ async def _fulfill_standalone_no_report(
         )
         if not website and framework == "pdpa_quick_scan":
             await _alert_payment_fulfillment_issue(
-                reason="PDPA Quick Scan paid but no website found on metadata or profile",
+                reason="PDPA Snapshot paid but no website found on metadata or profile",
                 product_type=product_type,
                 customer_email=customer_email,
             )

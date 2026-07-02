@@ -1077,7 +1077,7 @@ Note: Consult legal counsel for specific compliance requirements."""
 
         summary = f"""1. Context & Purpose of This Document
 
-This document summarizes a PDPA Quick Scan compliance audit performed by Booppa on the {company_name} website, translated into English and enriched with developer implementation tasks. It is intended to be forwarded directly to the development team.
+This document summarizes a PDPA Snapshot compliance audit performed by Booppa on the {company_name} website, translated into English and enriched with developer implementation tasks. It is intended to be forwarded directly to the development team.
 
 The audit was conducted on {scan_date} and anchored on the {settings.active_polygon_network_name} blockchain for evidentiary integrity.
 

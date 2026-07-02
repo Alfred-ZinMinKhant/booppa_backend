@@ -42,6 +42,7 @@ celery_app.conf.update(
         "fulfill_cover_sheet_task": {"queue": "default"},
         "vendor_active_health_check_task": {"queue": "default"},
         "pdpa_monitor_monthly_rescan_task": {"queue": "reports"},
+        "bulk_pdpa_scan_item_task": {"queue": "reports"},
         "check_compliance_drift_task": {"queue": "default"},
         "app.workers.tasks.*": {"queue": "default"},
         # CSP Compliance Pack tasks (csp.generate_documents, csp.notarize_record,

@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Request, HTTPException, Query, Depends
+from fastapi import (
+    APIRouter, Request, HTTPException, Query, Depends, UploadFile,
+    File as FastAPIFile,
+)
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -762,6 +765,7 @@ async def simulate_purchase(
         NOTARIZATION_PRODUCT_TYPES,
         PDPA_PRODUCT_TYPES,
         VENDOR_PROOF_PRODUCT_TYPES,
+        CSP_ONETIME_PRODUCT_TYPES,
         _activate_subscription,
         _fulfill_bundle,
         _fulfill_standalone_no_report,
@@ -952,6 +956,7 @@ async def simulate_purchase(
 
     elif product_type in (
         NOTARIZATION_PRODUCT_TYPES | PDPA_PRODUCT_TYPES | VENDOR_PROOF_PRODUCT_TYPES
+        | CSP_ONETIME_PRODUCT_TYPES
     ):
         dispatch = "standalone"
         await _fulfill_standalone_no_report(
@@ -996,3 +1001,234 @@ async def simulate_purchase(
         "details": details,
     }
 
+
+
+# ── PDPA bulk scan (CSV/XLSX of companies → rate-limited free scans) ──────────
+# Testing/prospecting tool: upload up to MAX_BULK_SCAN_ROWS rows of
+# (company_name, website_url); each becomes a bulk_pdpa_scan_item_task on the
+# `reports` queue, throttled to 20/min so a 600-row batch drains in ~30 minutes
+# without starving paid fulfillment work.
+
+MAX_BULK_SCAN_ROWS = 1000
+_BULK_SCAN_COLUMNS = {"company_name", "website_url"}
+
+
+def _parse_bulk_scan_rows(filename: str, content: bytes) -> list[dict]:
+    """Return [{company_name, website_url}, …] from CSV or XLSX bytes.
+
+    Header match is case-insensitive and tolerates extra columns. Rows without
+    a website URL are dropped; URLs are deduped (first occurrence wins).
+    """
+    import csv
+    import io
+
+    name = (filename or "").lower()
+    raw_rows: list[dict] = []
+
+    if name.endswith(".xlsx"):
+        try:
+            import openpyxl
+        except ImportError:
+            raise HTTPException(status_code=500, detail="openpyxl not installed on server")
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+            ws = wb.active
+            rows_data = list(ws.iter_rows(values_only=True))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not parse Excel file: {exc}")
+        if not rows_data:
+            raise HTTPException(status_code=400, detail="Excel file is empty")
+        headers = [str(h).strip().lower() if h else "" for h in rows_data[0]]
+        for vals in rows_data[1:]:
+            raw_rows.append({
+                headers[i]: (str(v).strip() if v is not None else "")
+                for i, v in enumerate(vals) if i < len(headers)
+            })
+    else:
+        try:
+            text = content.decode("utf-8-sig")  # utf-8-sig handles BOM from Excel exports
+            reader = csv.DictReader(io.StringIO(text))
+            headers = [h.strip().lower() for h in (reader.fieldnames or [])]
+            for row in reader:
+                raw_rows.append({
+                    (k or "").strip().lower(): (v or "").strip() for k, v in row.items()
+                })
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not parse CSV file: {exc}")
+
+    missing = _BULK_SCAN_COLUMNS - set(headers)
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File missing required columns: {', '.join(sorted(missing))}. "
+                   f"Expected headers: company_name, website_url",
+        )
+
+    seen_urls: set[str] = set()
+    rows: list[dict] = []
+    for row in raw_rows:
+        url = (row.get("website_url") or "").strip()
+        company = (row.get("company_name") or "").strip()
+        if not url:
+            continue
+        if not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+        key = url.lower().rstrip("/")
+        if key in seen_urls:
+            continue
+        seen_urls.add(key)
+        rows.append({"company_name": company or url, "website_url": url[:500]})
+        if len(rows) > MAX_BULK_SCAN_ROWS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File exceeds maximum {MAX_BULK_SCAN_ROWS} rows. Split into multiple files.",
+            )
+    if not rows:
+        raise HTTPException(status_code=400, detail="No rows with a website_url found in file")
+    return rows
+
+
+@router.post("/pdpa/bulk-scan")
+async def create_pdpa_bulk_scan(
+    request: Request,
+    file: UploadFile = FastAPIFile(...),
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    from app.core.models_v12 import PdpaBulkScanBatch, PdpaBulkScanItem
+    from app.workers.tasks import bulk_pdpa_scan_item_task
+
+    content = await file.read()
+    rows = _parse_bulk_scan_rows(file.filename or "", content)
+
+    db = SessionLocal()
+    try:
+        batch = PdpaBulkScanBatch(filename=(file.filename or "")[:255], total=len(rows))
+        db.add(batch)
+        db.flush()
+        items = [
+            PdpaBulkScanItem(batch_id=batch.id, company_name=r["company_name"][:255],
+                             website_url=r["website_url"])
+            for r in rows
+        ]
+        db.add_all(items)
+        db.commit()
+        batch_id = str(batch.id)
+        item_ids = [str(i.id) for i in items]
+    finally:
+        db.close()
+
+    # Stagger enqueue as a second safety layer on top of the task's
+    # rate_limit="20/m", so a worker restart can't burst-drain the backlog.
+    for idx, item_id in enumerate(item_ids):
+        bulk_pdpa_scan_item_task.apply_async(args=[item_id], countdown=idx * 3)
+
+    logger.info(f"[pdpa-bulk-scan] batch={batch_id} queued {len(item_ids)} scans")
+    return {"ok": True, "batch_id": batch_id, "total": len(item_ids)}
+
+
+@router.get("/pdpa/bulk-scan/{batch_id}")
+def get_pdpa_bulk_scan(
+    batch_id: str,
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    from sqlalchemy import func
+    from app.core.models_v12 import PdpaBulkScanBatch, PdpaBulkScanItem
+
+    db = SessionLocal()
+    try:
+        batch = db.query(PdpaBulkScanBatch).filter(PdpaBulkScanBatch.id == batch_id).first()
+        if not batch:
+            raise HTTPException(status_code=404, detail="Batch not found")
+        counts = dict(
+            db.query(PdpaBulkScanItem.status, func.count())
+            .filter(PdpaBulkScanItem.batch_id == batch.id)
+            .group_by(PdpaBulkScanItem.status)
+            .all()
+        )
+        items = (
+            db.query(PdpaBulkScanItem)
+            .filter(PdpaBulkScanItem.batch_id == batch.id)
+            .order_by(PdpaBulkScanItem.created_at, PdpaBulkScanItem.id)
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        return {
+            "batch_id": str(batch.id),
+            "filename": batch.filename,
+            "total": batch.total,
+            "created_at": batch.created_at.isoformat() if batch.created_at else None,
+            "counts": {
+                "pending": counts.get("pending", 0),
+                "running": counts.get("running", 0),
+                "done": counts.get("done", 0),
+                "failed": counts.get("failed", 0),
+            },
+            "items": [
+                {
+                    "id": str(i.id),
+                    "company_name": i.company_name,
+                    "website_url": i.website_url,
+                    "status": i.status,
+                    "score": (i.result or {}).get("score"),
+                    "risk_level": (i.result or {}).get("risk_level"),
+                    "total_findings": (i.result or {}).get("total_findings"),
+                    "error": i.error,
+                    "finished_at": i.finished_at.isoformat() if i.finished_at else None,
+                }
+                for i in items
+            ],
+        }
+    finally:
+        db.close()
+
+
+@router.get("/pdpa/bulk-scan/{batch_id}/export")
+def export_pdpa_bulk_scan(
+    batch_id: str,
+    _auth: bool = Depends(_admin_auth),
+):
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+    from app.core.models_v12 import PdpaBulkScanBatch, PdpaBulkScanItem
+
+    db = SessionLocal()
+    try:
+        batch = db.query(PdpaBulkScanBatch).filter(PdpaBulkScanBatch.id == batch_id).first()
+        if not batch:
+            raise HTTPException(status_code=404, detail="Batch not found")
+        items = (
+            db.query(PdpaBulkScanItem)
+            .filter(PdpaBulkScanItem.batch_id == batch.id)
+            .order_by(PdpaBulkScanItem.created_at, PdpaBulkScanItem.id)
+            .all()
+        )
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow([
+            "company_name", "website_url", "status", "score", "risk_level",
+            "total_findings", "top_finding", "error",
+        ])
+        for i in items:
+            result = i.result or {}
+            top = (result.get("free_finding") or {}).get("title", "")
+            writer.writerow([
+                i.company_name, i.website_url, i.status, result.get("score", ""),
+                result.get("risk_level", ""), result.get("total_findings", ""),
+                top, i.error or "",
+            ])
+        buf.seek(0)
+        return StreamingResponse(
+            iter([buf.getvalue()]),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f'attachment; filename="pdpa_bulk_scan_{batch_id}.csv"'
+            },
+        )
+    finally:
+        db.close()
