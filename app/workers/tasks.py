@@ -3668,6 +3668,7 @@ def buyer_supplier_snapshot_task(
             evidence_hash_for, demo_tx_hash, _xml_escape,
             SUPPLIER_DUE_DILIGENCE_SCHEMA_VERSION,
         )
+        from app.services.email_layout import branded_email_html
 
         tier, plan_label = _buyer_tier_from_product(product_type)
         # Pro/Enterprise get the anchored certificate; Starter gets a plain snapshot.
