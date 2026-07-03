@@ -652,7 +652,7 @@ def list_watchlist(org_id: str, db: Session = Depends(get_db), current_user: Use
 
 @router.post("/organisations/{org_id}/watchlist", status_code=201)
 def add_watchlist_item(org_id: str, body: WatchlistCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _require_collaboration_plan(org_id, current_user, db)
+    org = _require_collaboration_plan(org_id, current_user, db)
     vendor_ref = body.vendor_ref.strip()
     if not vendor_ref:
         raise HTTPException(status_code=400, detail="vendor_ref required")
@@ -675,6 +675,25 @@ def add_watchlist_item(org_id: str, body: WatchlistCreate, db: Session = Depends
     db.add(item)
     db.commit()
     db.refresh(item)
+
+    # Fire the instant Supplier Verification Snapshot / Due-Diligence Certificate so
+    # the buyer receives a tangible artifact the moment they start watching — no wait
+    # for the monthly digest. Best-effort: never block the watchlist add on delivery.
+    try:
+        from app.workers.tasks import buyer_supplier_snapshot_task
+
+        plan = _org_owner_plan(org, db)
+        buyer_supplier_snapshot_task.delay(
+            str(current_user.id),
+            current_user.email,
+            item.vendor_ref,
+            vendor_name=item.vendor_name,
+            notes=item.notes,
+            product_type=plan,
+        )
+    except Exception as snap_err:  # pragma: no cover
+        logger.warning("[Watchlist] snapshot enqueue failed for ref=%s: %s", vendor_ref, snap_err)
+
     return {"id": str(item.id), "vendor_ref": item.vendor_ref}
 
 

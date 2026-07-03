@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 # Risk signals we surface as "needs attention" in the digest headline.
 _ALERT_RISK_SIGNALS = {"FLAGGED", "CRITICAL"}
 
+# Event-triggered drift-alert thresholds (#1).
+DRIFT_SCORE_DROP = 5          # trust-score points dropped since last alert → alert
+CERT_EXPIRY_WARN_DAYS = 30    # warn when a supplier's cert lapses within this window
+
 
 def get_buyer_org_ids(db, user_id: str) -> list[str]:
     """Every organisation the buyer belongs to (member or owner). [] when none."""
@@ -110,6 +114,160 @@ def _supplier_status(db, vendor_user_id: str) -> dict:
             out["compliance_delta"] = trend.get("compliance_delta")
     except Exception:
         pass
+    return out
+
+
+def get_supplier_cert_expiry(db, vendor_user_id: str):
+    """Nearest active certificate expiry for a resolved vendor, or None.
+
+    Sourced from VerifyRecord.expires_at — the Vendor Proof / verification cert the
+    buyer is relying on. Best-effort; returns None on any gap.
+    """
+    try:
+        from app.core.models_v6 import VerifyRecord
+
+        rec = (
+            db.query(VerifyRecord)
+            .filter(
+                VerifyRecord.vendor_id == vendor_user_id,
+                VerifyRecord.expires_at.isnot(None),
+            )
+            .order_by(VerifyRecord.expires_at.asc())
+            .first()
+        )
+        return rec.expires_at if rec else None
+    except Exception as e:  # pragma: no cover
+        logger.warning("[BuyerInsights] cert expiry lookup failed for %s: %s", vendor_user_id, e)
+        return None
+
+
+def evaluate_supplier_drift(current: dict, cert_expiry, ledger) -> dict | None:
+    """Decide whether a watched supplier's change warrants an *immediate* alert.
+
+    Pure comparison of the live status (`current` from `_supplier_status`, plus the
+    nearest `cert_expiry` datetime) against the last state we alerted on (`ledger`,
+    a BuyerSupplierAlert row or None). Returns a dict describing the alert, or None
+    when nothing material crossed a threshold.
+
+    Reasons, in priority order:
+      * ``risk_flip``   — flipped *into* FLAGGED/CRITICAL (and wasn't already there).
+      * ``score_drop``  — trust score fell ≥ DRIFT_SCORE_DROP since the last alert.
+      * ``cert_expiry`` — an active certificate lapses within CERT_EXPIRY_WARN_DAYS
+                          and we haven't already warned for that same expiry date.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    last_signal = getattr(ledger, "last_risk_signal", None) if ledger else None
+    last_score = getattr(ledger, "last_trust_score", None) if ledger else None
+    last_expiry_warned = getattr(ledger, "last_expiry_warned_for", None) if ledger else None
+
+    cur_signal = current.get("risk_signal")
+    cur_score = current.get("trust_score")
+
+    # 1) Risk flip into an alerting signal.
+    if cur_signal in _ALERT_RISK_SIGNALS and last_signal not in _ALERT_RISK_SIGNALS:
+        return {
+            "reason": "risk_flip",
+            "headline": f"Risk signal changed to {cur_signal}",
+            "detail": (
+                f"This supplier's risk signal is now <strong>{cur_signal}</strong>. "
+                "We flagged it the moment it changed so you can reassess before your "
+                "next procurement decision."
+            ),
+            "risk_signal": cur_signal,
+            "trust_score": cur_score,
+        }
+
+    # 2) Material trust-score drop since we last alerted (needs both scores).
+    if (
+        isinstance(cur_score, int)
+        and isinstance(last_score, int)
+        and (last_score - cur_score) >= DRIFT_SCORE_DROP
+    ):
+        drop = last_score - cur_score
+        return {
+            "reason": "score_drop",
+            "headline": f"Trust score dropped {drop} points",
+            "detail": (
+                f"This supplier's Trust score fell from <strong>{last_score}</strong> to "
+                f"<strong>{cur_score}</strong> ({drop} points). A sustained drop can signal "
+                "lapsing verification or a new risk finding."
+            ),
+            "risk_signal": cur_signal,
+            "trust_score": cur_score,
+        }
+
+    # 3) Approaching certificate expiry (warn once per distinct expiry date).
+    if cert_expiry is not None:
+        now = datetime.now(timezone.utc)
+        exp = cert_expiry
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        within = exp <= (now + timedelta(days=CERT_EXPIRY_WARN_DAYS))
+        already = (
+            last_expiry_warned is not None
+            and abs((last_expiry_warned - cert_expiry).total_seconds()) < 86400
+        )
+        if within and exp > now and not already:
+            days = max(0, (exp - now).days)
+            return {
+                "reason": "cert_expiry",
+                "headline": f"Certificate expires in {days} day{'s' if days != 1 else ''}",
+                "detail": (
+                    f"This supplier's verification certificate lapses on "
+                    f"<strong>{exp.strftime('%d %b %Y')}</strong> ({days} days). "
+                    "Ask them to renew before it expires to keep your audit trail current."
+                ),
+                "risk_signal": cur_signal,
+                "trust_score": cur_score,
+                "expiry": cert_expiry,
+            }
+
+    return None
+
+
+def get_watchlist_sectors(db, user_id: str) -> dict[str, list[str]]:
+    """Map each sector the buyer's watched suppliers operate in → the supplier names.
+
+    The buyer-fit signal for a tender: buyers watch suppliers, and those suppliers
+    carry `VendorSector` tags. A tender in a sector the buyer already sources from
+    is a strong fit. Resolves each watchlist row to its vendor User, then to every
+    `VendorSector` for that vendor. Best-effort — returns {} on any gap or when the
+    buyer watches nothing resolvable.
+    """
+    out: dict[str, list[str]] = {}
+    try:
+        from app.core.models_enterprise import VendorWatchlistItem
+        from app.core.models_v6 import VendorSector
+
+        org_ids = get_buyer_org_ids(db, user_id)
+        if not org_ids:
+            return {}
+
+        items = (
+            db.query(VendorWatchlistItem)
+            .filter(VendorWatchlistItem.organisation_id.in_(org_ids))
+            .all()
+        )
+        seen_refs: set[str] = set()
+        for it in items:
+            if it.vendor_ref in seen_refs:
+                continue
+            seen_refs.add(it.vendor_ref)
+            vuid = _resolve_watchlist_vendor_user(db, it.vendor_ref)
+            if not vuid:
+                continue
+            name = (it.vendor_name or it.vendor_ref or "").strip()
+            for sv in db.query(VendorSector).filter(VendorSector.vendor_id == vuid).all():
+                sector = (sv.sector or "").strip()
+                if not sector:
+                    continue
+                names = out.setdefault(sector, [])
+                if name and name not in names:
+                    names.append(name)
+    except Exception as e:  # pragma: no cover
+        logger.warning("[BuyerInsights] get_watchlist_sectors failed for %s: %s", user_id, e)
+        return {}
     return out
 
 

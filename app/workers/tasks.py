@@ -3424,6 +3424,7 @@ def buyer_procurement_digest_task(
     product_type: str | None = None,
     override_company: str | None = None,
     is_first_cycle: bool = False,
+    demo: bool = False,
 ):
     """
     Single consolidated Procurement Intelligence Digest for buyer subscribers.
@@ -3587,6 +3588,11 @@ def buyer_procurement_digest_task(
             header = "Monthly Procurement Intelligence Digest"
             intro = "Here is your supplier monitoring and tender intelligence for the past 30 days:"
 
+        # Demo/test-checkout preview (Stripe livemode=false): tag the subject so the
+        # recipient can tell a fire-all sample from a real cycle deliverable.
+        if demo:
+            subject = f"[DEMO] {subject}"
+
         body_inner = f"""
                 <p>Hello <strong>{_esc(company)}</strong>,</p>
                 <p>{intro}</p>
@@ -3625,6 +3631,727 @@ def buyer_procurement_digest_task(
     except Exception as exc:
         logger.error(f"Buyer procurement digest failed for {user_id}: {exc}")
         raise self.retry(exc=exc, countdown=300)
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, max_retries=2, name="buyer_supplier_snapshot_task")
+def buyer_supplier_snapshot_task(
+    self,
+    buyer_user_id: str,
+    buyer_email: str,
+    vendor_ref: str,
+    vendor_name: str | None = None,
+    notes: str | None = None,
+    product_type: str | None = None,
+    *,
+    is_certificate: bool = False,
+    demo: bool = False,
+):
+    """Instant supplier snapshot (#3) / anchored Due-Diligence Certificate (#2).
+
+    Fired the moment a buyer adds a supplier to their watchlist, and reusable as an
+    on-demand certificate. Tiered like the digest:
+
+      * Starter          → un-anchored verification snapshot PDF + HTML card.
+      * Pro / Enterprise → anchored Due-Diligence Certificate (SHA-256 on Polygon),
+        attached to the email.
+
+    In demo/test-checkout mode (`demo=True`) the certificate uses a deterministic
+    mock tx hash instead of hitting the chain — no gas, instant, still shows the
+    buyer what the real artifact looks like.
+    """
+    db = SessionLocal()
+    try:
+        from app.services.supplier_due_diligence_generator import (
+            build_certificate_data, generate_certificate_pdf,
+            evidence_hash_for, demo_tx_hash, _xml_escape,
+            SUPPLIER_DUE_DILIGENCE_SCHEMA_VERSION,
+        )
+
+        tier, plan_label = _buyer_tier_from_product(product_type)
+        # Pro/Enterprise get the anchored certificate; Starter gets a plain snapshot.
+        wants_cert = is_certificate or tier in ("pro", "enterprise")
+
+        data = build_certificate_data(
+            db, buyer_user_id, vendor_ref,
+            vendor_name=vendor_name, notes=notes, is_certificate=wants_cert,
+        )
+        supplier_name = data.get("supplier_name") or vendor_ref
+
+        # Render once un-anchored to get the fingerprint, then (for a real cert)
+        # anchor that hash and re-render with the tx reference embedded.
+        pdf = generate_certificate_pdf(data)
+        tx_hash = None
+        anchored = False
+        if wants_cert:
+            ev_hash = evidence_hash_for(pdf)
+            if demo:
+                tx_hash = demo_tx_hash(ev_hash)
+                anchored = False  # demo: reference only, not on-chain
+            else:
+                try:
+                    from app.services.blockchain import BlockchainService
+                    tx_hash = asyncio.run(BlockchainService().anchor_evidence(
+                        ev_hash,
+                        metadata=f"supplier-due-diligence:{supplier_name}",
+                    ))
+                    anchored = bool(tx_hash)
+                except Exception as anc_err:
+                    logger.warning(
+                        "[DueDiligence] anchor failed for buyer=%s ref=%s: %s",
+                        buyer_user_id, vendor_ref, anc_err,
+                    )
+            data["tx_hash"] = tx_hash
+            data["anchored"] = anchored
+            pdf = generate_certificate_pdf(data)
+
+        # ── Email ───────────────────────────────────────────────────────────────
+        doc_label = "Due-Diligence Certificate" if wants_cert else "Verification Snapshot"
+        demo_tag = "[DEMO] " if demo else ""
+        _safe = _xml_escape(supplier_name)
+        _safe_file = (supplier_name or "supplier").replace("/", "-").replace(" ", "-")
+
+        if wants_cert and tx_hash:
+            verify_line = (
+                f'<p style="font-size:13px;color:#334155;">📎 <strong>Attached:</strong> an '
+                f'anchored Due-Diligence Certificate for your audit file. Its fingerprint is '
+                f'{"recorded on Polygon" if anchored else "referenced for on-chain anchoring"} — '
+                f'transaction <code style="font-size:12px;">{_xml_escape(tx_hash)[:22]}…</code>.</p>'
+            )
+        else:
+            verify_line = (
+                '<p style="font-size:13px;color:#334155;">📎 <strong>Attached:</strong> a '
+                'verification snapshot of this supplier\'s current state. Anchored, independently '
+                'verifiable certificates are included on Pro and Enterprise plans.</p>'
+            )
+
+        status = (data.get("risk_signal") or data.get("procurement_readiness")
+                  or ("MONITORED" if data.get("resolved") else "UNRATED"))
+        header = f"You're now monitoring {supplier_name}"
+        body_inner = f"""
+                <p>You added <strong>{_safe}</strong> to your watchlist. Here's their verified
+                   state right now, captured as a {doc_label.lower()} you can keep on file.</p>
+                <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;
+                            padding:16px 20px;margin:16px 0;">
+                  <p style="margin:4px 0;"><strong>Supplier:</strong> {_safe}</p>
+                  <p style="margin:4px 0;"><strong>Verification status:</strong> {_xml_escape(status)}</p>
+                  <p style="margin:4px 0;"><strong>Trust score:</strong> {data.get('trust_score') if data.get('trust_score') is not None else '—'}
+                     &nbsp;·&nbsp; <strong>PDPA / Compliance:</strong> {data.get('compliance_score') if data.get('compliance_score') is not None else '—'}</p>
+                </div>
+                {verify_line}
+                <p>We'll email you immediately if this supplier's score drops or their risk
+                   signal changes — you don't have to check back.</p>
+                <p style="margin-top:24px;">
+                  <a href="https://www.booppa.io/buyer/dashboard"
+                     style="background:#0f172a;color:#fff;padding:12px 24px;text-decoration:none;
+                            border-radius:8px;font-weight:bold;display:inline-block;">
+                    Open Procurement Dashboard →
+                  </a>
+                </p>"""
+
+        email_svc = EmailService()
+        ok = asyncio.run(email_svc.send_html_email(
+            to_email=buyer_email,
+            subject=f"{demo_tag}Supplier {doc_label}: {supplier_name}",
+            body_html=branded_email_html(
+                body_inner, title=f"{demo_tag}{header}",
+                preheader=f"{plan_label} · {supplier_name} verified state on file",
+            ),
+            attachments=[(f"BOOPPA-Supplier-{doc_label.replace(' ', '-')}-{_safe_file}.pdf", pdf)],
+        ))
+        if not ok:
+            logger.error(
+                "[DueDiligence] email delivery rejected for buyer=%s ref=%s tier=%s",
+                buyer_user_id, vendor_ref, tier,
+            )
+        else:
+            logger.info(
+                "[DueDiligence] %s (schema v%s, demo=%s) sent for buyer=%s supplier=%s",
+                doc_label, SUPPLIER_DUE_DILIGENCE_SCHEMA_VERSION, demo, buyer_user_id, supplier_name,
+            )
+    except Exception as exc:
+        logger.error(f"Supplier snapshot/certificate failed for buyer {buyer_user_id}: {exc}")
+        raise self.retry(exc=exc, countdown=300)
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, max_retries=2, name="buyer_supplier_drift_alert_task")
+def buyer_supplier_drift_alert_task(
+    self,
+    buyer_user_id: str,
+    buyer_email: str,
+    vendor_ref: str,
+    vendor_name: str,
+    reason: str,
+    headline: str,
+    detail_html: str,
+    product_type: str | None = None,
+    *,
+    demo: bool = False,
+):
+    """Event-triggered supplier drift alert (#1).
+
+    Sent the moment a watched supplier's state changes materially — score drop,
+    flip into FLAGGED/CRITICAL, or an approaching certificate expiry. Tiered like
+    every other buyer deliverable:
+
+      * Starter          → alert email only (the change, and what to do).
+      * Pro / Enterprise → + an attached anchored Due-Diligence Certificate
+        capturing the supplier's new verified state for the buyer's audit file.
+
+    In demo mode the certificate uses a mock tx hash (no gas). Dedup / threshold
+    logic lives in the sweep that enqueues this task; here we just render + send.
+    """
+    db = SessionLocal()
+    try:
+        from app.services.email_layout import branded_email_html
+        from app.services.supplier_due_diligence_generator import (
+            build_certificate_data, generate_certificate_pdf,
+            evidence_hash_for, demo_tx_hash, _xml_escape,
+        )
+
+        tier, plan_label = _buyer_tier_from_product(product_type)
+        wants_cert = tier in ("pro", "enterprise")
+
+        # Certificate attachment for Pro/Enterprise; Starter gets email only.
+        pdf = None
+        tx_hash = None
+        if wants_cert:
+            data = build_certificate_data(
+                db, buyer_user_id, vendor_ref,
+                vendor_name=vendor_name, is_certificate=True,
+            )
+            pdf = generate_certificate_pdf(data)
+            ev_hash = evidence_hash_for(pdf)
+            anchored = False
+            if demo:
+                tx_hash = demo_tx_hash(ev_hash)
+            else:
+                try:
+                    from app.services.blockchain import BlockchainService
+                    tx_hash = asyncio.run(BlockchainService().anchor_evidence(
+                        ev_hash, metadata=f"supplier-drift:{vendor_name}",
+                    ))
+                    anchored = bool(tx_hash)
+                except Exception as anc_err:
+                    logger.warning(
+                        "[DriftAlert] anchor failed for buyer=%s ref=%s: %s",
+                        buyer_user_id, vendor_ref, anc_err,
+                    )
+            data["tx_hash"] = tx_hash
+            data["anchored"] = anchored
+            pdf = generate_certificate_pdf(data)
+
+        demo_tag = "[DEMO] " if demo else ""
+        _safe = _xml_escape(vendor_name)
+        _safe_file = (vendor_name or "supplier").replace("/", "-").replace(" ", "-")
+
+        if wants_cert:
+            attach_line = (
+                '<p style="font-size:13px;color:#334155;">📎 <strong>Attached:</strong> an '
+                'anchored Due-Diligence Certificate capturing this supplier\'s new verified '
+                'state — drop it straight into your audit file.</p>'
+            )
+        else:
+            attach_line = (
+                '<p style="font-size:13px;color:#334155;">Anchored Due-Diligence Certificates '
+                'for every change are included on Pro and Enterprise plans.</p>'
+            )
+
+        body_inner = f"""
+                <p>A supplier you're monitoring just changed. We caught it as it happened
+                   so you don't have to wait for your monthly digest.</p>
+                <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;
+                            padding:16px 20px;margin:16px 0;">
+                  <p style="margin:4px 0;font-size:15px;"><strong>{_safe}</strong></p>
+                  <p style="margin:4px 0;color:#b91c1c;"><strong>{_xml_escape(headline)}</strong></p>
+                  <p style="margin:8px 0 0;color:#334155;">{detail_html}</p>
+                </div>
+                {attach_line}
+                <p style="margin-top:24px;">
+                  <a href="https://www.booppa.io/buyer/dashboard"
+                     style="background:#0f172a;color:#fff;padding:12px 24px;text-decoration:none;
+                            border-radius:8px;font-weight:bold;display:inline-block;">
+                    Review supplier →
+                  </a>
+                </p>"""
+
+        attachments = None
+        if wants_cert and pdf:
+            attachments = [(f"BOOPPA-Supplier-Due-Diligence-Certificate-{_safe_file}.pdf", pdf)]
+
+        email_svc = EmailService()
+        ok = asyncio.run(email_svc.send_html_email(
+            to_email=buyer_email,
+            subject=f"{demo_tag}Supplier alert: {vendor_name} — {headline}",
+            body_html=branded_email_html(
+                body_inner,
+                title=f"{demo_tag}Supplier alert: {vendor_name}",
+                preheader=f"{plan_label} · {headline}",
+            ),
+            attachments=attachments,
+        ))
+        if not ok:
+            logger.error(
+                "[DriftAlert] email delivery rejected for buyer=%s ref=%s reason=%s",
+                buyer_user_id, vendor_ref, reason,
+            )
+        else:
+            logger.info(
+                "[DriftAlert] %s alert (demo=%s, cert=%s) sent for buyer=%s supplier=%s",
+                reason, demo, wants_cert, buyer_user_id, vendor_name,
+            )
+    except Exception as exc:
+        logger.error(f"Supplier drift alert failed for buyer {buyer_user_id}: {exc}")
+        raise self.retry(exc=exc, countdown=300)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="buyer_supplier_drift_sweep_task")
+def buyer_supplier_drift_sweep_task(demo: bool = False):
+    """Event-triggered supplier drift sweep (#1).
+
+    Walks every buyer org's watchlist, resolves each supplier's live status, and
+    compares it against the per-(buyer, supplier) `BuyerSupplierAlert` ledger. When
+    a material change crosses a threshold — score drop, flip to FLAGGED/CRITICAL,
+    or an approaching cert expiry — it enqueues a tiered drift alert to the org
+    owner and updates the ledger so the same change never re-fires.
+
+    Runs on a beat schedule as the reliable backstop for the whole watched estate
+    (independent of whether a supplier holds an active vendor subscription). The
+    ledger dedup means firing this frequently is cheap and idempotent.
+    """
+    db = SessionLocal()
+    enqueued = 0
+    try:
+        from datetime import datetime
+        from app.core.models import User
+        from app.core.models_enterprise import Organisation, VendorWatchlistItem
+        from app.core.models_v12 import BuyerSupplierAlert
+        from app.services.buyer_procurement_insights import (
+            _resolve_watchlist_vendor_user, _supplier_status,
+            get_supplier_cert_expiry, evaluate_supplier_drift,
+        )
+
+        orgs = db.query(Organisation).all()
+        for org in orgs:
+            owner = db.query(User).filter(User.id == org.owner_user_id).first()
+            if not owner or not owner.email:
+                continue
+            plan = (getattr(owner, "plan", "") or "").lower().strip()
+            items = (
+                db.query(VendorWatchlistItem)
+                .filter(VendorWatchlistItem.organisation_id == org.id)
+                .all()
+            )
+            seen_refs: set = set()
+            for it in items:
+                if it.vendor_ref in seen_refs:
+                    continue
+                seen_refs.add(it.vendor_ref)
+
+                vuid = _resolve_watchlist_vendor_user(db, it.vendor_ref)
+                if not vuid:
+                    continue  # unresolved suppliers have no live status to drift
+                current = _supplier_status(db, vuid)
+                cert_expiry = get_supplier_cert_expiry(db, vuid)
+
+                ledger = (
+                    db.query(BuyerSupplierAlert)
+                    .filter(
+                        BuyerSupplierAlert.buyer_user_id == owner.id,
+                        BuyerSupplierAlert.vendor_ref == it.vendor_ref,
+                    )
+                    .first()
+                )
+                alert = evaluate_supplier_drift(current, cert_expiry, ledger)
+                if not alert:
+                    continue
+
+                # Upsert the ledger to the new baseline so this change won't re-fire.
+                if ledger is None:
+                    ledger = BuyerSupplierAlert(
+                        buyer_user_id=owner.id, vendor_ref=it.vendor_ref,
+                    )
+                    db.add(ledger)
+                ledger.last_trust_score = current.get("trust_score")
+                ledger.last_risk_signal = current.get("risk_signal")
+                if alert.get("reason") == "cert_expiry" and alert.get("expiry") is not None:
+                    ledger.last_expiry_warned_for = alert["expiry"]
+                ledger.last_reason = alert.get("reason")
+                ledger.last_alerted_at = datetime.utcnow()
+                db.commit()
+
+                buyer_supplier_drift_alert_task.delay(
+                    str(owner.id), owner.email, it.vendor_ref,
+                    it.vendor_name or it.vendor_ref,
+                    alert.get("reason"), alert.get("headline", "Supplier status changed"),
+                    alert.get("detail", ""), product_type=plan, demo=demo,
+                )
+                enqueued += 1
+
+        logger.info("[DriftSweep] evaluated %d orgs, enqueued %d alerts (demo=%s)",
+                    len(orgs), enqueued, demo)
+        return {"orgs": len(orgs), "alerts": enqueued}
+    except Exception as exc:
+        logger.error(f"Buyer supplier drift sweep failed: {exc}")
+        db.rollback()
+        return {"error": str(exc)}
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, max_retries=2, name="buyer_tender_fit_push_task")
+def buyer_tender_fit_push_task(
+    self,
+    buyer_user_id: str,
+    buyer_email: str,
+    tender_no: str,
+    tender_title: str,
+    tender_agency: str | None,
+    tender_url: str | None,
+    closing_label: str | None,
+    sector: str,
+    matched_names: list | None = None,
+    product_type: str | None = None,
+    *,
+    demo: bool = False,
+):
+    """Per-tender high-fit push (#4).
+
+    A single buyer-framed email sent the moment a strongly-matching GeBIZ tender is
+    ingested: a tender in a sector the buyer already sources from (one or more of
+    their watched suppliers operate there). Unlike the vendor tender alert ("worth
+    bidding on"), the buyer framing is evaluate/shortlist/publish — the buyer is on
+    the procuring side. Email-only for every tier; dedup lives in the sweep.
+    """
+    db = SessionLocal()
+    try:
+        from app.services.email_service import EmailService
+        from app.services.email_layout import branded_email_html
+        from app.services.supplier_due_diligence_generator import _xml_escape
+
+        tier, plan_label = _buyer_tier_from_product(product_type)
+
+        title = _xml_escape((tender_title or "").strip()[:140] or "New government tender")
+        agency = _xml_escape((tender_agency or "").strip()[:80] or "Government Agency")
+        sector_txt = _xml_escape((sector or "").strip() or "your procurement area")
+        closes = _xml_escape((closing_label or "").strip() or "—")
+        url = (tender_url or "").strip()
+
+        names = [str(n).strip() for n in (matched_names or []) if str(n).strip()]
+        if names:
+            shown = ", ".join(_xml_escape(n[:48]) for n in names[:4])
+            extra = f" and {len(names) - 4} more" if len(names) > 4 else ""
+            match_line = (
+                f'<p style="margin:10px 0 0;font-size:13px;color:#334155;">This tender is in '
+                f'<strong>{sector_txt}</strong> — a sector your watched supplier(s) '
+                f'<strong>{shown}{extra}</strong> operate in, so you likely have vetted '
+                f'suppliers ready to invite or benchmark.</p>'
+            )
+        else:
+            match_line = (
+                f'<p style="margin:10px 0 0;font-size:13px;color:#334155;">This tender is in '
+                f'<strong>{sector_txt}</strong>, a sector on your procurement radar.</p>'
+            )
+
+        cta = (
+            f'<p style="margin:20px 0 0;">'
+            f'<a href="{_xml_escape(url) if url else "https://www.booppa.io/buyer/tenders"}" '
+            f'style="background:#0f172a;color:#fff;padding:12px 24px;text-decoration:none;'
+            f'border-radius:8px;font-weight:bold;display:inline-block;">View tender →</a></p>'
+        )
+
+        demo_tag = "[DEMO] " if demo else ""
+        subject = f"{demo_tag}High-fit tender for {sector_txt}: {title[:70]}"
+
+        body_inner = f"""
+                <div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;padding:20px;margin:0 0 8px;">
+                  <p style="margin:0;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#047857;font-weight:bold;">High-fit tender just opened</p>
+                  <p style="margin:8px 0 0;font-size:16px;color:#064e3b;font-weight:bold;">{title}</p>
+                  <p style="margin:6px 0 0;font-size:13px;color:#065f46;">{agency} · closes {closes}</p>
+                </div>
+                {match_line}
+                {cta}
+                <p style="margin:24px 0 0;font-size:12px;color:#64748b;">
+                  You're receiving this because a newly-published tender matched a sector your
+                  watched suppliers operate in. It also appears in your monthly Procurement
+                  Intelligence Digest — this is the early heads-up.
+                </p>"""
+
+        email_svc = EmailService()
+        ok = asyncio.run(email_svc.send_html_email(
+            to_email=buyer_email,
+            subject=subject,
+            body_html=branded_email_html(
+                body_inner, title="High-fit tender alert",
+                preheader=f"{sector_txt} · {agency}",
+            ),
+        ))
+        if not ok:
+            logger.error(
+                "[TenderPush] delivery rejected buyer=%s tender=%s demo=%s",
+                buyer_user_id, tender_no, demo,
+            )
+        else:
+            logger.info(
+                "[TenderPush] pushed tender=%s to buyer=%s (%s, demo=%s)",
+                tender_no, buyer_user_id, plan_label, demo,
+            )
+    except Exception as exc:
+        logger.error(f"Buyer tender fit push failed buyer={buyer_user_id} tender={tender_no}: {exc}")
+        raise self.retry(exc=exc, countdown=300)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="buyer_tender_fit_push_sweep_task")
+def buyer_tender_fit_push_sweep_task(demo: bool = False, lookback_minutes: int = 90):
+    """Ingest-triggered sweep for per-tender high-fit pushes (#4).
+
+    For every GeBIZ tender ingested in the last `lookback_minutes` (bounds the scan;
+    the ledger, not the window, prevents duplicates), resolve its sector and match
+    it against each buyer's watched-supplier sectors. On a match with no existing
+    `BuyerTenderPush` row, enqueue a buyer-framed push and record the ledger. Only
+    buyers on a Procurement plan are pushed to. Enqueued at the tail of
+    `sync_gebiz_tenders` so pushes fire minutes after a tender first appears.
+    """
+    db = SessionLocal()
+    enqueued = 0
+    try:
+        from datetime import datetime, timedelta
+        from app.core.models import User
+        from app.core.models_enterprise import Organisation
+        from app.core.models_gebiz import GebizTender
+        from app.core.models_v12 import BuyerTenderPush
+        from app.services.buyer_procurement_insights import get_watchlist_sectors
+        from app.services.tender_service import _CATEGORY_TO_SECTOR
+        from app.billing.enforcement import PROCUREMENT_PLAN_KEYS
+
+        cutoff = datetime.utcnow() - timedelta(minutes=lookback_minutes)
+        new_tenders = (
+            db.query(GebizTender)
+            .filter(
+                GebizTender.status == "Open",
+                GebizTender.created_at.isnot(None),
+                GebizTender.created_at >= cutoff,
+            )
+            .all()
+        )
+        if not new_tenders:
+            return {"tenders": 0, "pushes": 0}
+
+        # Precompute (tender, sector) once.
+        scored: list = []
+        for gt in new_tenders:
+            raw = gt.raw_data or {}
+            cat = raw.get("category", "") if isinstance(raw, dict) else ""
+            sector = _CATEGORY_TO_SECTOR.get(cat, "General")
+            scored.append((gt, sector))
+
+        orgs = db.query(Organisation).all()
+        for org in orgs:
+            owner = db.query(User).filter(User.id == org.owner_user_id).first()
+            if not owner or not owner.email:
+                continue
+            plan = (getattr(owner, "plan", "") or "").lower().strip()
+            if plan not in PROCUREMENT_PLAN_KEYS:
+                continue
+
+            sectors = get_watchlist_sectors(db, str(owner.id))
+            if not sectors:
+                continue
+
+            for gt, sector in scored:
+                if sector not in sectors:
+                    continue
+                # Dedup: never push the same tender to the same buyer twice.
+                exists = (
+                    db.query(BuyerTenderPush)
+                    .filter(
+                        BuyerTenderPush.buyer_user_id == owner.id,
+                        BuyerTenderPush.tender_no == gt.tender_no,
+                    )
+                    .first()
+                )
+                if exists:
+                    continue
+                db.add(BuyerTenderPush(
+                    buyer_user_id=owner.id, tender_no=gt.tender_no,
+                    sector=sector, pushed_at=datetime.utcnow(),
+                ))
+                db.commit()
+
+                closing_label = gt.closing_date.strftime("%d %b %Y") if gt.closing_date else None
+                buyer_tender_fit_push_task.delay(
+                    str(owner.id), owner.email, gt.tender_no,
+                    gt.title or "New government tender", gt.agency, gt.url,
+                    closing_label, sector, sectors.get(sector, []),
+                    product_type=plan, demo=demo,
+                )
+                enqueued += 1
+
+        logger.info("[TenderPushSweep] %d new tenders, %d pushes enqueued (demo=%s)",
+                    len(new_tenders), enqueued, demo)
+        return {"tenders": len(new_tenders), "pushes": enqueued}
+    except Exception as exc:
+        logger.error(f"Buyer tender fit push sweep failed: {exc}")
+        db.rollback()
+        return {"error": str(exc)}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="buyer_demo_fireall_task")
+def buyer_demo_fireall_task(
+    buyer_user_id: str,
+    buyer_email: str,
+    product_type: str | None = None,
+    override_company: str | None = None,
+):
+    """Demo/test-checkout fire-all — send EVERY buyer deliverable to one inbox.
+
+    Triggered ONLY by a Stripe test-mode checkout (`livemode=false`); it must never
+    fire for a real live buyer (the `_activate_subscription` gate enforces this).
+    Its purpose is to let a client see, in one activation, every proactive email a
+    buyer subscription can produce — so it fans out one representative copy of each
+    deliverable, all `[DEMO]`-tagged and all running in `demo=True` mode:
+
+      • #4 tender push  → a real just-ingested high-fit tender if any, else a sample.
+      • #3 snapshot     → instant watchlist-add verification snapshot.
+      • #2 certificate  → anchored Due-Diligence Certificate (mock tx hash, no gas).
+      • #1 drift alert  → a sample supplier-status-change alert.
+      • Procurement Intelligence Digest (welcome framing).
+
+    Deliverables that anchor to the chain use a deterministic mock hash in demo mode
+    (`demo_tx_hash`), so the fire-all costs no gas while still showing the buyer the
+    real artifact shape. Every arm is enqueued via `.delay()` so one failing arm
+    can't block the others.
+    """
+    db = SessionLocal()
+    fired = 0
+    try:
+        from app.core.models_enterprise import Organisation, VendorWatchlistItem
+        from app.core.models_gebiz import GebizTender
+        from app.services.tender_service import _CATEGORY_TO_SECTOR
+
+        tier, plan_label = _buyer_tier_from_product(product_type)
+
+        # ── Pick a representative supplier ──────────────────────────────────────
+        # Prefer a real watched supplier so the demo mirrors the buyer's own estate;
+        # fall back to a clearly-labelled sample so an empty watchlist still demos.
+        sample_ref = None
+        sample_name = None
+        try:
+            org = (
+                db.query(Organisation)
+                .filter(Organisation.owner_user_id == buyer_user_id)
+                .first()
+            )
+            if org:
+                it = (
+                    db.query(VendorWatchlistItem)
+                    .filter(VendorWatchlistItem.organisation_id == org.id)
+                    .first()
+                )
+                if it:
+                    sample_ref = it.vendor_ref
+                    sample_name = it.vendor_name or it.vendor_ref
+        except Exception:
+            pass
+        if not sample_ref:
+            sample_ref = "sample-supplier"
+            sample_name = "Sample Supplier Pte Ltd"
+
+        # ── Pick a representative tender ────────────────────────────────────────
+        tender_no = tender_title = tender_agency = tender_url = closing_label = None
+        sector = "General"
+        try:
+            t = (
+                db.query(GebizTender)
+                .filter(GebizTender.status == "Open")
+                .order_by(GebizTender.created_at.desc())
+                .first()
+            )
+            if t:
+                tender_no = t.tender_no
+                tender_title = t.title
+                tender_agency = t.agency
+                tender_url = t.url
+                closing_label = t.closing_date.strftime("%d %b %Y") if t.closing_date else None
+                cat = (t.raw_data or {}).get("category") if isinstance(t.raw_data, dict) else None
+                sector = _CATEGORY_TO_SECTOR.get(cat, "General")
+        except Exception:
+            pass
+        if not tender_no:
+            tender_no = "SAMPLE-TENDER-0001"
+            tender_title = "Supply and Delivery of Sample Goods and Services"
+            tender_agency = "Sample Government Agency"
+            tender_url = None
+            closing_label = "30 days from now"
+            sector = "General"
+
+        # ── Fan out every deliverable in demo mode ──────────────────────────────
+        try:
+            buyer_tender_fit_push_task.delay(
+                buyer_user_id, buyer_email, tender_no, tender_title,
+                tender_agency, tender_url, closing_label, sector,
+                matched_names=[sample_name], product_type=product_type, demo=True,
+            )
+            fired += 1
+        except Exception as e:  # pragma: no cover
+            logger.warning("[DemoFireAll] tender push arm failed: %s", e)
+
+        try:
+            buyer_supplier_snapshot_task.delay(
+                buyer_user_id, buyer_email, sample_ref, sample_name,
+                None, product_type, is_certificate=False, demo=True,
+            )
+            fired += 1
+        except Exception as e:  # pragma: no cover
+            logger.warning("[DemoFireAll] snapshot arm failed: %s", e)
+
+        try:
+            buyer_supplier_snapshot_task.delay(
+                buyer_user_id, buyer_email, sample_ref, sample_name,
+                None, product_type, is_certificate=True, demo=True,
+            )
+            fired += 1
+        except Exception as e:  # pragma: no cover
+            logger.warning("[DemoFireAll] certificate arm failed: %s", e)
+
+        try:
+            buyer_supplier_drift_alert_task.delay(
+                buyer_user_id, buyer_email, sample_ref, sample_name,
+                "score_drop", f"{sample_name} — Trust score dropped",
+                "<p>This supplier's Trust score fell in the latest scan. Review before "
+                "your next award.</p>",
+                product_type=product_type, demo=True,
+            )
+            fired += 1
+        except Exception as e:  # pragma: no cover
+            logger.warning("[DemoFireAll] drift alert arm failed: %s", e)
+
+        try:
+            buyer_procurement_digest_task.delay(
+                buyer_user_id, buyer_email, product_type=product_type,
+                override_company=override_company, is_first_cycle=True, demo=True,
+            )
+            fired += 1
+        except Exception as e:  # pragma: no cover
+            logger.warning("[DemoFireAll] digest arm failed: %s", e)
+
+        logger.info(
+            "[DemoFireAll] fired %d demo deliverables for buyer=%s tier=%s",
+            fired, buyer_user_id, tier,
+        )
+        return {"fired": fired, "tier": tier}
+    except Exception as exc:
+        logger.error("Buyer demo fire-all failed for %s: %s", buyer_user_id, exc)
+        return {"error": str(exc)}
     finally:
         db.close()
 
@@ -4980,6 +5707,14 @@ def sync_gebiz_tenders():
         # Bridge GebizTender → TenderShortlist so the probability engine can
         # score any RSS-synced tender without requiring a manual admin entry.
         _bridge_gebiz_to_shortlist(db)
+
+        # Fire per-tender high-fit pushes (#4) for any tender ingested this run
+        # that matches a buyer's watched-supplier sectors. Enqueued (not inline)
+        # so a push failure never rolls back the sync; the ledger dedups.
+        try:
+            buyer_tender_fit_push_sweep_task.delay()
+        except Exception as push_err:  # pragma: no cover
+            logger.warning(f"[GeBIZ] tender push sweep enqueue failed: {push_err}")
     except Exception as exc:
         logger.error(f"[GeBIZ] sync_gebiz_tenders failed: {exc}")
         db.rollback()

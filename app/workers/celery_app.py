@@ -152,6 +152,14 @@ celery_app.conf.update(
             "task": "run_buyer_procurement_monthly_digests",
             "schedule": crontab(hour=6, minute=30),
         },
+        # Buyer supplier drift alerts (#1): sweep every watched supplier for a
+        # material change (score drop / flip to FLAGGED|CRITICAL / cert expiry)
+        # and email the buyer immediately. Every 6 hours; the per-(buyer,supplier)
+        # ledger dedups so nothing re-fires. Buyer-side only — vendor flows untouched.
+        "buyer-supplier-drift-sweep": {
+            "task": "buyer_supplier_drift_sweep_task",
+            "schedule": crontab(minute=15, hour="*/6"),
+        },
         # Standard/Pro Suite: monthly MAS TRM board report on the 1st at 05:00 UTC.
         "trm-monthly-board-reports": {
             "task": "run_trm_monthly_board_reports",

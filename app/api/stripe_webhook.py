@@ -267,6 +267,7 @@ async def _activate_subscription(
     test_simulation: bool = False,
     override_company: str | None = None,
     override_website: str | None = None,
+    demo: bool = False,
 ) -> None:
     """
     Persist subscription state when a new Stripe subscription is created or renewed.
@@ -283,6 +284,12 @@ async def _activate_subscription(
     real user profile (the harness email can be a real account). They are passed
     through to the per-user first-cycle wrappers; production renewals leave them
     None and fall back to the stored profile as before.
+
+    `demo` is set True ONLY when the originating Stripe event's `livemode` is
+    explicitly False (test-mode checkout). It routes buyer activations to the
+    `buyer_demo_fireall_task` preview fan-out instead of the single first-cycle
+    digest, so a client can see every buyer email in one activation. It must never
+    be True for a real live buyer.
     """
     db = SessionLocal()
     try:
@@ -462,17 +469,30 @@ async def _activate_subscription(
                     override_company=override_company,
                 )
             elif new_plan in ("buyer_starter", "buyer_pro", "buyer_enterprise"):
-                # Procurement Intelligence Digest — first-cycle/welcome mode.
-                # Starter = email summary; Pro/Enterprise = + attached
-                # Procurement Report PDF. Tier is resolved inside the task from
-                # the raw product_type SKU.
-                _wtasks.buyer_procurement_digest_task.delay(
-                    str(user.id),
-                    user.email,
-                    product_type=product_type,
-                    override_company=override_company,
-                    is_first_cycle=True,
-                )
+                if demo:
+                    # Test-mode checkout (Stripe livemode=false): fire EVERY buyer
+                    # deliverable to this inbox, [DEMO]-tagged, mock hash (no gas), so
+                    # the client sees the full proactive email set in one activation.
+                    # NEVER reached for a real live buyer — `demo` is only True when
+                    # the webhook event's livemode is explicitly False.
+                    _wtasks.buyer_demo_fireall_task.delay(
+                        str(user.id),
+                        user.email,
+                        product_type=product_type,
+                        override_company=override_company,
+                    )
+                else:
+                    # Procurement Intelligence Digest — first-cycle/welcome mode.
+                    # Starter = email summary; Pro/Enterprise = + attached
+                    # Procurement Report PDF. Tier is resolved inside the task from
+                    # the raw product_type SKU.
+                    _wtasks.buyer_procurement_digest_task.delay(
+                        str(user.id),
+                        user.email,
+                        product_type=product_type,
+                        override_company=override_company,
+                        is_first_cycle=True,
+                    )
             elif new_plan in ("standard_suite", "pro_suite"):
                 # Deliver the MAS TRM Baseline Assessment PDF. Small countdown so
                 # the TRM controls initialised later in this same activation are
@@ -3614,6 +3634,11 @@ async def _stripe_webhook_impl(
             if product_type in SUBSCRIPTION_PRODUCT_TYPES:
                 stripe_sub_id = session.get("subscription")
                 stripe_cust_id = session.get("customer")
+                # Demo fire-all fires ONLY on an explicit test-mode event
+                # (Stripe always stamps `livemode`; we require it to be exactly
+                # False so a missing/true value can never trigger the demo path
+                # for a real live buyer).
+                demo_checkout = raw.get("livemode") is False
                 # Activate synchronously so plan is set and email sent
                 # immediately — does not depend on Celery workers being up.
                 await _activate_subscription(
@@ -3621,6 +3646,7 @@ async def _stripe_webhook_impl(
                     customer_email=customer_email,
                     stripe_subscription_id=stripe_sub_id,
                     stripe_customer_id=stripe_cust_id,
+                    demo=demo_checkout,
                 )
                 logger.info(
                     f"Activated subscription for {product_type} email={customer_email}"

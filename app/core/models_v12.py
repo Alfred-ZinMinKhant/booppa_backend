@@ -283,3 +283,88 @@ class PdpaBulkScanItem(Base):
 
 
 Index("ix_pdpa_bulk_items_batch_status", PdpaBulkScanItem.batch_id, PdpaBulkScanItem.status)
+
+
+class BuyerSupplierAlert(Base):
+    """Dedup ledger for event-triggered supplier drift alerts (#1).
+
+    One row per (buyer, watched supplier). Records the last state we alerted the
+    buyer about, so the drift sweep only emails when a *new* material change
+    crosses a threshold — a score drop, a flip into FLAGGED/CRITICAL, or an
+    approaching certificate expiry — instead of re-sending the same alert every
+    run. `last_*` columns hold the state at the moment of the last alert; the
+    sweep compares live status against them and updates on send.
+    """
+
+    __tablename__ = "buyer_supplier_alerts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    buyer_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # The watchlist vendor_ref (marketplace slug / free-form id) as stored on the
+    # VendorWatchlistItem — not necessarily a resolvable users.id.
+    vendor_ref = Column(String(255), nullable=False, index=True)
+    last_trust_score = Column(Integer, nullable=True)
+    last_risk_signal = Column(String(50), nullable=True)
+    # Cert-expiry alerts: the expires_at we last warned about, so we don't renag.
+    last_expiry_warned_for = Column(DateTime, nullable=True)
+    last_reason = Column(String(64), nullable=True)
+    last_alerted_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+UniqueConstraint(
+    BuyerSupplierAlert.buyer_user_id,
+    BuyerSupplierAlert.vendor_ref,
+    name="uq_buyer_supplier_alert",
+)
+Index(
+    "ix_buyer_supplier_alert_buyer_ref",
+    BuyerSupplierAlert.buyer_user_id,
+    BuyerSupplierAlert.vendor_ref,
+    unique=True,
+)
+
+
+class BuyerTenderPush(Base):
+    """Dedup ledger for per-tender high-fit push alerts (#4).
+
+    One row per (buyer, tender). Records that we already emailed this buyer an
+    immediate "a strongly-matching tender just opened" push for this GeBIZ tender,
+    so the ingest-triggered sweep never re-pushes the same tender — and the buyer
+    still sees it in the monthly digest's roundup without a duplicate one-off.
+    """
+
+    __tablename__ = "buyer_tender_pushes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    buyer_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # GebizTender.tender_no — the stable public tender identifier.
+    tender_no = Column(String(100), nullable=False, index=True)
+    # Why it matched: the resolved tender sector at push time (audit / debugging).
+    sector = Column(String(255), nullable=True)
+    pushed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+UniqueConstraint(
+    BuyerTenderPush.buyer_user_id,
+    BuyerTenderPush.tender_no,
+    name="uq_buyer_tender_push",
+)
+Index(
+    "ix_buyer_tender_push_buyer_tender",
+    BuyerTenderPush.buyer_user_id,
+    BuyerTenderPush.tender_no,
+    unique=True,
+)
