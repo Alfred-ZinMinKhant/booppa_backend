@@ -461,6 +461,18 @@ async def _activate_subscription(
                     override_website=override_website,
                     override_company=override_company,
                 )
+            elif new_plan in ("buyer_starter", "buyer_pro", "buyer_enterprise"):
+                # Procurement Intelligence Digest — first-cycle/welcome mode.
+                # Starter = email summary; Pro/Enterprise = + attached
+                # Procurement Report PDF. Tier is resolved inside the task from
+                # the raw product_type SKU.
+                _wtasks.buyer_procurement_digest_task.delay(
+                    str(user.id),
+                    user.email,
+                    product_type=product_type,
+                    override_company=override_company,
+                    is_first_cycle=True,
+                )
             elif new_plan in ("standard_suite", "pro_suite"):
                 # Deliver the MAS TRM Baseline Assessment PDF. Small countdown so
                 # the TRM controls initialised later in this same activation are

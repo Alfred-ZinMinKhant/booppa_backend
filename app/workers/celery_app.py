@@ -145,6 +145,13 @@ celery_app.conf.update(
             "task": "run_vendor_active_monthly_checks",
             "schedule": crontab(hour=6, minute=0),
         },
+        # Buyer subscriptions: daily anniversary cron at 06:30 UTC. Task filters
+        # buyer subscribers whose subscription_anniversary_day matches today and
+        # sends the single tiered Procurement Intelligence Digest.
+        "buyer-procurement-daily-anniversary-digests": {
+            "task": "run_buyer_procurement_monthly_digests",
+            "schedule": crontab(hour=6, minute=30),
+        },
         # Standard/Pro Suite: monthly MAS TRM board report on the 1st at 05:00 UTC.
         "trm-monthly-board-reports": {
             "task": "run_trm_monthly_board_reports",

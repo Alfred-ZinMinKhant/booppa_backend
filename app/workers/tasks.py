@@ -3406,6 +3406,275 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
         db.close()
 
 
+def _buyer_tier_from_product(product_type: str | None) -> tuple[str, str]:
+    """(tier, plan_label) from a buyer subscription product_type. Defaults to Starter."""
+    p = (product_type or "").lower()
+    if p.startswith("buyer_enterprise"):
+        return "enterprise", "Buyer Enterprise"
+    if p.startswith("buyer_pro"):
+        return "pro", "Buyer Pro"
+    return "starter", "Buyer Starter"
+
+
+@celery_app.task(bind=True, max_retries=2, name="buyer_procurement_digest_task")
+def buyer_procurement_digest_task(
+    self,
+    user_id: str,
+    user_email: str,
+    product_type: str | None = None,
+    override_company: str | None = None,
+    is_first_cycle: bool = False,
+):
+    """
+    Single consolidated Procurement Intelligence Digest for buyer subscribers.
+
+    The buyer analog of `vendor_active_health_check_task`: the ONE email a buyer
+    subscription sends per cycle (the bare "Activated" email is suppressed for
+    buyers in `_activate_subscription`). It combines the two recurring buyer
+    assets into one deliverable:
+      • Watched-supplier drift — each supplier on the org watchlist with its
+        current Trust/Compliance score, risk signal, and month-over-month delta.
+      • New GeBIZ tenders to evaluate (soonest-closing open tenders).
+
+    Tiered by plan (resolved from `product_type`, not hardcoded SKUs):
+      • Starter    → email summary only, no attachment.
+      • Pro        → + attached Procurement Intelligence Report PDF.
+      • Enterprise → + attached PDF with full multi-supplier watchlist section.
+
+    `is_first_cycle=True` (set by the activation wrapper) switches the framing
+    from "monthly digest" to "welcome". `override_company` is test-harness-only
+    and never mutates the stored profile.
+    """
+    db = SessionLocal()
+    try:
+        from app.core.models import User
+        from app.services.email_service import EmailService
+        from app.services.email_layout import branded_email_html
+        from app.services.buyer_procurement_insights import (
+            get_watched_suppliers_with_status, summarise_watchlist,
+        )
+        from app.services.vendor_active_insights import get_tender_matches
+
+        tier, plan_label = _buyer_tier_from_product(product_type)
+
+        user = db.query(User).filter(User.id == user_id).first()
+        company = (override_company or "").strip() or (getattr(user, "company", None) or "Your organisation")
+
+        def _esc(s) -> str:
+            return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        # 1. Watchlist drift — the substance of the digest. Best-effort.
+        suppliers = get_watched_suppliers_with_status(db, user_id)
+        summary = summarise_watchlist(suppliers)
+
+        # 2. New tenders to evaluate. Buyers have no VendorSector, so matches come
+        #    back unclassified — still a useful closing-soon list.
+        tender_matches = get_tender_matches(db, user_id, limit=8)
+
+        # ── Watchlist section ──────────────────────────────────────────────────
+        def _delta_html(d) -> str:
+            if d is None or not isinstance(d, int):
+                return ""
+            if d > 0:
+                return f' <span style="color:#10b981;font-size:12px;font-weight:bold;">▲ {d}</span>'
+            if d < 0:
+                return f' <span style="color:#ef4444;font-size:12px;font-weight:bold;">▼ {abs(d)}</span>'
+            return ' <span style="color:#94a3b8;font-size:12px;">no change</span>'
+
+        watchlist_section = ""
+        if suppliers:
+            rows = ""
+            for sup in suppliers[:15]:
+                name = _esc((sup.get("vendor_name") or "")[:48])
+                if sup.get("resolved"):
+                    status = sup.get("risk_signal") or sup.get("procurement_readiness") or "MONITORED"
+                    trust = sup.get("trust_score")
+                    trust_txt = f'{trust}{_delta_html(sup.get("trust_delta"))}' if trust is not None else "—"
+                else:
+                    status = "UNRATED"
+                    trust_txt = "—"
+                rows += (
+                    f'<tr><td style="padding:7px 8px;border-bottom:1px solid #eef2f7;font-size:13px;">{name}</td>'
+                    f'<td style="padding:7px 8px;border-bottom:1px solid #eef2f7;font-size:12px;color:#475569;white-space:nowrap;">{_esc(status)}</td>'
+                    f'<td style="padding:7px 8px;border-bottom:1px solid #eef2f7;font-size:13px;text-align:right;white-space:nowrap;">{trust_txt}</td></tr>'
+                )
+            watchlist_section = f"""
+            <h3 style="color:#0f172a;font-size:15px;margin:24px 0 8px;">Your watched suppliers</h3>
+            <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #eef2f7;border-radius:8px;overflow:hidden;">
+              <tr style="background:#f8fafc;"><th style="text-align:left;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Supplier</th><th style="text-align:left;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Status</th><th style="text-align:right;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Trust</th></tr>
+              {rows}
+            </table>
+            <p style="font-size:12px;color:#64748b;margin:6px 0 0;">Δ is vs each supplier's previous scan. UNRATED suppliers aren't a claimed profile yet — scores populate once they verify.</p>
+            """
+        else:
+            watchlist_section = """
+            <h3 style="color:#0f172a;font-size:15px;margin:24px 0 8px;">Your watched suppliers</h3>
+            <p style="font-size:13px;color:#334155;">You aren't watching any suppliers yet.
+              <a href="https://www.booppa.io/buyer/dashboard" style="color:#0ea5e9;">Add suppliers to your watchlist</a>
+              to start monthly monitoring of their Trust &amp; PDPA scores and risk signals.</p>
+            """
+
+        # ── Tender section ─────────────────────────────────────────────────────
+        gebiz_section = ""
+        if tender_matches:
+            trows = ""
+            for t in tender_matches[:8]:
+                cd = t.get("closing_date")
+                close = cd.strftime("%d %b %Y") if cd else "—"
+                title = _esc((t.get("title") or "")[:90])
+                url = t.get("url")
+                cell = f'<a href="{_esc(url)}" style="color:#0ea5e9;text-decoration:none;">{title}</a>' if url else title
+                agency = _esc((t.get("agency") or "")[:28])
+                trows += (
+                    f'<tr><td style="padding:7px 8px;border-bottom:1px solid #eef2f7;font-size:13px;">{cell}</td>'
+                    f'<td style="padding:7px 8px;border-bottom:1px solid #eef2f7;font-size:12px;color:#475569;">{agency}</td>'
+                    f'<td style="padding:7px 8px;border-bottom:1px solid #eef2f7;font-size:12px;color:#475569;white-space:nowrap;">{close}</td></tr>'
+                )
+            gebiz_section = f"""
+            <h3 style="color:#0f172a;font-size:15px;margin:24px 0 8px;">New tenders to evaluate</h3>
+            <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #eef2f7;border-radius:8px;overflow:hidden;">
+              <tr style="background:#f8fafc;"><th style="text-align:left;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Tender</th><th style="text-align:left;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Agency</th><th style="text-align:left;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Closes</th></tr>
+              {trows}
+            </table>
+            <p style="font-size:12px;color:#64748b;margin:6px 0 0;">
+              <a href="https://www.booppa.io/buyer/tenders" style="color:#0ea5e9;">See all open tenders →</a>
+            </p>
+            """
+
+        # ── Headline summary box ───────────────────────────────────────────────
+        alerting_line = ""
+        if summary.get("alerting"):
+            names = ", ".join(_esc(n) for n in (summary.get("alerting_names") or []))
+            alerting_line = (
+                f'<p style="margin:10px 0 0;font-size:13px;color:#b91c1c;">⚠ <strong>{summary["alerting"]}</strong> '
+                f'supplier(s) need attention this cycle: {names}.</p>'
+            )
+        summary_box = f"""
+        <div style="background:#f8fafc;border-radius:8px;padding:20px;margin:20px 0;">
+          <p style="margin:4px 0;"><strong>Suppliers watched:</strong> {summary.get('total', 0)}</p>
+          <p style="margin:4px 0;"><strong>Need attention:</strong> {summary.get('alerting', 0)}</p>
+          <p style="margin:4px 0;"><strong>Score slipped (30d):</strong> {summary.get('slipped', 0)}</p>
+          {alerting_line}
+        </div>"""
+
+        # ── PDF attachment (Pro / Enterprise) ──────────────────────────────────
+        digest_attachments: list[tuple[str, bytes]] = []
+        if tier in ("pro", "enterprise"):
+            try:
+                from app.services.buyer_procurement_report_generator import build_buyer_procurement_report_pdf
+                _safe_co = (company or "report").replace("/", "-").replace(" ", "-")
+                pdf = build_buyer_procurement_report_pdf(
+                    db, user_id, tier=tier, company=company, plan_label=plan_label,
+                )
+                if pdf:
+                    digest_attachments.append((f"BOOPPA-Procurement-Report-{_safe_co}.pdf", pdf))
+            except Exception as rep_err:
+                logger.warning("[BuyerDigest] report PDF failed for %s: %s", user_id, rep_err)
+
+        attachments_note = (
+            '<p style="font-size:13px;color:#334155;margin:16px 0 0;">📎 <strong>Attached:</strong> '
+            'your monthly Procurement Intelligence Report (PDF) — file it, forward it, or take it into a review.</p>'
+            if digest_attachments else ""
+        )
+
+        # ── Email framing ──────────────────────────────────────────────────────
+        if is_first_cycle:
+            subject = f"Welcome to {plan_label} — your procurement intelligence starts now"
+            header = f"Welcome to {plan_label}"
+            intro = f"Your <strong>{plan_label}</strong> subscription is now active. Here's your procurement intelligence:"
+        else:
+            subject = f"Your monthly Procurement Intelligence Digest — {company}"
+            header = "Monthly Procurement Intelligence Digest"
+            intro = "Here is your supplier monitoring and tender intelligence for the past 30 days:"
+
+        body_inner = f"""
+                <p>Hello <strong>{_esc(company)}</strong>,</p>
+                <p>{intro}</p>
+                {summary_box}
+                {attachments_note}
+                {watchlist_section}
+                {gebiz_section}
+                <p style="margin-top:24px;">
+                  <a href="https://www.booppa.io/buyer/dashboard"
+                     style="background:#0f172a;color:#fff;padding:12px 24px;text-decoration:none;
+                            border-radius:8px;font-weight:bold;display:inline-block;">
+                    Open Procurement Dashboard →
+                  </a>
+                </p>"""
+
+        email_svc = EmailService()
+        ok = asyncio.run(email_svc.send_html_email(
+            to_email=user_email,
+            subject=subject,
+            body_html=branded_email_html(
+                body_inner, title=header,
+                preheader=f"{plan_label} · {summary.get('total', 0)} suppliers watched",
+            ),
+            attachments=digest_attachments or None,
+        ))
+        if not ok:
+            logger.error(
+                "[BuyerDigest] email delivery rejected for user=%s tier=%s first_cycle=%s",
+                user_id, tier, is_first_cycle,
+            )
+        else:
+            logger.info(
+                "[BuyerDigest] digest (%s, first_cycle=%s) sent for buyer %s",
+                plan_label, is_first_cycle, user_id,
+            )
+    except Exception as exc:
+        logger.error(f"Buyer procurement digest failed for {user_id}: {exc}")
+        raise self.retry(exc=exc, countdown=300)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="run_buyer_procurement_monthly_digests")
+def run_buyer_procurement_monthly_digests():
+    """
+    Anniversary-day cron (runs daily; processes buyer subscribers whose
+    anniversary day matches today's day-of-month) — mirrors
+    `run_vendor_active_monthly_checks`. Sends each active buyer subscriber their
+    single Procurement Intelligence Digest, tiered by their plan.
+    """
+    db = SessionLocal()
+    try:
+        from app.core.models import User, Subscription as SubModel
+        from app.billing.enforcement import PROCUREMENT_PLAN_KEYS
+
+        active_subs = db.query(SubModel).filter(
+            SubModel.product_type.in_(list(PROCUREMENT_PLAN_KEYS)),
+            SubModel.status.in_(("active", "trialing")),
+        ).all()
+        # Latest product_type per user (for tier resolution); any buyer sub qualifies.
+        product_by_user: dict = {}
+        for s in active_subs:
+            if s.user_id:
+                product_by_user[s.user_id] = s.product_type
+        user_ids = set(product_by_user.keys())
+        subscribers = (
+            db.query(User)
+            .filter(
+                User.id.in_(user_ids),
+                _anniversary_match_filter(User.subscription_anniversary_day),
+            )
+            .all()
+            if user_ids else []
+        )
+        for user in subscribers:
+            if user.email:
+                buyer_procurement_digest_task.delay(
+                    str(user.id), user.email,
+                    product_type=product_by_user.get(user.id),
+                )
+        logger.info(
+            "[BuyerDigest] day=%d queued %d procurement digests",
+            datetime.now(timezone.utc).day, len(subscribers),
+        )
+    finally:
+        db.close()
+
+
 @celery_app.task(bind=True, max_retries=2, name="pdpa_monitor_monthly_alert_task")
 def pdpa_monitor_monthly_alert_task(self, vendor_id: str, vendor_email: str):
     """
