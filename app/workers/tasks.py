@@ -3412,8 +3412,8 @@ def _buyer_tier_from_product(product_type: str | None) -> tuple[str, str]:
     if p.startswith("buyer_enterprise"):
         return "enterprise", "Buyer Enterprise"
     if p.startswith("buyer_pro"):
-        return "pro", "Buyer Pro"
-    return "starter", "Buyer Starter"
+        return "pro", "Buyer Professional"
+    return "starter", "Buyer Essentials"
 
 
 @celery_app.task(bind=True, max_retries=2, name="buyer_procurement_digest_task")
