@@ -70,10 +70,13 @@ async def health_check():
     return {"status": "healthy", "version": "10.0.0", "service": "booppa-api"}
 
 
-# Include API routes
+# Include API routes.
+# NOTE: the second mount below is a DELIBERATE compatibility alias, not an
+# accidental duplicate. The Next.js frontend depends on the unversioned /api
+# surface for its live polling contracts (GET /api/stripe/checkout/verify,
+# GET /api/stripe/rfp/result, POST /api/rfp-intake/{id}/submit). Do not remove
+# it without first migrating those callers to /api/v1.
 app.include_router(api_router, prefix="/api/v1")
-# Also expose the same API surface at /api for compatibility with frontend
-# callers that expect unversioned endpoints (e.g. /api/stripe/checkout).
 app.include_router(api_router, prefix="/api")
 
 # Mount WebSocket Server
