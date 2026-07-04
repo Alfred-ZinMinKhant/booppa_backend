@@ -131,3 +131,7 @@ docker-compose.override.yml
 *.tfstate
 *.tfstate.backup
 .terraform/
+
+# Never commit session/cookie dumps
+cookies.txt
+*.cookies
