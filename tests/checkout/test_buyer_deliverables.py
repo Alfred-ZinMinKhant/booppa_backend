@@ -92,16 +92,19 @@ def test_demo_fireall_fans_out_all_arms(test_db, monkeypatch):
             assert k.get("demo") is True
 
 
-# ── 3. Digest tiering: PDF attached only for Pro / Enterprise ────────────────
+# ── 3. Digest: Procurement Report PDF attached for every tier ────────────────
 
-def test_digest_starter_has_no_attachment(test_db, email_capture):
+def test_digest_starter_attaches_report_pdf(test_db, email_capture):
+    """Phase B: the full Procurement Intelligence Report now ships to every tier,
+    Starter included — no buyer digest is attachment-less anymore."""
     from app.workers.tasks import buyer_procurement_digest_task
     user = _seed_buyer(test_db, plan="buyer_starter")
     buyer_procurement_digest_task(
         str(user.id), user.email, product_type="buyer_starter_monthly",
     )
     assert len(email_capture) == 1
-    assert not email_capture[0]["attachments"]
+    atts = email_capture[0]["attachments"]
+    assert any(a[0].endswith(".pdf") and a[1].startswith(b"%PDF") for a in atts)
 
 
 def test_digest_pro_attaches_report_pdf(test_db, email_capture):
