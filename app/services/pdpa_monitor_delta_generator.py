@@ -34,11 +34,13 @@ def _drift_chart(score_history: List[Dict[str, Any]]):
     """A compliance-score-over-time line chart (Drawing) or None.
 
     `score_history` is an ordered list of {"label": "Apr", "score": 53}. Needs at
-    least 2 points to plot a trend; the DPO attaches this to board updates.
+    least 3 points before we call it a "trend" — two readings are a single segment,
+    not a trend, and plotting them as one overstates the signal on a board update.
+    Returns None below 3 points so the caller can show an honest interim state.
     """
     pts = [(h.get("label") or "", h.get("score")) for h in (score_history or [])
            if isinstance(h.get("score"), (int, float))]
-    if len(pts) < 2:
+    if len(pts) < 3:
         return None
     try:
         from reportlab.graphics.shapes import Drawing
@@ -247,9 +249,20 @@ def generate_pdpa_monitor_report_pdf(data: Dict[str, Any]) -> bytes:
                 story.append(Paragraph(
                     f'<font color="#dc2626">Score declined by {abs(_d)} point(s) since last month — see findings.</font>', s["body"]))
     else:
-        story.append(Paragraph(
-            "Baseline established — your compliance trend chart appears from next month's scan.",
-            s["body"]))
+        # <3 real points: don't draw a line that reads as a "trend". Tell the
+        # reader honestly how many readings exist and when the chart appears.
+        _n_pts = len([h for h in (data.get("score_history") or [])
+                      if isinstance(h.get("score"), (int, float))])
+        if _n_pts >= 2:
+            story.append(Paragraph(
+                "Two readings so far. Your compliance trend chart plots from your "
+                "next scan, once there are three monthly data points.",
+                s["body"]))
+        else:
+            story.append(Paragraph(
+                "Baseline established — your compliance trend chart appears once you "
+                "have three monthly scans.",
+                s["body"]))
     story.append(Spacer(1, 14))
 
     if data.get("full_report_url"):

@@ -723,7 +723,7 @@ class PDFService:
             ),
             Spacer(1, 5),
             Paragraph("ANCHORED ON", s["Label"]),
-            Paragraph(f"{settings.active_polygon_network_name}  ·  Immutable blockchain record", s["Body"]),
+            Paragraph(f"{settings.active_polygon_network_name}  ·  Tamper-evident hash record", s["Body"]),
         ]
 
         qr_items = [
@@ -1834,8 +1834,8 @@ class PDFService:
                 story.append(Spacer(1, 6))
                 if findings:
                     story.append(Paragraph(
-                        f"The following artifacts must be anchored on the {settings.active_polygon_network_name} blockchain to create "
-                        "an immutable, court-admissible compliance trail:",
+                        f"The following artifacts must be anchored on the {settings.active_polygon_network_name} to create "
+                        "a tamper-evident, independently verifiable compliance trail:",
                         s["Body"],
                     ))
                     story.append(Spacer(1, 6))
@@ -1844,7 +1844,7 @@ class PDFService:
                 else:
                     story.append(Paragraph(
                         "As no violations were detected, the primary artifact to anchor is this audit report "
-                        "itself, providing immutable proof of a clean compliance assessment on the audit date.",
+                        "itself, providing tamper-evident proof of a clean compliance assessment on the audit date.",
                         s["Body"],
                     ))
                     story.append(Spacer(1, 6))

@@ -36,6 +36,7 @@ from app.services.policy_clause_classifier import (
 )
 from app.services.pdpa_dimension_snapshot import compute_dimension_snapshots
 from app.services.finding_keys import extract_finding_keys
+from app.services.pdpa_findings import resolve_pdpa_findings, resolve_pdpa_score
 import asyncio
 import hashlib
 import json
@@ -2472,55 +2473,18 @@ def fulfill_cover_sheet_task(
                     pdpa_tx_hash = pdpa_report.tx_hash
                     pdpa_ad = pdpa_report.assessment_data if isinstance(pdpa_report.assessment_data, dict) else {}
                     structured = pdpa_ad.get("booppa_report") if isinstance(pdpa_ad.get("booppa_report"), dict) else {}
-                    structured_ra = (
-                        structured.get("risk_assessment")
-                        if isinstance(structured.get("risk_assessment"), dict)
-                        else {}
-                    )
-                    # PDPA stores a *risk* score (0 = clean, 100 = high risk).
-                    # Convert to a compliance score (100 - risk) for the cover sheet.
-                    raw_risk = (
-                        pdpa_ad.get("overall_risk_score")
-                        if pdpa_ad.get("overall_risk_score") is not None
-                        else pdpa_ad.get("score")
-                        if pdpa_ad.get("score") is not None
-                        else pdpa_ad.get("risk_score")
-                        if pdpa_ad.get("risk_score") is not None
-                        else structured_ra.get("score")
-                    )
-                    # Single source of truth: when the PDPA report persisted the
-                    # exact compliance score its own PDF printed, display THAT
-                    # verbatim — never recompute (recomputing is what drifted the
-                    # cover sheet to 54 while the PDPA report showed 53).
+                    # Single source of truth: `resolve_pdpa_score` returns the
+                    # persisted `compliance_score` verbatim when present (never
+                    # recompute — that's what drifted the cover sheet to 54 while
+                    # the PDPA report showed 53), else derives it from raw risk.
+                    # The RFP Supplier Declaration reads the same helper via
+                    # `latest_pdpa_score`, so the two documents can't disagree.
                     canonical_score = pdpa_ad.get("compliance_score")
-                    if isinstance(canonical_score, (int, float)):
-                        pdpa_score = int(round(canonical_score))
-                    elif raw_risk is not None:
-                        try:
-                            pdpa_score = max(0, min(100, 100 - int(round(float(raw_risk)))))
-                        except (TypeError, ValueError):
-                            pdpa_score = "—"
-                    # Findings have lived under several keys in different
-                    # versions of the PDPA worker output. Check all of them
-                    # so the Cover Sheet doesn't silently lose findings when
-                    # the AI returns them under an unexpected key. Order
-                    # reflects observed frequency: structured.detailed_findings
-                    # is the modern path; the rest are backfills.
-                    findings = (
-                        structured.get("detailed_findings")
-                        or pdpa_ad.get("detailed_findings")
-                        or structured.get("findings")
-                        or pdpa_ad.get("findings")
-                        or structured_ra.get("findings")
-                        or pdpa_ad.get("violations")
-                        or []
-                    )
-                    # Coerce dict-of-findings to list (some older AI paths return
-                    # {"finding_key": {...}, ...} instead of a list of dicts).
-                    if isinstance(findings, dict):
-                        findings = list(findings.values())
-                    if not isinstance(findings, list):
-                        findings = []
+                    _resolved_score = resolve_pdpa_score(pdpa_ad)
+                    pdpa_score = _resolved_score if _resolved_score is not None else "—"
+                    # Single source of truth — same resolver the Monitor Report
+                    # uses, so the two documents can never disagree on the count.
+                    findings = resolve_pdpa_findings(pdpa_ad)
 
                     sev_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
                     for f in findings:
@@ -3086,7 +3050,9 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
         )
         trend = get_score_trend(db, vendor_id)
         benchmark = get_sector_benchmark(db, vendor_id)
-        tender_matches = get_tender_matches(db, vendor_id, limit=5)
+        # B.4: surface a win-probability on the Active snapshot too (not just Pro
+        # email), so the snapshot PDF shows a differentiated win% column.
+        tender_matches = get_tender_matches(db, vendor_id, limit=5, with_win_probability=True)
         # 4b/4e: per-dimension Trust Score breakdown + absolute sector rank.
         trust_breakdown = get_trust_breakdown(db, vendor_id)
         sector_rank = get_sector_rank(db, vendor_id)
@@ -3103,6 +3069,31 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
             from app.services.vendor_snapshot_generator import generate_vendor_snapshot_pdf
             from app.services.storage import S3Service
 
+            # Notarization visibility: surface the vendor's on-chain notarization
+            # count so completed notarizations are visible in the snapshot rather
+            # than only affecting hidden elevation logic. Best-effort — never
+            # blocks the snapshot.
+            snapshot_extra_rows = []
+            try:
+                from app.core.models_v6 import Proof, VerifyRecord
+                _notal_count = (
+                    db.query(Proof)
+                    .join(VerifyRecord)
+                    .filter(VerifyRecord.vendor_id == vendor_id)
+                    .count()
+                )
+                if _notal_count > 0:
+                    snapshot_extra_rows.append((
+                        "Notarizations",
+                        f"{_notal_count} record{'s' if _notal_count != 1 else ''} "
+                        "anchored on-chain",
+                    ))
+            except Exception as _notal_err:
+                logger.warning(
+                    "[VendorSnapshot] notarization count failed for %s: %s",
+                    vendor_id, _notal_err,
+                )
+
             snapshot_pdf = generate_vendor_snapshot_pdf({
                 "company_name": company,
                 "plan_label": plan_label,
@@ -3116,6 +3107,7 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
                 "sector_rank": sector_rank,
                 "search_impressions_30d": search_impressions_30d,
                 "tender_matches": tender_matches,
+                "extra_rows": snapshot_extra_rows,
             })
             snapshot_url = asyncio.run(
                 S3Service().upload_pdf(snapshot_pdf, f"vendor-snapshot-{vendor_id}")
@@ -3458,6 +3450,11 @@ def buyer_procurement_digest_task(
 
         tier, plan_label = _buyer_tier_from_product(product_type)
 
+        # Single window/date for the whole deliverable: the email header, the
+        # subject and the attached PDF all reference THIS date, so the digest
+        # can't show one "as of" date on the email and another on the PDF.
+        digest_date = datetime.now(timezone.utc).strftime("%d %B %Y")
+
         user = db.query(User).filter(User.id == user_id).first()
         company = (override_company or "").strip() or (getattr(user, "company", None) or "Your organisation")
 
@@ -3589,6 +3586,7 @@ def buyer_procurement_digest_task(
             from app.services.buyer_procurement_report_generator import build_buyer_procurement_report_pdf
             pdf = build_buyer_procurement_report_pdf(
                 db, user_id, tier=tier, company=company, plan_label=plan_label, demo=demo,
+                generated_at=digest_date,
             )
             if pdf:
                 digest_attachments.append((f"BOOPPA-Procurement-Report-{_safe_co}.pdf", pdf))
@@ -3615,7 +3613,10 @@ def buyer_procurement_digest_task(
         else:
             subject = f"Your monthly Procurement Intelligence Digest — {company}"
             header = "Monthly Procurement Intelligence Digest"
-            intro = "Here is your supplier monitoring and tender intelligence for the past 30 days:"
+            intro = (
+                f"Here is your supplier monitoring and tender intelligence "
+                f"<strong>as of {digest_date}</strong>:"
+            )
 
         # Demo/test-checkout preview (Stripe livemode=false): tag the subject so the
         # recipient can tell a fire-all sample from a real cycle deliverable.
@@ -4781,10 +4782,11 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
             return None if risk is None else max(0, min(100, 100 - int(round(risk))))
 
         cur_ad = current.assessment_data if isinstance(current.assessment_data, dict) else {}
-        findings = (
-            cur_ad.get("detailed_findings") or cur_ad.get("findings")
-            or (cur_ad.get("risk_assessment") or {}).get("findings") or []
-        )
+        # Single source of truth — the Quick Scan nests findings under
+        # assessment_data["booppa_report"]["detailed_findings"]. Reading only the
+        # top-level keys here is what produced the "0 vs 2 open findings"
+        # contradiction between the Monitor Report and the Quick Scan.
+        findings = resolve_pdpa_findings(cur_ad)
         dimension_changes = (
             _per_dimension_flips(db, str(user.id), framework, current.id, previous.id)
             if previous else []
@@ -4828,8 +4830,7 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
                 score_history.append({"label": when.strftime("%b"), "score": sc})
             if when is None:
                 continue
-            rad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
-            rfs = rad.get("detailed_findings") or rad.get("findings") or []
+            rfs = resolve_pdpa_findings(r.assessment_data)
             for f in (rfs if isinstance(rfs, list) else []):
                 if isinstance(f, dict):
                     k = _fkey(f)
@@ -4974,10 +4975,11 @@ def run_vendor_pro_pdpa_snapshot_for_user(self, vendor_id: str, vendor_email: st
             return None if risk is None else max(0, min(100, 100 - int(round(risk))))
 
         cur_ad = current.assessment_data if isinstance(current.assessment_data, dict) else {}
-        findings = (
-            cur_ad.get("detailed_findings") or cur_ad.get("findings")
-            or (cur_ad.get("risk_assessment") or {}).get("findings") or []
-        )
+        # Single source of truth — the Quick Scan nests findings under
+        # assessment_data["booppa_report"]["detailed_findings"]. Reading only the
+        # top-level keys here is what produced the "0 vs 2 open findings"
+        # contradiction between the Monitor Report and the Quick Scan.
+        findings = resolve_pdpa_findings(cur_ad)
         dimension_flips = (
             _per_dimension_flips(db, str(user.id), framework, current.id, previous.id)
             if previous else []

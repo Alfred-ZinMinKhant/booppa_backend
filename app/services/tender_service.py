@@ -95,6 +95,71 @@ RISK_PENALTY = {
     "CRITICAL": 0.40,
 }
 
+# ── Per-tender value-fit multiplier ───────────────────────────────────────────
+# Two identical vendors can — and should — score differently on two tenders that
+# differ in size and deadline. These deterministic, explainable factors give the
+# probability engine per-tender signal beyond the shared vendor snapshot, which is
+# what fixed the "constant 33.6% on every tender" defect.
+def _value_fit_mult(tender_value: Optional[float], vendor_typical_value: Optional[float]) -> float:
+    """How well the tender's contract value fits the vendor's demonstrated range.
+
+    When the vendor has a demonstrated typical award size, closeness (in log
+    space) drives the multiplier: a tender near the vendor's proven range scores
+    higher than one an order of magnitude larger or smaller. When the vendor's
+    range is unknown we fall back to an absolute-size curve — very large tenders
+    are marginally harder for an unproven bidder, tiny ones marginally easier —
+    so the factor still varies per tender rather than collapsing to 1.0.
+    """
+    import math
+
+    if not tender_value or tender_value <= 0:
+        return 1.00  # no tender value on file → neutral
+
+    if vendor_typical_value and vendor_typical_value > 0:
+        # log10 distance: 0 == perfect fit, 1 == one order of magnitude off
+        dist = abs(math.log10(tender_value / vendor_typical_value))
+        if dist <= 0.3:      # within ~2x
+            return 1.15
+        elif dist <= 0.7:    # within ~5x
+            return 1.05
+        elif dist <= 1.2:    # within ~15x
+            return 0.92
+        else:                # wildly out of proven range
+            return 0.80
+
+    # No demonstrated range — size-based curve keyed to absolute contract value.
+    if tender_value >= 5_000_000:
+        return 0.85
+    elif tender_value >= 1_000_000:
+        return 0.95
+    elif tender_value >= 100_000:
+        return 1.05
+    else:
+        return 1.10
+
+
+# ── Per-tender deadline-comfort multiplier ────────────────────────────────────
+def _deadline_comfort_mult(closing_date) -> float:
+    """A comfortable runway to prepare a strong bid raises realistic win odds;
+    a tender closing in days penalises a vendor who hasn't started. Neutral when
+    the closing date is unknown."""
+    if not closing_date:
+        return 1.00
+    try:
+        cd = closing_date if closing_date.tzinfo else closing_date.replace(tzinfo=timezone.utc)
+    except AttributeError:
+        return 1.00
+    days = (cd - datetime.now(timezone.utc)).days
+    if days < 0:
+        return 0.80   # already closed / closing today — realistically unwinnable
+    elif days <= 7:
+        return 0.90   # tight — little time to assemble a competitive submission
+    elif days <= 21:
+        return 1.00   # workable
+    else:
+        return 1.05   # comfortable runway
+
+
 # ── RFP product simulated profile upgrades ────────────────────────────────────
 # Express: achieves DEEP verification + 3 evidence items
 RFP_EXPRESS_DEPTH    = "DEEP"
@@ -111,12 +176,14 @@ def _compute_raw_probability(
     sector_percentile: float,
     evidence_count: int,
     risk_signal: str,
+    value_fit_mult: float = 1.0,
+    deadline_mult: float = 1.0,
 ) -> float:
     p_mult  = PROFILE_MULT.get(verification_depth, 0.50)
     s_mult  = _sector_mult(sector_percentile)
     e_mult  = _evidence_mult(evidence_count)
     r_pen   = RISK_PENALTY.get(risk_signal, 1.0)
-    raw     = base_rate * p_mult * s_mult * e_mult * r_pen
+    raw     = base_rate * p_mult * s_mult * e_mult * r_pen * value_fit_mult * deadline_mult
     return min(raw, MAX_PROBABILITY)
 
 
@@ -259,6 +326,34 @@ def compute_tender_win_probability(
         except Exception as e:
             logger.warning(f"[TenderService] Could not count Proof rows for {vendor_id}: {e}")
 
+    # ── Per-tender signal (value fit + deadline comfort) ──────────────────────
+    # The vendor snapshot is identical across every tender, so without a
+    # tender-specific factor two different tenders scored the same vendor at an
+    # identical probability (the constant-33.6% defect). Pull the live tender's
+    # contract value and closing date and fold in deterministic value-fit and
+    # deadline-comfort multipliers so distinct tenders yield distinct odds.
+    tender_value: Optional[float] = None
+    closing_date = None
+    try:
+        gebiz = db.query(GebizTender).filter(
+            GebizTender.tender_no == tender_no
+        ).first()
+        if gebiz:
+            # Coerce to a real number; GebizTender.estimated_value may be None,
+            # a string, or absent — anything non-numeric must fall through to the
+            # neutral (None) path rather than reach the arithmetic below.
+            try:
+                tender_value = float(gebiz.estimated_value) if gebiz.estimated_value is not None else None
+            except (TypeError, ValueError):
+                tender_value = None
+            closing_date = gebiz.closing_date
+    except Exception as e:
+        logger.warning(f"[TenderService] Could not load GebizTender {tender_no} for scoring: {e}")
+
+    vendor_typical_value = _vendor_typical_award_value(db, vendor_id) if vendor_id else None
+    value_fit_mult = _value_fit_mult(tender_value, vendor_typical_value)
+    deadline_mult  = _deadline_comfort_mult(closing_date)
+
     # ── Current probability ───────────────────────────────────────────────────
     current_prob = _compute_raw_probability(
         tender.base_rate,
@@ -266,15 +361,21 @@ def compute_tender_win_probability(
         sector_percentile,
         evidence_count,
         risk_signal,
+        value_fit_mult,
+        deadline_mult,
     )
 
     # ── Projections ───────────────────────────────────────────────────────────
+    # Value-fit and deadline comfort are properties of the tender, not the
+    # vendor's profile, so they carry through the upgrade projections unchanged.
     express_prob = _compute_raw_probability(
         tender.base_rate,
         max_depth(verification_depth, RFP_EXPRESS_DEPTH),
         sector_percentile,
         max(evidence_count, RFP_EXPRESS_EVIDENCE),
         risk_signal,
+        value_fit_mult,
+        deadline_mult,
     )
     complete_prob = _compute_raw_probability(
         tender.base_rate,
@@ -282,6 +383,8 @@ def compute_tender_win_probability(
         sector_percentile,
         max(evidence_count, RFP_COMPLETE_EVIDENCE),
         risk_signal,
+        value_fit_mult,
+        deadline_mult,
     )
 
     express_delta  = round((express_prob  - current_prob) * 100, 1)
@@ -291,6 +394,28 @@ def compute_tender_win_probability(
     gap_reasons = _build_gap_reasons(
         verification_depth, sector_percentile, evidence_count, risk_signal
     )
+    if deadline_mult < 1.0 and closing_date:
+        days = (
+            (closing_date if closing_date.tzinfo else closing_date.replace(tzinfo=timezone.utc))
+            - datetime.now(timezone.utc)
+        ).days
+        if days < 0:
+            gap_reasons.append("This tender has already closed — realistic win probability is near zero")
+        else:
+            gap_reasons.append(
+                f"Only {max(days, 0)} day(s) until close — a compressed timeline lowers realistic win odds"
+            )
+    if value_fit_mult < 1.0 and tender_value:
+        if vendor_typical_value:
+            gap_reasons.append(
+                "Contract value is far from your demonstrated award range — "
+                "agencies favour bidders with comparable proven track records"
+            )
+        else:
+            gap_reasons.append(
+                "This is a large-value tender — building a demonstrated track record "
+                "at this scale strengthens competitiveness"
+            )
 
     # 4.7: Data freshness metadata
     data_freshness: dict | None = None
@@ -350,3 +475,38 @@ _RANK_DEPTH = {v: k for k, v in _DEPTH_RANK.items()}
 def max_depth(a: str, b: str) -> str:
     """Return the deeper of two verification depth strings."""
     return _RANK_DEPTH[max(_DEPTH_RANK.get(a, 0), _DEPTH_RANK.get(b, 0))]
+
+
+def _vendor_typical_award_value(db: Session, vendor_id: Optional[str]) -> Optional[float]:
+    """Best-effort estimate of the vendor's demonstrated contract-value range.
+
+    Averages the vendor's own GeBIZ award amounts, matched by company name
+    against ``GebizAwardHistory.supplier_name``. Returns ``None`` when the vendor
+    has no company name or no matched awards — callers then fall back to the
+    absolute-size value-fit curve. Purely best-effort: any failure yields None.
+    """
+    if not vendor_id:
+        return None
+    try:
+        from app.core.models import User
+        from app.core.models_gebiz import GebizAwardHistory
+        from sqlalchemy import func
+
+        user = db.query(User).filter(User.id == vendor_id).first()
+        company = (user.company if user else None) or ""
+        company = company.strip()
+        if len(company) < 3:
+            return None
+
+        avg_amt = (
+            db.query(func.avg(GebizAwardHistory.award_amt))
+            .filter(
+                GebizAwardHistory.supplier_name.ilike(f"%{company}%"),
+                GebizAwardHistory.award_amt.isnot(None),
+            )
+            .scalar()
+        )
+        return float(avg_amt) if avg_amt else None
+    except Exception as e:
+        logger.warning(f"[TenderService] Could not derive typical award value for {vendor_id}: {e}")
+        return None

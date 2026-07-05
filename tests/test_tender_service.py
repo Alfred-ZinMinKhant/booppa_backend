@@ -54,14 +54,26 @@ def _mock_snapshot(
 
 
 def _make_db(tender=None, snapshot=None):
-    """Return a mock Session where query().filter().first() returns preset objects."""
+    """Return a mock Session where query().filter().first() returns preset objects.
+
+    Only TenderShortlist and VendorStatusSnapshot are answered with fixtures.
+    The service also queries GebizTender (per-tender value/deadline) and
+    VerifyRecord/Proof (evidence backfill); those return None here so the
+    per-tender factors stay neutral and the vendor-only math is what's asserted.
+    """
     db = MagicMock()
 
     def _query_side_effect(model):
+        m = str(model)
+        if "TenderShortlist" in m:
+            result = tender
+        elif "VendorStatusSnapshot" in m:
+            result = snapshot
+        else:
+            result = None
         q = MagicMock()
-        q.filter.return_value.first.return_value = (
-            tender if "TenderShortlist" in str(model) else snapshot
-        )
+        q.filter.return_value.first.return_value = result
+        q.filter.return_value.count.return_value = 0
         return q
 
     db.query.side_effect = _query_side_effect

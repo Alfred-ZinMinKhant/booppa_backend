@@ -240,6 +240,7 @@ def build_buyer_procurement_report_pdf(
     company: str | None = None,
     plan_label: str = "Buyer",
     demo: bool = False,
+    generated_at: str | None = None,
 ) -> bytes:
     """Assemble report data from the DB and render the consolidated PDF.
 
@@ -270,6 +271,9 @@ def build_buyer_procurement_report_pdf(
         "company_name": company,
         "plan_label": plan_label,
         "tier": tier,
+        # Threaded from the digest task so the PDF's "As of" date matches the
+        # email's — a single window/date for the whole deliverable.
+        "generated_at": generated_at,
         "watchlist_summary": summarise_watchlist(suppliers),
         "watched_suppliers": suppliers,
         # Buyers have no VendorSector, so matches come back unclassified — still a

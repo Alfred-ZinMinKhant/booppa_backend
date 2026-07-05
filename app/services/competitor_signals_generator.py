@@ -38,7 +38,11 @@ def _sector_for_vendor(db, vendor_id: str) -> str:
     Falls back to 'IT' if not set — most Singapore gov tenders are IT-adjacent.
     """
     try:
-        from app.core.models import VendorSector
+        # VendorSector lives in models_v6 and is NOT re-exported from models —
+        # importing it from app.core.models raised ImportError, which the except
+        # swallowed, so this always returned the "IT" fallback (competitor intel
+        # then matched nothing and rendered empty). Import from the real module.
+        from app.core.models_v6 import VendorSector
         row = db.query(VendorSector).filter(VendorSector.vendor_id == vendor_id).first()
         return (row.sector or "IT").upper() if row else "IT"
     except Exception as e:
@@ -52,15 +56,18 @@ def _get_signals(db, sector: str, days: int = 90) -> dict:
     Returns a dict with keys: top_suppliers, win_rate_by_size, sector_trend.
     Safe to call even if the table is empty — returns sensible defaults.
     """
+    from sqlalchemy import func
     from app.core.models_gebiz import GebizAwardHistory
 
     since = datetime.now(timezone.utc).date() - timedelta(days=days)
 
     try:
+        # GebizAwardHistory.sector is normally written uppercased, but match
+        # case-insensitively so legacy mixed-case rows still count.
         rows = (
             db.query(GebizAwardHistory)
             .filter(
-                GebizAwardHistory.sector == sector,
+                func.upper(GebizAwardHistory.sector) == (sector or "").upper(),
                 GebizAwardHistory.awarded_date >= since,
             )
             .all()

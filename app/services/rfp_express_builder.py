@@ -424,6 +424,7 @@ class RFPExpressBuilder:
             "gebiz_supplier": False,
             "gebiz_contracts_count": 0,
             "privacy_policy_url": None,
+            "compliance_score": None,
         }
         if db is None:
             return ctx
@@ -438,6 +439,14 @@ class RFPExpressBuilder:
                 user = db.query(User).filter(User.email == self.vendor_id).first()
             if user:
                 ctx["uen"] = getattr(user, "uen", None)
+                # Single source of truth with the Cover Sheet's PDPA score, so
+                # the Supplier Declaration prints the same number (e.g. 66/100)
+                # instead of "not available".
+                try:
+                    from app.services.pdpa_findings import latest_pdpa_score
+                    ctx["compliance_score"] = latest_pdpa_score(db, user.id)
+                except Exception as score_err:
+                    logger.warning(f"PDPA score lookup failed for {self.vendor_id}: {score_err}")
             # VendorScore / VendorSector are keyed by UUID — skip if vendor_id is an email
             is_uuid = _re.match(r'^[0-9a-f-]{36}$', self.vendor_id or '', _re.IGNORECASE)
             if is_uuid:
@@ -801,7 +810,24 @@ class RFPExpressBuilder:
             if response and isinstance(response, str):
                 match = re.search(r'\{.*\}', response, re.DOTALL)
                 if match:
-                    return json.loads(match.group())
+                    ai_answers = json.loads(match.group())
+                    if isinstance(ai_answers, dict):
+                        # Backfill any question the model omitted with its template
+                        # answer, so a partial JSON response never silently drops a
+                        # question (leaving a blank in the deliverable). Missing keys
+                        # get the [FILL IN] template so the placeholder gate still
+                        # forces the buyer to complete them.
+                        missing = [q for q in questions
+                                   if not str(ai_answers.get(q) or "").strip()]
+                        if missing:
+                            self.warnings.append(
+                                f"AI omitted {len(missing)} answer(s); backfilled from template"
+                            )
+                            tmpl = self._template_qa(ctx, missing)
+                            for q in missing:
+                                if q in tmpl:
+                                    ai_answers[q] = tmpl[q]
+                        return ai_answers
         except Exception as e:
             logger.warning(f"AI Q&A generation failed, using template fallback: {e}")
             self.warnings.append("AI Q&A used template fallback")

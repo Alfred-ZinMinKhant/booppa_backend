@@ -28,7 +28,7 @@ CRITICAL INSTRUCTIONS:
 5. Structure responses with: VIOLATION → LEGISLATION → MAX PENALTY → EVIDENCE → DEVELOPER IMPLEMENTATION TASKS (REQUIREMENTS, ACCEPTANCE CRITERIA, RECOMMENDED TOOLS)
 6. Use Singapore-specific terminology: NRIC (not ID), PDPC (not DPA), DNC Registry
 7. Include Chinese/Malay/Tamil translations for key terms when helpful
-8. Emphasize court-admissibility of blockchain evidence anchored on Polygon
+8. Describe blockchain evidence anchored on Polygon as tamper-evident, independently verifiable proof-of-existence (do not claim it is court-admissible or immutable)
 9. Format with clear severity levels: CRITICAL, HIGH, MEDIUM, LOW
 10. Provide specific developer tasks organized by priority and timeline
 
@@ -455,7 +455,7 @@ BLOCKCHAIN EVIDENCE REQUIREMENTS:
 
 VERIFICATION:
 • Transaction: {polygon_explorer_url}/tx/{tx_hash_placeholder}
-• Court-admissible as per Singapore Evidence Act""",
+• Tamper-evident, independently verifiable proof-of-existence""",
                 "severity": "CRITICAL",
                 "triggers": [
                     "nric",
@@ -1100,7 +1100,7 @@ RECOMMENDED IMMEDIATE ACTIONS:
 4. Schedule follow-up audit in 30 days
 
 BLOCKCHAIN EVIDENCE:
-All compliance actions should be documented on Polygon blockchain for court-admissible evidence.
+All compliance actions should be documented on Polygon blockchain for tamper-evident, independently verifiable evidence.
 Transaction hashes should be stored in compliance records.
 
 NEXT STEPS:
@@ -1164,7 +1164,7 @@ Consult legal counsel for interpretation of regulatory requirements."""
     ) -> Dict:
         """Generate blockchain evidence instructions"""
         return {
-            "purpose": "Create court-admissible evidence of compliance actions",
+            "purpose": "Create tamper-evident, independently verifiable evidence of compliance actions",
             "blockchain": f"{settings.active_polygon_network_name} (Proof-of-Stake)",
             "steps": [
                 "1. Generate SHA-256 hash of compliance action documentation",
@@ -1176,8 +1176,8 @@ Consult legal counsel for interpretation of regulatory requirements."""
             "verification": {
                 "url_format": f"{settings.active_polygon_explorer_url.rstrip('/')}/tx/{{transaction_hash}}",
                 "qr_code": "Generate QR code for mobile verification",
-                "court_admissibility": "Recognized under Singapore Evidence Act",
-                "timestamp_proof": "Immutable timestamp on blockchain",
+                "evidentiary_value": "Tamper-evident proof-of-existence; independently verifiable on-chain",
+                "timestamp_proof": "Tamper-evident timestamp on blockchain",
             },
             "cost_estimate": "S$0.01 - S$0.05 per transaction",
             "recommended_actions": [

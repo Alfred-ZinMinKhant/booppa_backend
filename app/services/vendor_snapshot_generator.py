@@ -236,16 +236,28 @@ def generate_vendor_snapshot_pdf(data: Dict[str, Any]) -> bytes:
     matches = data.get("tender_matches") or []
     if matches:
         story.append(Paragraph("Tender matches — should you bid?", s["h2"]))
-        m_rows = [["Tender", "Closes", "Signal"]]
+        # Show the win-probability column only when at least one match carries a
+        # value (Vendor Pro / Active with_win_probability); otherwise omit it so
+        # Active-without-scoring isn't a column of dashes.
+        show_wp = any(m.get("win_probability") is not None for m in matches[:5])
+        header = ["Tender", "Closes", "Signal"] + (["Win %"] if show_wp else [])
+        m_rows = [header]
         for m in matches[:5]:
             cd = m.get("closing_date")
             close = cd.strftime("%d %b %Y") if hasattr(cd, "strftime") else (str(cd) if cd else "—")
-            m_rows.append([
+            row = [
                 Paragraph(_xml_escape((m.get("title") or "")[:80]), s["body"]),
                 Paragraph(close, s["body"]),
                 Paragraph(_xml_escape(m.get("bid_label") or "—"), s["body"]),
-            ])
-        m_tbl = Table(m_rows, colWidths=[3.9 * inch, 1.4 * inch, 1.1 * inch])
+            ]
+            if show_wp:
+                wp = m.get("win_probability")
+                wp_txt = f"{wp:.0f}%" if isinstance(wp, (int, float)) else "—"
+                row.append(Paragraph(wp_txt, s["body"]))
+            m_rows.append(row)
+        col_widths = ([3.4 * inch, 1.3 * inch, 0.9 * inch, 0.8 * inch]
+                      if show_wp else [3.9 * inch, 1.4 * inch, 1.1 * inch])
+        m_tbl = Table(m_rows, colWidths=col_widths)
         m_tbl.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
@@ -262,6 +274,16 @@ def generate_vendor_snapshot_pdf(data: Dict[str, Any]) -> bytes:
         story.append(Spacer(1, 8))
         story.append(Paragraph(
             "Signals are data-driven guidance from real GeBIZ history, not guarantees.", s["small"]))
+        story.append(Spacer(1, 14))
+    else:
+        # Empty matches (new vendor, or no open tenders fit the profile this
+        # cycle). Show an honest zero-state instead of dropping the whole
+        # section, so the report never looks broken to a first-cycle vendor.
+        story.append(Paragraph("Tender matches — should you bid?", s["h2"]))
+        story.append(Paragraph(
+            "No open tenders matched your sector and profile this cycle. Matches "
+            "appear here as relevant GeBIZ tenders open — keep your sector and "
+            "capabilities up to date on your profile to widen the match.", s["body"]))
         story.append(Spacer(1, 14))
 
     story.append(Paragraph("Profile Details", s["h2"]))

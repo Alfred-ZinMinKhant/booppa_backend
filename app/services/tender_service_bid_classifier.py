@@ -97,28 +97,34 @@ def classify_tender(tender: dict, vendor_history: dict | None = None) -> dict:
         }
 
     # ── Compute composite score for BID vs WATCH ──────────────────────────────
-    # Max 100 points. BID threshold: ≥65. WATCH: 35–64. PASS: <35.
+    # Max 100 points. BID threshold: ≥50. WATCH: 30–49. PASS: <30.
+    # Thresholds are calibrated for HONEST sector-level signals (no fabricated
+    # per-vendor win rates — see build_vendor_history): the size-fit and deadline
+    # factors carry real weight, so a strong sector fit can reach BID without
+    # relying on an agency-relationship signal we don't actually have.
 
     score = 0
     reasons: list[str] = []
 
-    # Factor 1: Sector match (max 30pts)
+    # Factor 1: Sector fit (max 30pts). "Sector award rate" is a sector-level
+    # estimate, NOT a verified per-vendor win rate — worded as such.
     sector_win_rate = float(h.get("sector_win_rate") or 0.15)
     if sector_win_rate >= 0.30:
         score += 30
-        reasons.append(f"Strong sector match (win rate {sector_win_rate:.0%})")
+        reasons.append(f"Strong sector fit (sector award rate ~{sector_win_rate:.0%}, est.)")
     elif sector_win_rate >= 0.15:
         score += 18
-        reasons.append(f"Moderate sector match (win rate {sector_win_rate:.0%})")
+        reasons.append(f"Moderate sector fit (sector award rate ~{sector_win_rate:.0%}, est.)")
     elif sector_win_rate > 0:
         score += 8
-        reasons.append(f"Weak sector match (win rate {sector_win_rate:.0%})")
+        reasons.append(f"Weak sector fit (sector award rate ~{sector_win_rate:.0%}, est.)")
 
-    # Factor 2: Agency relationship (max 20pts)
+    # Factor 2: Agency relationship (max 20pts). Only contributes when a real
+    # agency signal exists (default 0.0 → no points; honestly "no relationship").
     agency_win_rate = float(h.get("agency_win_rate") or 0)
     if agency_win_rate >= 0.25:
         score += 20
-        reasons.append(f"Strong agency relationship ({agency}: {agency_win_rate:.0%} win rate)")
+        reasons.append(f"Strong agency relationship ({agency}: {agency_win_rate:.0%})")
     elif agency_win_rate >= 0.10:
         score += 10
         reasons.append(f"Prior experience with {agency}")
@@ -159,14 +165,14 @@ def classify_tender(tender: dict, vendor_history: dict | None = None) -> dict:
         reasons.append(f"{agency} large contracts are highly competitive")
 
     # ── Final classification ──────────────────────────────────────────────────
-    if score >= 65:
+    if score >= 50:
         label = "BID"
         primary_reason = (
             f"Score {score}/100 — " + "; ".join(reasons[:2]) + "."
             if reasons else f"Score {score}/100 — strong overall fit."
         )
         confidence = min(95, 60 + score // 3)
-    elif score >= 35:
+    elif score >= 30:
         label = "WATCH"
         primary_reason = (
             f"Score {score}/100 — " + "; ".join(reasons[:2]) + ". "
@@ -251,8 +257,12 @@ def build_vendor_history(db, vendor_id: str, sector: str, agency: str | None = N
       - agency_win_rate: 0.0 (no real signal exists yet) — classify_tender's
         scoring treats this as "no prior relationship", which is the
         epistemically honest default.
-      - avg_bid_size: derived from LeadCapture.avg_tender_value if present,
-        else None (classify_tender skips the size-fit factor when None).
+      - avg_bid_size: derived from LeadCapture.avg_tender_value if the vendor
+        self-reported it; else the SECTOR MEDIAN award value from real GeBIZ
+        award history (a sector-level estimate, tagged avg_bid_size_source=
+        "sector_median"), else None. This is deliberately a sector figure, not a
+        fabricated per-vendor number, so the classifier's contract-size-fit
+        factor can contribute instead of leaving every tender stuck at WATCH.
       - open_bids: count of DISTINCT tender_no the vendor checked in the last
         14 days via TenderCheckLookup. This is a real, measured proxy for
         "active attention", not a count of actual open bids — documented
@@ -299,6 +309,21 @@ def build_vendor_history(db, vendor_id: str, sector: str, agency: str | None = N
     except Exception as e:
         logger.warning("[VendorHistory] LeadCapture lookup failed for %s: %s", vendor_id, e)
 
+    # B.2 (honest sector signals): when the vendor hasn't self-reported an
+    # avg_bid_size, fall back to the SECTOR MEDIAN award value from real GeBIZ
+    # award history. This is a defensible SECTOR-level number (not a fabricated
+    # per-vendor win rate), and it lets classify_tender's contract-size-fit
+    # factor contribute instead of being skipped — which is what left every
+    # tender stuck at WATCH. Explicitly NOT a vendor-specific figure.
+    if history["avg_bid_size"] is None:
+        try:
+            median = _sector_median_award(db, sector)
+            if median:
+                history["avg_bid_size"] = median
+                history["avg_bid_size_source"] = "sector_median"
+        except Exception as e:
+            logger.warning("[VendorHistory] sector median lookup failed for %s: %s", vendor_id, e)
+
     try:
         from app.core.models_vendor_pro import TenderCheckLookup
         since = datetime.now(timezone.utc) - timedelta(days=14)
@@ -316,6 +341,42 @@ def build_vendor_history(db, vendor_id: str, sector: str, agency: str | None = N
         logger.warning("[VendorHistory] TenderCheckLookup lookup failed for %s: %s", vendor_id, e)
 
     return history
+
+
+def _sector_median_award(db, sector: str | None) -> float | None:
+    """Median award value for a sector from real GeBIZ award history.
+
+    A defensible SECTOR-level signal (not per-vendor). Returns None when there
+    isn't enough data (fewer than 3 awards) so the size-fit factor stays off
+    rather than resting on a single noisy data point.
+    """
+    if not sector:
+        return None
+    try:
+        from sqlalchemy import func
+        from app.core.models_gebiz import GebizAwardHistory
+
+        amounts = [
+            float(r[0])
+            for r in db.query(GebizAwardHistory.award_amt)
+            .filter(
+                func.upper(GebizAwardHistory.sector) == sector.upper(),
+                GebizAwardHistory.award_amt.isnot(None),
+                GebizAwardHistory.award_amt > 0,
+            )
+            .all()
+            if r[0] is not None
+        ]
+    except Exception as e:
+        logger.warning("[VendorHistory] sector median query failed: %s", e)
+        return None
+
+    if len(amounts) < 3:
+        return None
+    amounts.sort()
+    n = len(amounts)
+    mid = n // 2
+    return amounts[mid] if n % 2 else (amounts[mid - 1] + amounts[mid]) / 2
 
 
 def bid_label_to_html_badge(label: str) -> str:

@@ -364,6 +364,17 @@ def _cover_page(pack: dict, doc_meta: dict) -> list:
     elements.append(Paragraph(_xml_escape(doc_meta["title"]), S["h1"]))
     elements.append(HRFlowable(width=INNER_W, color=TEAL, thickness=2, spaceAfter=6*mm))
 
+    # Per-doc anchor state — single source of truth for BOTH the header Status
+    # line and the chain box below. ANCHORED only when a real tx_hash exists;
+    # otherwise the pack is still mid-anchor and must say so (was hardcoded
+    # "ANCHORED" here, contradicting a "PENDING" chain box on the same page).
+    anchor = pack.get("anchoring", {}).get(doc_meta["doc_type"], {})
+    _is_anchored = bool(isinstance(anchor, dict) and anchor.get("tx_hash"))
+    status_text = (
+        "ANCHORED · Polygon Amoy testnet" if _is_anchored
+        else "PENDING · anchoring in progress"
+    )
+
     # Org block — assessed entity is the CUSTOMER (incl. their UEN).
     elements.append(_kv_table([
         ("Organisation",   pack["organisation"]),
@@ -372,12 +383,11 @@ def _cover_page(pack: dict, doc_meta: dict) -> list:
         ("Framework",      pack["framework"]),
         ("Generated",      pack["generated_at"][:10]),
         ("Next Review",    doc_meta.get("next_review", "12 months from effective date")),
-        ("Status",         "ANCHORED · Polygon Amoy testnet"),
+        ("Status",         status_text),
     ]))
     elements.append(Spacer(1, 9*mm))
 
     # Blockchain anchoring box
-    anchor = pack.get("anchoring", {}).get(doc_meta["doc_type"], {})
     tx_hash   = anchor.get("tx_hash", "PENDING")
     doc_hash  = pack.get("hashes", {}).get(doc_meta["doc_type"], "")
     explorer_base = settings.active_polygon_explorer_url.rstrip("/")

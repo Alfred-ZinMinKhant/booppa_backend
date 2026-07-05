@@ -11,7 +11,7 @@ Ported onto Booppa's Celery + service layer:
 
 FIX #2 (preserved verbatim): notarize_csp_record builds a DETERMINISTIC SHA-256 hash from
 the serialized record content — not from datetime.now() — so two notarizations of the same
-record produce the same hash, making the blockchain evidence court-admissible.
+record produce the same hash, making the blockchain evidence tamper-evident.
 
 FIX #3 (preserved): CDD/UBO/manual screening runs OFAC + UN sanctions screening; hits escalate
 the client to VERY_HIGH risk + edd_required.
