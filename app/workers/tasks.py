@@ -3558,24 +3558,53 @@ def buyer_procurement_digest_task(
           {alerting_line}
         </div>"""
 
-        # ── PDF attachment (Pro / Enterprise) ──────────────────────────────────
+        # ── PDF attachments ────────────────────────────────────────────────────
         digest_attachments: list[tuple[str, bytes]] = []
-        if tier in ("pro", "enterprise"):
-            try:
-                from app.services.buyer_procurement_report_generator import build_buyer_procurement_report_pdf
-                _safe_co = (company or "report").replace("/", "-").replace(" ", "-")
-                pdf = build_buyer_procurement_report_pdf(
-                    db, user_id, tier=tier, company=company, plan_label=plan_label,
-                )
-                if pdf:
-                    digest_attachments.append((f"BOOPPA-Procurement-Report-{_safe_co}.pdf", pdf))
-            except Exception as rep_err:
-                logger.warning("[BuyerDigest] report PDF failed for %s: %s", user_id, rep_err)
+        _safe_co = (company or "report").replace("/", "-").replace(" ", "-")
 
+        # Welcome pack — every tier, first cycle only. A static onboarding artifact
+        # that describes what the plan includes and how to use each capability, so
+        # even Starter (Buyer Essentials) buyers get a PDF deliverable on checkout.
+        welcome_attached = False
+        if is_first_cycle:
+            try:
+                from app.services.buyer_essentials_pack_generator import generate_buyer_essentials_pack
+                welcome_pdf = generate_buyer_essentials_pack({
+                    "company": company,
+                    "buyer_email": user_email,
+                    "plan_label": plan_label,
+                })
+                if welcome_pdf:
+                    digest_attachments.append((f"BOOPPA-Welcome-Pack-{_safe_co}.pdf", welcome_pdf))
+                    welcome_attached = True
+            except Exception as wp_err:
+                logger.warning("[BuyerDigest] welcome pack PDF failed for %s: %s", user_id, wp_err)
+
+        # Procurement Intelligence Report — every tier (Starter included). The
+        # renderer tailors the "what your plan includes" copy per tier, so the
+        # Starter report stays honest about its scope. `demo=demo` populates the
+        # comparison table with the SG sample estate on test-mode checkouts.
+        report_attached = False
+        try:
+            from app.services.buyer_procurement_report_generator import build_buyer_procurement_report_pdf
+            pdf = build_buyer_procurement_report_pdf(
+                db, user_id, tier=tier, company=company, plan_label=plan_label, demo=demo,
+            )
+            if pdf:
+                digest_attachments.append((f"BOOPPA-Procurement-Report-{_safe_co}.pdf", pdf))
+                report_attached = True
+        except Exception as rep_err:
+            logger.warning("[BuyerDigest] report PDF failed for %s: %s", user_id, rep_err)
+
+        _attached_labels = []
+        if welcome_attached:
+            _attached_labels.append("your Welcome Pack (PDF)")
+        if report_attached:
+            _attached_labels.append("your Procurement Intelligence Report (PDF)")
         attachments_note = (
             '<p style="font-size:13px;color:#334155;margin:16px 0 0;">📎 <strong>Attached:</strong> '
-            'your monthly Procurement Intelligence Report (PDF) — file it, forward it, or take it into a review.</p>'
-            if digest_attachments else ""
+            f'{" and ".join(_attached_labels)} — file it, forward it, or take it into a review.</p>'
+            if _attached_labels else ""
         )
 
         # ── Email framing ──────────────────────────────────────────────────────
@@ -3798,12 +3827,14 @@ def buyer_supplier_drift_alert_task(
     flip into FLAGGED/CRITICAL, or an approaching certificate expiry. Tiered like
     every other buyer deliverable:
 
-      * Starter          → alert email only (the change, and what to do).
+      * Starter          → + an attached un-anchored verification snapshot PDF
+        capturing the supplier's new state (no gas / no on-chain anchor).
       * Pro / Enterprise → + an attached anchored Due-Diligence Certificate
         capturing the supplier's new verified state for the buyer's audit file.
 
-    In demo mode the certificate uses a mock tx hash (no gas). Dedup / threshold
-    logic lives in the sweep that enqueues this task; here we just render + send.
+    Either way the alert email now carries a PDF for every tier. In demo mode the
+    certificate uses a mock tx hash (no gas). Dedup / threshold logic lives in the
+    sweep that enqueues this task; here we just render + send.
     """
     db = SessionLocal()
     try:
@@ -3816,7 +3847,8 @@ def buyer_supplier_drift_alert_task(
         tier, plan_label = _buyer_tier_from_product(product_type)
         wants_cert = tier in ("pro", "enterprise")
 
-        # Certificate attachment for Pro/Enterprise; Starter gets email only.
+        # Every tier gets a PDF: an anchored certificate for Pro/Enterprise, or an
+        # un-anchored verification snapshot for Starter.
         pdf = None
         tx_hash = None
         if wants_cert:
@@ -3844,6 +3876,13 @@ def buyer_supplier_drift_alert_task(
             data["tx_hash"] = tx_hash
             data["anchored"] = anchored
             pdf = generate_certificate_pdf(data)
+        else:
+            # Starter — un-anchored snapshot (is_certificate=False, no tx_hash).
+            data = build_certificate_data(
+                db, buyer_user_id, vendor_ref,
+                vendor_name=vendor_name, is_certificate=False,
+            )
+            pdf = generate_certificate_pdf(data)
 
         demo_tag = "[DEMO] " if demo else ""
         _safe = _xml_escape(vendor_name)
@@ -3857,8 +3896,9 @@ def buyer_supplier_drift_alert_task(
             )
         else:
             attach_line = (
-                '<p style="font-size:13px;color:#334155;">Anchored Due-Diligence Certificates '
-                'for every change are included on Pro and Enterprise plans.</p>'
+                '<p style="font-size:13px;color:#334155;">📎 <strong>Attached:</strong> a '
+                'verification snapshot capturing this supplier\'s new state. Anchored, '
+                'audit-grade Due-Diligence Certificates are included on Pro and Enterprise plans.</p>'
             )
 
         body_inner = f"""
@@ -3880,8 +3920,13 @@ def buyer_supplier_drift_alert_task(
                 </p>"""
 
         attachments = None
-        if wants_cert and pdf:
-            attachments = [(f"BOOPPA-Supplier-Due-Diligence-Certificate-{_safe_file}.pdf", pdf)]
+        if pdf:
+            _pdf_name = (
+                f"BOOPPA-Supplier-Due-Diligence-Certificate-{_safe_file}.pdf"
+                if wants_cert else
+                f"BOOPPA-Supplier-Verification-Snapshot-{_safe_file}.pdf"
+            )
+            attachments = [(_pdf_name, pdf)]
 
         email_svc = EmailService()
         ok = asyncio.run(email_svc.send_html_email(
@@ -4027,10 +4072,12 @@ def buyer_tender_fit_push_task(
     ingested: a tender in a sector the buyer already sources from (one or more of
     their watched suppliers operate there). Unlike the vendor tender alert ("worth
     bidding on"), the buyer framing is evaluate/shortlist/publish — the buyer is on
-    the procuring side. Email-only for every tier; dedup lives in the sweep.
+    the procuring side. Carries a one-page Tender Opportunity Brief PDF for every
+    tier; dedup lives in the sweep.
     """
     db = SessionLocal()
     try:
+        from app.core.models import User
         from app.services.email_service import EmailService
         from app.services.email_layout import branded_email_html
         from app.services.supplier_due_diligence_generator import _xml_escape
@@ -4066,6 +4113,32 @@ def buyer_tender_fit_push_task(
             f'border-radius:8px;font-weight:bold;display:inline-block;">View tender →</a></p>'
         )
 
+        # One-page Tender Opportunity Brief PDF — attached for every tier so the
+        # push is a filable deliverable, not just an email.
+        brief_pdf = None
+        try:
+            from app.services.tender_brief_generator import generate_tender_brief_pdf
+            _company = None
+            _u = db.query(User).filter(User.id == buyer_user_id).first()
+            if _u:
+                _company = getattr(_u, "company_name", None) or getattr(_u, "full_name", None)
+            brief_pdf = generate_tender_brief_pdf({
+                "company_name": _company,
+                "plan_label": plan_label,
+                "tender_no": tender_no,
+                "tender_title": tender_title,
+                "tender_agency": tender_agency,
+                "tender_url": tender_url,
+                "closing_label": closing_label,
+                "sector": sector,
+                "matched_names": names,
+            })
+        except Exception as brief_err:
+            logger.warning(
+                "[TenderPush] brief PDF failed buyer=%s tender=%s: %s",
+                buyer_user_id, tender_no, brief_err,
+            )
+
         demo_tag = "[DEMO] " if demo else ""
         subject = f"{demo_tag}High-fit tender for {sector_txt}: {title[:70]}"
 
@@ -4076,6 +4149,7 @@ def buyer_tender_fit_push_task(
                   <p style="margin:6px 0 0;font-size:13px;color:#065f46;">{agency} · closes {closes}</p>
                 </div>
                 {match_line}
+                {'<p style="font-size:13px;color:#334155;margin:14px 0 0;">📎 <strong>Attached:</strong> a one-page Tender Opportunity Brief — file it, forward it to your procurement lead, or take it into an evaluation.</p>' if brief_pdf else ''}
                 {cta}
                 <p style="margin:24px 0 0;font-size:12px;color:#64748b;">
                   You're receiving this because a newly-published tender matched a sector your
@@ -4083,6 +4157,8 @@ def buyer_tender_fit_push_task(
                   Intelligence Digest — this is the early heads-up.
                 </p>"""
 
+        _safe_tno = (tender_no or "tender").replace("/", "-").replace(" ", "-")
+        attachments = [(f"BOOPPA-Tender-Opportunity-Brief-{_safe_tno}.pdf", brief_pdf)] if brief_pdf else None
         email_svc = EmailService()
         ok = asyncio.run(email_svc.send_html_email(
             to_email=buyer_email,
@@ -4091,6 +4167,7 @@ def buyer_tender_fit_push_task(
                 body_inner, title="High-fit tender alert",
                 preheader=f"{sector_txt} · {agency}",
             ),
+            attachments=attachments,
         ))
         if not ok:
             logger.error(
@@ -4225,6 +4302,11 @@ def buyer_demo_fireall_task(
       • #3 snapshot     → instant watchlist-add verification snapshot.
       • #2 certificate  → anchored Due-Diligence Certificate (mock tx hash, no gas).
       • #1 drift alert  → a sample supplier-status-change alert.
+
+    With no real watchlist, each arm draws from the populated SG demo estate
+    (`buyer_demo_samples`) so the deliverables render against varied, believable
+    suppliers — a CRITICAL for the drift alert, a healthy one for the certificate,
+    a FLAGGED one for the snapshot — rather than one shared placeholder.
       • Procurement Intelligence Digest (welcome framing).
 
     Deliverables that anchor to the chain use a deterministic mock hash in demo mode
@@ -4263,9 +4345,43 @@ def buyer_demo_fireall_task(
                     sample_name = it.vendor_name or it.vendor_ref
         except Exception:
             pass
+
+        # No real watchlist → source each arm from the populated SG demo estate so
+        # the drift / certificate / snapshot render against varied, believable
+        # suppliers (a CRITICAL, a healthy, a FLAGGED) instead of one placeholder.
+        # Each arm's row shape matches get_watched_suppliers_with_status.
+        drift_ref = drift_name = None
+        cert_ref = cert_name = None
+        snap_ref = snap_name = None
+        demo_matched: list[str] = []
         if not sample_ref:
+            try:
+                from app.services.buyer_demo_samples import (
+                    demo_supplier,
+                    demo_watched_suppliers,
+                )
+                crit = demo_supplier("critical")
+                healthy = demo_supplier("healthy")
+                flagged = demo_supplier("flagged")
+                drift_ref, drift_name = crit["vendor_ref"], crit["vendor_name"]
+                cert_ref, cert_name = healthy["vendor_ref"], healthy["vendor_name"]
+                snap_ref, snap_name = flagged["vendor_ref"], flagged["vendor_name"]
+                demo_matched = [r["vendor_name"] for r in demo_watched_suppliers(4)]
+            except Exception as e:  # pragma: no cover
+                logger.warning("[DemoFireAll] demo estate load failed: %s", e)
+            # Legacy single-placeholder fallback if the demo estate can't load.
             sample_ref = "sample-supplier"
             sample_name = "Sample Supplier Pte Ltd"
+
+        # Per-arm suppliers: real watchlist item if present, else the varied demo
+        # estate, else the single placeholder.
+        drift_ref = drift_ref or sample_ref
+        drift_name = drift_name or sample_name
+        cert_ref = cert_ref or sample_ref
+        cert_name = cert_name or sample_name
+        snap_ref = snap_ref or sample_ref
+        snap_name = snap_name or sample_name
+        matched_for_push = demo_matched or [sample_name]
 
         # ── Pick a representative tender ────────────────────────────────────────
         tender_no = tender_title = tender_agency = tender_url = closing_label = None
@@ -4300,7 +4416,7 @@ def buyer_demo_fireall_task(
             buyer_tender_fit_push_task.delay(
                 buyer_user_id, buyer_email, tender_no, tender_title,
                 tender_agency, tender_url, closing_label, sector,
-                matched_names=[sample_name], product_type=product_type, demo=True,
+                matched_names=matched_for_push, product_type=product_type, demo=True,
             )
             fired += 1
         except Exception as e:  # pragma: no cover
@@ -4308,7 +4424,7 @@ def buyer_demo_fireall_task(
 
         try:
             buyer_supplier_snapshot_task.delay(
-                buyer_user_id, buyer_email, sample_ref, sample_name,
+                buyer_user_id, buyer_email, snap_ref, snap_name,
                 None, product_type, is_certificate=False, demo=True,
             )
             fired += 1
@@ -4317,7 +4433,7 @@ def buyer_demo_fireall_task(
 
         try:
             buyer_supplier_snapshot_task.delay(
-                buyer_user_id, buyer_email, sample_ref, sample_name,
+                buyer_user_id, buyer_email, cert_ref, cert_name,
                 None, product_type, is_certificate=True, demo=True,
             )
             fired += 1
@@ -4326,8 +4442,8 @@ def buyer_demo_fireall_task(
 
         try:
             buyer_supplier_drift_alert_task.delay(
-                buyer_user_id, buyer_email, sample_ref, sample_name,
-                "score_drop", f"{sample_name} — Trust score dropped",
+                buyer_user_id, buyer_email, drift_ref, drift_name,
+                "score_drop", f"{drift_name} — Trust score dropped",
                 "<p>This supplier's Trust score fell in the latest scan. Review before "
                 "your next award.</p>",
                 product_type=product_type, demo=True,

@@ -239,12 +239,17 @@ def build_buyer_procurement_report_pdf(
     tier: str = "pro",
     company: str | None = None,
     plan_label: str = "Buyer",
+    demo: bool = False,
 ) -> bytes:
     """Assemble report data from the DB and render the consolidated PDF.
 
     Single source of truth shared by the monthly digest and (future) on-demand
     download so the two never diverge. Always renders — an empty watchlist yields
     the tender-led fallback layout.
+
+    `demo=True` (Stripe test-checkout only) substitutes a sample supplier estate
+    when the buyer's real watchlist is empty, so the comparison table renders with
+    believable data instead of the empty-state fallback.
     """
     from app.core.models import User
     from app.services.buyer_procurement_insights import (
@@ -257,6 +262,9 @@ def build_buyer_procurement_report_pdf(
         company = (getattr(user, "company", None) or "Your Organisation")
 
     suppliers = get_watched_suppliers_with_status(db, user_id)
+    if demo and not suppliers:
+        from app.services.buyer_demo_samples import demo_watched_suppliers
+        suppliers = demo_watched_suppliers()
 
     return generate_buyer_procurement_report_pdf({
         "company_name": company,
