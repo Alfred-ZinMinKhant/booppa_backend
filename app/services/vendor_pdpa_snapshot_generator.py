@@ -27,6 +27,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 
 from app.core.company import COMPANY_NAME
 from app.services.pdf_logo import draw_logo_header
+from app.services.tx_utils import is_real_onchain_tx
 
 logger = logging.getLogger(__name__)
 
@@ -233,9 +234,11 @@ def generate_vendor_pdpa_snapshot_pdf(data: Dict[str, Any]) -> bytes:
             story.append(Spacer(1, 3))
     story.append(Spacer(1, 16))
 
-    # Provenance / anchoring — honest testnet disclosure
+    # Provenance / anchoring — honest testnet disclosure.
+    # Gate on a real on-chain tx so a PENDING/sentinel/demo value is never
+    # rendered as "tx …" (consistent with every other anchor renderer).
     anchor_tx = data.get("anchor_tx")
-    if anchor_tx:
+    if is_real_onchain_tx(anchor_tx):
         story.append(Paragraph(
             f"Integrity anchor: SHA-256 of this snapshot recorded on the Polygon <b>Amoy "
             f"testnet</b> (tx {_xml_escape(anchor_tx)}). A testnet timestamp evidences existence "
