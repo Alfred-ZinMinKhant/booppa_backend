@@ -157,14 +157,15 @@ def generate_certificate_pdf(data: Dict[str, Any]) -> bytes:
 
     # ── Verification / anchor block ─────────────────────────────────────────────
     story.append(Paragraph("Verification record", s["h2"]))
-    if is_cert and is_real_onchain_tx(tx_hash):
+    # Only surface a transaction hash when the record is genuinely anchored on a
+    # real, confirmed on-chain tx. A demo/test-checkout value (demo_tx_hash) is
+    # shape-valid but never mined (anchored=False), so it must NOT be rendered as
+    # a "Transaction reference" — that was how a fabricated hash reached buyers.
+    if is_cert and anchored and is_real_onchain_tx(tx_hash):
         chain = "Polygon Amoy"
-        anchored_line = (
-            f"This record's SHA-256 fingerprint is anchored on {chain}. Transaction:"
-            if anchored else
-            "This record carries a pending on-chain anchor. Transaction reference:"
-        )
-        story.append(Paragraph(anchored_line, s["body"]))
+        story.append(Paragraph(
+            f"This record's SHA-256 fingerprint is anchored on {chain}. Transaction:",
+            s["body"]))
         story.append(Spacer(1, 4))
         story.append(Paragraph(_xml_escape(tx_hash), s["mono"]))
     else:

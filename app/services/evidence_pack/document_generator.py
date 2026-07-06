@@ -758,18 +758,28 @@ def generate_evidence_pack(intake: dict, scan_evidence: dict | None = None) -> d
     }
 
     for doc_type in doc_types:
-        try:
-            print(f"  Generating {doc_type}...")
-            doc      = generate_document(doc_type, intake, scan_evidence)
-            doc_json = json.dumps(doc, sort_keys=True)
-            doc_hash = hashlib.sha256(doc_json.encode()).hexdigest()
+        # Retry once in-place: a transient AI/JSON-parse failure on a single doc
+        # should self-heal here rather than fail the whole pack downstream (which
+        # would regenerate AND re-anchor all 7 docs, costing gas). The pack is
+        # sold as SEVEN documents, so a doc left in `errors` is caught by the
+        # completeness gate in the fulfillment task.
+        last_err: Exception | None = None
+        for attempt in range(2):
+            try:
+                print(f"  Generating {doc_type}..." + (" (retry)" if attempt else ""))
+                doc      = generate_document(doc_type, intake, scan_evidence)
+                doc_json = json.dumps(doc, sort_keys=True)
+                doc_hash = hashlib.sha256(doc_json.encode()).hexdigest()
 
-            pack["documents"][doc_type] = doc
-            pack["hashes"][doc_type]    = doc_hash
-
-        except Exception as e:
-            pack["errors"].append({"doc_type": doc_type, "error": str(e)})
-            print(f"  ERROR on {doc_type}: {e}")
+                pack["documents"][doc_type] = doc
+                pack["hashes"][doc_type]    = doc_hash
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                print(f"  ERROR on {doc_type} (attempt {attempt + 1}): {e}")
+        if last_err is not None:
+            pack["errors"].append({"doc_type": doc_type, "error": str(last_err)})
 
     # Master hash over all 7 document hashes
     master_input     = json.dumps(pack["hashes"], sort_keys=True)
