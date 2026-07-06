@@ -31,6 +31,7 @@ from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 from app.core.config import settings
 from app.core.company import COMPANY_NAME
 from app.services.pdf_logo import LOGO_PATH
+from app.services.tx_utils import is_real_onchain_tx
 
 
 try:
@@ -369,7 +370,11 @@ def _cover_page(pack: dict, doc_meta: dict) -> list:
     # otherwise the pack is still mid-anchor and must say so (was hardcoded
     # "ANCHORED" here, contradicting a "PENDING" chain box on the same page).
     anchor = pack.get("anchoring", {}).get(doc_meta["doc_type"], {})
-    _is_anchored = bool(isinstance(anchor, dict) and anchor.get("tx_hash"))
+    # ANCHORED only for a real, well-formed on-chain tx — never a session id,
+    # order ref, or PENDING sentinel (GTM finding: a simulated value must never
+    # be presented as blockchain proof).
+    _anchor_tx = anchor.get("tx_hash") if isinstance(anchor, dict) else None
+    _is_anchored = is_real_onchain_tx(_anchor_tx)
     status_text = (
         "ANCHORED · Polygon Amoy testnet" if _is_anchored
         else "PENDING · anchoring in progress"
@@ -387,13 +392,15 @@ def _cover_page(pack: dict, doc_meta: dict) -> list:
     ]))
     elements.append(Spacer(1, 9*mm))
 
-    # Blockchain anchoring box
-    tx_hash   = anchor.get("tx_hash", "PENDING")
+    # Blockchain anchoring box — only surface a tx / verify URL when it is a
+    # real on-chain hash; otherwise show PENDING so a non-tx value can never be
+    # rendered as a transaction the buyer might rely on.
+    tx_hash   = _anchor_tx if _is_anchored else "PENDING"
     doc_hash  = pack.get("hashes", {}).get(doc_meta["doc_type"], "")
     explorer_base = settings.active_polygon_explorer_url.rstrip("/")
-    verify_url = anchor.get("verification_url") or (
-        f"{explorer_base}/tx/{tx_hash}" if tx_hash and tx_hash != "PENDING" else "Pending"
-    )
+    verify_url = (
+        anchor.get("verification_url") or f"{explorer_base}/tx/{tx_hash}"
+    ) if _is_anchored else "Pending"
 
     def _chain_cell(text, color):
         return Paragraph(_xml_escape(text), ParagraphStyle(

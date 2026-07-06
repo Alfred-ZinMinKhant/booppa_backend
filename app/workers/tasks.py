@@ -2420,6 +2420,7 @@ def fulfill_cover_sheet_task(
                 # were generated but never connected to the cover sheet).
                 try:
                     from app.core.models_v13 import EvidencePack
+                    from app.services.tx_utils import is_real_onchain_tx
 
                     _pack = (
                         db.query(EvidencePack)
@@ -2442,11 +2443,20 @@ def fulfill_cover_sheet_task(
                             "review_log": "Periodic Security Review Log",
                         }
                         _bh = _pack.hashes if isinstance(_pack.hashes, dict) else {}
+                        # Only list a doc the customer actually received. A doc
+                        # can be anchored (hash written on-chain) yet fail to
+                        # build/upload — listing it on the cover sheet as
+                        # "anchored" while the buyer never got the file was the
+                        # forensic finding (Security Review Log shown anchored,
+                        # not delivered). Gate on presence in download_urls.
+                        _dl = _pack.download_urls if isinstance(_pack.download_urls, dict) else {}
                         for dt, label in BCEP_LABELS.items():
                             _anc = _pack.anchoring.get(dt) if isinstance(_pack.anchoring.get(dt), dict) else {}
                             _tx = _anc.get("tx_hash")
-                            if not _tx:
-                                continue  # only include confirmed-anchored docs
+                            if not is_real_onchain_tx(_tx):
+                                continue  # only include confirmed real on-chain anchors
+                            if not _dl.get(dt):
+                                continue  # anchored but not delivered — never list
                             anchored_documents.append({
                                 "filename": f"{label} ({_pack.pack_id})",
                                 "descriptor": label,
@@ -2458,16 +2468,33 @@ def fulfill_cover_sheet_task(
                 except Exception as _bcep_err:
                     logger.warning("[CoverSheet] BCEP link failed (non-blocking): %s", _bcep_err)
 
-                # PDPA + VP status from latest matching reports
-                pdpa_report = (
+                # PDPA + VP status from latest matching report.
+                # Deliverable-selection guard (forensic finding: an empty-score
+                # QA artifact — "Vendor: Test", suite-b.booppa.io, all scores
+                # "—" — was picked up as the cover sheet's PDPA source). Only a
+                # *completed*, *real-scored*, *non-test* scan may back a paying
+                # customer's deliverable. Scan the newest-first candidates and
+                # take the first that qualifies rather than blindly taking the
+                # latest row (which could be a stub or a scan that produced no
+                # dimension scores).
+                _pdpa_candidates = (
                     db.query(Report)
                     .filter(
                         Report.owner_id == user.id,
                         Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
+                        Report.status == "completed",
                     )
                     .order_by(Report.created_at.desc())
-                    .first()
+                    .limit(10)
+                    .all()
                 )
+                pdpa_report = None
+                for _cand in _pdpa_candidates:
+                    _cad = _cand.assessment_data if isinstance(_cand.assessment_data, dict) else {}
+                    if resolve_pdpa_score(_cad) is None:
+                        continue  # empty-score scan — not a deliverable
+                    pdpa_report = _cand
+                    break
                 if pdpa_report:
                     pdpa_status = pdpa_report.status.title() if pdpa_report.status else "Pending"
                     pdpa_tx_hash = pdpa_report.tx_hash
@@ -8207,7 +8234,50 @@ def fulfill_evidence_pack_task(self, evidence_pack_id: str):
             except Exception as pe:
                 logger.error("[EvidencePack] PDF/upload failed for %s: %s", dt, pe)
 
-        # 4. Persist the finished pack.
+        # 4. Completeness gate — the pack is sold as SEVEN governance documents.
+        # A partial pack (a doc failed to generate, or built but failed to
+        # upload) must NOT be delivered as "ready": the forensic finding was a
+        # 5/7 pack shipped to a paying customer with the cover sheet still
+        # listing the two missing docs. Require every DOC_META doc_type to be
+        # both generated AND present in the delivered download set.
+        _required = set(DOC_META.keys())
+        _generated = set((pack.get("documents") or {}).keys())
+        _delivered = set(download_urls.keys())
+        _missing_gen = _required - _generated
+        _missing_del = _required - _delivered
+        if _missing_gen or _missing_del:
+            missing = sorted(_missing_gen | _missing_del)
+            logger.error(
+                "[EvidencePack] %s incomplete — generated %d/%d, delivered %d/%d; "
+                "missing=%s; errors=%s",
+                evidence_pack_id, len(_generated), len(_required),
+                len(_delivered), len(_required), missing, pack.get("errors"),
+            )
+            row.documents = pack.get("documents")
+            row.hashes = pack.get("hashes")
+            row.master_hash = pack.get("master_hash")
+            row.anchoring = anchoring
+            row.download_urls = download_urls
+            row.status = "error"
+            row.error = f"incomplete pack — missing docs: {missing}"[:1000]
+            db.commit()
+            try:
+                buyer_for_alert = db.query(User).filter(User.id == row.user_id).first()
+                from app.api.stripe_webhook import _alert_payment_fulfillment_issue
+                asyncio.run(_alert_payment_fulfillment_issue(
+                    reason=f"Evidence Pack {pack.get('pack_id')} incomplete: missing {missing}",
+                    product_type="compliance_evidence_pack",
+                    customer_email=(buyer_for_alert.email if buyer_for_alert else None),
+                    session_id=row.session_id,
+                    notify_customer=False,
+                ))
+            except Exception as _ae:
+                logger.warning("[EvidencePack] incomplete-pack alert failed: %s", _ae)
+            # Retry the whole generation — a transient AI/upload failure should
+            # self-heal rather than leave the buyer with a partial pack.
+            raise RuntimeError(f"incomplete evidence pack: missing {missing}")
+
+        # Persist the finished (complete) pack.
         row.documents = pack.get("documents")
         row.hashes = pack.get("hashes")
         row.master_hash = pack.get("master_hash")

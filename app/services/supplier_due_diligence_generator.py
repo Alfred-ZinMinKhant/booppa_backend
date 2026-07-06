@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any, Dict
 
+from app.services.tx_utils import is_real_onchain_tx
+
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -155,7 +157,7 @@ def generate_certificate_pdf(data: Dict[str, Any]) -> bytes:
 
     # ── Verification / anchor block ─────────────────────────────────────────────
     story.append(Paragraph("Verification record", s["h2"]))
-    if is_cert and tx_hash:
+    if is_cert and is_real_onchain_tx(tx_hash):
         chain = "Polygon Amoy"
         anchored_line = (
             f"This record's SHA-256 fingerprint is anchored on {chain}. Transaction:"

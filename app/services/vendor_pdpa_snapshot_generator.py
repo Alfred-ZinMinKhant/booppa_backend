@@ -30,7 +30,7 @@ from app.services.pdf_logo import draw_logo_header
 
 logger = logging.getLogger(__name__)
 
-VENDOR_PDPA_SNAPSHOT_SCHEMA_VERSION = 1
+VENDOR_PDPA_SNAPSHOT_SCHEMA_VERSION = 2
 
 
 def _xml_escape(s: str) -> str:
@@ -61,6 +61,29 @@ def _styles():
 
 def _metric_card(s, value: str, label: str) -> List:
     return [Paragraph(value, s["metric"]), Paragraph(label, s["metric_lbl"])]
+
+
+def _dimension_precedent(dimension_name: str) -> Optional[str]:
+    """Map a PDPA dimension to a PDPC enforcement-precedent sentence, if any.
+
+    Reuses the same curated register the main PDF report draws from
+    (`pdpc_precedents`), so the Snapshot's remediation guidance is grounded in
+    real, published PDPC decisions rather than generic warnings. Only dimensions
+    that map to a finding key with precedents on file surface a line — never an
+    empty or invented claim.
+    """
+    name = (dimension_name or "").lower()
+    if "breach" in name or "notification" in name or "§26" in name or "26b" in name or "26d" in name:
+        key = "breach:pdpc_enforcement"
+    elif "nric" in name:
+        key = "nric:collection"
+    else:
+        return None
+    try:
+        from app.services.pdpc_precedents import precedent_summary as _ps
+        return _ps(key)
+    except Exception:  # pragma: no cover - precedent lookup is best-effort
+        return None
 
 
 def _delta_label(current: Optional[int], previous: Optional[int]) -> str:
@@ -188,10 +211,17 @@ def generate_vendor_pdpa_snapshot_pdf(data: Dict[str, Any]) -> bytes:
     story.append(Paragraph("Recommended next actions", s["h2"]))
     if flips:
         for f in flips:
+            _dim = f.get("dimension_name", "")
             story.append(Paragraph(
-                f"&bull; Remediate <b>{_xml_escape(f.get('dimension_name', ''))}</b> — it moved to "
+                f"&bull; Remediate <b>{_xml_escape(_dim)}</b> — it moved to "
                 f"<b>{_xml_escape(f.get('current_status', ''))}</b>. Review the corresponding finding "
                 "in your latest PDPA report and attach updated evidence.", s["body"]))
+            # Ground the action in real PDPC enforcement precedent where one is
+            # on file for this dimension — makes the risk concrete for legal review.
+            _prec = _dimension_precedent(_dim)
+            if _prec:
+                story.append(Paragraph(
+                    f"&nbsp;&nbsp;<i>Regulatory precedent:</i> {_xml_escape(_prec)}", s["small"]))
             story.append(Spacer(1, 3))
     else:
         for step in (

@@ -994,6 +994,9 @@ Note: Consult legal counsel for specific compliance requirements."""
             "Extract the following fields from this tender text and return them "
             "as a single JSON object:\n"
             "  rfp_description: string  // 1-3 sentence plain-English summary of what is being procured\n"
+            "  tender_ref: string       // the tender/quotation reference number exactly as printed (e.g. 'GEBIZ/2026/T012'), or '' if not stated\n"
+            "  tender_agency: string    // the issuing agency/organisation name, or '' if not stated\n"
+            "  tender_title: string     // the tender's official title, or '' if not stated\n"
             "  sector: string           // e.g. 'fintech', 'healthcare', 'government' — 'unknown' if not clear\n"
             "  iso_status: string       // one of 'certified', 'pursuing', 'none', 'unknown' — what the tender requires of the BIDDER\n"
             "  data_hosting: string     // one of 'sg', 'apac', 'global', 'unknown' — residency requirement on the bidder\n"
@@ -1040,6 +1043,9 @@ Note: Consult legal counsel for specific compliance requirements."""
 
         return {
             "rfp_description": _str(parsed.get("rfp_description")),
+            "tender_ref": _str(parsed.get("tender_ref")),
+            "tender_agency": _str(parsed.get("tender_agency")),
+            "tender_title": _str(parsed.get("tender_title")),
             "sector": _str(parsed.get("sector")),
             "iso_status": _enum(parsed.get("iso_status"), {"certified", "pursuing", "none", "unknown"}),
             "data_hosting": _enum(parsed.get("data_hosting"), {"sg", "apac", "global", "unknown"}),

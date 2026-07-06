@@ -2357,6 +2357,13 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
         db.close()
 
 
+class _RfpDeliverableIncomplete(Exception):
+    """Raised when an RFP kit built successfully but a tier-defining deliverable
+    (the editable DOCX for rfp_complete) is missing. Propagated past the
+    swallow-all handler so ``fulfill_rfp_task`` retries instead of shipping a
+    PDF-only kit for the SGD 599 Complete tier."""
+
+
 async def _fulfill_rfp_package(
     product_type: str,
     vendor_id: str,
@@ -2409,6 +2416,38 @@ async def _fulfill_rfp_package(
             f"RFP package fulfilled: product={product_type} vendor={vendor_id} "
             f"url={download_url} errors={result.get('errors')}"
         )
+
+        # Complete-tier hard deliverable gate (audit fix). The editable DOCX is
+        # the defining extra of rfp_complete (SGD 599 vs SGD 249 Express). If it
+        # failed to build or upload, `docx_url` comes back None and the kit would
+        # previously ship PDF-only, silently — the buyer pays for the Complete
+        # tier and never gets its distinguishing deliverable. Refuse to persist /
+        # cache / email a PDF-only kit: alert support and raise so the Celery
+        # task retries. The test/admin-sim path (allow_incomplete) is exempt so
+        # the e2e harness still yields a kit without a live S3 bucket.
+        if (
+            product_type == "rfp_complete"
+            and not allow_incomplete
+            and not result.get("docx_url")
+        ):
+            logger.error(
+                "[RFP] rfp_complete for %s produced no docx_url — refusing PDF-only "
+                "delivery; will retry. errors=%s warnings=%s",
+                vendor_email, result.get("errors"), result.get("warnings"),
+            )
+            try:
+                await _alert_payment_fulfillment_issue(
+                    reason="RFP Complete kit generated without the editable DOCX deliverable",
+                    product_type=product_type,
+                    customer_email=vendor_email,
+                    session_id=session_id,
+                    notify_customer=False,
+                )
+            except Exception as _ae:
+                logger.warning("[RFP] docx-missing alert failed: %s", _ae)
+            raise _RfpDeliverableIncomplete(
+                f"rfp_complete missing docx_url (session={session_id})"
+            )
 
         # Persist a Report row for every completed RFP so the bundle progress
         # page (and any future audit query) can find it. The cover-sheet
@@ -2488,6 +2527,10 @@ async def _fulfill_rfp_package(
                 },
                 ttl=604800,  # 7 days
             )
+    except _RfpDeliverableIncomplete:
+        # Re-raise so fulfill_rfp_task's retry/backoff kicks in — do NOT swallow
+        # into a success like the generic handler below.
+        raise
     except Exception as e:
         logger.error(f"RFP fulfillment failed for vendor {vendor_id}: {e}")
     finally:
@@ -2642,16 +2685,32 @@ def _maybe_fire_cover_sheet(customer_email: str | None) -> None:
             db.commit()
             return
 
-        pdpa_report = (
+        # Cover-sheet readiness must reflect a *deliverable* PDPA scan, using
+        # the same guard the render path applies (forensic finding: an
+        # empty-score artifact — "Vendor: Test", suite-b.booppa.io, all scores
+        # "—" — was bundled into a paying customer's pack). Take the newest
+        # completed scan that has a real, resolvable score — not the oldest row,
+        # and not a stub / empty-score scan the render path would then reject.
+        from app.services.pdpa_findings import resolve_pdpa_score as _resolve_pdpa_score
+
+        _pdpa_candidates = (
             db.query(Report)
             .filter(
                 Report.owner_id == user.id,
                 Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
                 Report.status == "completed",
             )
-            .order_by(Report.created_at.asc())
-            .first()
+            .order_by(Report.created_at.desc())
+            .limit(10)
+            .all()
         )
+        pdpa_report = None
+        for _cand in _pdpa_candidates:
+            _cad = _cand.assessment_data if isinstance(_cand.assessment_data, dict) else {}
+            if _resolve_pdpa_score(_cad) is None:
+                continue  # empty-score scan — not a deliverable
+            pdpa_report = _cand
+            break
         pdpa_done = pdpa_report is not None
         rfp_done = bool(getattr(user, "compliance_evidence_rfp_ready", False))
         if not (pdpa_done and rfp_done):
@@ -2970,7 +3029,29 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         try:
             from app.services.vendor_proof_generator import generate_vendor_proof_certificate
             from app.services.storage import S3Service
+            from app.core.models import User as _User
             import hashlib as _hashlib
+
+            # Notarization credit balance at issue — surfaces the redemption line
+            # on the certificate. Standalone Vendor Proof grants none; Vendor
+            # Trust Pack grants 2 (already applied to the balance by webhook).
+            _vp_credits = (
+                db.query(_User.notarization_credits)
+                .filter(_User.id == vendor_id)
+                .scalar()
+            ) or 0
+
+            # Sector benchmark — position the Trust Score against same-sector peers
+            # (falls back to all-vendors when the sector cohort is too thin, or
+            # None when there aren't enough peers to benchmark at all).
+            _vp_benchmark = None
+            try:
+                from app.services.vendor_benchmark import compute_sector_benchmark
+                _vp_benchmark = compute_sector_benchmark(
+                    db, vendor_id, _pdpa_compliance, sector
+                )
+            except Exception:
+                logger.exception("[VendorProof] sector benchmark computation failed")
 
             cert_pdf = generate_vendor_proof_certificate(
                 company_name=company_name,
@@ -2985,6 +3066,8 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                 explorer_url=settings.active_polygon_explorer_url,
                 entity_status=acra_info.get("entity_status"),
                 expires_on=_vp_expires_display,
+                notarization_credits=int(_vp_credits),
+                sector_benchmark=_vp_benchmark,
             )
             cert_hash = _hashlib.sha256(cert_pdf).hexdigest()
 

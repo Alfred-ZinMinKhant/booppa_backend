@@ -13,6 +13,8 @@ import logging
 from io import BytesIO
 from datetime import datetime, timezone
 
+from app.services.tx_utils import is_real_onchain_tx
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -53,6 +55,8 @@ def generate_vendor_proof_certificate(
     explorer_url: str | None = None,
     entity_status: str | None = None,
     expires_on: str | None = None,
+    notarization_credits: int = 0,
+    sector_benchmark: dict | None = None,
 ) -> bytes:
     """Render the Vendor Proof certificate. Returns PDF bytes.
 
@@ -164,11 +168,51 @@ def generate_vendor_proof_certificate(
         ("Procurement readiness", _xml_escape(readiness_label)),
     ]
     if expires_on:
-        _standing_rows.append(("Certificate valid until", _xml_escape(expires_on)))
+        _standing_rows.append((
+            "Certificate valid until",
+            f"{_xml_escape(expires_on)} — renews annually; trust status re-verified each year",
+        ))
     story.append(_kv(_standing_rows))
 
-    # Blockchain anchor
-    if tx_hash:
+    # Sector benchmark — turn the standalone Trust Score into a relative signal a
+    # procurement officer can weigh. Rendered only when a real peer cohort exists
+    # (see vendor_benchmark.compute_sector_benchmark); the basis (same-sector vs
+    # all-vendors fallback) is stated honestly so the comparison isn't overclaimed.
+    if isinstance(sector_benchmark, dict) and sector_benchmark.get("percentile") is not None:
+        _pct = int(sector_benchmark["percentile"])
+        _avg = sector_benchmark.get("sector_avg")
+        _sector = _xml_escape(sector_benchmark.get("sector") or "peers")
+        _n = sector_benchmark.get("peer_count")
+        if sector_benchmark.get("basis") == "sector":
+            _scope = f"in {_sector}"
+        else:
+            _scope = f"across all Booppa-scanned vendors (sector cohort for {_sector} too small to isolate)"
+        _avg_txt = f" The {_sector} peer average is {int(_avg)}/100." if isinstance(_avg, (int, float)) else ""
+        story.append(Paragraph("Sector benchmark", sec_style))
+        story.append(Paragraph(
+            f"This Trust Score is at or above <b>{_pct}%</b> of {_n} scored peers "
+            f"{_scope}.{_avg_txt} Benchmarks are relative to Booppa's scanned-vendor "
+            "population and move as more vendors are scored.",
+            cell_value,
+        ))
+
+    # Notarization credits — mirror the Cover Sheet's redemption line so the
+    # holder knows they carry a credit balance and how to redeem it. Rendered
+    # from the holder's actual balance at issue (standalone Vendor Proof grants
+    # none; the Vendor Trust Pack grants 2) — never claim a credit not held.
+    if notarization_credits and notarization_credits > 0:
+        _plural = "s" if notarization_credits != 1 else ""
+        story.append(Paragraph("Notarization credits", sec_style))
+        story.append(Paragraph(
+            f"As of issue you hold <b>{notarization_credits} notarization "
+            f"credit{_plural}</b>. Redeem by uploading a document at "
+            "booppa.io/notarize to anchor its SHA-256 hash on-chain.",
+            cell_value,
+        ))
+
+    # Blockchain anchor — render the "Blockchain anchor" block only for a real
+    # on-chain tx, so a session id / sentinel is never shown as a transaction.
+    if is_real_onchain_tx(tx_hash):
         anchor_rows = [
             ("Network", _xml_escape(network_name) or "Polygon"),
             ("Transaction", _xml_escape(tx_hash)),

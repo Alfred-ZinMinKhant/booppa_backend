@@ -36,6 +36,7 @@ from reportlab.platypus import (
 # hardcoded UEN was fabricated; printing one on a compliance artifact handed to
 # a procurer/regulator is a misrepresentation.)
 from app.core.company import COMPANY_NAME
+from app.services.tx_utils import is_real_onchain_tx
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +92,11 @@ for _c in _LOGO_CANDIDATES:
 # v11: "PDPA Quick Scan" renamed to "PDPA Snapshot" in section titles + component
 #      list, matching the standalone report + sales-page rebrand. Flags v10 copies
 #      as outdated so customers get the consistently-named cover sheet.
-COVER_SHEET_SCHEMA_VERSION = 11  # PDPA Snapshot rename (was: PDPA Quick Scan)
+# v13: Section 3 "PDPA Snapshot — Full Report" gains a one-line clarifier that
+#      "Full Report" is the untruncated presentation of the SAME automated scan as
+#      the standalone PDPA Quick Scan (same public-web surface), not a deeper scan.
+#      Flags v12 copies as outdated so customers get the disambiguated cover sheet.
+COVER_SHEET_SCHEMA_VERSION = 13  # PDPA "Full Report" vs Quick Scan depth clarifier
 
 PAGE_W, PAGE_H = A4
 MARGIN = 0.75 * inch
@@ -581,6 +586,16 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
 
     # ── Section 3: PDPA Full Report ────────────────────────────────────────────
     story += _section("PDPA Snapshot — Full Report", _STYLES, page_break=True)
+    # Clarify what "Full Report" means so it isn't misread as a deeper scan than
+    # the standalone PDPA Quick Scan: it is the SAME automated scan, presented in
+    # full (untruncated findings) — not a broader crawl or a different engine.
+    story.append(Paragraph(
+        "<i>\"Full Report\" here means the complete, untruncated findings of your "
+        "PDPA Snapshot — the same automated scan as the standalone PDPA Quick Scan, "
+        "over the same public web surface. It is a fuller presentation, not a deeper scan.</i>",
+        _STYLES["small"],
+    ))
+    story.append(Spacer(1, 0.06 * inch))
     pdpa_score_v = data.get("pdpa_score")
     score_str = f"{pdpa_score_v} / 100" if isinstance(pdpa_score_v, int) else "Pending — scan still running"
     pdpa_d = data.get("pdpa_details") or {}
@@ -832,7 +847,9 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
             descriptor = d.get("descriptor") or d.get("filename") or "—"
             file_hash = d.get("file_hash") or "—"
             short_hash = (file_hash[:18] + "…" + file_hash[-6:]) if len(file_hash) > 28 else file_hash
-            tx = d.get("tx_hash") or ""
+            # Only render a real on-chain tx; a non-tx value (session id, order
+            # ref, sentinel) must show "Pending", never masquerade as a tx.
+            tx = d.get("tx_hash") if is_real_onchain_tx(d.get("tx_hash")) else ""
             short_tx = (tx[:12] + "…" + tx[-6:]) if tx else "Pending"
             doc_rows.append([str(i), descriptor[:48], short_hash, short_tx])
         doc_table = Table(doc_rows, colWidths=[0.3 * inch, 2.6 * inch, 2.5 * inch, 1.3 * inch])

@@ -1401,6 +1401,12 @@ class RFPExpressBuilder:
                 ("UEN (Business Reg. No.)", ctx.get("uen") or "Not provided"),
             ]
 
+            # Tender personalization — when the buyer told us which tender they
+            # are bidding on, attribute the kit to it up front.
+            _tender_line = self._tender_attribution(intake)
+            if _tender_line:
+                details.insert(0, ("Prepared in response to", _tender_line))
+
             # ACRA verification
             if acra_live and acra_live.get("found"):
                 entity_type = acra_live.get("entity_type", "")
@@ -1479,6 +1485,7 @@ class RFPExpressBuilder:
                     f"This certificate confirms that {company_name} has completed the "
                     f"BOOPPA {'RFP Kit Complete' if is_complete else 'RFP Kit Express'} process, "
                     f"generating blockchain-anchored evidence for procurement submission."
+                    + (f" Prepared in response to {_tender_line}." if _tender_line else "")
                 ),
                 # Structured payload consumed by PDFService._rfp_kit_story.
                 "rfp_kit": {
@@ -1508,6 +1515,28 @@ class RFPExpressBuilder:
 
     def _q_label(self, key: str) -> str:
         return QUESTION_LABELS.get(key, key.replace("_", " ").title())
+
+    @staticmethod
+    def _tender_attribution(intake: dict | None) -> str:
+        """Human-readable 'this kit was prepared for tender X by agency Y' line.
+
+        Personalizes the RFP kit to the specific tender the buyer is bidding on,
+        drawn from the tender fields the intake captured (extracted from an
+        uploaded tender PDF or typed by the buyer). Returns "" when no tender
+        identifiers are on file so the kit stays generic rather than inventing one.
+        """
+        intake = intake or {}
+        ref = (intake.get("tender_ref") or "").strip()
+        agency = (intake.get("tender_agency") or "").strip()
+        title = (intake.get("tender_title") or "").strip()
+        parts: list[str] = []
+        if ref:
+            parts.append(f"Tender {ref}")
+        if title:
+            parts.append(f'"{title}"' if not ref else title)
+        if agency:
+            parts.append(f"issued by {agency}")
+        return " — ".join(parts) if parts else ""
 
     def _compute_verification(
         self,
@@ -1814,6 +1843,9 @@ class RFPExpressBuilder:
 
             intake = intake or {}
             doc.add_paragraph(f"Prepared for: {company_name}")
+            _tender_line = self._tender_attribution(intake)
+            if _tender_line:
+                doc.add_paragraph(f"Prepared in response to: {_tender_line}")
             doc.add_paragraph(f"Website: {vendor_url}")
             uen_val = ctx.get("uen") or "_______________________________"
             doc.add_paragraph(f"UEN (Singapore Business Registration No.): {uen_val}")
