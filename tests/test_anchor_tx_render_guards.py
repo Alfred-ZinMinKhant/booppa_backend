@@ -81,3 +81,19 @@ def test_snapshot_real_anchor_tx_is_rendered():
     })
     txt = _text(pdf)
     assert "Integrity anchor" in txt
+
+
+def test_raw_txn_prefers_snake_case_and_falls_back():
+    """web3 >=6 exposes raw_transaction; the helper must use it, and still
+    fall back to the legacy rawTransaction on older web3 (regression: 7.16
+    broke every real anchor because the code used the removed camelCase name)."""
+    from app.services.blockchain import _raw_txn
+
+    class NewStyle:  # web3 >= 6
+        raw_transaction = b"new-bytes"
+
+    class OldStyle:  # web3 < 6
+        rawTransaction = b"old-bytes"
+
+    assert _raw_txn(NewStyle()) == b"new-bytes"
+    assert _raw_txn(OldStyle()) == b"old-bytes"

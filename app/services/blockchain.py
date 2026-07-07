@@ -6,6 +6,19 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _raw_txn(signed) -> bytes:
+    """Return the raw signed-transaction bytes across web3.py versions.
+
+    web3.py >= 6 renamed SignedTransaction.rawTransaction -> raw_transaction
+    (snake_case). Installed here is 7.x, where only raw_transaction exists;
+    the old camelCase attribute raised
+    "'SignedTransaction' object has no attribute 'rawTransaction'" and broke
+    every real (demo=False) anchor. Prefer the new name, fall back to the old.
+    """
+    return getattr(signed, "raw_transaction", None) or signed.rawTransaction
+
+
 class BlockchainService:
     """Polygon blockchain service for evidence anchoring"""
 
@@ -112,7 +125,7 @@ class BlockchainService:
                 }
             )
             signed = self.w3.eth.account.sign_transaction(txn, private_key)
-            tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
+            tx_hash = self.w3.eth.send_raw_transaction(_raw_txn(signed))
             tx_hex = tx_hash.hex()
 
             logger.info("Evidence anchored on blockchain: %s", tx_hex)
@@ -149,7 +162,7 @@ class BlockchainService:
                 }
             )
             signed = self.w3.eth.account.sign_transaction(txn, private_key)
-            tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
+            tx_hash = self.w3.eth.send_raw_transaction(_raw_txn(signed))
             tx_hex = tx_hash.hex()
 
             logger.info("Batch of %s hashes anchored: %s", len(hashes_to_anchor), tx_hex)
