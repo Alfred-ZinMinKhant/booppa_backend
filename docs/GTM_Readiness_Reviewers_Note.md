@@ -49,8 +49,9 @@ Status legend: **FIXED** (was real, now remediated) · **WRONG** (not accurate a
 1. **Demo/test-checkout hash could render as a "Transaction reference"** on the supplier due-diligence certificate. `demo_tx_hash()` is shape-valid but never mined; the renderer now requires `anchored AND is_real_onchain_tx` before printing a tx. Reachable only via admin simulate-purchase, but the email goes to a real address. — `supplier_due_diligence_generator.py:160-176`
 2. **Quarterly PDPA snapshot rendered `anchor_tx` with no guard** (every other renderer had one). Now gated by `is_real_onchain_tx`. — `vendor_pdpa_snapshot_generator.py:237-243`
 3. **Evidence-pack per-doc generation** now retries once in-place before deferring to the whole-pack completeness gate — reduces gas-costly full re-anchors on transient AI/JSON failures. — `evidence_pack/document_generator.py:760-782`
+4. **web3.py 7.x broke every real (`demo=False`) anchor.** `SignedTransaction.rawTransaction` was renamed to `raw_transaction` (snake_case) in web3 ≥ 6; the code still used the removed camelCase name, so `send_raw_transaction` raised `AttributeError` on every anchor attempt. Added a version-tolerant `_raw_txn()` helper (prefers `raw_transaction`, falls back to `rawTransaction`). Discovered during the Phase-3 trial re-run. — `app/services/blockchain.py:10-19`, called at `:128` and `:165`
 
-Regression tests: `tests/test_anchor_tx_render_guards.py` (4 tests, passing).
+Regression tests: `tests/test_anchor_tx_render_guards.py` (5 tests, passing).
 
 ## Suggested next actions
 

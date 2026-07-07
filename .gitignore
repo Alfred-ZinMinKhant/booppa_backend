@@ -135,3 +135,7 @@ docker-compose.override.yml
 # Never commit session/cookie dumps
 cookies.txt
 *.cookies
+
+# Local runtime artifacts
+.cache/
+celerybeat-schedule

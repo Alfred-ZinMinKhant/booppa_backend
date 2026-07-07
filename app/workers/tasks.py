@@ -3760,6 +3760,24 @@ def buyer_supplier_snapshot_task(
                         "[DueDiligence] anchor failed for buyer=%s ref=%s: %s",
                         buyer_user_id, vendor_ref, anc_err,
                     )
+                # A real (non-demo) certificate promises an on-chain anchor. If the
+                # anchor did not land, do NOT ship an unanchored cert as if it were
+                # verified — alert and retry so a transient RPC/gas blip self-heals,
+                # and the buyer never receives a certificate we can't stand behind.
+                if not anchored:
+                    try:
+                        from app.api.stripe_webhook import _alert_payment_fulfillment_issue
+                        asyncio.run(_alert_payment_fulfillment_issue(
+                            f"Supplier due-diligence certificate anchor failed for "
+                            f"buyer={buyer_user_id} ref={vendor_ref} "
+                            f"supplier={supplier_name} — cert withheld pending anchor."
+                        ))
+                    except Exception as alert_err:
+                        logger.error("[DueDiligence] alert failed: %s", alert_err)
+                    raise self.retry(
+                        exc=RuntimeError("due-diligence anchor failed; cert withheld"),
+                        countdown=300,
+                    )
             data["tx_hash"] = tx_hash
             data["anchored"] = anchored
             pdf = generate_certificate_pdf(data)
@@ -3828,6 +3846,9 @@ def buyer_supplier_snapshot_task(
                 "[DueDiligence] %s (schema v%s, demo=%s) sent for buyer=%s supplier=%s",
                 doc_label, SUPPLIER_DUE_DILIGENCE_SCHEMA_VERSION, demo, buyer_user_id, supplier_name,
             )
+    except Retry:
+        # Deliberate retry (e.g. anchor withheld above) — propagate untouched.
+        raise
     except Exception as exc:
         logger.error(f"Supplier snapshot/certificate failed for buyer {buyer_user_id}: {exc}")
         raise self.retry(exc=exc, countdown=300)
