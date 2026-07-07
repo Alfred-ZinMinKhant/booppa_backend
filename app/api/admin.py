@@ -841,12 +841,19 @@ async def simulate_purchase(
 
     if product_type in SUBSCRIPTION_PRODUCT_TYPES:
         dispatch = "subscription"
+        # For buyer SKUs, fire the full [DEMO] deliverable fan-out (all 6 buyer
+        # emails, mock tx hash, no gas) instead of just the first-cycle digest,
+        # so the test checkout shows the complete buyer email set. `demo` only
+        # affects the buyer branch in _activate_subscription and never touches
+        # the live-webhook path (where demo derives from Stripe livemode).
+        is_buyer = product_type.startswith("buyer_")
         await _activate_subscription(
             product_type=product_type,
             customer_email=customer_email,
             stripe_subscription_id=sim_id,
             stripe_customer_id=sim_id,
             test_simulation=True,
+            demo=is_buyer,
             # Test Identity drives first-cycle deliverables (Vendor snapshot,
             # PDPA Monitor report) without mutating the real user profile.
             override_company=company_name or None,
