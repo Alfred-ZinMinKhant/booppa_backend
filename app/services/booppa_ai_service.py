@@ -28,7 +28,12 @@ CRITICAL INSTRUCTIONS:
 5. Structure responses with: VIOLATION → LEGISLATION → MAX PENALTY → EVIDENCE → DEVELOPER IMPLEMENTATION TASKS (REQUIREMENTS, ACCEPTANCE CRITERIA, RECOMMENDED TOOLS)
 6. Use Singapore-specific terminology: NRIC (not ID), PDPC (not DPA), DNC Registry
 7. Include Chinese/Malay/Tamil translations for key terms when helpful
-8. Describe blockchain evidence anchored on Polygon as tamper-evident, independently verifiable proof-of-existence (do not claim it is court-admissible or immutable)
+8. When referencing blockchain evidence anchored on Polygon Amoy testnet, describe
+   it accurately as a tamper-evidence timestamp only — NEVER claim or imply
+   "court-admissible", "admissible under the Singapore Evidence Act", or any
+   equivalent legal-admissibility phrase. Testnet anchoring does not carry the
+   settlement/evidentiary guarantees needed to support that claim, and only
+   Legal may approve admissibility language, on mainnet, if ever.
 9. Format with clear severity levels: CRITICAL, HIGH, MEDIUM, LOW
 10. Provide specific developer tasks organized by priority and timeline
 
@@ -455,7 +460,9 @@ BLOCKCHAIN EVIDENCE REQUIREMENTS:
 
 VERIFICATION:
 • Transaction: {polygon_explorer_url}/tx/{tx_hash_placeholder}
-• Tamper-evident, independently verifiable proof-of-existence""",
+• Testnet timestamp only — evidences existence for tamper-checking; does not
+  carry the settlement or evidentiary guarantees of a mainnet anchor or an
+  accredited RFC 3161 timestamp. Not a claim of court-admissibility.""",
                 "severity": "CRITICAL",
                 "triggers": [
                     "nric",
@@ -835,8 +842,13 @@ BLOCKCHAIN EVIDENCE:
                 cookies_guidelines_url=SINGAPORE_LEGISLATION["PDPC_ADVISORIES"][
                     "cookies_2021"
                 ]["url"],
-                tx_hash_placeholder="0x"
-                + "0" * 64,  # Placeholder for actual transaction
+                # This report text is generated at scan time, before the actual
+                # anchoring step runs later in the pipeline — so no real tx_hash
+                # exists yet. A dummy "0x000...0" string is intentionally NOT used
+                # here: it has the right shape to be mistaken for a genuine
+                # transaction hash once "court-admissible"-style language is
+                # nearby. Use an explicit, unmistakable placeholder instead.
+                tx_hash_placeholder="PENDING (assigned once this finding is anchored)",
                 company_name=scan_data.get("company_name", "the organization"),
                 scan_date=scan_data.get(
                     "scan_date", datetime.now().strftime("%Y-%m-%d")

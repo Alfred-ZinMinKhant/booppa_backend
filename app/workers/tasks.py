@@ -2395,7 +2395,7 @@ def fulfill_cover_sheet_task(
                 # current cycle's artifact. Anything older is a prior cycle.
                 seen_frameworks: set[str] = set()
                 FRAMEWORK_LABELS = {
-                    "pdpa_quick_scan": "PDPA Snapshot Report",
+                    "pdpa_quick_scan": "PDPA Quick Scan Report",
                     "rfp_complete": "RFP Complete Kit",
                     "compliance_evidence_signed_sheet": "Signed Cover Sheet",
                     "ropa_lite": "Record of Processing Activities (ROPA Lite)",
@@ -3768,9 +3768,14 @@ def buyer_supplier_snapshot_task(
                     try:
                         from app.api.stripe_webhook import _alert_payment_fulfillment_issue
                         asyncio.run(_alert_payment_fulfillment_issue(
-                            f"Supplier due-diligence certificate anchor failed for "
-                            f"buyer={buyer_user_id} ref={vendor_ref} "
-                            f"supplier={supplier_name} — cert withheld pending anchor."
+                            reason=(
+                                f"Supplier due-diligence certificate anchor failed for "
+                                f"buyer={buyer_user_id} ref={vendor_ref} "
+                                f"supplier={supplier_name} — cert withheld pending anchor."
+                            ),
+                            product_type=None,
+                            customer_email=None,
+                            notify_customer=False,
                         ))
                     except Exception as alert_err:
                         logger.error("[DueDiligence] alert failed: %s", alert_err)
