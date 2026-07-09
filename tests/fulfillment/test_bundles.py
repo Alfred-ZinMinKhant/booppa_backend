@@ -36,7 +36,7 @@ def test_bundle_component_definitions_intact():
       - enterprise_bid_kit: VP + PDPA + 7× notarization + rfp_complete
       - compliance_evidence_pack: PDPA + 1× notarization + rfp_complete + cover_sheet
     """
-    from app.api.stripe_webhook import BUNDLE_COMPONENTS
+    from app.services.fulfillment.helpers import BUNDLE_COMPONENTS
 
     vtp = BUNDLE_COMPONENTS["vendor_trust_pack"]
     assert vtp["vendor_proof"] and vtp["pdpa"] and vtp["notarization_count"] == 2

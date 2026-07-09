@@ -34,7 +34,7 @@ def _run(report_id, email, mocker):
         return True
     mocker.patch("app.services.email_service.EmailService.send_html_email", fake_email)
     mocker.patch("app.services.scoring.VendorScoreEngine.update_vendor_score", return_value=None)
-    from app.api.stripe_webhook import _fulfill_vendor_proof
+    from app.services.fulfillment.single_products import _fulfill_vendor_proof
     asyncio.run(_fulfill_vendor_proof(str(report_id), email))
 
 

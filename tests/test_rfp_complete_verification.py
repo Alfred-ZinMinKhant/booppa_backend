@@ -17,15 +17,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import app.api.stripe_webhook as wh
-from app.api.stripe_webhook import _RfpDeliverableIncomplete, _fulfill_rfp_package
+import app.services.fulfillment.single_products as sp
+from app.services.fulfillment.single_products import _RfpDeliverableIncomplete, _fulfill_rfp_package
 from app.services.rfp_express_builder import RFPExpressBuilder
 
 
 def _run_fulfill(monkeypatch, *, product_type, result, allow_incomplete=False):
     """Drive _fulfill_rfp_package with a stubbed builder result. Returns the list
     of fired support alerts; propagates whatever the function raises."""
-    monkeypatch.setattr(wh, "SessionLocal", lambda: MagicMock())
+    monkeypatch.setattr(sp, "SessionLocal", lambda: MagicMock())
 
     async def _fake_generate(self, **kwargs):
         return result
@@ -39,8 +39,8 @@ def _run_fulfill(monkeypatch, *, product_type, result, allow_incomplete=False):
         alerts.append(kwargs)
         return True
 
-    monkeypatch.setattr(wh, "_alert_payment_fulfillment_issue", _fake_alert)
-    monkeypatch.setattr(wh, "_maybe_fire_cover_sheet", lambda *a, **k: None)
+    monkeypatch.setattr(sp, "_alert_payment_fulfillment_issue", _fake_alert)
+    monkeypatch.setattr(sp, "_maybe_fire_cover_sheet", lambda *a, **k: None)
     coro = _fulfill_rfp_package(
         product_type=product_type,
         vendor_id="v1",

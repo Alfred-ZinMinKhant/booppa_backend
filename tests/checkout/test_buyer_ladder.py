@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.api.stripe_checkout import MODE_MAP, PROCUREMENT_PRODUCTS  # type: ignore
-from app.api.stripe_webhook import SUBSCRIPTION_PRODUCT_TYPES
+from app.services.fulfillment.helpers import SUBSCRIPTION_PRODUCT_TYPES
 from app.services.pricing import PRODUCTS, get_product
 from tests.fixtures.product_catalog import BUYER_LADDER, sku_id
 from tests.fixtures.stripe_events import wrap_event
@@ -134,7 +134,7 @@ def test_buyer_webhook_activates_subscription(
     `_activate_subscription` with the right product_type — same dispatch
     path as every other subscription, no special-casing."""
     fake_activate = AsyncMock(return_value=None)
-    mocker.patch("app.api.stripe_webhook._activate_subscription", fake_activate)
+    mocker.patch("app.services.fulfillment.subscriptions._activate_subscription", fake_activate)
 
     session = stripe_session_factory(case.product_type)
     resp = post_webhook(wrap_event(session))

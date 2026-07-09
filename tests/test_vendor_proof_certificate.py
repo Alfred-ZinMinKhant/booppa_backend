@@ -1,7 +1,7 @@
 """Vendor Proof §7 fixes: real (non-hardcoded) score, ACRA UEN lookup, and a
 generated + anchored certificate PDF.
 
-Covers app/api/stripe_webhook.py:_fulfill_vendor_proof and
+Covers app/services/fulfillment/single_products.py:_fulfill_vendor_proof and
 app/services/vendor_proof_generator.py.
 """
 import asyncio
@@ -41,7 +41,7 @@ def _run(report_id, email, mocker, anchor="0xanchored"):
     mocker.patch("app.services.scoring.VendorScoreEngine.update_vendor_score", return_value=None)
     mocker.patch("app.services.storage.S3Service.upload_pdf", fake_upload)
     mocker.patch("app.services.blockchain.BlockchainService.anchor_evidence", fake_anchor)
-    from app.api.stripe_webhook import _fulfill_vendor_proof
+    from app.services.fulfillment.single_products import _fulfill_vendor_proof
     asyncio.run(_fulfill_vendor_proof(str(report_id), email))
 
 

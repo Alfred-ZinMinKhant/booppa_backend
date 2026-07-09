@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from app.api.stripe_webhook import _activate_subscription  # noqa: F401  # import for side effects
+from app.services.fulfillment.subscriptions import _activate_subscription  # noqa: F401  # import for side effects
 from app.core.models import Subscription, User
 from app.core.models import Organisation, SsoConfig
 

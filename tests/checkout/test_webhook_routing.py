@@ -21,7 +21,7 @@ def test_subscription_webhook_calls_activate(
 ):
     """Subscription SKUs hit _activate_subscription synchronously."""
     fake_activate = AsyncMock(return_value=None)
-    mocker.patch("app.api.stripe_webhook._activate_subscription", fake_activate)
+    mocker.patch("app.services.fulfillment.subscriptions._activate_subscription", fake_activate)
 
     session = stripe_session_factory(case.product_type)
     resp = post_webhook(wrap_event(session))
@@ -68,7 +68,7 @@ def test_rfp_webhook_with_brief_still_defers_to_intake(
     fake_task.delay = MagicMock()
     mocker.patch("app.workers.tasks.fulfill_rfp_task", fake_task)
     fake_defer = AsyncMock(return_value=None)
-    mocker.patch("app.api.stripe_webhook._defer_rfp_to_intake", fake_defer)
+    mocker.patch("app.services.fulfillment.single_products._defer_rfp_to_intake", fake_defer)
 
     session = stripe_session_factory(
         case.product_type,
@@ -94,7 +94,7 @@ def test_rfp_webhook_without_brief_defers_to_intake(
 ):
     """No `rfp_description` → deferred intake."""
     fake_defer = AsyncMock(return_value=None)
-    mocker.patch("app.api.stripe_webhook._defer_rfp_to_intake", fake_defer)
+    mocker.patch("app.services.fulfillment.single_products._defer_rfp_to_intake", fake_defer)
 
     session = stripe_session_factory(case.product_type)  # no rfp_description
     resp = post_webhook(wrap_event(session))
@@ -114,7 +114,7 @@ def test_standalone_one_time_calls_fulfill_standalone(
     """vendor_proof / pdpa / notarization one-time SKUs use the standalone handler."""
     fake_standalone = AsyncMock(return_value=True)
     mocker.patch(
-        "app.api.stripe_webhook._fulfill_standalone_no_report", fake_standalone
+        "app.services.fulfillment.bundles._fulfill_standalone_no_report", fake_standalone
     )
 
     session = stripe_session_factory(case.product_type)

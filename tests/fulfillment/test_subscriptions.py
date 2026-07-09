@@ -31,9 +31,9 @@ def test_subscription_activates_plan_and_emails(
     """
     # Avoid kicking off Celery side-effects we don't care about here.
     mocker.patch("app.workers.tasks.pdpa_monitor_monthly_rescan_task.delay", return_value=None)
-    mocker.patch("app.api.stripe_webhook._apply_subscription_score_lever", return_value=None)
+    mocker.patch("app.services.fulfillment.helpers._apply_subscription_score_lever", return_value=None)
     # Score recalc + activity logging touch unrelated tables that may be empty
-    mocker.patch("app.api.stripe_webhook._log_purchase_activity", return_value=None)
+    mocker.patch("app.services.fulfillment.helpers._log_purchase_activity", return_value=None)
 
     email = f"sub+{case.product_type}@booppa.io"
     user = _seed_user(test_db, email)
@@ -92,8 +92,8 @@ def test_subscription_idempotent_on_replay(
     client, test_db, post_webhook, stripe_session_factory, email_capture, mocker
 ):
     """Replaying the same webhook should not double-insert Subscription rows."""
-    mocker.patch("app.api.stripe_webhook._apply_subscription_score_lever", return_value=None)
-    mocker.patch("app.api.stripe_webhook._log_purchase_activity", return_value=None)
+    mocker.patch("app.services.fulfillment.helpers._apply_subscription_score_lever", return_value=None)
+    mocker.patch("app.services.fulfillment.helpers._log_purchase_activity", return_value=None)
 
     email = "sub+replay@booppa.io"
     _seed_user(test_db, email)
@@ -124,8 +124,8 @@ def test_activation_email_sent_once_across_dual_webhook_delivery(
     double-emailed (the exact regression the forensic audit caught with the
     duplicate Standard Suite activation emails).
     """
-    mocker.patch("app.api.stripe_webhook._apply_subscription_score_lever", return_value=None)
-    mocker.patch("app.api.stripe_webhook._log_purchase_activity", return_value=None)
+    mocker.patch("app.services.fulfillment.helpers._apply_subscription_score_lever", return_value=None)
+    mocker.patch("app.services.fulfillment.helpers._log_purchase_activity", return_value=None)
 
     email = "sub+dualdelivery@booppa.io"
     _seed_user(test_db, email)
