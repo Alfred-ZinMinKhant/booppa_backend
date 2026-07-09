@@ -806,6 +806,13 @@ async def _resolve_website_url(raw_url: str | None) -> dict:
         candidates.append(f"https://www.{normalized}")
     candidates += [f"https://{normalized}", f"http://{normalized}"]
 
+    # Fallback to root domain if the provided URL has a path (to handle 404s like /SG)
+    if "/" in normalized:
+        root_domain = normalized.split("/", 1)[0]
+        if not root_domain.startswith("www."):
+            candidates.append(f"https://www.{root_domain}")
+        candidates += [f"https://{root_domain}", f"http://{root_domain}"]
+
     async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
         for candidate in candidates:
             try:
@@ -817,6 +824,11 @@ async def _resolve_website_url(raw_url: str | None) -> dict:
                         candidate,
                         headers={"User-Agent": "BooppaComplianceBot/1.0"},
                     )
+                # If it's a 404, we continue to the next candidate (which might be the root domain)
+                if resp.status_code == 404 and candidate != candidates[-1]:
+                    logger.info(f"URL {candidate} returned 404, trying next candidate")
+                    continue
+                
                 final_url = str(resp.url)
                 return {
                     "resolved_url": final_url,
@@ -1810,8 +1822,8 @@ def activate_subscription_task(
 ):
     """Celery task: persist subscription state after a successful Stripe checkout or renewal."""
     try:
-        from app.api.stripe_webhook import _activate_subscription
-        asyncio.run(_activate_subscription(
+        from app.services.fulfillment import activate_subscription
+        asyncio.run(activate_subscription(
             product_type=product_type,
             customer_email=customer_email,
             stripe_subscription_id=stripe_subscription_id,
@@ -1834,8 +1846,8 @@ def fulfill_bundle_task(
 ):
     """Celery task: fan out bundle fulfillment to individual component Celery tasks."""
     try:
-        from app.api.stripe_webhook import _fulfill_bundle
-        asyncio.run(_fulfill_bundle(
+        from app.services.fulfillment import fulfill_bundle
+        asyncio.run(fulfill_bundle(
             product_type=product_type,
             report_id=report_id,
             customer_email=customer_email,
@@ -1852,8 +1864,8 @@ def fulfill_bundle_task(
 def fire_strategy_6_task(self, sector: str | None, rfp_title: str):
     """Celery task: notify top-5 verified sector vendors about a new procurement opportunity."""
     try:
-        from app.api.stripe_webhook import _fire_strategy_6
-        asyncio.run(_fire_strategy_6(sector=sector, buyer_rfp_title=rfp_title))
+        from app.services.fulfillment import fire_strategy_6
+        asyncio.run(fire_strategy_6(sector=sector, buyer_rfp_title=rfp_title))
         logger.info(f"[fire_strategy_6_task] sector={sector}")
     except Exception as exc:
         logger.warning(f"[fire_strategy_6_task] failed (attempt {self.request.retries + 1}): {exc}")
@@ -1890,8 +1902,8 @@ def send_referral_reward_email_task(self, referrer_email: str):
 def fulfill_vendor_proof_task(self, report_id: str, customer_email: str | None = None):
     """Celery task: create VerifyRecord, set compliance baseline, send badge email."""
     try:
-        from app.api.stripe_webhook import _fulfill_vendor_proof
-        asyncio.run(_fulfill_vendor_proof(report_id=report_id, customer_email=customer_email))
+        from app.services.fulfillment import fulfill_vendor_proof
+        asyncio.run(fulfill_vendor_proof(report_id=report_id, customer_email=customer_email))
         logger.info(f"Vendor proof fulfilled for report {report_id}")
     except Exception as exc:
         logger.error(f"Vendor proof fulfillment failed for {report_id}: {exc}")
@@ -1899,12 +1911,12 @@ def fulfill_vendor_proof_task(self, report_id: str, customer_email: str | None =
         raise self.retry(exc=exc, countdown=countdown)
 
 
-@celery_app.task(bind=True, max_retries=3, name="fulfill_pdpa_task")
+@celery_app.task(bind=True, max_retries=20, name="fulfill_pdpa_task")
 def fulfill_pdpa_task(self, report_id: str, customer_email: str | None = None):
     """Celery task: generate PDPA PDF, update compliance score, write CertificateLog, send email."""
     try:
-        from app.api.stripe_webhook import _fulfill_pdpa
-        asyncio.run(_fulfill_pdpa(report_id=report_id, customer_email=customer_email))
+        from app.services.fulfillment import fulfill_pdpa
+        asyncio.run(fulfill_pdpa(report_id=report_id, customer_email=customer_email, raise_if_incomplete=True))
         logger.info(f"PDPA snapshot fulfilled for report {report_id}")
     except Exception as exc:
         logger.error(f"PDPA fulfillment failed for {report_id}: {exc}")
@@ -1916,8 +1928,8 @@ def fulfill_pdpa_task(self, report_id: str, customer_email: str | None = None):
 def fulfill_notarization_task(self, report_id: str, customer_email: str | None = None):
     """Celery task: anchor, generate PDF, and deliver notarization certificate."""
     try:
-        from app.api.stripe_webhook import _fulfill_notarization
-        asyncio.run(_fulfill_notarization(report_id=report_id, customer_email=customer_email))
+        from app.services.fulfillment import fulfill_notarization
+        asyncio.run(fulfill_notarization(report_id=report_id, customer_email=customer_email))
         logger.info(f"Notarization fulfilled for report {report_id}")
     except Exception as exc:
         logger.error(f"Notarization fulfillment failed for {report_id}: {exc}")
@@ -1940,8 +1952,8 @@ def fulfill_rfp_task(
 ):
     """Celery task: generate and deliver the RFP Kit evidence package."""
     try:
-        from app.api.stripe_webhook import _fulfill_rfp_package
-        asyncio.run(_fulfill_rfp_package(
+        from app.services.fulfillment import fulfill_rfp_package
+        asyncio.run(fulfill_rfp_package(
             product_type=product_type,
             vendor_id=vendor_id,
             vendor_email=vendor_email,
@@ -2320,7 +2332,6 @@ def fulfill_cover_sheet_task(
                                 Body=ropa_pdf_bytes, ContentType="application/pdf",
                             )
 
-                            from app.services.blockchain import BlockchainService
                             ropa_tx_hash = asyncio.run(
                                 BlockchainService().anchor_evidence(
                                     ropa_file_hash, metadata=f"ropa_lite:{ropa_report_id}",
@@ -2984,9 +2995,15 @@ def fulfill_cover_sheet_task(
                     f"(signed_cs={signed_cs_tx[:10]}…, zip={'yes' if _zip_attachment else 'no'})"
                 )
             else:
+                _draft_attachment = None
+                if pdf_bytes:
+                    _safe_co = (company_name or "Kit").replace("/", "-").replace(" ", "-")
+                    _draft_attachment = [(f"Cover_Sheet_Unsigned_{_safe_co}.pdf", pdf_bytes)]
+
                 asyncio.run(email_svc.send_html_email(
                     to_email=customer_email,
                     subject="Your Compliance Evidence Pack — sign & notarize the Cover Sheet",
+                    attachments=_draft_attachment,
                     body_html=(
                         f"<div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;'>"
                         f"<h2 style='color:#0f172a;'>Cover Sheet ready — final step inside</h2>"
@@ -3324,24 +3341,10 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
                             digest_attachments.append((f"BOOPPA-Competitor-Signals-{_safe_co}.pdf", cs))
                     except Exception as cs_err:
                         logger.warning("[VendorDigest] competitor signals PDF failed for %s: %s", vendor_id, cs_err)
-                if pdpa_drift and pdpa_drift.get("current_score") is not None:
-                    try:
-                        from app.services.pdpa_monitor_delta_generator import generate_pdpa_monitor_report_pdf
-                        drift_pdf = generate_pdpa_monitor_report_pdf({
-                            "company_name": company,
-                            "current_score": pdpa_drift.get("current_score"),
-                            "previous_score": pdpa_drift.get("previous_score"),
-                            "scanned_url": pdpa_drift.get("scanned_url"),
-                            "dimension_changes": pdpa_drift.get("dimension_changes") or [],
-                        })
-                        if drift_pdf:
-                            digest_attachments.append((f"BOOPPA-PDPA-Drift-{_safe_co}.pdf", drift_pdf))
-                    except Exception as dr_err:
-                        logger.warning("[VendorDigest] PDPA drift PDF failed for %s: %s", vendor_id, dr_err)
-
         _pro_attach_note = (
-            ' Your <strong>Vendor Pro Monthly Intelligence Report</strong> (consolidated), '
-            'Competitor Signals, and PDPA Drift report are attached too.'
+            ' Your <strong>Vendor Pro Monthly Intelligence Report</strong> (consolidated) and '
+            'Competitor Signals report are attached too. (The full PDPA Monitor Report arrives via a separate email '
+            'when the deep scan completes.)'
             if is_pro else ""
         )
         attachments_note = (
@@ -3766,8 +3769,8 @@ def buyer_supplier_snapshot_task(
                 # and the buyer never receives a certificate we can't stand behind.
                 if not anchored:
                     try:
-                        from app.api.stripe_webhook import _alert_payment_fulfillment_issue
-                        asyncio.run(_alert_payment_fulfillment_issue(
+                        from app.services.fulfillment import alert_payment_fulfillment_issue
+                        asyncio.run(alert_payment_fulfillment_issue(
                             reason=(
                                 f"Supplier due-diligence certificate anchor failed for "
                                 f"buyer={buyer_user_id} ref={vendor_ref} "
@@ -4661,11 +4664,11 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
         db.commit()
         db.refresh(stub)
 
-        from app.api.stripe_webhook import _fulfill_pdpa
+        from app.services.fulfillment import fulfill_pdpa
         # send_email=False: the month-over-month Monitor Report (queued below) is
         # the single consolidated PDPA deliverable email for this cycle — no
         # separate raw Quick-Scan email.
-        asyncio.run(_fulfill_pdpa(report_id=str(stub.id), customer_email=vendor_email, send_email=False))
+        asyncio.run(fulfill_pdpa(report_id=str(stub.id), customer_email=vendor_email, send_email=False))
         logger.info(f"PDPA Monitor monthly re-scan complete for vendor {vendor_id}")
 
         # Deliver the month-over-month Monitor Report PDF — the actual Monitor
@@ -4732,7 +4735,9 @@ def _pdpa_monitor_briefing_bullets(company, sector, findings, current_score, pre
         sev = (f.get("severity") or "").upper()
         dim = f.get("dimension") or f.get("type") or f.get("category") or "finding"
         desc = f.get("title") or f.get("description") or ""
-        lines.append(f"- [{sev}] {dim}: {desc}".strip())
+        leg = f.get("legislation") or f.get("legislation_violated") or ""
+        leg_str = f" (Legislation: {leg})" if leg else ""
+        lines.append(f"- [{sev}] {dim}: {desc}{leg_str}".strip())
     findings_blob = "\n".join(lines) or "(no structured findings)"
 
     if isinstance(current_score, int) and isinstance(previous_score, int):
@@ -4752,8 +4757,10 @@ def _pdpa_monitor_briefing_bullets(company, sector, findings, current_score, pre
             "You are a Singapore PDPA compliance advisor. Given an organisation's open "
             "findings, produce EXACTLY 3 specific, actionable regulatory items. Each item: "
             "the concrete action, the relevant PDPA section reference, and an estimated "
-            "remediation time. Be specific to the findings — no generic advice. Return ONLY "
-            "a JSON array of 3 short strings, no prose, no code fences."
+            "remediation time. Be specific to the findings — no generic advice. "
+            "CRITICAL: You MUST use the exact Legislation provided in the findings. "
+            "Do NOT invent or hallucinate section numbers. "
+            "Return ONLY a JSON array of 3 short strings, no prose, no code fences."
         )
         user = (
             f"Organisation: {company}\nSector: {sector or 'unknown'}\n"
@@ -4874,13 +4881,14 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
         def _fkey(f: dict) -> str:
             return str((f.get("type") or f.get("dimension") or f.get("title") or "")).strip().lower()
 
-        score_history = []
+        score_history_dict = {}
         first_seen: dict[str, datetime] = {}
         for r in history_reports:  # ascending → earliest occurrence wins
             when = r.completed_at or r.created_at
             sc = _compliance(r)
             if sc is not None and when is not None:
-                score_history.append({"label": when.strftime("%b"), "score": sc})
+                m_key = when.strftime("%Y-%m")
+                score_history_dict[m_key] = {"label": when.strftime("%b '%y"), "score": sc}
             if when is None:
                 continue
             rfs = resolve_pdpa_findings(r.assessment_data)
@@ -4889,6 +4897,8 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
                     k = _fkey(f)
                     if k and k not in first_seen:
                         first_seen[k] = when
+
+        score_history = list(score_history_dict.values())
 
         urgent_findings = []
         _now_naive = datetime.utcnow()
@@ -6089,7 +6099,7 @@ def sweep_pending_cover_sheets():
     no-op for buyers who simply haven't submitted their RFP brief yet.
     """
     from app.core.models import User
-    from app.api.stripe_webhook import _maybe_fire_cover_sheet
+    from app.services.fulfillment import maybe_fire_cover_sheet
 
     db = SessionLocal()
     try:
@@ -6113,7 +6123,7 @@ def sweep_pending_cover_sheets():
         try:
             # Idempotent: fires only when PDPA + RFP are both done, then clears
             # the flag. A no-op otherwise.
-            _maybe_fire_cover_sheet(email)
+            maybe_fire_cover_sheet(email)
             fired += 1
         except Exception as e:
             logger.error(f"[CoverSheetSweep] Re-fire failed for {email}: {e}")
@@ -6476,20 +6486,13 @@ def send_tender_alerts():
         now = datetime.now(timezone.utc)
         lo = now + timedelta(days=_ALERT_MIN_DAYS)
         hi = now + timedelta(days=_ALERT_MAX_DAYS)
-        live = (
-            db.query(GebizTender)
-            .filter(
-                GebizTender.status == "Open",
-                GebizTender.closing_date >= lo,
-                GebizTender.closing_date <= hi,
-            )
-            .order_by(GebizTender.closing_date.asc())
-            .limit(50)
-            .all()
+        
+        # We query tenders inside the subscriber loop to filter by sector.
+        _base_tender_q = db.query(GebizTender).filter(
+            GebizTender.status == "Open",
+            GebizTender.closing_date >= lo,
+            GebizTender.closing_date <= hi,
         )
-        if not live:
-            logger.info("[TenderAlerts] no live tenders in alert horizon — skipping")
-            return
 
         def _tdict(t):
             return {
@@ -6506,6 +6509,19 @@ def send_tender_alerts():
                 sec = db.query(VendorSector).filter(VendorSector.vendor_id == sub.id).first()
                 sector = (sec.sector.upper() if sec and sec.sector else "IT")
                 history = build_vendor_history(db, str(sub.id), sector=sector)
+
+                from app.services.tender_service import _CATEGORY_TO_SECTOR
+                matching_categories = [c for c, sc in _CATEGORY_TO_SECTOR.items() if sc.lower() == sector.lower()]
+                
+                if matching_categories:
+                    live = _base_tender_q.filter(
+                        GebizTender.raw_data['category'].astext.in_(matching_categories)
+                    ).order_by(GebizTender.closing_date.desc()).limit(50).all()
+                else:
+                    live = _base_tender_q.order_by(GebizTender.closing_date.desc()).limit(50).all()
+                    
+                if not live:
+                    continue
 
                 already = {
                     r[0] for r in db.query(VendorTenderAlertSent.tender_no)
@@ -6892,10 +6908,8 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
         subscribers = sub_query.all()
 
         # ── BID/WATCH/PASS — Block A (once per run) ──────────────────────────
-        # Fetch the live open tenders ONCE. Identical for every recipient, so it
-        # must NOT be re-fetched inside the subscriber loop. The per-subscriber
-        # classification (Block B) happens inside the loop, because each vendor's
-        # sector + history differs.
+        # Fetching of live tenders has been moved to Block B (inside the
+        # subscriber loop) to ensure strict per-subscriber sector filtering.
         from app.core.models_gebiz import GebizTender
         from app.core.models_v6 import VendorSector
         from app.services.tender_service_bid_classifier import (
@@ -6904,29 +6918,7 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
             bid_label_to_html_badge,
         )
 
-        _live_tenders = (
-            db.query(GebizTender)
-            .filter(
-                GebizTender.status == "Open",
-                GebizTender.closing_date >= datetime.now(timezone.utc),
-            )
-            .order_by(GebizTender.closing_date.asc())
-            .limit(10)
-            .all()
-        )
-        _live_tender_dicts = [
-            {
-                "tender_no": t.tender_no,
-                "title": t.title,
-                "agency": t.agency,
-                "closing_date": t.closing_date,
-                "estimated_value": t.estimated_value,
-                "sector": getattr(t, "sector", None),
-                "status": t.status,
-                "url": t.url,
-            }
-            for t in _live_tenders
-        ]
+
 
         if not subscribers:
             logger.info(
@@ -6979,6 +6971,48 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                 total_value = _agg["total_value"]
                 _award_count = _agg["count"]
                 subject = f"Tender Intelligence — {_award_count} GeBIZ awards ({period_label})"
+
+                from app.services.tender_service import _CATEGORY_TO_SECTOR
+                matching_categories = []
+                for s in _sub_sectors:
+                    matching_categories.extend([c for c, sc in _CATEGORY_TO_SECTOR.items() if sc.lower() == s.lower()])
+                
+                # Fetch live tenders specifically for this vendor's sector
+                _base_q = db.query(GebizTender).filter(
+                    GebizTender.status == "Open",
+                    GebizTender.closing_date >= datetime.now(timezone.utc),
+                    GebizTender.estimated_value > 0,  # Ensure value column is never blank
+                )
+                
+                if matching_categories:
+                    _sub_tenders = (
+                        _base_q.filter(GebizTender.raw_data['category'].astext.in_(matching_categories))
+                        .order_by(GebizTender.closing_date.desc())  # Prioritize comfortable deadlines for better AI scoring
+                        .limit(10)
+                        .all()
+                    )
+                else:
+                    _sub_tenders = _base_q.order_by(GebizTender.closing_date.desc()).limit(10).all()
+                    
+                # Pad with generic tenders if sector-specific count is low
+                if len(_sub_tenders) < 10:
+                    _existing_ids = {t.id for t in _sub_tenders}
+                    _pad = _base_q.filter(~GebizTender.id.in_(_existing_ids)).order_by(GebizTender.closing_date.desc()).limit(10 - len(_sub_tenders)).all()
+                    _sub_tenders.extend(_pad)
+
+                _live_tender_dicts = [
+                    {
+                        "tender_no": t.tender_no,
+                        "title": t.title,
+                        "agency": t.agency,
+                        "closing_date": t.closing_date,
+                        "estimated_value": t.estimated_value,
+                        "sector": getattr(t, "sector", None),
+                        "status": t.status,
+                        "url": t.url,
+                    }
+                    for t in _sub_tenders
+                ]
 
                 _vendor_history = build_vendor_history(db, str(sub.id), sector=_sub_sector)
                 _classified_tenders = enrich_tender_digest_with_classifications(
@@ -8289,8 +8323,8 @@ def fulfill_evidence_pack_task(self, evidence_pack_id: str):
             db.commit()
             try:
                 buyer_for_alert = db.query(User).filter(User.id == row.user_id).first()
-                from app.api.stripe_webhook import _alert_payment_fulfillment_issue
-                asyncio.run(_alert_payment_fulfillment_issue(
+                from app.services.fulfillment import alert_payment_fulfillment_issue
+                asyncio.run(alert_payment_fulfillment_issue(
                     reason=f"Evidence Pack {pack.get('pack_id')} incomplete: missing {missing}",
                     product_type="compliance_evidence_pack",
                     customer_email=(buyer_for_alert.email if buyer_for_alert else None),
@@ -8318,11 +8352,11 @@ def fulfill_evidence_pack_task(self, evidence_pack_id: str):
         # instead of waiting up to an hour for the `sweep_pending_cover_sheets`
         # backstop. Best-effort — must never fail the pack delivery.
         try:
-            from app.api.stripe_webhook import _maybe_fire_cover_sheet
+            from app.services.fulfillment import maybe_fire_cover_sheet
 
             buyer_for_cs = db.query(User).filter(User.id == row.user_id).first()
             if buyer_for_cs and buyer_for_cs.email:
-                _maybe_fire_cover_sheet(buyer_for_cs.email)
+                maybe_fire_cover_sheet(buyer_for_cs.email)
         except Exception as cs_err:
             logger.warning("[EvidencePack] cover-sheet re-fire failed (non-blocking): %s", cs_err)
 

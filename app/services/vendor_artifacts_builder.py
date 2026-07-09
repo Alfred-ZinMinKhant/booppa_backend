@@ -40,18 +40,39 @@ def plan_label(user: User) -> str:
 
 def build_badge_certificate(db: Session, user: User, company_override: str | None = None) -> tuple[str, bytes]:
     from app.core.models_v8 import VendorStatusSnapshot
+    from app.core.models_v6 import VendorScore
 
     snap = (
         db.query(VendorStatusSnapshot)
         .filter(VendorStatusSnapshot.vendor_id == user.id)
+        .order_by(VendorStatusSnapshot.created_at.desc())
         .first()
     )
+    score_record = (
+        db.query(VendorScore)
+        .filter(VendorScore.vendor_id == user.id)
+        .first()
+    )
+    confidence = getattr(snap, "confidence_score", 0)
+    if not confidence and score_record:
+        confidence = getattr(score_record, "compliance_score", 0)
+
+    # Re-evaluate procurement readiness if derived from fallback score
+    readiness = getattr(snap, "procurement_readiness", None) or "CONDITIONAL"
+    if not getattr(snap, "confidence_score", 0) and score_record:
+        if confidence >= 80:
+            readiness = "READY"
+        elif confidence >= 60:
+            readiness = "CONDITIONAL"
+        else:
+            readiness = "NEEDS_ATTENTION"
+
     verify_base = (getattr(settings, "VERIFY_BASE_URL", "https://www.booppa.io") or "https://www.booppa.io").rstrip("/")
     pdf = generate_badge_certificate_pdf({
         "company_name": (company_override or "").strip() or company_of(user),
         "verification_depth": getattr(snap, "verification_depth", None) or "BASIC",
-        "procurement_readiness": getattr(snap, "procurement_readiness", None) or "CONDITIONAL",
-        "confidence_score": getattr(snap, "confidence_score", None),
+        "procurement_readiness": readiness,
+        "confidence_score": confidence,
         "vendor_id": str(user.id),
         "verify_url": f"{verify_base}/verify/{user.id}",
     })

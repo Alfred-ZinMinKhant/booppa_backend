@@ -758,7 +758,7 @@ async def simulate_purchase(
 
     # Lazy imports so admin module can load even if Stripe wiring breaks at boot.
     from app.api.stripe_checkout import MODE_MAP
-    from app.api.stripe_webhook import (
+    from app.services.fulfillment import (
         SUBSCRIPTION_PRODUCT_TYPES,
         BUNDLE_COMPONENTS,
         RFP_PRODUCT_TYPES,
@@ -766,10 +766,10 @@ async def simulate_purchase(
         PDPA_PRODUCT_TYPES,
         VENDOR_PROOF_PRODUCT_TYPES,
         CSP_ONETIME_PRODUCT_TYPES,
-        _activate_subscription,
-        _fulfill_bundle,
-        _fulfill_standalone_no_report,
-        _defer_rfp_to_intake,
+        activate_subscription,
+        fulfill_bundle,
+        fulfill_standalone_no_report,
+        defer_rfp_to_intake,
     )
     from app.core.models import Report, Subscription
     from app.core.models_v12 import PendingRfpIntake
@@ -847,7 +847,7 @@ async def simulate_purchase(
         # affects the buyer branch in _activate_subscription and never touches
         # the live-webhook path (where demo derives from Stripe livemode).
         is_buyer = product_type.startswith("buyer_")
-        await _activate_subscription(
+        await activate_subscription(
             product_type=product_type,
             customer_email=customer_email,
             stripe_subscription_id=sim_id,
@@ -877,7 +877,7 @@ async def simulate_purchase(
 
     elif product_type in BUNDLE_COMPONENTS:
         dispatch = "bundle"
-        await _fulfill_bundle(
+        await fulfill_bundle(
             product_type=product_type,
             report_id=None,
             customer_email=customer_email,
@@ -951,7 +951,7 @@ async def simulate_purchase(
             details = {"session_id": sim_id, "queued": "fulfill_rfp_task"}
         else:
             dispatch = "rfp-deferred"
-            intake_id = await _defer_rfp_to_intake(
+            intake_id = await defer_rfp_to_intake(
                 rfp_product_type=product_type,
                 bundle_source=product_type,
                 customer_email=customer_email,
@@ -966,7 +966,7 @@ async def simulate_purchase(
         | CSP_ONETIME_PRODUCT_TYPES
     ):
         dispatch = "standalone"
-        await _fulfill_standalone_no_report(
+        await fulfill_standalone_no_report(
             product_type=product_type,
             customer_email=customer_email,
             metadata=metadata,

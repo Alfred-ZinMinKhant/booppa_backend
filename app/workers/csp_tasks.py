@@ -309,8 +309,8 @@ def generate_csp_documents(self, profile_id: str) -> dict:
             )
             logger.error(msg)
             try:
-                from app.api.stripe_webhook import _alert_payment_fulfillment_issue
-                asyncio.run(_alert_payment_fulfillment_issue(
+                from app.services.fulfillment import alert_payment_fulfillment_issue
+                asyncio.run(alert_payment_fulfillment_issue(
                     reason="CSP document generation produced 0 documents",
                     product_type="csp_pack",
                     customer_email=None,

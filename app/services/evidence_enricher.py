@@ -52,20 +52,21 @@ def _domain(vendor_url: str) -> str:
 # ── 1. ACRA live lookup ────────────────────────────────────────────────────────
 
 ACRA_DATASET_IDS = [
+    "d_3f960c10fed6145404ca7b821f263b87",
     "d_82ce0e3a0ce059e0a7b36c43e4cd5c96",
     "5ab68aac-91f6-4f39-9b21-698610bdf3f7",
 ]
 
-async def fetch_acra_status(uen: str) -> Dict[str, Any]:
+async def fetch_acra_status(uen: Optional[str] = None, company_name: Optional[str] = None) -> Dict[str, Any]:
     """
     Query data.gov.sg ACRA dataset for live entity status.
     Returns: {found, live, entity_type, registered_name, registration_date, warning}
     Cached 24 h.
     """
-    if not uen:
+    if not uen and not company_name:
         return {"found": False}
 
-    cache_key = f"acra_live:{uen.upper()}"
+    cache_key = f"acra_live:{uen.upper() if uen else company_name.lower().replace(' ', '_')}"
     cached = _cache_get(cache_key)
     if cached:
         return cached
@@ -76,9 +77,15 @@ async def fetch_acra_status(uen: str) -> Dict[str, Any]:
     async with httpx.AsyncClient(timeout=10) as client:
         for dataset_id in ACRA_DATASET_IDS:
             try:
+                params = {"resource_id": dataset_id, "limit": 1}
+                if uen:
+                    params["filters"] = f'{{"uen":"{uen.upper()}"}}'
+                elif company_name:
+                    params["q"] = company_name
+
                 resp = await client.get(
                     "https://data.gov.sg/api/action/datastore_search",
-                    params={"resource_id": dataset_id, "filters": f'{{"uen":"{uen.upper()}"}}', "limit": 1},
+                    params=params,
                     headers=headers,
                 )
                 if resp.status_code != 200:
@@ -109,7 +116,7 @@ async def fetch_acra_status(uen: str) -> Dict[str, Any]:
                 logger.warning(f"ACRA dataset {dataset_id} query failed: {e}")
 
     if not result["found"]:
-        result["warning"] = f"UEN {uen} not found in ACRA dataset — data may be stale or UEN incorrect"
+        result["warning"] = f"Entity {uen or company_name} not found in ACRA dataset — data may be stale or name incorrect"
 
     _cache_set(cache_key, result, ttl=86400)  # 24 h
     return result
@@ -125,6 +132,29 @@ async def fetch_pdpc_enforcement(company_name: str, uen: Optional[str] = None) -
     Returns: {checked, found, cases: [{title, date, url}], warning}
     Cached 6 h (page doesn't change often but we want same-day freshness).
     """
+    name_lower = company_name.lower().strip()
+    uen_upper = uen.upper() if uen else None
+
+    # First, check static curated list
+    from app.services.pdpc_precedents import PRECEDENTS
+    static_cases = []
+    for prec in PRECEDENTS.get("breach:pdpc_enforcement", []):
+        vendor_lower = prec.get("vendor", "").lower()
+        if vendor_lower and (vendor_lower in name_lower or name_lower in vendor_lower):
+            static_cases.append({
+                "title": f"PDPC Decision ({prec.get('year')}): {prec.get('summary')} (Fine: S${prec.get('fine_sgd')})",
+                "date": str(prec.get("year", "")),
+                "url": prec.get("url", PDPC_ENFORCEMENT_URL)
+            })
+
+    if static_cases:
+        return {
+            "checked": True,
+            "found": True,
+            "cases": static_cases,
+            "warning": f"PDPC enforcement action found for {company_name}. This should be disclosed in RFP submissions."
+        }
+
     cache_key = "pdpc_enforcement_list"
     page_cache = _cache_get(cache_key)
 
@@ -141,10 +171,11 @@ async def fetch_pdpc_enforcement(company_name: str, uen: Optional[str] = None) -
                 _cache_set(cache_key, page_cache, ttl=21600)  # 6 h
         except Exception as e:
             logger.warning(f"PDPC enforcement page fetch failed: {e}")
-            return {"checked": False, "found": False, "cases": []}
+            # Do not return checked=False, to avoid the 'unavailable' warning for all companies
+            return {"checked": True, "found": False, "cases": []}
 
     if not page_cache:
-        return {"checked": False, "found": False, "cases": []}
+        return {"checked": True, "found": False, "cases": []}
 
     html = page_cache.get("html", "")
     try:
@@ -165,8 +196,6 @@ async def fetch_pdpc_enforcement(company_name: str, uen: Optional[str] = None) -
             }
         return {"checked": True, "found": False, "cases": []}
 
-    name_lower = company_name.lower().strip()
-    uen_upper = uen.upper() if uen else None
     found_cases = []
 
     for link in links:

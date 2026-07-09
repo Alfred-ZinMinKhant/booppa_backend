@@ -22,6 +22,7 @@ class RFPExpressEmailer:
         product_type: str = "rfp_express",
         declaration_url: Optional[str] = None,
         appendix_d_url: Optional[str] = None,
+        pdf_bytes: Optional[bytes] = None,
     ) -> bool:
         try:
             from app.services.email_service import EmailService
@@ -88,10 +89,17 @@ class RFPExpressEmailer:
             </body></html>
             """
 
+            _attachments = None
+            if pdf_bytes:
+                _safe_co = (vendor_name or "Kit").replace("/", "-").replace(" ", "-")
+                _filename = "RFP_Complete_Kit" if product_type == "rfp_complete" else "RFP_Kit_Express"
+                _attachments = [(f"{_filename}_{_safe_co}.pdf", pdf_bytes)]
+
             await svc.send_html_email(
                 to_email=customer_email,
                 subject=f"Your {product_label} Evidence is Ready — {vendor_name}",
                 body_html=body_html,
+                attachments=_attachments,
             )
             logger.info(f"{product_label} delivery email sent to {customer_email}")
             return True

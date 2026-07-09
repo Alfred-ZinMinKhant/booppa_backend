@@ -252,7 +252,7 @@ def vendor_pro_pdpa_trend(
             Report.status == "completed",
         )
         .order_by(Report.completed_at.desc().nullslast())
-        .limit(8)
+        .limit(30)
         .all()
     )
 
@@ -267,11 +267,23 @@ def vendor_pro_pdpa_trend(
                 return max(0, min(100, 100 - int(round(v))))
         return None
 
+    seen_months = set()
+    monthly_latest = []
+    for r in rows:
+        when = r.completed_at or r.created_at
+        if not when: continue
+        m_key = when.strftime("%Y-%m")
+        if m_key not in seen_months:
+            seen_months.add(m_key)
+            monthly_latest.append(r)
+            if len(monthly_latest) == 8:
+                break
+
     points = []
-    for r in reversed(rows):  # oldest → newest
+    for r in reversed(monthly_latest):  # oldest → newest
         sc = _score(r)
         when = r.completed_at or r.created_at
         if sc is not None and when is not None:
-            points.append({"label": when.strftime("%b %y"), "score": sc})
+            points.append({"label": when.strftime("%b '%y"), "score": sc})
 
     return {"points": points}

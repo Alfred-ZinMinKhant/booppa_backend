@@ -127,8 +127,21 @@ def build_pdpa_dashboard(db: Session, vendor_id) -> Dict[str, Any]:
 def _trend_points(db: Session, vendor_id) -> List[Dict[str, Any]]:
     """Up to 8 most recent scans, oldest → newest, each clickable into its report."""
     rows = _completed_pdpa_reports(db, vendor_id, ascending=False, limit=8)
+    seen_months = set()
+    monthly_latest = []
+    for r in rows:
+        when = r.completed_at or r.created_at
+        if not when:
+            continue
+        m_key = when.strftime("%Y-%m")
+        if m_key not in seen_months:
+            seen_months.add(m_key)
+            monthly_latest.append(r)
+            if len(monthly_latest) == 8:
+                break
+
     points: List[Dict[str, Any]] = []
-    for r in reversed(rows):  # oldest → newest
+    for r in reversed(monthly_latest):  # oldest → newest
         score = _compliance_score(r)
         when = r.completed_at or r.created_at
         if score is not None and when is not None:

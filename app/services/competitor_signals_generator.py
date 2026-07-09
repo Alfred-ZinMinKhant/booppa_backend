@@ -59,22 +59,27 @@ def _get_signals(db, sector: str, days: int = 90) -> dict:
     from sqlalchemy import func
     from app.core.models_gebiz import GebizAwardHistory
 
-    since = datetime.now(timezone.utc).date() - timedelta(days=days)
-
-    try:
-        # GebizAwardHistory.sector is normally written uppercased, but match
-        # case-insensitively so legacy mixed-case rows still count.
-        rows = (
-            db.query(GebizAwardHistory)
-            .filter(
-                func.upper(GebizAwardHistory.sector) == (sector or "").upper(),
-                GebizAwardHistory.awarded_date >= since,
+    rows = []
+    actual_days = days
+    for fallback_days in [days, 365, 730]:
+        since = datetime.now(timezone.utc).date() - timedelta(days=fallback_days)
+        try:
+            # GebizAwardHistory.sector is normally written uppercased, but match
+            # case-insensitively so legacy mixed-case rows still count.
+            rows = (
+                db.query(GebizAwardHistory)
+                .filter(
+                    func.upper(GebizAwardHistory.sector) == (sector or "").upper(),
+                    GebizAwardHistory.awarded_date >= since,
+                )
+                .all()
             )
-            .all()
-        )
-    except Exception as e:
-        logger.warning("[CompetitorSignals] DB query failed: %s", e)
-        rows = []
+            if rows:
+                actual_days = fallback_days
+                break
+        except Exception as e:
+            logger.warning("[CompetitorSignals] DB query failed: %s", e)
+            break
 
     if not rows:
         return {
@@ -135,7 +140,7 @@ def _get_signals(db, sector: str, days: int = 90) -> dict:
     ]
 
     # Signal 3: Sector trend — compare first half vs second half of the window
-    midpoint = since + timedelta(days=days // 2)
+    midpoint = since + timedelta(days=actual_days // 2)
     first_half = sum(1 for r in rows if r.awarded_date and r.awarded_date < midpoint)
     second_half = sum(1 for r in rows if r.awarded_date and r.awarded_date >= midpoint)
     if first_half == 0:
@@ -155,7 +160,7 @@ def _get_signals(db, sector: str, days: int = 90) -> dict:
         "win_rate_by_size": win_rate_by_size,
         "sector_trend": {"direction": trend_direction, "pct": trend_pct},
         "sector": sector,
-        "period_days": days,
+        "period_days": actual_days,
         "total_awards": total_awards,
     }
 
@@ -260,6 +265,8 @@ def generate_competitor_signals_pdf(signals: dict, company_name: str) -> bytes:
             ("TOPPADDING", (0, 0), (-1, -1), 5),
         ]))
         story.append(t)
+    else:
+        story.append(Paragraph("Signal 2 — No award data available to compute contract size brackets.", h2_style))
 
     # Signal 3: Sector trend
     story.append(Paragraph("Signal 3 — Sector procurement trend", h2_style))

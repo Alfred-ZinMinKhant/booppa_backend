@@ -766,18 +766,30 @@ def trm_progress_history(
             Report.framework == "trm_board_report",
             Report.status == "completed",
         )
-        .order_by(Report.completed_at.asc().nullsfirst())
-        .limit(24)
+        .order_by(Report.completed_at.desc().nullslast())
+        .limit(50)
         .all()
     )
-    points = []
+    seen_months = set()
+    monthly_latest = []
     for r in rows:
+        when = r.completed_at or r.created_at
+        if not when: continue
+        m_key = when.strftime("%Y-%m")
+        if m_key not in seen_months:
+            seen_months.add(m_key)
+            monthly_latest.append(r)
+            if len(monthly_latest) == 24:
+                break
+
+    points = []
+    for r in reversed(monthly_latest):  # oldest → newest
         ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
         pct = ad.get("compliant_pct")
         when = r.completed_at or r.created_at
         if isinstance(pct, (int, float)) and when is not None:
             points.append({
-                "label": when.strftime("%b %y"),
+                "label": when.strftime("%b '%y"),
                 "compliant_pct": int(round(pct)),
                 "generated_at": when.isoformat(),
             })

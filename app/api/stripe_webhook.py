@@ -2203,6 +2203,7 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                     to_email=contact_email,
                     subject=f"Your Notarization Certificate is Ready — {original_filename}",
                     body_html=body_html,
+                    attachments=[(f"Notarization_{report_id[:8]}.pdf", pdf_bytes)] if pdf_bytes else None,
                 )
                 if sent:
                     # Mark email as sent to prevent duplicates on retry. Only on a
@@ -3218,7 +3219,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         db.close()
 
 
-async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: bool = True) -> None:
+async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: bool = True, raise_if_incomplete: bool = False) -> None:
     """
     PDPA Snapshot fulfillment:
     1. Run the full on-page + AI scan (if not already done)
@@ -3272,7 +3273,11 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
                 )
             except Exception as e:
                 logger.error(f"[PDPA] Could not queue scan for {report_id}: {e}")
-            # Compliance score and CertificateLog will be written when scan completes
+            
+            if raise_if_incomplete:
+                # Raise exception so the fulfill_pdpa_task retries and eventually writes
+                # the Compliance score and CertificateLog when scan completes
+                raise Exception("PDPA scan not yet complete, retrying later")
             return
 
         # ── Step 2: Generate PDF ────────────────────────────────────────────
@@ -3459,10 +3464,15 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
                 </body></html>
                 """
                 email_svc = EmailService()
+                _attachments = None
+                if pdf_bytes:
+                    _safe_co = (company_name or "report").replace("/", "-").replace(" ", "-")
+                    _attachments = [(f"PDPA_Snapshot_{_safe_co}.pdf", pdf_bytes)]
                 sent = await email_svc.send_html_email(
                     to_email=contact_email,
                     subject=f"Your PDPA Snapshot Report is Ready — {company_name}",
                     body_html=body_html,
+                    attachments=_attachments,
                 )
                 if not sent:
                     await _alert_payment_fulfillment_issue(

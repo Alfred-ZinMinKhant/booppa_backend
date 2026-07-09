@@ -225,6 +225,15 @@ def generate_vendor_proof_certificate(
 
     if verify_url:
         story.append(Spacer(1, 0.15 * inch))
+        story.append(Paragraph("Embeddable Trust Badge", sec_style))
+        badge_snippet = f'&lt;a href="{_xml_escape(verify_url)}"&gt;&lt;img src="https://booppa.io/assets/trust-badge.svg" alt="Booppa Verified Vendor"/&gt;&lt;/a&gt;'
+        story.append(Paragraph(
+            f"Add this verified trust badge to your website's footer to signal compliance readiness to buyers:<br/>"
+            f"<font name='Courier' size='8' color='#334155'>{badge_snippet}</font>",
+            cell_value,
+        ))
+        
+        story.append(Spacer(1, 0.15 * inch))
         story.append(Paragraph(
             f'Live verification page: <a href="{_xml_escape(verify_url)}">{_xml_escape(verify_url)}</a>',
             cell_value,

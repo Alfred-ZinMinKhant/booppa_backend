@@ -253,19 +253,42 @@ def get_tender_matches(db, vendor_id: str, limit: int = 5,
             enrich_tender_digest_with_classifications,
         )
 
-        now = datetime.now(timezone.utc)
-        tenders = (
-            db.query(GebizTender)
-            .filter(GebizTender.status == "Open", GebizTender.closing_date >= now)
-            .order_by(GebizTender.closing_date.asc())
-            .limit(20)
-            .all()
-        )
-        if not tenders:
-            return []
-
         sector_row = db.query(VendorSector).filter(VendorSector.vendor_id == vendor_id).first()
         sector = sector_row.sector if sector_row else None
+        
+        from app.services.tender_service import _CATEGORY_TO_SECTOR
+        matching_categories = [c for c, s in _CATEGORY_TO_SECTOR.items() if s.lower() == (sector or "").lower()]
+
+        now = datetime.now(timezone.utc)
+        base_query = db.query(GebizTender).filter(GebizTender.status == "Open", GebizTender.closing_date >= now)
+        
+        tenders = []
+        if matching_categories:
+            tenders = (
+                base_query.filter(GebizTender.raw_data['category'].astext.in_(matching_categories))
+                .order_by(GebizTender.closing_date.asc())
+                .limit(20)
+                .all()
+            )
+        
+        # Fall back to generic tenders if we didn't find enough sector-specific ones
+        if len(tenders) < 5:
+            fallback_tenders = (
+                base_query.order_by(GebizTender.closing_date.asc())
+                .limit(20)
+                .all()
+            )
+            # Merge avoiding duplicates
+            seen = {t.tender_no for t in tenders}
+            for t in fallback_tenders:
+                if t.tender_no not in seen:
+                    tenders.append(t)
+                    seen.add(t.tender_no)
+                if len(tenders) >= 20:
+                    break
+
+        if not tenders:
+            return []
 
         rows = [
             {
@@ -288,7 +311,7 @@ def get_tender_matches(db, vendor_id: str, limit: int = 5,
             except Exception as he:
                 logger.warning("[VendorInsights] build_vendor_history failed for %s: %s", vendor_id, he)
 
-        enriched = enrich_tender_digest_with_classifications(rows, vendor_history, max_classify=limit * 2)
+        enriched = enrich_tender_digest_with_classifications(rows, vendor_history, max_classify=20)
 
         rank = {"BID": 0, "WATCH": 1, "PASS": 2, None: 3}
         enriched.sort(key=lambda r: (rank.get(r.get("bid_label"), 3), r.get("closing_date") or now))

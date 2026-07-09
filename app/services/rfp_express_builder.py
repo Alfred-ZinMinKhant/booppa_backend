@@ -112,12 +112,11 @@ class RFPExpressBuilder:
         )
         import asyncio as _asyncio
         uen = vendor_ctx.get("uen") or intake.get("uen")
-        async def _no_acra() -> dict:
-            return {"found": False}
+        uen = vendor_ctx.get("uen") or intake.get("uen")
 
         stated_hosting = intake.get("data_hosting") or intake.get("primary_cloud")
         (acra_live, pdpc_result, ssl_result, domain_rep, hosting_signals) = await _asyncio.gather(
-            fetch_acra_status(uen) if uen else _no_acra(),
+            fetch_acra_status(uen, company_name),
             fetch_pdpc_enforcement(company_name, uen),
             fetch_ssl_grade(vendor_url),
             fetch_domain_reputation(vendor_url),
@@ -336,7 +335,7 @@ class RFPExpressBuilder:
         # build/anchor/upload/email. By here, qa_answers is placeholder-free.
 
         # 5. Send email
-        await self._send_email(company_name, download_url, product_type, docx_url=docx_url, declaration_url=declaration_url, appendix_d_url=appendix_d_url)
+        await self._send_email(company_name, download_url, product_type, docx_url=docx_url, declaration_url=declaration_url, appendix_d_url=appendix_d_url, pdf_bytes=pdf_bytes)
 
         elapsed = (datetime.now(timezone.utc) - self.generation_start).total_seconds()
         logger.info(f"RFP Kit Express complete in {elapsed:.1f}s for {company_name}")
@@ -1964,7 +1963,7 @@ class RFPExpressBuilder:
                 Bucket=s3_svc.bucket,
                 Key=key,
                 Body=docx_bytes,
-                ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ContentType="application/octet-stream",
             )
             url = s3_svc.s3_client.generate_presigned_url(
                 "get_object",
@@ -2026,7 +2025,7 @@ class RFPExpressBuilder:
 
     # ── Step 5: email ─────────────────────────────────────────────────────────
 
-    async def _send_email(self, company_name: str, download_url: str, product_type: str = "rfp_express", docx_url: Optional[str] = None, declaration_url: Optional[str] = None, appendix_d_url: Optional[str] = None):
+    async def _send_email(self, company_name: str, download_url: str, product_type: str = "rfp_express", docx_url: Optional[str] = None, declaration_url: Optional[str] = None, appendix_d_url: Optional[str] = None, pdf_bytes: Optional[bytes] = None):
         try:
             from app.services.rfp_express_emailer import RFPExpressEmailer
             emailer = RFPExpressEmailer()
@@ -2037,6 +2036,7 @@ class RFPExpressBuilder:
                 product_type=product_type,
                 declaration_url=declaration_url,
                 appendix_d_url=appendix_d_url,
+                pdf_bytes=pdf_bytes,
             )
         except Exception as e:
             logger.warning(f"Email delivery failed (non-blocking): {e}")

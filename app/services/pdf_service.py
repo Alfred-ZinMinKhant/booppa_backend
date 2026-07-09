@@ -172,7 +172,7 @@ FOOTER_H = 0.40 * inch
 # ── Per-page canvas callback ───────────────────────────────────────────────────
 
 
-def _draw_page(canvas, doc):
+def draw_booppa_page(canvas, doc):
     canvas.saveState()
 
     # ── Watermark (logo centred, diagonal, low opacity) ───────────────────────
@@ -264,23 +264,61 @@ def _draw_logo_text(canvas, y: float):
     canvas.drawString(MARGIN + 56, y + 0.09 * inch, "·  Trust Intelligence")
 
 
-# ── PDFService ─────────────────────────────────────────────────────────────────
+
+def get_booppa_doc_template(buffer, title, report_type_label="AUDIT REPORT", is_pdpa=False, branding=None):
+    from reportlab.platypus import SimpleDocTemplate
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=MARGIN,
+        rightMargin=MARGIN,
+        topMargin=HEADER_H + 0.35 * inch,
+        bottomMargin=FOOTER_H + 0.35 * inch,
+        title=title,
+    )
+    doc._report_type_label = report_type_label
+    doc._branding = branding
+    if is_pdpa:
+        _disc = (
+            f"Automated compliance assessment by {COMPANY_NAME} · "
+            f"{COMPANY_FRAMEWORK_VERSION} · Results reflect publicly accessible website elements at assessment date."
+        )
+        _disc2 = (
+            "May be used as supporting evidence in procurement and regulatory contexts. "
+            f"Does not substitute for legal counsel. {COMPANY_NAME}."
+        )
+        doc._pdpa_footer_lines = [_disc, _disc2]
+    return doc
+
+# ── PDFService ──
 
 
 class PDFService:
     """Generate branded Booppa PDF reports."""
 
     def __init__(self):
-        self._s = self._build_styles()
+        self._s = get_booppa_styles()
 
     # ── Styles ─────────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _build_styles() -> dict:
-        def ps(name, **kw) -> ParagraphStyle:
-            return ParagraphStyle(name, **kw)
+def get_booppa_styles() -> dict:
+    from reportlab.lib.styles import getSampleStyleSheet
+    base = getSampleStyleSheet()
+    
+    def ps(name, **kw) -> ParagraphStyle:
+        return ParagraphStyle(name, **kw)
 
-        return {
+    return {
+        # ── PDPA Monitor specific styles ──
+        "pm_title": ps("pm_title", parent=base["Title"], fontSize=20, textColor=NAVY, spaceAfter=4),
+        "pm_sub": ps("pm_sub", parent=base["Normal"], fontSize=10, textColor=SLATE, spaceAfter=2),
+        "pm_h2": ps("pm_h2", parent=base["Heading2"], fontSize=13, textColor=NAVY, spaceBefore=14, spaceAfter=6),
+        "pm_body": ps("pm_body", parent=base["Normal"], fontSize=9.5, textColor=TEXT_DARK, leading=14),
+        "pm_big": ps("pm_big", parent=base["Normal"], fontSize=26, textColor=NAVY, leading=28),
+        "pm_lbl": ps("pm_lbl", parent=base["Normal"], fontSize=8, textColor=SLATE, leading=11),
+        "pm_cell": ps("pm_cell", parent=base["Normal"], fontSize=8.5, leading=11),
+        "pm_small": ps("pm_small", parent=base["Normal"], fontSize=7.5, textColor=SLATE, leading=10),
+
             "CoverTitle": ps(
                 "CoverTitle",
                 fontSize=24,
@@ -1502,28 +1540,6 @@ class PDFService:
             buffer = BytesIO()
             s = self._s
 
-            doc = BaseDocTemplate(
-                buffer,
-                pagesize=A4,
-                leftMargin=MARGIN,
-                rightMargin=MARGIN,
-                topMargin=HEADER_H + 0.35 * inch,
-                bottomMargin=FOOTER_H + 0.35 * inch,
-            )
-            doc._report_type_label = (
-                (report_data.get("framework") or "AUDIT REPORT")
-                .upper()
-                .replace("_", " ")
-            )
-            frame = Frame(
-                doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="main"
-            )
-            doc.addPageTemplates(
-                [PageTemplate(id="main", frames=[frame], onPage=_draw_page)]
-            )
-
-            story = []
-
             # Compute framework type early — gates several sections below
             framework_raw = (report_data.get("framework") or "").upper()
             is_pdpa = framework_raw in {"PDPA", "PDPA_QUICK_SCAN"}
@@ -1532,17 +1548,21 @@ class PDFService:
                 report_data.get("product_type") or ""
             ).startswith("rfp_")
 
-            # Change 6(b/d): set PDPA footer disclaimer on doc object for _draw_page
-            if is_pdpa:
-                _disc = (
-                    f"Automated compliance assessment by {COMPANY_NAME} · "
-                    f"{COMPANY_FRAMEWORK_VERSION} · Results reflect publicly accessible website elements at assessment date."
-                )
-                _disc2 = (
-                    "May be used as supporting evidence in procurement and regulatory contexts. "
-                    f"Does not substitute for legal counsel. {COMPANY_NAME}."
-                )
-                doc._pdpa_footer_lines = [_disc, _disc2]
+            report_type_label = (report_data.get("framework") or "AUDIT REPORT").upper().replace("_", " ")
+
+            doc = get_booppa_doc_template(
+                buffer=buffer,
+                title="Booppa Report",
+                report_type_label=report_type_label,
+                is_pdpa=is_pdpa,
+            )
+            # Add PageTemplate since PDFService used BaseDocTemplate before, 
+            # but wait, get_booppa_doc_template returns a SimpleDocTemplate!
+            # SimpleDocTemplate already sets up a Frame and PageTemplate in its build() method!
+            # So we don't need to add a PageTemplate manually if we call doc.build(story, onFirstPage=draw_booppa_page, onLaterPages=draw_booppa_page).
+            # We'll just build it at the end.
+
+            story = []
 
             # ── Cover ──────────────────────────────────────────────────────
             company = report_data.get("company_name") or "Vendor Report"
@@ -1709,7 +1729,7 @@ class PDFService:
                     story.extend(self._assessment_conducted_by_section(report_data))
 
                     # Skip all normal PDPA sections — jump to end
-                    doc.build(story)
+                    doc.build(story, onFirstPage=draw_booppa_page, onLaterPages=draw_booppa_page)
                     buffer.seek(0)
                     logger.info("PDF generated (site inaccessible report)")
                     return buffer.getvalue()
@@ -2073,7 +2093,7 @@ class PDFService:
                     )
                 )
 
-            doc.build(story)
+            doc.build(story, onFirstPage=draw_booppa_page, onLaterPages=draw_booppa_page)
             buffer.seek(0)
             logger.info("PDF generated successfully")
             return buffer.getvalue()

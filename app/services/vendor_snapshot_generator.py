@@ -147,10 +147,17 @@ def generate_vendor_snapshot_pdf(data: Dict[str, Any]) -> bytes:
     ]
     if bench.get("percentile") is not None and bench.get("sector"):
         pct = int(bench["percentile"])
-        trend_bits.append(
-            f'Sector standing: <b>top {max(1, 100 - pct)}%</b> in '
-            f'{_xml_escape(bench["sector"])} (ahead of {pct}% of peers)'
-        )
+        _n = bench.get("peer_count", 0)
+        _sector = _xml_escape(bench["sector"])
+        if bench.get("basis") == "sector" and _n:
+            trend_bits.append(
+                f'Sector standing: at or above <b>{pct}%</b> of {_n} scored peers in {_sector}'
+            )
+        else:
+            trend_bits.append(
+                f'Sector standing: <b>top {max(1, 100 - pct)}%</b> in {_sector} '
+                f'(ahead of {pct}% of peers)'
+            )
     if trend_bits:
         story.append(Paragraph(" &nbsp;·&nbsp; ".join(trend_bits), s["body"]))
         story.append(Spacer(1, 14))
@@ -218,7 +225,8 @@ def generate_vendor_snapshot_pdf(data: Dict[str, Any]) -> bytes:
     elif not (data.get("profile_views_30d") or 0):
         rank_bits.append(
             "Your profile is live and prioritised — search appearances and views "
-            "accumulate as buyer traffic grows on the platform."
+            "accumulate as buyer traffic grows on the platform. "
+            "<i>(Month 1: Building baseline visibility)</i>"
         )
     bd_top = (breakdown.get("top_actions") or [])
     if bd_top:

@@ -17,7 +17,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from app.services.pdf_logo import draw_logo_header
+from app.services.pdf_service import NAVY, EMERALD, SLATE, LIGHT_BG, BORDER, TEXT_DARK, WHITE, get_booppa_styles, get_booppa_doc_template, draw_booppa_page
 
 from app.core.company import COMPANY_NAME
 
@@ -62,27 +62,6 @@ def _drift_chart(score_history: List[Dict[str, Any]]):
     except Exception as exc:  # pragma: no cover - chart is best-effort
         logger.warning("[MonitorReport] drift chart render failed: %s", exc)
         return None
-
-
-def _styles():
-    base = getSampleStyleSheet()
-    return {
-        "title": ParagraphStyle("pm_title", parent=base["Title"], fontSize=20,
-                                textColor=colors.HexColor("#0f172a"), spaceAfter=4),
-        "sub": ParagraphStyle("pm_sub", parent=base["Normal"], fontSize=10,
-                              textColor=colors.HexColor("#475569"), spaceAfter=2),
-        "h2": ParagraphStyle("pm_h2", parent=base["Heading2"], fontSize=13,
-                            textColor=colors.HexColor("#0f172a"), spaceBefore=14, spaceAfter=6),
-        "body": ParagraphStyle("pm_body", parent=base["Normal"], fontSize=9.5,
-                              textColor=colors.HexColor("#334155"), leading=14),
-        "big": ParagraphStyle("pm_big", parent=base["Normal"], fontSize=26,
-                             textColor=colors.HexColor("#0f172a"), leading=28),
-        "lbl": ParagraphStyle("pm_lbl", parent=base["Normal"], fontSize=8,
-                            textColor=colors.HexColor("#64748b"), leading=11),
-        "cell": ParagraphStyle("pm_cell", parent=base["Normal"], fontSize=8.5, leading=11),
-        "small": ParagraphStyle("pm_small", parent=base["Normal"], fontSize=7.5,
-                              textColor=colors.HexColor("#64748b"), leading=10),
-    }
 
 
 def generate_pdpa_monitor_report_pdf(data: Dict[str, Any]) -> bytes:
@@ -189,9 +168,9 @@ def generate_pdpa_monitor_report_pdf(data: Dict[str, Any]) -> bytes:
     card = Table(score_card, colWidths=[2.3 * inch, 2.3 * inch, 1.8 * inch])
     card.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fafc")),
-        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
-        ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+        ("BACKGROUND", (0, 0), (-1, -1), LIGHT_BG),
+        ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER),
         ("TOPPADDING", (0, 0), (-1, -1), 14),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 14),
         ("LEFTPADDING", (0, 0), (-1, -1), 14),
@@ -218,11 +197,11 @@ def generate_pdpa_monitor_report_pdf(data: Dict[str, Any]) -> bytes:
             ])
         t = Table(rows, colWidths=[3.4 * inch, 1.5 * inch, 1.5 * inch], repeatRows=1)
         t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+            ("BACKGROUND", (0, 0), (-1, 0), NAVY),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+            ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LIGHT_BG]),
             ("TOPPADDING", (0, 0), (-1, -1), 5),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
             ("LEFTPADDING", (0, 0), (-1, -1), 6),
@@ -276,5 +255,5 @@ def generate_pdpa_monitor_report_pdf(data: Dict[str, Any]) -> bytes:
         "accessible website elements at scan time; not a statement of regulatory compliance.",
         s["small"]))
 
-    doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
+    doc.build(story, onFirstPage=draw_booppa_page, onLaterPages=draw_booppa_page)
     return buf.getvalue()

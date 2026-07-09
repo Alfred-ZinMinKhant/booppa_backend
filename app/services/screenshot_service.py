@@ -85,7 +85,9 @@ def capture_screenshot_bytes(url: str, timeout: int = 45) -> Optional[bytes]:
         with sync_playwright() as p:
             browser = p.chromium.launch()
             page = browser.new_page()
-            page.goto(url, timeout=_PLAYWRIGHT_NAV_TIMEOUT_MS, wait_until="networkidle")
+            response = page.goto(url, timeout=_PLAYWRIGHT_NAV_TIMEOUT_MS, wait_until="networkidle")
+            if response and response.status >= 400:
+                raise Exception(f"HTTP {response.status} returned by page")
             # Brief settle wait so animated intros render their final frame.
             page.wait_for_timeout(_PLAYWRIGHT_SETTLE_MS)
             img = page.screenshot(full_page=False)

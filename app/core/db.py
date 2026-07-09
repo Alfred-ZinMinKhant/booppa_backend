@@ -32,6 +32,26 @@ def get_db():
         db.close()
 
 
+import contextlib
+
+@contextlib.contextmanager
+def transactional_session():
+    """
+    Context manager that yields a database session and safely handles transactions.
+    Commits automatically on success, rolls back on exception, and always closes the session.
+    Prevents connection pool exhaustion from unclosed sessions or leaked locks.
+    """
+    db = SessionLocal()
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def create_tables():
     try:
         Base.metadata.create_all(bind=engine)

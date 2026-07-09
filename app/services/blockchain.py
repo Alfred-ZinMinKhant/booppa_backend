@@ -115,7 +115,7 @@ class BlockchainService:
             private_key = self._get_private_key()
             account = self.w3.eth.account.from_key(private_key)
 
-            nonce = self.w3.eth.get_transaction_count(account.address)
+            nonce = self.w3.eth.get_transaction_count(account.address, 'pending')
             txn = self.contract.functions.anchorHash(file_hash, metadata).build_transaction(
                 {
                     "from": account.address,

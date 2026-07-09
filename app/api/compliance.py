@@ -20,6 +20,8 @@ import uuid
 
 from app.core.db import SessionLocal
 from app.core.models import Report, User
+from app.core.repositories.report_repository import ReportRepository
+from app.core.repositories.user_repository import UserRepository
 from app.services.storage import S3Service
 
 logger = logging.getLogger(__name__)
@@ -60,14 +62,7 @@ async def download_cover_sheet(report_id: str):
     """
     db = SessionLocal()
     try:
-        report = (
-            db.query(Report)
-            .filter(
-                Report.id == report_id,
-                Report.framework == "compliance_evidence_pack",
-            )
-            .first()
-        )
+        report = ReportRepository.get_by_id_and_framework(db, report_id, "compliance_evidence_pack")
         if not report:
             raise HTTPException(status_code=404, detail="Cover sheet not found.")
         ad = report.assessment_data if isinstance(report.assessment_data, dict) else {}
@@ -98,7 +93,7 @@ async def cover_sheet_status(email: str, response: Response):
     response.headers["Cache-Control"] = "no-store"
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.email == email).first()
+        user = UserRepository.get_by_email(db, email)
         if not user:
             return {
                 "credits": 0,
@@ -111,15 +106,7 @@ async def cover_sheet_status(email: str, response: Response):
                 "signed": None,
             }
 
-        pdpa = (
-            db.query(Report)
-            .filter(
-                Report.owner_id == user.id,
-                Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
-            )
-            .order_by(Report.created_at.desc())
-            .first()
-        )
+        pdpa = ReportRepository.get_latest_for_owner_by_frameworks(db, user.id, ["pdpa_quick_scan", "pdpa_snapshot"])
         pdpa_payload = None
         if pdpa:
             pdpa_ad = pdpa.assessment_data if isinstance(pdpa.assessment_data, dict) else {}
@@ -150,12 +137,7 @@ async def cover_sheet_status(email: str, response: Response):
                 "completed_at": pdpa.completed_at.isoformat() if pdpa.completed_at else None,
             }
 
-        rfp = (
-            db.query(Report)
-            .filter(Report.owner_id == user.id, Report.framework == "rfp_complete")
-            .order_by(Report.created_at.desc())
-            .first()
-        )
+        rfp = ReportRepository.get_latest_for_owner_by_framework(db, user.id, "rfp_complete")
         rfp_payload = None
         if rfp:
             rfp_ad = rfp.assessment_data if isinstance(rfp.assessment_data, dict) else {}
@@ -209,12 +191,7 @@ async def cover_sheet_status(email: str, response: Response):
                 except Exception:
                     pass
 
-        cs = (
-            db.query(Report)
-            .filter(Report.owner_id == user.id, Report.framework == "compliance_evidence_pack")
-            .order_by(Report.created_at.desc())
-            .first()
-        )
+        cs = ReportRepository.get_latest_for_owner_by_framework(db, user.id, "compliance_evidence_pack")
         cs_payload = {"ready": False}
         if cs and (cs.file_key or cs.s3_url):
             from app.services.cover_sheet_generator import COVER_SHEET_SCHEMA_VERSION
@@ -270,6 +247,7 @@ async def cover_sheet_status(email: str, response: Response):
         # Scope to current cycle: only show signed report from after the latest
         # PDPA scan (so monthly subscribers don't see last month's signed sheet
         # bleed into this cycle's UI).
+        # Keep inline query for conditional timestamp filter since it's highly specific
         signed_q = db.query(Report).filter(
             Report.owner_id == user.id,
             Report.framework == "compliance_evidence_signed_sheet",
@@ -354,18 +332,10 @@ async def regenerate_cover_sheet(email: str = Form(...)):
     """
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.email == email).first()
+        user = UserRepository.get_by_email(db, email)
         if not user:
             raise HTTPException(status_code=404, detail="User not found.")
-        existing = (
-            db.query(Report)
-            .filter(
-                Report.owner_id == user.id,
-                Report.framework == "compliance_evidence_pack",
-            )
-            .order_by(Report.created_at.desc())
-            .first()
-        )
+        existing = ReportRepository.get_latest_for_owner_by_framework(db, user.id, "compliance_evidence_pack")
         if not existing:
             raise HTTPException(
                 status_code=400,
@@ -424,12 +394,7 @@ async def upload_signed_cover_sheet(
         # Row-level lock — two concurrent signed-sheet uploads must not both
         # pass the credits/flag checks and double-anchor a single credit. The
         # loser blocks until the winner commits, then sees the cleared flag.
-        user = (
-            db.query(User)
-            .filter(User.email == email)
-            .with_for_update()
-            .first()
-        )
+        user = UserRepository.get_by_email(db, email, lock_for_update=True)
         if not user:
             raise HTTPException(status_code=404, detail="User not found.")
         credits = getattr(user, "compliance_evidence_credits", 0) or 0
@@ -558,12 +523,7 @@ async def sign_cover_sheet_electronically(payload: ESignRequest, request: Reques
     try:
         # Row-level lock mirrors upload_signed_cover_sheet — two concurrent
         # sign-electronically calls must not both pass the credit check.
-        user = (
-            db.query(User)
-            .filter(User.email == payload.email)
-            .with_for_update()
-            .first()
-        )
+        user = UserRepository.get_by_email(db, payload.email, lock_for_update=True)
         if not user:
             raise HTTPException(status_code=404, detail="User not found.")
         credits = getattr(user, "compliance_evidence_credits", 0) or 0

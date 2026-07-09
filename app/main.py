@@ -13,13 +13,14 @@ from app.core import models as _models
 import logging
 from mangum import Mangum
 from app.api.websocket import socket_app, start_event_relay
+from app.core.json_logger import setup_json_logging
 import asyncio
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
-logging.basicConfig(level=settings.LOG_LEVEL)
+setup_json_logging(level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])

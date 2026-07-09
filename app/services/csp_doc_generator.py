@@ -41,7 +41,7 @@ def _call(system: str, user: str) -> Tuple[str, int, int]:
         from openai import OpenAI
     except ImportError:
         raise RuntimeError("pip install openai")
-    client = OpenAI(api_key=os.environ["DEEPSEEK_API_KEY"], base_url=DEEPSEEK_BASE_URL)
+    client = OpenAI(api_key=os.environ["DEEPSEEK_API_KEY"], base_url=DEEPSEEK_BASE_URL, timeout=60.0)
     resp = client.chat.completions.create(
         model=DEEPSEEK_MODEL, max_tokens=MAX_TOKENS, temperature=0.15,
         messages=[{"role":"system","content":system},{"role":"user","content":user}],

@@ -7,6 +7,7 @@ from app.core.config import settings
 import stripe
 import logging
 from app.core.models import Report, User
+from app.core.repositories.report_repository import ReportRepository
 import base64
 from io import BytesIO
 import qrcode
@@ -240,7 +241,7 @@ def _run_report_workflow_sync(report_id: str) -> None:
         logger.error(f"On-demand report processing failed for {report_id}: {exc}")
         db = SessionLocal()
         try:
-            report = db.query(Report).filter(Report.id == report_id).first()
+            report = ReportRepository.get_by_id(db, report_id)
             if report:
                 assessment = report.assessment_data or {}
                 if not isinstance(assessment, dict):
@@ -260,7 +261,7 @@ async def _run_report_workflow_async(report_id: str) -> None:
         logger.error(f"On-demand async processing failed for {report_id}: {exc}")
         db = SessionLocal()
         try:
-            report = db.query(Report).filter(Report.id == report_id).first()
+            report = ReportRepository.get_by_id(db, report_id)
             if report:
                 assessment = report.assessment_data or {}
                 if not isinstance(assessment, dict):
@@ -324,19 +325,14 @@ async def get_report_by_session(
     try:
         report = None
         if report_id:
-            report = db.query(Report).filter(Report.id == report_id).first()
+            report = ReportRepository.get_by_id(db, report_id)
 
         # Fallback: standalone /pricing purchases create the stub Report inside
         # the webhook *after* Stripe issued the session, so the session metadata
         # may not carry report_id if the metadata-backfill round-trip failed.
         # The stub stores its session_id in assessment_data, so look it up there.
         if not report:
-            report = (
-                db.query(Report)
-                .filter(cast(Report.assessment_data["stripe_session_id"], String) == session_id)
-                .order_by(Report.created_at.desc())
-                .first()
-            )
+            report = ReportRepository.get_by_stripe_session_id(db, session_id)
             if report:
                 logger.info(
                     f"[by-session] Resolved report {report.id} via assessment_data fallback for {session_id}"
@@ -552,10 +548,9 @@ async def get_report(
     current_user: User = Depends(get_optional_user),
 ):
     """Get report status and details. No login required (public reports accessible by ID)."""
-    query = db.query(Report).filter(Report.id == report_id)
-    if current_user:
-        query = query.filter(Report.owner_id == current_user.id)
-    report = query.first()
+    report = ReportRepository.get_by_id(db, str(report_id))
+    if report and current_user and report.owner_id != current_user.id:
+        report = None
 
     if not report:
         raise HTTPException(
@@ -608,10 +603,9 @@ async def download_report_pdf(
     from fastapi.responses import RedirectResponse
     from app.services.storage import S3Service
 
-    query = db.query(Report).filter(Report.id == report_id)
-    if current_user:
-        query = query.filter(Report.owner_id == current_user.id)
-    report = query.first()
+    report = ReportRepository.get_by_id(db, str(report_id))
+    if report and current_user and report.owner_id != current_user.id:
+        report = None
 
     if not report:
         raise HTTPException(
@@ -639,10 +633,9 @@ async def get_report_qr(
     current_user: User = Depends(get_optional_user),
 ):
     """Return a QR code PNG for the report verification URL (read-only)."""
-    query = db.query(Report).filter(Report.id == report_id)
-    if current_user:
-        query = query.filter(Report.owner_id == current_user.id)
-    report = query.first()
+    report = ReportRepository.get_by_id(db, str(report_id))
+    if report and current_user and report.owner_id != current_user.id:
+        report = None
 
     if not report:
         raise HTTPException(

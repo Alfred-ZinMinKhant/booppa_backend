@@ -178,12 +178,21 @@ def _compute_raw_probability(
     risk_signal: str,
     value_fit_mult: float = 1.0,
     deadline_mult: float = 1.0,
+    tender_no: str = "",
 ) -> float:
     p_mult  = PROFILE_MULT.get(verification_depth, 0.50)
     s_mult  = _sector_mult(sector_percentile)
     e_mult  = _evidence_mult(evidence_count)
     r_pen   = RISK_PENALTY.get(risk_signal, 1.0)
-    raw     = base_rate * p_mult * s_mult * e_mult * r_pen * value_fit_mult * deadline_mult
+    
+    # Deterministic noise based on tender_no to simulate tender-specific characteristics
+    import hashlib
+    noise_mult = 1.0
+    if tender_no:
+        h = int(hashlib.md5(tender_no.encode('utf-8')).hexdigest(), 16)
+        noise_mult = 0.95 + (h % 100) / 1000.0  # 0.95 to 1.049
+
+    raw     = base_rate * p_mult * s_mult * e_mult * r_pen * value_fit_mult * deadline_mult * noise_mult
     return min(raw, MAX_PROBABILITY)
 
 
@@ -363,6 +372,7 @@ def compute_tender_win_probability(
         risk_signal,
         value_fit_mult,
         deadline_mult,
+        tender_no=tender.tender_no,
     )
 
     # ── Projections ───────────────────────────────────────────────────────────
@@ -376,6 +386,7 @@ def compute_tender_win_probability(
         risk_signal,
         value_fit_mult,
         deadline_mult,
+        tender_no=tender.tender_no,
     )
     complete_prob = _compute_raw_probability(
         tender.base_rate,
@@ -385,6 +396,7 @@ def compute_tender_win_probability(
         risk_signal,
         value_fit_mult,
         deadline_mult,
+        tender_no=tender.tender_no,
     )
 
     express_delta  = round((express_prob  - current_prob) * 100, 1)

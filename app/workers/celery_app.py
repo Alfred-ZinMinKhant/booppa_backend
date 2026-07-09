@@ -25,29 +25,38 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
     worker_max_tasks_per_child=100,
     # Fallback queue for any task without an explicit route below. MUST be
-    # "default" (a queue the worker consumes via `-Q reports,default`), not
+    # "fast_queue" (a queue the worker consumes via `-Q fast_queue`), not
     # Celery's built-in "celery" queue — otherwise explicitly-named tasks that
     # aren't listed in task_routes (e.g. the per-user first-cycle delivery
     # tasks like send_tender_intelligence_digest_for_user) get enqueued to a
     # queue nothing listens on and silently never run.
-    task_default_queue="default",
+    task_default_queue="fast_queue",
     # Queue routing
     task_routes={
-        "process_report_task": {"queue": "reports"},
-        "fulfill_notarization_task": {"queue": "reports"},
-        "fulfill_pdpa_task": {"queue": "reports"},
-        "fulfill_vendor_proof_task": {"queue": "reports"},
-        "fulfill_rfp_task": {"queue": "reports"},
-        "fulfill_bundle_task": {"queue": "default"},
-        "fulfill_cover_sheet_task": {"queue": "default"},
-        "vendor_active_health_check_task": {"queue": "default"},
-        "pdpa_monitor_monthly_rescan_task": {"queue": "reports"},
-        "bulk_pdpa_scan_item_task": {"queue": "reports"},
-        "check_compliance_drift_task": {"queue": "default"},
-        "app.workers.tasks.*": {"queue": "default"},
+        "process_report_task": {"queue": "heavy_queue"},
+        "fulfill_notarization_task": {"queue": "heavy_queue"},
+        "fulfill_pdpa_task": {"queue": "heavy_queue"},
+        "fulfill_vendor_proof_task": {"queue": "heavy_queue"},
+        "fulfill_rfp_task": {"queue": "heavy_queue"},
+        "fulfill_bundle_task": {"queue": "fast_queue"},
+        "fulfill_cover_sheet_task": {"queue": "fast_queue"},
+        "vendor_active_health_check_task": {"queue": "fast_queue"},
+        "pdpa_monitor_monthly_rescan_task": {"queue": "heavy_queue"},
+        "bulk_pdpa_scan_item_task": {"queue": "heavy_queue"},
+        "check_compliance_drift_task": {"queue": "fast_queue"},
+        # New Heavy Task Routing
+        "anchor_scan_ledger_task": {"queue": "heavy_queue"},
+        "scrape_vendor_contact_task": {"queue": "heavy_queue"},
+        "run_vendor_pro_pdpa_snapshot_for_user": {"queue": "heavy_queue"},
+        "run_pdpa_monitor_report_for_user": {"queue": "heavy_queue"},
+        "run_trm_board_report_for_user": {"queue": "heavy_queue"},
+        "fulfill_evidence_pack_task": {"queue": "heavy_queue"},
+        "anchor_signed_cover_sheet_task": {"queue": "heavy_queue"},
+        
+        "app.workers.tasks.*": {"queue": "fast_queue"},
         # CSP Compliance Pack tasks (csp.generate_documents, csp.notarize_record,
         # csp.refresh_sanctions_lists, csp.daily_monitoring, csp.run_sanctions_screening)
-        "csp.*": {"queue": "default"},
+        "csp.*": {"queue": "fast_queue"},
     },
     # Beat schedule
     beat_schedule={
