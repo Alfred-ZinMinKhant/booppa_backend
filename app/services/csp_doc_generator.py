@@ -19,8 +19,9 @@ All reference:
   - MAS AML/CFT Notice (where MAS-licensed)
   - Singapore Corruption, Drug Trafficking & Other Serious Crimes Act (CDSA)
 """
-
 from __future__ import annotations
+
+from app.services.pdf_styles import get_unified_styles
 import hashlib
 import logging, os
 from datetime import datetime, timezone
@@ -862,7 +863,7 @@ def generate_csp_document_pdf(
     )
 
     meta = meta or {}
-    styles = getSampleStyleSheet()
+    styles = get_unified_styles()
     h1 = ParagraphStyle("CspH1", parent=styles["Heading1"], fontSize=16, spaceAfter=10, textColor=colors.HexColor("#0f172a"))
     h2 = ParagraphStyle("CspH2", parent=styles["Heading2"], fontSize=13, spaceBefore=10, spaceAfter=6, keepWithNext=1)
     h3 = ParagraphStyle("CspH3", parent=styles["Heading3"], fontSize=11, spaceBefore=8, spaceAfter=4, keepWithNext=1)

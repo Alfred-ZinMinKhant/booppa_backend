@@ -9,6 +9,7 @@ carries (tender title/agency/closing/sector + matched watched-supplier names).
 Reuses the shared logo header and the same styling vocabulary as
 `buyer_procurement_report_generator` — no new layout primitives.
 """
+from app.services.pdf_styles import get_unified_styles
 import logging
 from datetime import datetime, timezone
 from io import BytesIO

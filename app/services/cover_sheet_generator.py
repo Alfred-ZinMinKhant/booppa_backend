@@ -15,6 +15,7 @@ Sections:
   9. Legal Disclaimer
 """
 from __future__ import annotations
+from app.services.pdf_styles import get_unified_styles
 
 import logging
 import os
@@ -195,7 +196,7 @@ def _kv_table(rows: list[tuple[str, str]]) -> Table:
     return t
 
 
-_RAW_STYLES = getSampleStyleSheet()
+_RAW_STYLES = get_unified_styles()
 _STYLES: Dict[str, ParagraphStyle] = {
     "Normal": ParagraphStyle("cs_normal", fontSize=8, leading=12, textColor=colors.HexColor("#334155")),
     "h1": ParagraphStyle("cs_h1", fontSize=18, leading=22, textColor=NAVY, fontName="Helvetica-Bold"),

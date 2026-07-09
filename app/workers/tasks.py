@@ -3078,6 +3078,7 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
 
         thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
         from app.core.models import VerifyRecord, ProofView
+        from app.core.repositories.verify_record_repository import VerifyRecordRepository
         verify = VerifyRecordRepository.get_by_vendor_id(db, str(vendor_id))
         profile_views = 0
         if verify:

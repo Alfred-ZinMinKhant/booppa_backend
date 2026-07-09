@@ -9,6 +9,7 @@ procurement-readiness standing, and the blockchain anchor when present.
 All buyer/registry-supplied strings are XML-escaped before being placed in a
 ReportLab Paragraph.
 """
+from app.services.pdf_styles import get_unified_styles
 import logging
 from io import BytesIO
 from datetime import datetime, timezone
@@ -81,7 +82,7 @@ def generate_vendor_proof_certificate(
         title=f"Vendor Proof — {company_name}",
     )
 
-    styles = getSampleStyleSheet()
+    styles = get_unified_styles()
     h_style = ParagraphStyle(
         "h", parent=styles["Heading1"], fontSize=20,
         textColor=colors.HexColor("#0f172a"), spaceAfter=2,

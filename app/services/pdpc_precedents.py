@@ -34,8 +34,8 @@ Schema:
 
 Finding keys are the stable identifiers from app/services/finding_keys.py.
 """
-
 from __future__ import annotations
+
 
 from typing import Optional
 

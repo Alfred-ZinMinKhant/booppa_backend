@@ -12,8 +12,8 @@ payment or plan state.
 Projections simulate the vendor's profile after upgrading to RFP Express
 or RFP Complete, showing the realistic delta achievable through each tier.
 """
-
 from __future__ import annotations
+
 
 import logging
 from datetime import datetime, timezone, timedelta

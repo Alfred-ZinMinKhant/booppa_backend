@@ -604,22 +604,8 @@ async def _activate_subscription(
                 try:
                     import asyncio as _asyncio
 
-                    body_html = f"""<!DOCTYPE html><html><body style="font-family:-apple-system,Segoe UI,sans-serif;background:#f8fafc;padding:24px;">
-                    <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:8px;padding:28px;border:1px solid #e2e8f0;">
-                      <h2 style="margin:0 0 12px;color:#0f172a;">Welcome to Compliance Evidence — one more step</h2>
-                      <p style="color:#334155;line-height:1.55;">
-                        Your subscription is active, but we need your website on file to generate
-                        your PDPA Snapshot, RFP Complete Kit, and monthly Cover Sheet.
-                      </p>
-                      <a href="https://www.booppa.io/vendor/profile"
-                         style="background:#0f172a;color:#fff;padding:10px 20px;text-decoration:none;
-                                border-radius:6px;font-weight:bold;display:inline-block;margin-top:12px;">
-                        Add your website
-                      </a>
-                      <p style="margin-top:24px;font-size:11px;color:#94a3b8;">
-                        Once saved, your first cycle will run automatically.
-                      </p>
-                    </div></body></html>"""
+                    from app.services.email_templates import get_vendor_active_no_website_html
+                    body_html = get_vendor_active_no_website_html()
                     _asyncio.run(
                         EmailService().send_html_email(
                             to_email=customer_email,
@@ -730,24 +716,8 @@ async def _activate_subscription(
                             ),
                         ]
 
-                    onboarding_html = f"""
-                    <html><body style="font-family:Arial,sans-serif;background:#0a0f1e;color:#e5e5e5;padding:32px;">
-                    <div style="max-width:600px;margin:0 auto;">
-                      <div style="background:#0f172a;padding:24px 28px;border-radius:12px 12px 0 0;">
-                        <p style="margin:0 0 4px;color:#64748b;text-transform:uppercase;letter-spacing:.1em;font-size:11px;">BOOPPA · Subscription active</p>
-                        <h1 style="margin:0;color:#10b981;font-size:22px;">{suite_label} — you're all set</h1>
-                      </div>
-                      <div style="background:#0d1424;padding:28px;border:1px solid #1e293b;border-top:none;border-radius:0 0 12px 12px;">
-                        <p style="color:#cbd5e1;line-height:1.6;margin:0 0 18px;">
-                          Your <strong>{suite_label}</strong> subscription is now active. Here's everything it unlocks and where to start:
-                        </p>
-                        <table style="width:100%;border-collapse:collapse;">{''.join(features)}</table>
-                        <div style="text-align:center;margin:26px 0 6px;">
-                          <a href="https://www.booppa.io/vendor/dashboard" style="display:inline-block;background:#10b981;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;">Go to your dashboard &rarr;</a>
-                        </div>
-                        <p style="color:#475569;font-size:11px;text-align:center;margin-top:20px;">Questions? Reply to this email or visit booppa.io/support.</p>
-                      </div>
-                    </div></body></html>"""
+                    from app.services.email_templates import get_vendor_suite_onboarding_html
+                    onboarding_html = get_vendor_suite_onboarding_html(suite_label, ''.join(features))
 
                     sent_ob = await EmailService().send_html_email(
                         to_email=customer_email,
@@ -862,24 +832,8 @@ async def _activate_subscription(
                     "Notarize a document", "https://www.booppa.io/notarization",
                 ))
 
-                onboarding_html = f"""
-                <html><body style="font-family:Arial,sans-serif;background:#0a0f1e;color:#e5e5e5;padding:32px;">
-                <div style="max-width:600px;margin:0 auto;">
-                  <div style="background:#0f172a;padding:24px 28px;border-radius:12px 12px 0 0;">
-                    <p style="margin:0 0 4px;color:#64748b;text-transform:uppercase;letter-spacing:.1em;font-size:11px;">BOOPPA · Subscription active</p>
-                    <h1 style="margin:0;color:#10b981;font-size:22px;">{buyer_label} — you're all set</h1>
-                  </div>
-                  <div style="background:#0d1424;padding:28px;border:1px solid #1e293b;border-top:none;border-radius:0 0 12px 12px;">
-                    <p style="color:#cbd5e1;line-height:1.6;margin:0 0 8px;">
-                      Your <strong>{buyer_label}</strong> subscription is now active — {seats_txt}. Here's everything it unlocks and where to start:
-                    </p>
-                    <table style="width:100%;border-collapse:collapse;">{''.join(feats)}</table>
-                    <div style="text-align:center;margin:26px 0 6px;">
-                      <a href="{dash}" style="display:inline-block;background:#10b981;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;">Go to your dashboard &rarr;</a>
-                    </div>
-                    <p style="color:#475569;font-size:11px;text-align:center;margin-top:20px;">Questions? Reply to this email or visit booppa.io/support.</p>
-                  </div>
-                </div></body></html>"""
+                from app.services.email_templates import get_buyer_suite_onboarding_html
+                onboarding_html = get_buyer_suite_onboarding_html(buyer_label, seats_txt, dash, ''.join(feats))
 
                 sent_ob = await EmailService().send_html_email(
                     to_email=customer_email,

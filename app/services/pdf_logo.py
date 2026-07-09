@@ -10,8 +10,8 @@ previously emitted unbranded PDFs.
 Drawing is always wrapped in ``try/except`` so a missing or unreadable asset can
 never break document generation (these are paid fulfillment artifacts).
 """
-
 from __future__ import annotations
+
 
 import os
 

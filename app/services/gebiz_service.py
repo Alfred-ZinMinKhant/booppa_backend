@@ -9,8 +9,8 @@ Celery beat schedule — do not call scrape_gebiz_page() outside of the task).
 robots.txt compliance: we only read the public RSS feed and the publicly
 accessible "Open Tenders" listing; we do not crawl deeper pages.
 """
-
 from __future__ import annotations
+
 
 import logging
 import re

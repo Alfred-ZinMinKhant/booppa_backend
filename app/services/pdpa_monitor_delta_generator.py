@@ -6,6 +6,7 @@ This renders a Monitor-specific report: the current compliance score, the change
 versus the previous scan, and which dimensions moved. On the first cycle (no
 prior scan) it renders a baseline edition that says deltas begin next month.
 """
+from app.services.pdf_styles import get_unified_styles
 import logging
 from datetime import datetime, timezone
 from io import BytesIO

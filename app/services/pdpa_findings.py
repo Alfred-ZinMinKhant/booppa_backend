@@ -13,8 +13,8 @@ count; the Monitor Report read only the top-level keys and therefore always saw
 zero — the "0 vs 2 open findings" contradiction. This helper centralises the
 lookup so every consumer resolves the same list from the same row.
 """
-
 from __future__ import annotations
+
 
 import logging
 from typing import Any, Optional

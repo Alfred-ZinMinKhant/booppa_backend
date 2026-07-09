@@ -9,6 +9,7 @@ Standard renders it Booppa co-branded.
 Pure function (no DB / no S3): the caller resolves controls, deltas and any
 white-label logo bytes, then passes them in — so this is cheap to unit test.
 """
+from app.services.pdf_styles import get_unified_styles
 import logging
 from datetime import datetime, timezone
 from io import BytesIO
@@ -110,7 +111,7 @@ def generate_trm_board_report_pdf(data: Dict[str, Any]) -> bytes:
                       {primary_color, secondary_color, footer_text,
                        report_header_text, logo_bytes(optional)}
     """
-    base = getSampleStyleSheet()
+    base = get_unified_styles()
     wl = data.get("white_label") or None
     primary = (wl or {}).get("primary_color") or "#0f172a"
     accent = (wl or {}).get("secondary_color") or "#10b981"

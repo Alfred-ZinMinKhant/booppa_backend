@@ -12,6 +12,7 @@ Signals:
 Output: PDF bytes + structured dict for email template rendering.
 No new AWS resources needed — uses existing S3, SES/Resend, ReportLab.
 """
+from app.services.pdf_styles import get_unified_styles
 import logging
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
@@ -180,7 +181,7 @@ def generate_competitor_signals_pdf(signals: dict, company_name: str) -> bytes:
         topMargin=0.6 * inch, bottomMargin=0.6 * inch,
     )
 
-    styles = getSampleStyleSheet()
+    styles = get_unified_styles()
     h_style = ParagraphStyle(
         "h", parent=styles["Heading1"], fontSize=16,
         textColor=colors.HexColor("#0f172a"), spaceAfter=4,

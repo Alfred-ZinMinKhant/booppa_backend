@@ -14,8 +14,8 @@ This is intentionally separate from `pdf_service._compliance_score_table`
 because we don't want the history layer to depend on PDF rendering. Both
 modules read the same `assessment_data` keys.
 """
-
 from __future__ import annotations
+
 
 from typing import Any
 

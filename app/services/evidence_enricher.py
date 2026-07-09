@@ -11,8 +11,8 @@ Sources:
 
 All results are cached in Redis (TTLs vary by source freshness requirements).
 """
-
 from __future__ import annotations
+
 
 import hashlib
 import logging

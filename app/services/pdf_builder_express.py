@@ -1,5 +1,6 @@
 # app/services/pdf_builder_express.py
 
+from app.services.pdf_styles import get_unified_styles
 from datetime import datetime
 from typing import Dict
 from reportlab.lib.pagesizes import A4
@@ -39,7 +40,7 @@ class RFPKitPDFBuilder:
         
         doc = SimpleDocTemplate(output_path, pagesize=A4)
         story = []
-        styles = getSampleStyleSheet()
+        styles = get_unified_styles()
         
         # Custom styles
         title_style = ParagraphStyle(

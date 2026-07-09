@@ -14,8 +14,8 @@ Optional: uen_or_reg_no, country_of_inc, contact_name, contact_email,
           risk_rating, cdd_status, is_remote_onboarding,
           has_nominee_director, has_nominee_shareholder
 """
-
 from __future__ import annotations
+
 
 import csv
 import io

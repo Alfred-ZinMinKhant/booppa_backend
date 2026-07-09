@@ -10,8 +10,8 @@ Based on verified regulatory requirements:
 
 Each pillar returns: score (0-100), status, gaps[], urgent_actions[]
 """
-
 from __future__ import annotations
+
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 

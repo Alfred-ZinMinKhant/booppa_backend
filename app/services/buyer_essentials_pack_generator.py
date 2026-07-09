@@ -20,6 +20,7 @@ _xml_escape) mirrors cover_sheet_generator.py so both deliverables share one
 visual system.
 """
 from __future__ import annotations
+from app.services.pdf_styles import get_unified_styles
 
 import logging
 import os
@@ -118,7 +119,7 @@ def _draw_page(canvas, doc):
     canvas.restoreState()
 
 
-_RAW_STYLES = getSampleStyleSheet()
+_RAW_STYLES = get_unified_styles()
 _STYLES: Dict[str, ParagraphStyle] = {
     "Normal":  ParagraphStyle("we_normal", fontSize=8.5, leading=13, textColor=colors.HexColor("#334155")),
     "h1":      ParagraphStyle("we_h1", fontSize=18, leading=22, textColor=NAVY, fontName="Helvetica-Bold"),

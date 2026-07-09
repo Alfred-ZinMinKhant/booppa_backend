@@ -20,8 +20,8 @@ Source-of-truth mapping (each line = one stable key):
   pdpc enforcement hit          →  breach:pdpc_enforcement
   hosting non-singapore         →  xbt:non_sg
 """
-
 from __future__ import annotations
+
 
 import re
 from typing import Any, Iterable

@@ -461,25 +461,8 @@ async def _fulfill_compliance_evidence_pack(
     # intake CTA into the consolidated bundle email (send_email=False).
     if send_email and customer_email:
         intake_url = f"https://www.booppa.io/evidence-pack-intake/{row.id}"
-        body_html = f"""
-        <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:620px;margin:0 auto;">
-          <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-            <h1 style="color:#10b981;margin:0;font-size:20px;">Start your PDPA Compliance Evidence Pack</h1>
-          </div>
-          <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
-            <p>Thank you for your purchase. Your Evidence Pack builds seven PDPA governance
-               documents — DPMP, ROPA, Data Inventory, Vendor/DPA Register, Breach Runbook,
-               Training Register, and Security Review Log — tailored to your organisation.</p>
-            <p>To generate documents that reflect your actual operations, we need a short
-               structured intake (about 5 minutes): your org details, DPO, systems, data types,
-               and where data is hosted.</p>
-            <div style="text-align:center;margin:24px 0;">
-              <a href="{intake_url}" style="display:inline-block;background:#10b981;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;">Complete your intake →</a>
-            </div>
-            <p style="color:#64748b;font-size:12px;">Every document is an AI-generated DRAFT with no
-               evidentiary value until your authorised representative reviews and signs it.</p>
-          </div>
-        </body></html>"""
+        from app.services.email_templates import get_evidence_pack_intake_html
+        body_html = get_evidence_pack_intake_html(intake_url)
         sent = await EmailService().send_html_email(
             to_email=customer_email,
             subject="Action needed: start your PDPA Compliance Evidence Pack",

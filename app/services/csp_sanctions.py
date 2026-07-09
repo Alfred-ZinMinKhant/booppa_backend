@@ -23,8 +23,8 @@ Environment variables:
     WORLDCHECK_API_SECRET      = your-secret
     WORLDCHECK_API_BASE        = https://api.worldcheck.com/v2
 """
-
 from __future__ import annotations
+
 
 import hashlib
 import json

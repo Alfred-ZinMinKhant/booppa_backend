@@ -13,6 +13,7 @@ Self-contained (same pattern as competitor_signals_generator.py) so it has no
 coupling to the large pdf_service module. All buyer-supplied strings are XML
 escaped before being placed in a ReportLab Paragraph.
 """
+from app.services.pdf_styles import get_unified_styles
 import logging
 from io import BytesIO
 from datetime import datetime, timezone
@@ -172,7 +173,7 @@ def generate_ropa_lite_pdf(
         title=f"ROPA Lite — {company_name}",
     )
 
-    styles = getSampleStyleSheet()
+    styles = get_unified_styles()
     h_style = ParagraphStyle(
         "h", parent=styles["Heading1"], fontSize=18,
         textColor=colors.HexColor("#0f172a"), spaceAfter=4,

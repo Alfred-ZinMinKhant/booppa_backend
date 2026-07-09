@@ -68,7 +68,7 @@ def generate_vendor_snapshot_pdf(data: Dict[str, Any]) -> bytes:
       search_impressions_30d: int|None — buyer-search appearances, trailing 30d
       tender_matches: list of {title, closing_date, bid_label} (optional)
     """
-    s = get_unified_styles("vs_")
+    s = get_unified_styles()
     company = data.get("company_name") or "Your Company"
     plan_label = data.get("plan_label") or "Vendor"
     gen_at = data.get("generated_at") or datetime.now(timezone.utc).strftime("%d %B %Y")

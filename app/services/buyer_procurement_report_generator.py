@@ -111,7 +111,7 @@ def generate_buyer_procurement_report_pdf(data: Dict[str, Any]) -> bytes:
                            trust_score, compliance_score, trust_delta, compliance_delta}],
       tender_matches: [{title, agency, closing_date, bid_label}],
     """
-    s = get_unified_styles("bp_")
+    s = get_unified_styles()
     company = data.get("company_name") or "Your Organisation"
     tier = (data.get("tier") or "pro").lower()
     plan_label = data.get("plan_label") or "Buyer"

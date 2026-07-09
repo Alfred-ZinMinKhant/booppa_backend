@@ -96,7 +96,7 @@ def generate_vendor_pdpa_snapshot_pdf(data: Dict[str, Any]) -> bytes:
       is_baseline:       bool   (no prior scan to diff against)
       anchor_tx:         str|None   (Amoy testnet tx hash, if anchored)
     """
-    s = get_unified_styles("vps_")
+    s = get_unified_styles()
     company = data.get("company_name") or "Your Company"
     gen_at = data.get("generated_at") or datetime.now(timezone.utc).strftime("%d %B %Y")
     is_baseline = bool(data.get("is_baseline"))

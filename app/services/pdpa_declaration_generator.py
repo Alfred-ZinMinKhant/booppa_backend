@@ -10,6 +10,7 @@ PDPA Quick Scan (Level 1) to PDPC Level 2.
   - validate_pdpa_declaration     per-row required + length validation
   - generate_pdpa_declaration_pdf 1-section-per-activity PDF -> bytes
 """
+from app.services.pdf_styles import get_unified_styles
 import logging
 from io import BytesIO
 from datetime import datetime, timezone
@@ -151,7 +152,7 @@ def generate_pdpa_declaration_pdf(
         title=f"PDPA Level-2 Self-Declaration — {company_name}",
     )
 
-    styles = getSampleStyleSheet()
+    styles = get_unified_styles()
     h_style = ParagraphStyle("h", parent=styles["Heading1"], fontSize=18,
                              textColor=colors.HexColor("#0f172a"), spaceAfter=2)
     sub_style = ParagraphStyle("sub", parent=styles["Normal"], fontSize=9,

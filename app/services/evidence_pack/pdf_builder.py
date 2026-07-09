@@ -16,6 +16,7 @@ Layout system (BCEP-v1.1 redesign):
     asset can never break a paid fulfillment artifact.
 """
 
+from app.services.pdf_styles import get_unified_styles
 import io
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -59,7 +60,7 @@ INNER_W     = W - 2 * MARGIN
 # ── STYLES ───────────────────────────────────────────────────────────────
 
 def _make_styles():
-    getSampleStyleSheet()  # ensure default stylesheet is initialised
+    get_unified_styles()  # ensure default stylesheet is initialised
     return {
         "h1": ParagraphStyle("h1",
             fontName="Helvetica-Bold", fontSize=22, leading=27,

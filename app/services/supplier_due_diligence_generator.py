@@ -79,7 +79,7 @@ def generate_certificate_pdf(data: Dict[str, Any]) -> bytes:
       tx_hash (str | None), anchored (bool), is_certificate (bool — cert vs snapshot),
       notes.
     """
-    s = get_unified_styles("dd_")
+    s = get_unified_styles()
     supplier = data.get("supplier_name") or "Supplier"
     buyer = data.get("buyer_company") or "Your Organisation"
     resolved = bool(data.get("resolved"))

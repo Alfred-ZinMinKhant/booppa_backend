@@ -77,7 +77,7 @@ def generate_vendor_pro_report_pdf(data: Dict[str, Any]) -> bytes:
       competitor_pulse: {top_suppliers, win_rate_by_size, sector_trend, sector, total_awards},
       pdpa_drift: {current_score, previous_score, dimension_changes},
     """
-    s = get_unified_styles("vp_")
+    s = get_unified_styles()
     company = data.get("company_name") or "Your Company"
     plan_label = data.get("plan_label") or "Vendor Pro"
     gen_at = data.get("generated_at") or datetime.now(timezone.utc).strftime("%d %B %Y")

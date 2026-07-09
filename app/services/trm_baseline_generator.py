@@ -95,7 +95,7 @@ def generate_trm_baseline_pdf(data: Dict[str, Any]) -> bytes:
       generated_at: ISO str (optional)
       controls:     list of {domain, control_ref, status, risk_rating, gap_analysis}
     """
-    s = get_unified_styles("trm_")
+    s = get_unified_styles()
     company = data.get("company_name") or "Your Organisation"
     plan_label = data.get("plan_label") or "Suite"
     controls: List[Dict[str, Any]] = data.get("controls") or []

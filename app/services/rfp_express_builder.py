@@ -14,8 +14,8 @@ Flow:
 RFP Kit Complete (SGD 499) follows the same flow with 15 questions and
 an editable DOCX — handled by a separate builder.
 """
-
 from __future__ import annotations
+
 
 import logging
 import re

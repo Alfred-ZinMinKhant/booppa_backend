@@ -9,8 +9,9 @@ Metadata renders in a two-column label/value table.
 Blockchain verification shows details + QR side-by-side.
 Findings carry severity-colour badges (red/orange/amber/green).
 """
-
 from __future__ import annotations
+
+from app.services.pdf_styles import get_unified_styles
 
 import base64
 import logging
@@ -295,7 +296,7 @@ def get_booppa_doc_template(buffer, title, report_type_label="AUDIT REPORT", is_
 
 def get_booppa_styles() -> dict:
     from reportlab.lib.styles import getSampleStyleSheet
-    base = getSampleStyleSheet()
+    base = get_unified_styles()
     
     def ps(name, **kw) -> ParagraphStyle:
         return ParagraphStyle(name, **kw)

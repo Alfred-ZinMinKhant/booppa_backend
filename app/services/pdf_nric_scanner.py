@@ -11,8 +11,8 @@ Bounded by design:
   - TOTAL_BUDGET_SECONDS across the whole scan
 A PDF that violates any budget is skipped, never partially parsed.
 """
-
 from __future__ import annotations
+
 
 import asyncio
 import logging

@@ -14,8 +14,8 @@ Classification is done with a short LLM call (DeepSeek) over a small set of
 candidate snippets harvested from the HTML. The LLM only sees ~80-char windows
 around each match, never raw NRIC numbers (those are redacted before the call).
 """
-
 from __future__ import annotations
+
 
 import json
 import logging

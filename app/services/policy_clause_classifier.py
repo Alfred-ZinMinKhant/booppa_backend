@@ -19,8 +19,8 @@ Architecture mirrors `app.services.nric_classifier`:
   2. classify_clauses(snippets, provider) → structured per-clause verdict
   3. summarise(...) → roll-up consumed by the PDF report
 """
-
 from __future__ import annotations
+
 
 import json
 import logging

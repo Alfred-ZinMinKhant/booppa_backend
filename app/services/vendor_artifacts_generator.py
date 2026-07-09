@@ -124,7 +124,7 @@ def generate_badge_certificate_pdf(data: Dict[str, Any]) -> bytes:
     it does not assert PDPA/MAS compliance (audit: badge must not mislead
     procurement officers).
     """
-    s = get_unified_styles("va_")
+    s = get_unified_styles()
     company = data.get("company_name") or "Your Company"
     depth = str(data.get("verification_depth") or "BASIC")
     readiness = str(data.get("procurement_readiness") or "CONDITIONAL")
@@ -173,7 +173,7 @@ def generate_priority_placement_pdf(data: Dict[str, Any]) -> bytes:
     Expected `data`: company_name, plan_label, profile_views_30d, verification_depth,
     placement_active (bool), generated_at, anchor_tx (optional).
     """
-    s = get_unified_styles("va_")
+    s = get_unified_styles()
     company = data.get("company_name") or "Your Company"
     plan_label = data.get("plan_label") or "Vendor"
     gen_at = data.get("generated_at") or datetime.now(timezone.utc).strftime("%d %B %Y")
@@ -217,7 +217,7 @@ def generate_competitor_signals_pdf(data: Dict[str, Any]) -> bytes:
     {focal, focal_verified, similar, similar_verified}, sector,
     sector_active_verified, generated_at. All figures are anonymised counts.
     """
-    s = get_unified_styles("va_")
+    s = get_unified_styles()
     company = data.get("company_name") or "Your Company"
     tender_no = data.get("tender_no") or "—"
     window = data.get("window_days") or 30
@@ -268,7 +268,7 @@ def generate_bid_timing_pdf(data: Dict[str, Any]) -> bytes:
     Expected `data`: company_name, period_label, total_awards, busiest_month,
     months [{month, awards, value}], generated_at.
     """
-    s = get_unified_styles("va_")
+    s = get_unified_styles()
     company = data.get("company_name") or "Your Company"
     period_label = data.get("period_label") or "Recent GeBIZ awards"
     busiest = data.get("busiest_month") or "—"
