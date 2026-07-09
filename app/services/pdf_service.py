@@ -310,6 +310,15 @@ def get_booppa_styles() -> dict:
         "pm_lbl": ps("pm_lbl", parent=base["Normal"], fontSize=8, textColor=SLATE, leading=11),
         "pm_cell": ps("pm_cell", parent=base["Normal"], fontSize=8.5, leading=11),
         "pm_small": ps("pm_small", parent=base["Normal"], fontSize=7.5, textColor=SLATE, leading=10),
+        # ── Unprefixed aliases used by pdpa_monitor_delta_generator ──
+        "title": ps("pm_title_alias", parent=base["Title"], fontSize=20, textColor=NAVY, spaceAfter=4),
+        "sub": ps("pm_sub_alias", parent=base["Normal"], fontSize=10, textColor=SLATE, spaceAfter=2),
+        "h2": ps("pm_h2_alias", parent=base["Heading2"], fontSize=13, textColor=NAVY, spaceBefore=14, spaceAfter=6),
+        "body": ps("pm_body_alias", parent=base["Normal"], fontSize=9.5, textColor=TEXT_DARK, leading=14),
+        "big": ps("pm_big_alias", parent=base["Normal"], fontSize=26, textColor=NAVY, leading=28),
+        "lbl": ps("pm_lbl_alias", parent=base["Normal"], fontSize=8, textColor=SLATE, leading=11),
+        "cell": ps("pm_cell_alias", parent=base["Normal"], fontSize=8.5, leading=11),
+        "small": ps("pm_small_alias", parent=base["Normal"], fontSize=7.5, textColor=SLATE, leading=10),
 
             "CoverTitle": ps(
                 "CoverTitle",

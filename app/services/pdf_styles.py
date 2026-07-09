@@ -23,5 +23,8 @@ def get_unified_styles(prefix: str = "") -> dict:
         "metric_lbl": ParagraphStyle(f"{prefix}metric_lbl", parent=base["Normal"], fontSize=8, textColor=_MUTED, leading=11),
         "small": ParagraphStyle(f"{prefix}small", parent=base["Normal"], fontSize=7.5, textColor=_MUTED, leading=10),
         "cell": ParagraphStyle(f"{prefix}cell", parent=base["Normal"], fontSize=8.5, textColor=colors.HexColor("#334155"), leading=11),
+        "cell_b": ParagraphStyle(f"{prefix}cell_b", parent=base["Normal"], fontSize=8.5, textColor=colors.HexColor("#334155"), leading=11, fontName="Helvetica-Bold"),
+        "big": ParagraphStyle(f"{prefix}big", parent=base["Normal"], fontSize=28, textColor=_INK, leading=32, fontName="Helvetica-Bold"),
+        "lbl": ParagraphStyle(f"{prefix}lbl", parent=base["Normal"], fontSize=7.5, textColor=_MUTED, leading=10),
         "mono": ParagraphStyle(f"{prefix}mono", parent=base["Normal"], fontSize=7.5, textColor=colors.HexColor("#334155"), fontName="Courier", leading=10),
     }
