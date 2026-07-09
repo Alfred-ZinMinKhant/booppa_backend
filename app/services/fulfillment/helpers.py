@@ -7,13 +7,6 @@ from app.services.pdf_service import PDFService
 from app.services.booppa_ai_service import BooppaAIService
 from app.services.storage import S3Service
 
-#
-    _create_stub_report,
-    _alert_payment_fulfillment_issue,
-    _maybe_fire_cover_sheet,
-    _fire_strategy_6,
-)
-from app.services.fulfillment.single_products import _defer_rfp_to_intake
 
 from app.services.email_service import EmailService
 from app.billing.enforcement import enforce_tier

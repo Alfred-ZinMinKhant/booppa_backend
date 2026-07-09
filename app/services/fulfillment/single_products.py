@@ -12,8 +12,8 @@ from app.services.fulfillment.helpers import (
     _alert_payment_fulfillment_issue,
     _maybe_fire_cover_sheet,
     _fire_strategy_6,
+    _log_purchase_activity,
 )
-from app.services.fulfillment.single_products import _defer_rfp_to_intake
 
 from app.services.email_service import EmailService
 from app.billing.enforcement import enforce_tier
