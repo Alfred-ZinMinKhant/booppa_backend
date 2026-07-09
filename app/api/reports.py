@@ -208,7 +208,8 @@ async def create_report_public(request: ReportRequest):
         owner_id = uuid.uuid4()
         if contact_email:
             from app.core.models import User
-            existing_user = db.query(User).filter(User.email == contact_email).first()
+            from app.core.repositories.user_repository import UserRepository
+            existing_user = UserRepository.get_by_email(db, contact_email)
             if existing_user:
                 owner_id = existing_user.id
 

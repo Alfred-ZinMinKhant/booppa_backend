@@ -80,7 +80,8 @@ async def verify_cover_sheet_by_report_id(report_id: str):
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid report id")
 
-        report = db.query(Report).filter(Report.id == report_id).first()
+        from app.core.repositories.report_repository import ReportRepository
+        report = ReportRepository.get_by_id(db, report_id)
         if not report:
             raise HTTPException(status_code=404, detail="Cover Sheet not found")
 
@@ -129,7 +130,8 @@ async def verify_report(audit_hash: str):
     """Read-only verification endpoint for proof hashes."""
     db = SessionLocal()
     try:
-        report = db.query(Report).filter(Report.audit_hash == audit_hash).first()
+        from app.core.repositories.report_repository import ReportRepository
+        report = ReportRepository.get_by_audit_hash(db, audit_hash)
         if not report:
             raise HTTPException(status_code=404, detail="Verification record not found")
 
@@ -146,7 +148,8 @@ async def verify_report(audit_hash: str):
 
         # Notify the vendor owner of the QR scan (fire-and-forget, rate-limited)
         try:
-            owner = db.query(User).filter(User.id == report.owner_id).first()
+            from app.core.repositories.user_repository import UserRepository
+            owner = UserRepository.get_by_id(db, str(report.owner_id))
             if owner and owner.email:
                 asyncio.create_task(
                     _notify_owner_of_qr_scan(

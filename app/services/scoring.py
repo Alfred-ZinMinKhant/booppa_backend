@@ -263,7 +263,8 @@ class VendorScoreEngine:
         if not domains:
             return 0
             
-        enterprises = db.query(EnterpriseProfile).filter(EnterpriseProfile.domain.in_(domains)).all()
+        from app.core.repositories.enterprise_profile_repository import EnterpriseProfileRepository
+        enterprises = EnterpriseProfileRepository.get_by_domains(db, domains)
         if not enterprises:
             return 0
             
@@ -328,7 +329,8 @@ class VendorScoreEngine:
 class EnterpriseBehavioralEngine:
     @classmethod
     def process_enterprise_view(cls, db: Session, domain: str, proof_view_id: str, correlation_id: str = None):
-        profile = db.query(EnterpriseProfile).filter(EnterpriseProfile.domain == domain).first()
+        from app.core.repositories.enterprise_profile_repository import EnterpriseProfileRepository
+        profile = EnterpriseProfileRepository.get_by_domain(db, domain)
         if not profile:
             is_gov = domain.endswith('.gov.sg')
             org_type = OrganizationType.GOVERNMENT if is_gov else OrganizationType.UNKNOWN

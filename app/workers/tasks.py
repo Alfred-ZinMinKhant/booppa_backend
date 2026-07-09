@@ -857,7 +857,7 @@ def process_report_task(self, report_id: str):
         # Update report status to failed
         db = SessionLocal()
         try:
-            report = db.query(Report).filter(Report.id == report_id).first()
+            report = ReportRepository.get_by_id(db, str(report_id))
             if report:
                 report.status = "failed"
                 db.commit()
@@ -874,7 +874,7 @@ async def process_report_workflow(report_id: str) -> dict:
     db = SessionLocal()
     try:
         # Get report from database
-        report = db.query(Report).filter(Report.id == report_id).first()
+        report = ReportRepository.get_by_id(db, str(report_id))
         if not report:
             raise ValueError(f"Report {report_id} not found")
 
@@ -1793,7 +1793,7 @@ async def process_report_workflow(report_id: str) -> dict:
         db.rollback()
         logger.error(f"Report workflow failed: {e}")
         try:
-            report = db.query(Report).filter(Report.id == report_id).first()
+            report = ReportRepository.get_by_id(db, str(report_id))
             if report:
                 assessment = report.assessment_data or {}
                 if not isinstance(assessment, dict):
@@ -2002,7 +2002,7 @@ def anchor_signed_cover_sheet_task(self, report_id: str, customer_email: str | N
         from app.core.models import Report
         db = SessionLocal()
         try:
-            report = db.query(Report).filter(Report.id == report_id).first()
+            report = ReportRepository.get_by_id(db, str(report_id))
             if not report:
                 logger.warning(f"[SignedCS] Report {report_id} not found, skipping anchor")
                 return
@@ -2070,7 +2070,7 @@ def anchor_signed_cover_sheet_task(self, report_id: str, customer_email: str | N
                 from app.core.models import Report
                 _db = SessionLocal()
                 try:
-                    _r = _db.query(Report).filter(Report.id == report_id).first()
+                    _r = ReportRepository.get_by_id(db, str(report_id))
                     if _r:
                         from sqlalchemy.orm.attributes import flag_modified
                         _ad = _r.assessment_data if isinstance(_r.assessment_data, dict) else {}
@@ -2251,7 +2251,7 @@ def fulfill_cover_sheet_task(
         db = SessionLocal()
         try:
             user = (
-                db.query(User).filter(User.email == customer_email).first()
+                UserRepository.get_by_email(db, customer_email)
                 if customer_email else None
             )
             if user:
@@ -3072,12 +3072,12 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
         score_record = VendorScoreEngine.update_vendor_score(db, vendor_id)
 
         # 2. Build metrics summary
-        user = db.query(User).filter(User.id == vendor_id).first()
+        user = UserRepository.get_by_id(db, str(vendor_id))
         company = (override_company or "").strip() or (getattr(user, "company", "Your company") if user else "Your company")
 
         thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
         from app.core.models import VerifyRecord, ProofView
-        verify = db.query(VerifyRecord).filter(VerifyRecord.vendor_id == vendor_id).first()
+        verify = VerifyRecordRepository.get_by_vendor_id(db, str(vendor_id))
         profile_views = 0
         if verify:
             profile_views = db.query(ProofView).filter(
@@ -3485,7 +3485,7 @@ def buyer_procurement_digest_task(
         # can't show one "as of" date on the email and another on the PDF.
         digest_date = datetime.now(timezone.utc).strftime("%d %B %Y")
 
-        user = db.query(User).filter(User.id == user_id).first()
+        user = UserRepository.get_by_id(db, str(user_id))
         company = (override_company or "").strip() or (getattr(user, "company", None) or "Your organisation")
 
         def _esc(s) -> str:
@@ -4176,7 +4176,7 @@ def buyer_tender_fit_push_task(
         try:
             from app.services.tender_brief_generator import generate_tender_brief_pdf
             _company = None
-            _u = db.query(User).filter(User.id == buyer_user_id).first()
+            _u = UserRepository.get_by_id(db, str(buyer_user_id))
             if _u:
                 _company = getattr(_u, "company_name", None) or getattr(_u, "full_name", None)
             brief_pdf = generate_tender_brief_pdf({
@@ -4643,7 +4643,7 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
         from app.core.models import Report, User
         import uuid as _uuid
 
-        user = db.query(User).filter(User.id == vendor_id).first()
+        user = UserRepository.get_by_id(db, str(vendor_id))
         company = (override_company or "").strip() or (getattr(user, "company", "Customer") if user else "Customer")
 
         stub = Report(
@@ -4804,7 +4804,7 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
 
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.id == vendor_id).first()
+        user = UserRepository.get_by_id(db, str(vendor_id))
         if not user:
             logger.warning("[MonitorReport] no user for id=%s", vendor_id)
             return
@@ -5002,7 +5002,7 @@ def run_vendor_pro_pdpa_snapshot_for_user(self, vendor_id: str, vendor_email: st
 
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.id == vendor_id).first()
+        user = UserRepository.get_by_id(db, str(vendor_id))
         if not user:
             logger.warning("[VendorProSnapshot] no user for id=%s", vendor_id)
             return
@@ -7138,7 +7138,7 @@ def fulfill_pdpa_declaration_task(user_id: str, customer_email: str | None = Non
 
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.id == user_id).first()
+        user = UserRepository.get_by_id(db, str(user_id))
         if not user:
             logger.warning("[PDPADeclaration] no user for id=%s", user_id)
             return
@@ -7489,7 +7489,7 @@ def weekly_intelligence_brief():
         ]
         for owner_id in owner_ids:
             try:
-                user = db.query(User).filter(User.id == owner_id).first()
+                user = UserRepository.get_by_id(db, str(owner_id))
                 if not user or not user.email:
                     continue
                 score_row = db.query(VendorScore).filter(
@@ -8019,7 +8019,7 @@ def run_trm_board_report_for_user(self, user_id: str, override_company: str | No
 
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.id == user_id).first()
+        user = UserRepository.get_by_id(db, str(user_id))
         if not user or not user.email:
             return
         plan = (user.plan or "").lower()

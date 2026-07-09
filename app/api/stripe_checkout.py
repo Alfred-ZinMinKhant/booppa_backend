@@ -179,7 +179,8 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
 
         _db = SessionLocal()
         try:
-            user = _db.query(User).filter(User.email == prefill_email).first()
+            from app.core.repositories.user_repository import UserRepository
+            user = UserRepository.get_by_email(_db, prefill_email)
             if user and getattr(user, "role", "VENDOR") == "VENDOR":
                 raise HTTPException(
                     status_code=403,
@@ -225,7 +226,8 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
 
         _db = SessionLocal()
         try:
-            user = _db.query(User).filter(User.email == prefill_email).first()
+            from app.core.repositories.user_repository import UserRepository
+            user = UserRepository.get_by_email(_db, prefill_email)
             if user:
                 expected_plan = SUBSCRIPTION_PLAN_MAP[product_type]
                 # Check Subscription table for active sub of the same type
@@ -234,15 +236,8 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
                     k for k, v in SUBSCRIPTION_PLAN_MAP.items()
                     if v == expected_plan
                 ]
-                active_sub = (
-                    _db.query(SubModel)
-                    .filter(
-                        SubModel.user_id == user.id,
-                        SubModel.product_type.in_(plan_keys),
-                        SubModel.status.in_(("active", "trialing")),
-                    )
-                    .first()
-                )
+                from app.core.repositories.subscription_repository import SubscriptionRepository
+                active_sub = SubscriptionRepository.get_active_by_user_and_products(_db, str(user.id), plan_keys)
                 if active_sub:
                     # double-check with Stripe if we have a customer id to avoid stale local state
                     try:
@@ -318,7 +313,8 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
 
         _db = SessionLocal()
         try:
-            user = _db.query(User).filter(User.email == prefill_email).first()
+            from app.core.repositories.user_repository import UserRepository
+            user = UserRepository.get_by_email(_db, prefill_email)
             website = (getattr(user, "website", "") or "").strip() if user else ""
             if not website:
                 website = (data.get("website") or data.get("vendor_url") or "").strip()
@@ -342,7 +338,8 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
 
         _db = SessionLocal()
         try:
-            user = _db.query(User).filter(User.email == prefill_email).first()
+            from app.core.repositories.user_repository import UserRepository
+            user = UserRepository.get_by_email(_db, prefill_email)
             req_website = (data.get("website") or data.get("vendor_url") or "").strip()
             req_company = (data.get("company_name") or "").strip()
             website = req_website or ((getattr(user, "website", "") or "").strip() if user else "")
@@ -377,7 +374,8 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
 
         _db = SessionLocal()
         try:
-            user = _db.query(User).filter(User.email == prefill_email).first()
+            from app.core.repositories.user_repository import UserRepository
+            user = UserRepository.get_by_email(_db, prefill_email)
             req_company = (data.get("company_name") or "").strip()
             req_website = (data.get("website") or data.get("vendor_url") or "").strip()
             company_name = req_company or ((getattr(user, "company", "") or "").strip() if user else "")
@@ -424,7 +422,8 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
 
         _db = SessionLocal()
         try:
-            user = _db.query(User).filter(User.email == prefill_email).first() if prefill_email else None
+            from app.core.repositories.user_repository import UserRepository
+            user = UserRepository.get_by_email(_db, prefill_email) if prefill_email else None
             req_website = (data.get("website") or data.get("vendor_url") or "").strip()
             req_company = (data.get("company_name") or "").strip()
             website = req_website or ((getattr(user, "website", "") or "").strip() if user else "")
@@ -472,17 +471,11 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
 
         _db = SessionLocal()
         try:
-            user = _db.query(User).filter(User.email == prefill_email).first()
+            from app.core.repositories.user_repository import UserRepository
+            user = UserRepository.get_by_email(_db, prefill_email)
             if user:
-                already_verified = (
-                    _db.query(VerifyRecord)
-                    .filter(
-                        VerifyRecord.vendor_id == user.id,
-                        VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE,
-                    )
-                    .first()
-                    is not None
-                )
+                from app.core.repositories.verify_record_repository import VerifyRecordRepository
+                already_verified = VerifyRecordRepository.active_exists_by_vendor_id(_db, str(user.id))
                 if already_verified:
                     raise HTTPException(
                         status_code=409,
@@ -819,8 +812,9 @@ async def checkout_verify(session_id: str | None = None):
                     from app.core.models import User as _U
                     from app.core.models import PendingRfpIntake
                     _db = SessionLocal()
+                    from app.core.repositories.user_repository import UserRepository
                     try:
-                        _user = _db.query(_U).filter(_U.email == customer_email).first()
+                        _user = UserRepository.get_by_email(_db, customer_email)
                         if _user:
                             # Compliance Evidence Pack: surface the outstanding BCEP
                             # intake for THIS session (session-scoped only, never
@@ -975,7 +969,8 @@ async def create_portal_session(
 
     from app.core.models import User
 
-    user = db.query(User).filter(User.email == payload.get("sub")).first()
+    from app.core.repositories.user_repository import UserRepository
+    user = UserRepository.get_by_email(db, payload.get("sub"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 

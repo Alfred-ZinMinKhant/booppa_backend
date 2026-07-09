@@ -6,6 +6,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from app.core.db import SessionLocal
+from app.core.repositories.user_repository import UserRepository
 from app.core.models import ConsentLog, EnterpriseProfile, ActivityLog, VendorScore, User
 from app.core.config import settings
 from app.core.auth import create_admin_token, verify_admin_token
@@ -92,15 +93,11 @@ def list_consent_logs(
     _auth: bool = Depends(_admin_auth),
 ) -> List[dict]:
     """Return recent consent logs for quick verification. Protected by admin auth."""
+    from app.core.repositories.consent_log_repository import ConsentLogRepository
 
     db = SessionLocal()
     try:
-        rows = (
-            db.query(ConsentLog)
-            .order_by(ConsentLog.timestamp.desc())
-            .limit(limit)
-            .all()
-        )
+        rows = ConsentLogRepository.get_recent_logs(db, limit)
         results = []
         for r in rows:
             results.append(
@@ -125,23 +122,18 @@ def get_ecosystem_intelligence(
     db = SessionLocal()
     try:
         # Calculate real metrics from the database
-        active_windows = db.query(EnterpriseProfile).filter(EnterpriseProfile.active_procurement == True).count()
+        from app.core.repositories.enterprise_profile_repository import EnterpriseProfileRepository
+        active_windows = EnterpriseProfileRepository.count_active_procurement(db)
         
         # Calculate global pulse score (average of all active enterprise intent scores)
-        profiles = db.query(EnterpriseProfile).filter(
-            EnterpriseProfile.procurement_intent_score.isnot(None)
-        ).all()
+        profiles = EnterpriseProfileRepository.get_all_intent_scores(db)
         
         global_pulse = 0.0
         if profiles:
             global_pulse = sum((p.procurement_intent_score or 0) for p in profiles) / len(profiles)
 
         # Get top enterprises by intent score
-        top_profiles = db.query(EnterpriseProfile).filter(
-            EnterpriseProfile.procurement_intent_score.isnot(None)
-        ).order_by(
-            EnterpriseProfile.procurement_intent_score.desc()
-        ).limit(5).all()
+        top_profiles = EnterpriseProfileRepository.get_top_profiles(db, limit=5)
 
         top_enterprises = []
         for p in top_profiles:
@@ -185,11 +177,10 @@ def create_tender(
 ) -> dict:
     """Create a single TenderShortlist entry."""
     from app.core.models import TenderShortlist
+    from app.core.repositories.tender_shortlist_repository import TenderShortlistRepository
     db = SessionLocal()
     try:
-        existing = db.query(TenderShortlist).filter(
-            TenderShortlist.tender_no == body.tender_no
-        ).first()
+        existing = TenderShortlistRepository.get_by_tender_no(db, body.tender_no)
         if existing:
             raise HTTPException(status_code=409, detail="tender_no already exists")
         row = TenderShortlist(**body.model_dump())
@@ -208,14 +199,13 @@ def bulk_create_tenders(
 ) -> dict:
     """Upsert a list of tender entries (insert or update by tender_no)."""
     from app.core.models import TenderShortlist
+    from app.core.repositories.tender_shortlist_repository import TenderShortlistRepository
     db = SessionLocal()
     inserted = 0
     updated  = 0
     try:
         for item in body:
-            existing = db.query(TenderShortlist).filter(
-                TenderShortlist.tender_no == item.tender_no
-            ).first()
+            existing = TenderShortlistRepository.get_by_tender_no(db, item.tender_no)
             if existing:
                 for k, v in item.model_dump().items():
                     setattr(existing, k, v)
@@ -238,16 +228,10 @@ def list_tenders(
     _auth: bool = Depends(_admin_auth),
 ) -> dict:
     """List TenderShortlist entries with optional sector/agency filters."""
-    from app.core.models import TenderShortlist
+    from app.core.repositories.tender_shortlist_repository import TenderShortlistRepository
     db = SessionLocal()
     try:
-        q = db.query(TenderShortlist)
-        if sector:
-            q = q.filter(TenderShortlist.sector == sector)
-        if agency:
-            q = q.filter(TenderShortlist.agency == agency)
-        total = q.count()
-        rows  = q.order_by(TenderShortlist.created_at.desc()).offset(offset).limit(limit).all()
+        total, rows = TenderShortlistRepository.list_entries(db, sector, agency, offset, limit)
         return {
             "total":  total,
             "items": [
@@ -282,7 +266,8 @@ def update_tender(
             uid = _uuid.UUID(tender_id)
         except ValueError:
             raise HTTPException(status_code=422, detail="Invalid UUID")
-        row = db.query(TenderShortlist).filter(TenderShortlist.id == uid).first()
+        from app.core.repositories.tender_shortlist_repository import TenderShortlistRepository
+        row = TenderShortlistRepository.get_by_id(db, uid)
         if not row:
             raise HTTPException(status_code=404, detail="Tender not found")
         
@@ -350,7 +335,8 @@ def delete_tender(
             uid = _uuid.UUID(tender_id)
         except ValueError:
             raise HTTPException(status_code=422, detail="Invalid UUID")
-        row = db.query(TenderShortlist).filter(TenderShortlist.id == uid).first()
+        from app.core.repositories.tender_shortlist_repository import TenderShortlistRepository
+        row = TenderShortlistRepository.get_by_id(db, uid)
         if not row:
             raise HTTPException(status_code=404, detail="Tender not found")
         db.delete(row)
@@ -430,33 +416,16 @@ def admin_list_users(
     _auth: bool = Depends(_admin_auth),
 ) -> dict:
     """Paginated user directory for the admin console."""
-    from sqlalchemy import or_
-
     db = SessionLocal()
     try:
-        query = db.query(User)
-        if q:
-            like = f"%{q.strip()}%"
-            query = query.filter(
-                or_(
-                    User.email.ilike(like),
-                    User.full_name.ilike(like),
-                    User.company.ilike(like),
-                )
-            )
-        if role:
-            query = query.filter(User.role == role)
-        if plan:
-            query = query.filter(User.plan == plan)
-        if is_active is not None:
-            query = query.filter(User.is_active == is_active)
-
-        total = query.count()
-        rows = (
-            query.order_by(User.created_at.desc())
-            .offset(offset)
-            .limit(limit)
-            .all()
+        total, rows = UserRepository.search_users(
+            db,
+            q=q,
+            role=role,
+            plan=plan,
+            is_active=is_active,
+            offset=offset,
+            limit=limit,
         )
 
         items = []
@@ -509,7 +478,8 @@ def retry_anchor(
     from app.core.models import Report
     db = SessionLocal()
     try:
-        report = db.query(Report).filter(Report.id == body.report_id).first()
+        from app.core.repositories.report_repository import ReportRepository
+        report = ReportRepository.get_by_id(db, str(body.report_id))
         if not report:
             raise HTTPException(status_code=404, detail="Report not found")
         if report.framework != "compliance_evidence_signed_sheet":
@@ -563,12 +533,7 @@ def grant_credits(
     try:
         # Row-locked so two concurrent admin grants for the same email apply
         # additively instead of lost-update overwriting each other.
-        user = (
-            db.query(User)
-            .filter(User.email == body.email)
-            .with_for_update()
-            .first()
-        )
+        user = UserRepository.get_by_email(db, body.email, lock_for_update=True)
         if not user:
             raise HTTPException(status_code=404, detail=f"No user with email {body.email}")
         current = getattr(user, "notarization_credits", 0) or 0
@@ -798,7 +763,7 @@ async def simulate_purchase(
     # owner_id / grant credits / activate plans.
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.email == customer_email).first()
+        user = UserRepository.get_by_email(db, customer_email)
         if not user:
             from app.core.auth import get_password_hash
 
@@ -861,12 +826,9 @@ async def simulate_purchase(
         )
         db = SessionLocal()
         try:
-            u = db.query(User).filter(User.email == customer_email).first()
-            sub = (
-                db.query(Subscription)
-                .filter(Subscription.stripe_subscription_id == sim_id)
-                .first()
-            )
+            u = UserRepository.get_by_email(db, customer_email)
+            from app.core.repositories.subscription_repository import SubscriptionRepository
+            sub = SubscriptionRepository.get_by_stripe_subscription_id(db, sim_id)
             details = {
                 "plan": getattr(u, "plan", None),
                 "subscription_id": str(sub.id) if sub else None,
@@ -889,11 +851,8 @@ async def simulate_purchase(
         try:
             from sqlalchemy import String, cast
 
-            stubs = (
-                db.query(Report)
-                .filter(cast(Report.assessment_data["stripe_session_id"], String) == sim_id)
-                .all()
-            )
+            from app.core.repositories.report_repository import ReportRepository
+            stubs = ReportRepository.get_by_stripe_session_id(db, sim_id)
             pending = (
                 db.query(PendingRfpIntake)
                 .filter(PendingRfpIntake.session_id == sim_id)
@@ -929,7 +888,7 @@ async def simulate_purchase(
 
             db = SessionLocal()
             try:
-                u = db.query(User).filter(User.email == customer_email).first()
+                u = UserRepository.get_by_email(db, customer_email)
                 vendor_id = str(u.id) if u else customer_email
             finally:
                 db.close()
@@ -976,12 +935,10 @@ async def simulate_purchase(
         try:
             from sqlalchemy import String, cast
 
-            stub = (
-                db.query(Report)
-                .filter(cast(Report.assessment_data["stripe_session_id"], String) == sim_id)
-                .first()
-            )
-            u = db.query(User).filter(User.email == customer_email).first()
+            from app.core.repositories.report_repository import ReportRepository
+            stub_list = ReportRepository.get_by_stripe_session_id(db, sim_id)
+            stub = stub_list[0] if stub_list else None
+            u = UserRepository.get_by_email(db, customer_email)
             details = {
                 "session_id": sim_id,
                 "report_id": str(stub.id) if stub else None,

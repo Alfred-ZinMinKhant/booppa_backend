@@ -129,16 +129,8 @@ def list_slots(days: int = 30):
 
     db = SessionLocal()
     try:
-        rows = (
-            db.query(DemoBooking.slot_id, func.count(DemoBooking.id))
-            .filter(
-                DemoBooking.status == "confirmed",
-                DemoBooking.slot_date >= today,
-                DemoBooking.slot_date <= end_date,
-            )
-            .group_by(DemoBooking.slot_id)
-            .all()
-        )
+        from app.core.repositories.booking_repository import BookingRepository
+        rows = BookingRepository.get_booked_slot_counts(db, start_date=today, end_date=end_date)
         counts = {r[0]: r[1] for r in rows}
 
         results = []
@@ -170,14 +162,8 @@ def create_booking(payload: BookingCreate):
 
     db = SessionLocal()
     try:
-        existing = (
-            db.query(func.count(DemoBooking.id))
-            .filter(
-                DemoBooking.slot_id == payload.slot_id,
-                DemoBooking.status == "confirmed",
-            )
-            .scalar()
-        )
+        from app.core.repositories.booking_repository import BookingRepository
+        existing = BookingRepository.get_slot_booking_count(db, slot_id=payload.slot_id)
 
         if existing and existing >= settings.BOOKING_MAX_PER_SLOT:
             raise HTTPException(status_code=400, detail="Time slot is full")
@@ -215,11 +201,8 @@ def create_booking(payload: BookingCreate):
 def get_booking(token: str):
     db = SessionLocal()
     try:
-        booking = (
-            db.query(DemoBooking)
-            .filter(DemoBooking.booking_token == token)
-            .first()
-        )
+        from app.core.repositories.booking_repository import BookingRepository
+        booking = BookingRepository.get_by_token(db, token)
         if not booking:
             raise HTTPException(status_code=404, detail="Booking not found")
 
@@ -243,11 +226,8 @@ def get_booking(token: str):
 def cancel_booking(token: str):
     db = SessionLocal()
     try:
-        booking = (
-            db.query(DemoBooking)
-            .filter(DemoBooking.booking_token == token)
-            .first()
-        )
+        from app.core.repositories.booking_repository import BookingRepository
+        booking = BookingRepository.get_by_token(db, token)
         if not booking or booking.status != "confirmed":
             raise HTTPException(status_code=404, detail="Active booking not found")
 

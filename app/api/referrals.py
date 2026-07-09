@@ -25,10 +25,8 @@ class CreateReferralRequest(BaseModel):
 async def create_referral(body: CreateReferralRequest, db: Session = Depends(get_db)):
     """Create a referral code."""
     # Check if referrer already has an active code
-    existing = db.query(Referral).filter(
-        Referral.referrer_id == body.referrer_id,
-        Referral.status == "PENDING",
-    ).first()
+    from app.core.repositories.referral_repository import ReferralRepository
+    existing = ReferralRepository.get_pending_by_referrer_id(db, body.referrer_id)
 
     if existing:
         return {
@@ -57,7 +55,8 @@ async def create_referral(body: CreateReferralRequest, db: Session = Depends(get
 @router.get("/code/{code}")
 async def get_referral(code: str, db: Session = Depends(get_db)):
     """Get referral details by code."""
-    referral = db.query(Referral).filter(Referral.referral_code == code).first()
+    from app.core.repositories.referral_repository import ReferralRepository
+    referral = ReferralRepository.get_by_code(db, code)
     if not referral:
         raise HTTPException(status_code=404, detail="Referral code not found")
 
@@ -75,7 +74,8 @@ async def get_referral(code: str, db: Session = Depends(get_db)):
 @router.post("/redeem/{code}")
 async def redeem_referral(code: str, user_id: str, db: Session = Depends(get_db)):
     """Redeem a referral code during signup."""
-    referral = db.query(Referral).filter(Referral.referral_code == code).first()
+    from app.core.repositories.referral_repository import ReferralRepository
+    referral = ReferralRepository.get_by_code(db, code)
     if not referral:
         raise HTTPException(status_code=404, detail="Referral code not found")
 
@@ -97,7 +97,8 @@ async def redeem_referral(code: str, user_id: str, db: Session = Depends(get_db)
 @router.get("/my/{user_id}")
 async def list_my_referrals(user_id: str, db: Session = Depends(get_db)):
     """List all referrals created by a user."""
-    referrals = db.query(Referral).filter(Referral.referrer_id == user_id).all()
+    from app.core.repositories.referral_repository import ReferralRepository
+    referrals = ReferralRepository.get_by_referrer_id(db, str(user_id))
     return [
         {
             "referral_code": r.referral_code,

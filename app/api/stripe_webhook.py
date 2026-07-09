@@ -534,16 +534,8 @@ async def _stripe_webhook_impl(
                         # Row-locked: prevents two concurrent checkouts for the same
                         # referred user from both marking the same Referral REWARDED
                         # and double-paying the reward.
-                        referral = (
-                            _db.query(Referral)
-                            .filter(
-                                Referral.referred_id == user.id,
-                                Referral.status == "SIGNED_UP",
-                                Referral.reward_claimed == False,
-                            )
-                            .with_for_update()
-                            .first()
-                        )
+                        from app.core.repositories.referral_repository import ReferralRepository
+                        referral = ReferralRepository.get_unclaimed_by_referred_id_for_update(_db, str(user.id))
                         if referral:
                             referral.status = "REWARDED"
                             referral.reward_claimed = True
@@ -570,16 +562,8 @@ async def _stripe_webhook_impl(
                             pass
                         # Close the referral reward loop.
                         # Row-locked to prevent concurrent claims (see comment above).
-                        referral = (
-                            _db.query(Referral)
-                            .filter(
-                                Referral.referred_id == user.id,
-                                Referral.status == "SIGNED_UP",
-                                Referral.reward_claimed == False,
-                            )
-                            .with_for_update()
-                            .first()
-                        )
+                        from app.core.repositories.referral_repository import ReferralRepository
+                        referral = ReferralRepository.get_unclaimed_by_referred_id_for_update(_db, str(user.id))
                         if referral:
                             referral.status = "REWARDED"
                             referral.reward_claimed = True

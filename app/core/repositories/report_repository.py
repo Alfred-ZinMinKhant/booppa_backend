@@ -9,6 +9,19 @@ class ReportRepository:
         return db.query(Report).filter(Report.id == report_id).first()
 
     @staticmethod
+    def get_by_audit_hash(db: Session, audit_hash: str) -> Report | None:
+        return db.query(Report).filter(Report.audit_hash == audit_hash).first()
+
+    @staticmethod
+    def get_by_stripe_session_id(db: Session, session_id: str) -> list[Report]:
+        from sqlalchemy import String, cast
+        return (
+            db.query(Report)
+            .filter(cast(Report.assessment_data["stripe_session_id"], String) == session_id)
+            .all()
+        )
+
+    @staticmethod
     def get_by_id_and_framework(db: Session, report_id: str, framework: str) -> Report | None:
         return (
             db.query(Report)

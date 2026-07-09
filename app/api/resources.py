@@ -40,12 +40,8 @@ def list_resources():
     """Public: return all active resource items grouped by category."""
     db = SessionLocal()
     try:
-        items = (
-            db.query(ResourceItem)
-            .filter(ResourceItem.is_active == True)
-            .order_by(ResourceItem.category, ResourceItem.sort_order, ResourceItem.created_at)
-            .all()
-        )
+        from app.core.repositories.resource_item_repository import ResourceItemRepository
+        items = ResourceItemRepository.list_active_ordered(db)
         grouped: dict = {}
         for item in items:
             grouped.setdefault(item.category, []).append({
@@ -85,7 +81,8 @@ def create_resource(data: ResourceItemIn):
 def update_resource(item_id: str, data: ResourceItemIn):
     db = SessionLocal()
     try:
-        item = db.query(ResourceItem).filter(ResourceItem.id == item_id).first()
+        from app.core.repositories.resource_item_repository import ResourceItemRepository
+        item = ResourceItemRepository.get_by_id(db, item_id)
         if not item:
             raise HTTPException(status_code=404, detail="Not found")
         item.category = data.category
@@ -104,7 +101,8 @@ def update_resource(item_id: str, data: ResourceItemIn):
 def delete_resource(item_id: str):
     db = SessionLocal()
     try:
-        item = db.query(ResourceItem).filter(ResourceItem.id == item_id).first()
+        from app.core.repositories.resource_item_repository import ResourceItemRepository
+        item = ResourceItemRepository.get_by_id(db, item_id)
         if not item:
             raise HTTPException(status_code=404, detail="Not found")
         db.delete(item)
