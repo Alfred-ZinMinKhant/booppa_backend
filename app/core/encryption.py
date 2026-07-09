@@ -235,7 +235,7 @@ def encrypt_legacy_pii_field(db_session, model_class, field_name: str,
 
     Usage:
         from app.core.encryption import encrypt_legacy_pii_field
-        from app.core.models_csp import CspCddRecord
+        from app.core.models import CspCddRecord
         from app.core.db import SessionLocal
 
         db = SessionLocal()

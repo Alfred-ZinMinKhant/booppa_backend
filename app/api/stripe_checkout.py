@@ -468,7 +468,7 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
     if product_type == "vendor_proof" and prefill_email:
         from app.core.db import SessionLocal
         from app.core.models import User
-        from app.core.models_v6 import VerifyRecord, LifecycleStatus
+        from app.core.models import VerifyRecord, LifecycleStatus
 
         _db = SessionLocal()
         try:
@@ -817,7 +817,7 @@ async def checkout_verify(session_id: str | None = None):
                 try:
                     from app.core.db import SessionLocal
                     from app.core.models import User as _U
-                    from app.core.models_v12 import PendingRfpIntake
+                    from app.core.models import PendingRfpIntake
                     _db = SessionLocal()
                     try:
                         _user = _db.query(_U).filter(_U.email == customer_email).first()
@@ -827,7 +827,7 @@ async def checkout_verify(session_id: str | None = None):
                             # "latest regardless of status" — a prior cycle's row
                             # would mislead the success page).
                             try:
-                                from app.core.models_v13 import EvidencePack
+                                from app.core.models import EvidencePack
                                 _ep = (
                                     _db.query(EvidencePack)
                                     .filter(

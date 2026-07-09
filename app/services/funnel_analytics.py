@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_
-from app.core.models_v10 import FunnelEvent, RevenueEvent, SubscriptionSnapshot
+from app.core.models import FunnelEvent, RevenueEvent, SubscriptionSnapshot
 
 logger = logging.getLogger(__name__)
 

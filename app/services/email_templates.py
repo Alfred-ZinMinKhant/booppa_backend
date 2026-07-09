@@ -269,7 +269,7 @@ async def _activate_subscription(
         # invites until seats free up.
         try:
             from app.billing.enforcement import max_seats_for
-            from app.core.models_enterprise import Organisation as _Org
+            from app.core.models import Organisation as _Org
 
             new_cap = max_seats_for(new_plan)
             owned_orgs = db.query(_Org).filter(_Org.owner_user_id == user.id).all()
@@ -492,7 +492,7 @@ async def _activate_subscription(
             try:
                 from app.trm_workflow_service import initialise_trm_controls
                 from app.api.vendor_features import _get_or_create_org
-                from app.core.models_enterprise import TrmControl
+                from app.core.models import TrmControl
 
                 org = _get_or_create_org(db, user)
                 # Idempotent — skip if controls already exist (e.g. renewal webhook)
@@ -521,7 +521,7 @@ async def _activate_subscription(
             # simulate-purchase path, and doesn't depend on the Celery queue.
             if customer_email:
                 try:
-                    from app.core.models_v8 import ENTERPRISE_NOTARIZATION_LIMITS
+                    from app.core.models import ENTERPRISE_NOTARIZATION_LIMITS
 
                     is_pro = new_plan == "pro_suite"
                     suite_label = "Pro Suite" if is_pro else "Standard Suite"

@@ -144,7 +144,7 @@ def register_user(
     if role == "VENDOR" and company:
         try:
             from datetime import timezone
-            from app.core.models_v10 import MarketplaceVendor
+            from app.core.models import MarketplaceVendor
             from app.services.marketplace import generate_slug
 
             mv = None

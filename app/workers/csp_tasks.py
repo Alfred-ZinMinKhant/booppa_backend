@@ -201,7 +201,7 @@ def generate_csp_documents(self, profile_id: str) -> dict:
     Generate all AML/CFT/PF compliance documents via DeepSeek.
     Renders each to PDF, uploads to S3, and notarizes on-chain.
     """
-    from app.core.models_csp import CspProfile, CspClient, CspAmlProgramme, CspBlockchainEvidence
+    from app.core.models import CspProfile, CspClient, CspAmlProgramme, CspBlockchainEvidence
     from app.services.csp_doc_generator import generate_all_csp_documents, generate_csp_document_pdf
 
     db = _db()
@@ -359,7 +359,7 @@ def notarize_csp_record(self, record_id: str, record_type: str, profile_id: str)
     v3 legal-layer records (tos_acceptance / programme_attestation / risk_classification)
     the router already computed a richer content_hash — prefer it when present.
     """
-    from app.core.models_csp import (
+    from app.core.models import (
         CspCddRecord, CspStrReport, CspNomineeDirector,
         CspStaffTraining, CspAmlProgramme, CspBlockchainEvidence,
         CspTosAcceptance, CspProgrammeAttestation, CspRiskClassificationAudit,
@@ -490,7 +490,7 @@ def csp_daily_monitoring() -> dict:
     Daily compliance monitoring for all CSP profiles: flag expired CDD reviews,
     update calendar alert flags, quarterly sanctions re-screen for high-risk clients.
     """
-    from app.core.models_csp import CspProfile, CspClient, CspComplianceCalendar, RiskRating
+    from app.core.models import CspProfile, CspClient, CspComplianceCalendar, RiskRating
 
     db = _db()
     try:
@@ -617,7 +617,7 @@ def run_sanctions_screening_task(
     db = _db()
     try:
         from app.services.csp_sanctions import screen_individual, screen_entity
-        from app.core.models_csp import CspClient, CspBeneficialOwner, RiskRating
+        from app.core.models import CspClient, CspBeneficialOwner, RiskRating
 
         now = datetime.now(timezone.utc)
         fn  = screen_individual if client_type == "individual" else screen_entity

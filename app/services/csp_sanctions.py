@@ -106,13 +106,8 @@ class ScreeningResult:
 # ── REDIS CACHE ──────────────────────────────────────────────────────────────
 
 def _get_redis():
-    redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-    try:
-        import redis
-        return redis.from_url(redis_url, decode_responses=True)
-    except Exception:
-        return None   # Cache unavailable — proceed without cache
-
+    from app.core.cache.cache import get_redis_client
+    return get_redis_client()
 
 def _cache_key(name: str, lists: List[str]) -> str:
     normalized = _normalize_name(name)

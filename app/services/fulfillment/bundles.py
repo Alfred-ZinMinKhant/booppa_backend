@@ -18,7 +18,7 @@ from app.services.fulfillment.single_products import _defer_rfp_to_intake
 
 from app.services.email_service import EmailService
 from app.billing.enforcement import enforce_tier
-from app.core.models_v10 import Referral
+from app.core.models import Referral
 from datetime import datetime, timedelta, timezone
 import stripe
 import logging
@@ -380,7 +380,7 @@ async def _fulfill_compliance_evidence_pack(
     import uuid as _uuid
     from datetime import datetime as _dt
     from app.core.models import User
-    from app.core.models_v13 import EvidencePack
+    from app.core.models import EvidencePack
 
     if not owner_id:
         await _alert_payment_fulfillment_issue(
@@ -511,7 +511,7 @@ async def _fulfill_bundle(
         fulfill_vendor_proof_task,
         fulfill_pdpa_task,
     )
-    from app.core.models_v12 import PendingRfpIntake
+    from app.core.models import PendingRfpIntake
 
     db = SessionLocal()
     try:

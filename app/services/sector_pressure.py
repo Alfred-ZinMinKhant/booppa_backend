@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from sqlalchemy.orm import Session
 
-from app.core.models_v8 import NotarizationMetadata
+from app.core.models import NotarizationMetadata
 from app.core.models import VendorSector
 
 logger = logging.getLogger(__name__)

@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db, get_current_user
 from app.core.models import User, Report
-from app.core.models_v11 import ManagedVendor
+from app.core.models import ManagedVendor
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

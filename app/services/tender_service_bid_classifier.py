@@ -286,7 +286,7 @@ def build_vendor_history(db, vendor_id: str, sector: str, agency: str | None = N
     }
 
     try:
-        from app.core.models_v6 import LeadCapture
+        from app.core.models import LeadCapture
         from app.core.models import User
 
         user = db.query(User).filter(User.id == vendor_id).first()
@@ -325,7 +325,7 @@ def build_vendor_history(db, vendor_id: str, sector: str, agency: str | None = N
             logger.warning("[VendorHistory] sector median lookup failed for %s: %s", vendor_id, e)
 
     try:
-        from app.core.models_vendor_pro import TenderCheckLookup
+        from app.core.models import TenderCheckLookup
         since = datetime.now(timezone.utc) - timedelta(days=14)
         open_bids = (
             db.query(TenderCheckLookup.tender_no)
@@ -354,7 +354,7 @@ def _sector_median_award(db, sector: str | None) -> float | None:
         return None
     try:
         from sqlalchemy import func
-        from app.core.models_gebiz import GebizAwardHistory
+        from app.core.models import GebizAwardHistory
 
         amounts = [
             float(r[0])

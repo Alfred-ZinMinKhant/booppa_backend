@@ -202,9 +202,9 @@ router.include_router(sso_router, prefix="/enterprise", tags=["enterprise-sso"])
 def platform_stats(db: Session = Depends(__import__("app.core.db", fromlist=["get_db"]).get_db)):
     """Public stats for marketing pages: vendor count, verified count, open tenders."""
     from sqlalchemy import func
-    from app.core.models_v10 import MarketplaceVendor
-    from app.core.models_v6 import VerifyRecord, LifecycleStatus
-    from app.core.models_gebiz import GebizTender
+    from app.core.models import MarketplaceVendor
+    from app.core.models import VerifyRecord, LifecycleStatus
+    from app.core.models import GebizTender
     from datetime import datetime, timezone
 
     vendors_indexed = db.query(func.count(MarketplaceVendor.id)).scalar() or 0

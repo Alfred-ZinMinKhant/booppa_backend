@@ -11,9 +11,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.core.models import User
-from app.core.models_v6 import VendorScore, VendorSector, VerifyRecord
-from app.core.models_v8 import VendorStatusSnapshot
-from app.core.models_v10 import MarketplaceVendor
+from app.core.models import VendorScore, VendorSector, VerifyRecord
+from app.core.models import VendorStatusSnapshot
+from app.core.models import MarketplaceVendor
 
 logger = logging.getLogger(__name__)
 

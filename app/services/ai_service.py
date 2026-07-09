@@ -18,7 +18,8 @@ class AIService:
         self.openai_key = None
         self.ollama_url = None
         self.booppa_ai = BooppaAIService()
-        self.cache = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        from app.core.cache.cache import get_redis_client
+        self.cache = get_redis_client()
 
     def _get_cache_key(self, assessment_data: Dict) -> str:
         """Generate a stable cache key based on assessment data"""
@@ -32,7 +33,7 @@ class AIService:
         cache_key = self._get_cache_key(assessment_data)
         try:
             # Check cache first
-            cached_narrative = self.cache.get(cache_key)
+            cached_narrative = self.cache.get(cache_key) if self.cache else None
             if cached_narrative:
                 logger.info("Serving audit narrative from cache")
                 return cached_narrative
@@ -44,7 +45,8 @@ class AIService:
             narrative = self._format_report_as_narrative(report)
 
             # Cache the result for 24 hours
-            self.cache.setex(cache_key, 86400, narrative)
+            if self.cache:
+                self.cache.setex(cache_key, 86400, narrative)
 
             logger.info(
                 f"Generated Booppa-specialized audit narrative: {len(narrative)} chars"

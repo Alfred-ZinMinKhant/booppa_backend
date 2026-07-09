@@ -71,7 +71,7 @@ def _record_dimension_snapshots(db, report: Report) -> None:
     Safe to call multiple times; each call writes a fresh batch with the same
     captured_at timestamp clustering.
     """
-    from app.core.models_v8 import PdpaDimensionHistory
+    from app.core.models import PdpaDimensionHistory
 
     snapshots = compute_dimension_snapshots(report.assessment_data)
     if not snapshots:
@@ -96,7 +96,7 @@ def _confirm_remediations(db, report: Report) -> None:
     the current scan. If gone → confirmation_status='confirmed'. If still
     present → 'regressed'. Idempotent — safe to call repeatedly.
     """
-    from app.core.models_v8 import FindingRemediation
+    from app.core.models import FindingRemediation
 
     current_keys = extract_finding_keys(report.assessment_data)
     pending = (
@@ -1586,7 +1586,7 @@ async def process_report_workflow(report_id: str) -> dict:
         # Tier 6: attach this user's remediation history so the PDF can show
         # confirmed fixes and pending items. Best-effort — empty list on error.
         try:
-            from app.core.models_v8 import FindingRemediation
+            from app.core.models import FindingRemediation
             from app.services.finding_keys import label_for_key
             rem_rows = (
                 db.query(FindingRemediation)
@@ -2430,7 +2430,7 @@ def fulfill_cover_sheet_task(
                 # the full evidence set (forensic-audit finding: the 7 BCEP docs
                 # were generated but never connected to the cover sheet).
                 try:
-                    from app.core.models_v13 import EvidencePack
+                    from app.core.models import EvidencePack
                     from app.services.tx_utils import is_real_onchain_tx
 
                     _pack = (
@@ -2659,7 +2659,7 @@ def fulfill_cover_sheet_task(
                     # Report-row write. CertificateLog is always written, so
                     # use it as evidence the RFP finished.
                     try:
-                        from app.core.models_v10 import CertificateLog
+                        from app.core.models import CertificateLog
                         cert = (
                             db.query(CertificateLog)
                             .filter(
@@ -3119,7 +3119,7 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
             # blocks the snapshot.
             snapshot_extra_rows = []
             try:
-                from app.core.models_v6 import Proof, VerifyRecord
+                from app.core.models import Proof, VerifyRecord
                 _notal_count = (
                     db.query(Proof)
                     .join(VerifyRecord)
@@ -3259,7 +3259,7 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
         # 2e. Vendor Pro: surface the included notarization + the second-email note.
         pro_note = ""
         if is_pro:
-            from app.core.models_v8 import ENTERPRISE_NOTARIZATION_LIMITS
+            from app.core.models import ENTERPRISE_NOTARIZATION_LIMITS
             notar_limit = ENTERPRISE_NOTARIZATION_LIMITS.get(plan, 1)
             scan_line = (
                 "<p style=\"font-size:13px;color:#334155;\">Your PDPA Snapshot with drift "
@@ -4032,8 +4032,8 @@ def buyer_supplier_drift_sweep_task(demo: bool = False):
     try:
         from datetime import datetime
         from app.core.models import User
-        from app.core.models_enterprise import Organisation, VendorWatchlistItem
-        from app.core.models_v12 import BuyerSupplierAlert
+        from app.core.models import Organisation, VendorWatchlistItem
+        from app.core.models import BuyerSupplierAlert
         from app.services.buyer_procurement_insights import (
             _resolve_watchlist_vendor_user, _supplier_status,
             get_supplier_cert_expiry, evaluate_supplier_drift,
@@ -4259,9 +4259,9 @@ def buyer_tender_fit_push_sweep_task(demo: bool = False, lookback_minutes: int =
     try:
         from datetime import datetime, timedelta
         from app.core.models import User
-        from app.core.models_enterprise import Organisation
-        from app.core.models_gebiz import GebizTender
-        from app.core.models_v12 import BuyerTenderPush
+        from app.core.models import Organisation
+        from app.core.models import GebizTender
+        from app.core.models import BuyerTenderPush
         from app.services.buyer_procurement_insights import get_watchlist_sectors
         from app.services.tender_service import _CATEGORY_TO_SECTOR
         from app.billing.enforcement import PROCUREMENT_PLAN_KEYS
@@ -4374,8 +4374,8 @@ def buyer_demo_fireall_task(
     db = SessionLocal()
     fired = 0
     try:
-        from app.core.models_enterprise import Organisation, VendorWatchlistItem
-        from app.core.models_gebiz import GebizTender
+        from app.core.models import Organisation, VendorWatchlistItem
+        from app.core.models import GebizTender
         from app.services.tender_service import _CATEGORY_TO_SECTOR
 
         tier, plan_label = _buyer_tier_from_product(product_type)
@@ -5134,7 +5134,7 @@ def check_compliance_drift_task(self, vendor_id: str, vendor_email: str, framewo
     On material drift, persist a ComplianceDriftEvent and email the vendor.
     """
     from app.services.compliance_drift import detect_drift_for_vendor
-    from app.core.models_v8 import ComplianceDriftEvent
+    from app.core.models import ComplianceDriftEvent
 
     db = SessionLocal()
     email_svc = EmailService()
@@ -5157,7 +5157,7 @@ def check_compliance_drift_task(self, vendor_id: str, vendor_email: str, framewo
         # can credit the user's work in the same email.
         confirmed_rems: list = []
         try:
-            from app.core.models_v8 import FindingRemediation
+            from app.core.models import FindingRemediation
             from app.services.finding_keys import label_for_key as _label_for_key
             from app.core.models import Report as _Report
             prev_report = (
@@ -5303,7 +5303,7 @@ def check_vendor_proof_expiry():
     comparisons here use naive `datetime.utcnow()`.
     """
     from app.core.models import User
-    from app.core.models_v6 import VerifyRecord, LifecycleStatus
+    from app.core.models import VerifyRecord, LifecycleStatus
 
     db = SessionLocal()
     reminded = 0
@@ -5613,8 +5613,8 @@ def refresh_gebiz_base_rates():
     import asyncio as _asyncio
 
     async def _fetch_and_update():
-        from app.core.models_v10 import TenderShortlist
-        from app.core.models_gebiz import GebizAwardHistory
+        from app.core.models import TenderShortlist
+        from app.core.models import GebizAwardHistory
         from sqlalchemy.dialects.postgresql import insert as pg_insert
         from datetime import datetime as _dt
         db = SessionLocal()
@@ -5909,9 +5909,9 @@ def _bridge_gebiz_to_shortlist(db) -> None:
     Upsert open GebizTenders into TenderShortlist with a default base_rate.
     Also writes GeBizActivity rows linking vendors to open tenders in their sector.
     """
-    from app.core.models_gebiz import GebizTender
-    from app.core.models_v10 import TenderShortlist
-    from app.core.models_v6 import GeBizActivity
+    from app.core.models import GebizTender
+    from app.core.models import TenderShortlist
+    from app.core.models import GeBizActivity
     from app.core.models import VendorSector
     from app.services.tender_service import _CATEGORY_TO_SECTOR
     from datetime import datetime
@@ -6005,9 +6005,9 @@ def scrape_vendor_contacts_batch(model: str = "marketplace", limit: int = 50):
     db = SessionLocal()
     try:
         if model == "marketplace":
-            from app.core.models_v10 import MarketplaceVendor as Model
+            from app.core.models import MarketplaceVendor as Model
         else:
-            from app.core.models_v10 import DiscoveredVendor as Model
+            from app.core.models import DiscoveredVendor as Model
 
         from sqlalchemy import or_
 
@@ -6062,7 +6062,7 @@ def cleanup_old_tasks():
         # snapshot only ever reads the trailing 30 days
         # (get_search_impressions_30d), so 90 days is a generous margin while
         # keeping the table from growing unbounded.
-        from app.core.models_v10 import SearchImpression
+        from app.core.models import SearchImpression
 
         impression_cutoff = datetime.now(timezone.utc) - timedelta(days=90)
         deleted_impressions = (
@@ -6203,7 +6203,7 @@ def send_weekly_vendor_scores():
     Non-fatal — individual email failures are logged and skipped.
     """
     from app.core.models import User
-    from app.core.models_v6 import VendorScore
+    from app.core.models import VendorScore
 
     db = SessionLocal()
     sent = 0
@@ -6336,7 +6336,7 @@ def send_gebiz_alert_newsletter():
     Non-fatal — individual email failures are logged and skipped.
     """
     from app.core.models import User
-    from app.core.models_gebiz import GebizTender
+    from app.core.models import GebizTender
     from datetime import timedelta
 
     db = SessionLocal()
@@ -6460,9 +6460,9 @@ def send_tender_alerts():
     """
     from app.billing.enforcement import TENDER_INTELLIGENCE_PLAN_KEYS
     from app.core.models import User, Subscription as SubModel
-    from app.core.models_gebiz import GebizTender
-    from app.core.models_v6 import VendorSector
-    from app.core.models_v10 import VendorTenderAlertSent
+    from app.core.models import GebizTender
+    from app.core.models import VendorSector
+    from app.core.models import VendorTenderAlertSent
     from app.services.tender_service_bid_classifier import build_vendor_history, classify_tender
     from datetime import timedelta
     import asyncio as _asyncio
@@ -6587,7 +6587,7 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
     TENDER_INTELLIGENCE_PLAN_KEYS. Non-fatal — failures per recipient logged.
     """
     from app.core.models import User
-    from app.core.models_gebiz import GebizAwardHistory
+    from app.core.models import GebizAwardHistory
     from app.billing.enforcement import TENDER_INTELLIGENCE_PLAN_KEYS
     from sqlalchemy import func  # noqa: F401  (used elsewhere in this file via late binding)
     from datetime import timedelta
@@ -6910,8 +6910,8 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
         # ── BID/WATCH/PASS — Block A (once per run) ──────────────────────────
         # Fetching of live tenders has been moved to Block B (inside the
         # subscriber loop) to ensure strict per-subscriber sector filtering.
-        from app.core.models_gebiz import GebizTender
-        from app.core.models_v6 import VendorSector
+        from app.core.models import GebizTender
+        from app.core.models import VendorSector
         from app.services.tender_service_bid_classifier import (
             build_vendor_history,
             enrich_tender_digest_with_classifications,
@@ -7319,7 +7319,7 @@ def send_vendor_pro_daily_alerts():
     Runs at 00:00 UTC (08:00 SGT) via Celery Beat.
     """
     from app.core.models import User, Subscription as SubModel
-    from app.core.models_vendor_pro import TenderCheckLookup
+    from app.core.models import TenderCheckLookup
     from app.billing.enforcement import VENDOR_PRO_PLAN_KEYS  # noqa: F401
     from sqlalchemy import func
     from datetime import timedelta
@@ -7472,7 +7472,7 @@ def weekly_intelligence_brief():
     completed report, not just those with a VendorScore record.
     """
     from app.core.models import Report, User
-    from app.core.models_v6 import VendorScore
+    from app.core.models import VendorScore
     import asyncio as _asyncio
 
     db = SessionLocal()
@@ -7601,7 +7601,7 @@ def send_monthly_intake_refresh_task(self):
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     from app.core.db import SessionLocal as _SL
     from app.core.models import User, Report
-    from app.core.models_v12 import PendingRfpIntake
+    from app.core.models import PendingRfpIntake
     from app.core.cache import cache as _cache
     from app.services.email_service import EmailService
 
@@ -7862,7 +7862,7 @@ def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | 
     "13 domains initialised" with nothing to show.
     """
     from app.core.models import User
-    from app.core.models_enterprise import Organisation, TrmControl, MAS_TRM_DOMAINS
+    from app.core.models import Organisation, TrmControl, MAS_TRM_DOMAINS
     from app.services.trm_baseline_generator import generate_trm_baseline_pdf
     from app.services.storage import S3Service
     from app.services.email_service import EmailService
@@ -7929,7 +7929,7 @@ def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | 
         # "Active" = live entitlement; "Ready" = provisioned, awaiting one-time
         # buyer setup at the linked page (kept honest — we don't claim SSO is
         # configured when it needs the buyer's IdP details).
-        from app.core.models_v8 import ENTERPRISE_NOTARIZATION_LIMITS
+        from app.core.models import ENTERPRISE_NOTARIZATION_LIMITS
         _notar = ENTERPRISE_NOTARIZATION_LIMITS.get(plan, 50)
         provisioning = [
             {"capability": "MAS TRM workspace (13 domains)", "status": "Active",
@@ -8008,7 +8008,7 @@ def run_trm_board_report_for_user(self, user_id: str, override_company: str | No
     each run. PDF is delivered as a direct email attachment.
     """
     from app.core.models import Report, User
-    from app.core.models_enterprise import (
+    from app.core.models import (
         MAS_TRM_DOMAINS, Organisation, TrmControl, WhiteLabelConfig,
     )
     from app.services.trm_board_report_generator import (
@@ -8185,7 +8185,7 @@ def fulfill_evidence_pack_task(self, evidence_pack_id: str):
     import hashlib
     from datetime import datetime as _dt, timezone as _tz
     from app.core.models import User
-    from app.core.models_v13 import EvidencePack
+    from app.core.models import EvidencePack
     from app.services.evidence_pack import generate_evidence_pack, build_single_pdf, DOC_META
     from app.services.storage import S3Service
     from app.services.blockchain import BlockchainService
@@ -8490,7 +8490,7 @@ def anchor_scan_ledger_task(self, ledger_id: str):
     verification log. Computes a SHA-256 over the ledger fields, anchors it,
     and stores tx_hash/anchored_at on the row. Non-blocking; tolerant of a
     not-yet-committed row (retries) and of missing blockchain config (no-op)."""
-    from app.core.models_v8 import VendorScanLedger
+    from app.core.models import VendorScanLedger
     from datetime import datetime as _dt, timezone as _tz
 
     if not getattr(settings, "BLOCKCHAIN_PRIVATE_KEY", None):
@@ -8555,7 +8555,7 @@ def bulk_pdpa_scan_item_task(self, item_id: str):
     is run_free_scan() — HTTP-only, no AI/S3/blockchain — so the only shared
     resource each task touches is one short-lived DB session per phase.
     """
-    from app.core.models_v12 import PdpaBulkScanItem
+    from app.core.models import PdpaBulkScanItem
     from app.services.pdpa_free_scan_service import run_free_scan
     from datetime import datetime as _bulk_dt
 

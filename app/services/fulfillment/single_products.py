@@ -17,7 +17,7 @@ from app.services.fulfillment.single_products import _defer_rfp_to_intake
 
 from app.services.email_service import EmailService
 from app.billing.enforcement import enforce_tier
-from app.core.models_v10 import Referral
+from app.core.models import Referral
 from datetime import datetime, timedelta, timezone
 import stripe
 import logging
@@ -168,7 +168,7 @@ async def _defer_rfp_to_intake(
             notify_customer=False,
         )
         return None
-    from app.core.models_v12 import PendingRfpIntake
+    from app.core.models import PendingRfpIntake
 
     db = SessionLocal()
     intake_id: str | None = None
@@ -471,7 +471,7 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
         try:
             from app.services.notarization_elevation import create_or_update_elevation
             from app.core.models import User
-            from app.core.models_v6 import VerifyRecord, Proof
+            from app.core.models import VerifyRecord, Proof
 
             # Resolve real user from contact_email (report.owner_id may be a random UUID
             # if the report was created via the public unauthenticated endpoint)
@@ -528,7 +528,7 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
             # Sync VerifyRecord.verification_level to match the new depth so the
             # compliance score weight (1.0×BASIC → 1.1×STANDARD) updates correctly.
             try:
-                from app.core.models_v6 import (
+                from app.core.models import (
                     VerifyRecord as _VR,
                     VerificationLevel as _VL,
                 )
@@ -792,7 +792,7 @@ async def _handle_blocked_rfp(
     to intake to supply the missing facts (status -> needs_more_info), email them
     the exact fields to complete, and alert ops. No kit is delivered or cached.
     """
-    from app.core.models_v12 import PendingRfpIntake
+    from app.core.models import PendingRfpIntake
 
     intake_id = None
     try:
@@ -897,14 +897,14 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
     """
     db = SessionLocal()
     try:
-        from app.core.models_v6 import (
+        from app.core.models import (
             VerifyRecord,
             LifecycleStatus,
             VerificationLevel,
             VendorScore,
             VendorSector,
         )
-        from app.core.models_v8 import VendorStatusSnapshot
+        from app.core.models import VendorStatusSnapshot
 
         report = db.query(Report).filter(Report.id == report_id).first()
         if not report:
@@ -993,7 +993,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         _uen = (report.assessment_data or {}).get("uen")
         if _uen:
             try:
-                from app.core.models_v10 import DiscoveredVendor
+                from app.core.models import DiscoveredVendor
 
                 _dv = (
                     db.query(DiscoveredVendor)
@@ -1513,7 +1513,7 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
 
         # ── Step 5: Write CertificateLog ────────────────────────────────────
         try:
-            from app.core.models_v10 import CertificateLog
+            from app.core.models import CertificateLog
 
             cert = CertificateLog(
                 vendor_id=report.owner_id,

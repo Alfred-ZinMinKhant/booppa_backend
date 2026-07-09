@@ -20,9 +20,9 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 from sqlalchemy.orm import Session
 
-from app.core.models_v10 import TenderShortlist
-from app.core.models_v8 import VendorStatusSnapshot
-from app.core.models_gebiz import GebizTender
+from app.core.models import TenderShortlist
+from app.core.models import VendorStatusSnapshot
+from app.core.models import GebizTender
 
 # Map GeBIZ RSS category strings to normalised sector labels
 _CATEGORY_TO_SECTOR: dict[str, str] = {
@@ -318,7 +318,7 @@ def compute_tender_win_probability(
     # immediately on vendor-proof purchase, so they are the authoritative count.
     if vendor_id and evidence_count == 0:
         try:
-            from app.core.models_v6 import VerifyRecord, Proof
+            from app.core.models import VerifyRecord, Proof
             verify = db.query(VerifyRecord).filter(
                 VerifyRecord.vendor_id == vendor_id
             ).first()
@@ -501,7 +501,7 @@ def _vendor_typical_award_value(db: Session, vendor_id: Optional[str]) -> Option
         return None
     try:
         from app.core.models import User
-        from app.core.models_gebiz import GebizAwardHistory
+        from app.core.models import GebizAwardHistory
         from sqlalchemy import func
 
         user = db.query(User).filter(User.id == vendor_id).first()

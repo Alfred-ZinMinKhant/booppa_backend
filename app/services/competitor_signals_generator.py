@@ -42,7 +42,7 @@ def _sector_for_vendor(db, vendor_id: str) -> str:
         # importing it from app.core.models raised ImportError, which the except
         # swallowed, so this always returned the "IT" fallback (competitor intel
         # then matched nothing and rendered empty). Import from the real module.
-        from app.core.models_v6 import VendorSector
+        from app.core.models import VendorSector
         row = db.query(VendorSector).filter(VendorSector.vendor_id == vendor_id).first()
         return (row.sector or "IT").upper() if row else "IT"
     except Exception as e:
@@ -57,7 +57,7 @@ def _get_signals(db, sector: str, days: int = 90) -> dict:
     Safe to call even if the table is empty — returns sensible defaults.
     """
     from sqlalchemy import func
-    from app.core.models_gebiz import GebizAwardHistory
+    from app.core.models import GebizAwardHistory
 
     rows = []
     actual_days = days

@@ -29,7 +29,7 @@ from app.core.models import (
     VerifyRecord, ProofView, ActivityLog,
     VendorSector, VendorScore, GovernanceRecord,
 )
-from app.core.models_v8 import VendorStatusSnapshot, ScoreSnapshot, AnomalyEvent
+from app.core.models import VendorStatusSnapshot, ScoreSnapshot, AnomalyEvent
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ def compute_verification_depth(db: Session, vendor_id: str) -> str:
     doc_count = db.query(Proof).filter(Proof.verify_id == record.id).count()
 
     # Check for open HIGH/CRITICAL anomalies (blocks CERTIFIED)
-    from app.core.models_v8 import AnomalyEvent
+    from app.core.models import AnomalyEvent
     has_high_anomaly = db.query(AnomalyEvent).filter(
         AnomalyEvent.vendor_id == vendor_id,
         AnomalyEvent.status == "OPEN",

@@ -103,7 +103,7 @@ def is_feature_enabled(flag_name: str) -> bool:
 
     # 3. Check DB as last resort
     try:
-        from app.core.models_v10 import FeatureFlag
+        from app.core.models import FeatureFlag
         db = SessionLocal()
         try:
             flag = db.query(FeatureFlag).filter(FeatureFlag.flag_name == flag_name).first()
@@ -128,7 +128,7 @@ def set_feature_flag(flag_name: str, enabled: bool, enabled_by: str = "manual"):
 
     # Persist to DB
     try:
-        from app.core.models_v10 import FeatureFlag
+        from app.core.models import FeatureFlag
         db = SessionLocal()
         try:
             flag = db.query(FeatureFlag).filter(FeatureFlag.flag_name == flag_name).first()
@@ -172,9 +172,9 @@ def get_growth_metrics(db: Session) -> dict:
     """Gather current growth metrics. Each query is isolated so a single
     missing table/column doesn't 500 the whole endpoint."""
     from app.core.models import User
-    from app.core.models_v6 import VerifyRecord
-    from app.core.models_v8 import EvidencePackage, RfpRequirement
-    from app.core.models_v10 import MarketplaceVendor, CertificateLog
+    from app.core.models import VerifyRecord
+    from app.core.models import EvidencePackage, RfpRequirement
+    from app.core.models import MarketplaceVendor, CertificateLog
 
     def _safe(q):
         try:

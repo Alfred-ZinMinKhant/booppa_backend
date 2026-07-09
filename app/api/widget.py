@@ -9,8 +9,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.models import User
-from app.core.models_v6 import VerifyRecord, VendorScore
-from app.core.models_v8 import VendorStatusSnapshot
+from app.core.models import VerifyRecord, VendorScore
+from app.core.models import VendorStatusSnapshot
 
 router = APIRouter()
 

@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db, get_current_user
 from app.core.models import User
-from app.core.models_vendor_pro import TenderCheckLookup
+from app.core.models import TenderCheckLookup
 from app.billing.enforcement import VENDOR_PRO_PLAN_KEYS
 from app.services.tender_similarity import find_similar_tenders
 
@@ -177,7 +177,7 @@ def vendor_pro_me(
 ):
     """Snapshot for the Vendor Pro dashboard widget: notarization quota,
     last/next PDPA scan dates, opt-out state, recent signal count."""
-    from app.core.models_v8 import NotarizationCredit, ENTERPRISE_NOTARIZATION_LIMITS
+    from app.core.models import NotarizationCredit, ENTERPRISE_NOTARIZATION_LIMITS
 
     month_key = datetime.now(timezone.utc).strftime("%Y-%m")
     nc = (

@@ -32,7 +32,7 @@ CERT_EXPIRY_WARN_DAYS = 30    # warn when a supplier's cert lapses within this w
 def get_buyer_org_ids(db, user_id: str) -> list[str]:
     """Every organisation the buyer belongs to (member or owner). [] when none."""
     try:
-        from app.core.models_enterprise import Organisation, OrganisationMember
+        from app.core.models import Organisation, OrganisationMember
 
         ids: set[str] = set()
         for m in (
@@ -61,7 +61,7 @@ def _resolve_watchlist_vendor_user(db, vendor_ref: str) -> str | None:
     score/status only exist once that marketplace profile is claimed by a User.
     """
     try:
-        from app.core.models_v10 import MarketplaceVendor
+        from app.core.models import MarketplaceVendor
 
         mv = (
             db.query(MarketplaceVendor)
@@ -77,8 +77,8 @@ def _resolve_watchlist_vendor_user(db, vendor_ref: str) -> str | None:
 
 def _supplier_status(db, vendor_user_id: str) -> dict:
     """Current status/score snapshot for a resolved vendor User. Best-effort."""
-    from app.core.models_v6 import VendorScore
-    from app.core.models_v8 import VendorStatusSnapshot
+    from app.core.models import VendorScore
+    from app.core.models import VendorStatusSnapshot
     from app.services.vendor_active_insights import get_score_trend
 
     out: dict = {
@@ -124,7 +124,7 @@ def get_supplier_cert_expiry(db, vendor_user_id: str):
     buyer is relying on. Best-effort; returns None on any gap.
     """
     try:
-        from app.core.models_v6 import VerifyRecord
+        from app.core.models import VerifyRecord
 
         rec = (
             db.query(VerifyRecord)
@@ -237,8 +237,8 @@ def get_watchlist_sectors(db, user_id: str) -> dict[str, list[str]]:
     """
     out: dict[str, list[str]] = {}
     try:
-        from app.core.models_enterprise import VendorWatchlistItem
-        from app.core.models_v6 import VendorSector
+        from app.core.models import VendorWatchlistItem
+        from app.core.models import VendorSector
 
         org_ids = get_buyer_org_ids(db, user_id)
         if not org_ids:
@@ -280,7 +280,7 @@ def get_watched_suppliers_with_status(db, user_id: str, limit: int = 50) -> list
     Ordered so alerting suppliers (FLAGGED/CRITICAL) surface first.
     """
     try:
-        from app.core.models_enterprise import VendorWatchlistItem
+        from app.core.models import VendorWatchlistItem
 
         org_ids = get_buyer_org_ids(db, user_id)
         if not org_ids:

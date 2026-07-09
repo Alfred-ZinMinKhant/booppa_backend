@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db, get_current_user
 from app.core.models import Report, User
-from app.core.models_v8 import FindingRemediation
+from app.core.models import FindingRemediation
 from app.services.finding_keys import (
     extract_finding_keys,
     is_key_present,

@@ -36,8 +36,8 @@ from app.core.models import (
     User, VendorScore, VerifyRecord, VendorSector,
     EnterpriseProfile, GovernanceRecord, ActivityLog,
 )
-from app.core.models_v10 import MarketplaceVendor
-from app.core.models_v8 import (
+from app.core.models import MarketplaceVendor
+from app.core.models import (
     VendorStatusSnapshot, ScoreSnapshot, NotarizationMetadata,
 )
 from app.services.vendor_status import get_vendor_status
@@ -100,8 +100,8 @@ def _predict_downgrade_risk(risk_score: float, stability: float, volatility: flo
 def _buyer_has_active_framework(db, current_user) -> bool:
     """Cheap check: does the buyer have a non-DEFAULT scoring framework in play?
     Lets the /vendors fast path stay pure-SQL when no framework is configured."""
-    from app.core.models_enterprise import Organisation
-    from app.core.models_v12 import VendorEvaluationFramework
+    from app.core.models import Organisation
+    from app.core.models import VendorEvaluationFramework
 
     org = db.query(Organisation).filter(Organisation.owner_user_id == current_user.id).first()
     if not org:
@@ -132,8 +132,8 @@ def _buyer_weight_map(db, current_user, vendor_ids):
     {vendor_id_str: weights_dict} map so the caller can re-rank from the stored
     component scores. Bounded to ~3 queries regardless of vendor count.
     """
-    from app.core.models_enterprise import Organisation
-    from app.core.models_v12 import VendorEvaluationFramework
+    from app.core.models import Organisation
+    from app.core.models import VendorEvaluationFramework
     from app.services.scoring import VendorScoreEngine
 
     org = db.query(Organisation).filter(Organisation.owner_user_id == current_user.id).first()
@@ -600,8 +600,8 @@ async def procurement_vendor_evidence(
         db.commit()
 
     from app.core.models import Report
-    from app.core.models_v10 import CertificateLog
-    from app.core.models_v8 import NotarizationMetadata, ComplianceDriftEvent
+    from app.core.models import CertificateLog
+    from app.core.models import NotarizationMetadata, ComplianceDriftEvent
 
     # ── Blockchain anchors (every Report with a tx_hash) ─────────────────────
     anchored_reports = (
@@ -951,7 +951,7 @@ _WEIGHT_KEYS = ("COMPLIANCE", "VISIBILITY", "ENGAGEMENT", "RECENCY", "PROCUREMEN
 
 def _ensure_builtin_frameworks(db: Session, org_id) -> None:
     """Seed DEFAULT/MAS_TRM/MOH templates for an org if not already present."""
-    from app.core.models_v12 import VendorEvaluationFramework
+    from app.core.models import VendorEvaluationFramework
 
     existing = {
         f.framework_type
@@ -1029,7 +1029,7 @@ async def list_frameworks(db: Session = Depends(get_db), current_user=Depends(ge
 
     org = _get_or_create_org(db, current_user)
     _ensure_builtin_frameworks(db, org.id)
-    from app.core.models_v12 import VendorEvaluationFramework
+    from app.core.models import VendorEvaluationFramework
 
     rows = (
         db.query(VendorEvaluationFramework)
@@ -1059,7 +1059,7 @@ async def create_framework(body: FrameworkCreate, db: Session = Depends(get_db),
     w = body.weights.model_dump()
     _validate_weights_sum(w)
     from app.api.vendor_features import _get_or_create_org
-    from app.core.models_v12 import VendorEvaluationFramework
+    from app.core.models import VendorEvaluationFramework
 
     org = _get_or_create_org(db, current_user)
     fw = VendorEvaluationFramework(
@@ -1094,7 +1094,7 @@ async def update_framework(framework_id: str, body: FrameworkPatch, db: Session 
     if role != "ADMIN" and not can_customise_frameworks(plan):
         raise HTTPException(status_code=403, detail="Editing scoring frameworks requires Buyer Professional or higher.")
     from app.api.vendor_features import _get_or_create_org
-    from app.core.models_v12 import VendorEvaluationFramework
+    from app.core.models import VendorEvaluationFramework
 
     org = _get_or_create_org(db, current_user)
     fw = (
@@ -1128,7 +1128,7 @@ async def activate_framework(framework_id: str, db: Session = Depends(get_db), c
     the Enterprise tier (multiple frameworks); a single custom profile is Pro+."""
     _require_procurement(current_user)
     from app.api.vendor_features import _get_or_create_org
-    from app.core.models_v12 import VendorEvaluationFramework
+    from app.core.models import VendorEvaluationFramework
 
     org = _get_or_create_org(db, current_user)
     fw = (
@@ -1170,7 +1170,7 @@ async def scan_verification_log(
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found.")
 
-    from app.core.models_v8 import VendorScanLedger
+    from app.core.models import VendorScanLedger
     from app.core.config import settings as _settings
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=30 * months)

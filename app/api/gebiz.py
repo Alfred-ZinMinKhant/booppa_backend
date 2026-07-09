@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.models_gebiz import GebizTender
+from app.core.models import GebizTender
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

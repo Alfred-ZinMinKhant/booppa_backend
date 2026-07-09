@@ -20,7 +20,7 @@ from app.services.fulfillment.single_products import _defer_rfp_to_intake
 
 from app.services.email_service import EmailService
 from app.billing.enforcement import enforce_tier
-from app.core.models_v10 import Referral
+from app.core.models import Referral
 from datetime import datetime, timedelta, timezone
 import stripe
 import logging
@@ -240,7 +240,7 @@ _LEVEL_RANK = {"BASIC": 0, "STANDARD": 1, "PREMIUM": 2, "GOVERNMENT": 3}
             # intentionally omitted so the welcome email has no dead links.
             try:
                 from app.billing.enforcement import scan_limit_for, max_seats_for
-                from app.core.models_v8 import ENTERPRISE_NOTARIZATION_LIMITS
+                from app.core.models import ENTERPRISE_NOTARIZATION_LIMITS
 
                 labels = {
                     "buyer_starter": "Buyer Essentials",

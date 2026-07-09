@@ -282,7 +282,7 @@ def enforce_tier(
     is_pro_suite = plan_value in {"pro_suite", "pro_suite_monthly", "enterprise_pro", "enterprise_pro_monthly"}
     is_standard_suite = plan_value in {"standard_suite", "standard_suite_monthly"}
 
-    from app.core.models_v8 import ENTERPRISE_NOTARIZATION_LIMITS
+    from app.core.models import ENTERPRISE_NOTARIZATION_LIMITS
     notarization_quota = ENTERPRISE_NOTARIZATION_LIMITS.get(plan_value, 0) if paid else 0
 
     features = {

@@ -24,8 +24,8 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db, get_current_user
 from app.core.models import User
-from app.core.models_v12 import ApiKey
-from app.core.models_enterprise import (
+from app.core.models import ApiKey
+from app.core.models import (
     Organisation, OrganisationMember, WebhookEndpoint, WebhookDelivery, SsoConfig,
 )
 from app.billing.enforcement import enforce_tier
@@ -483,7 +483,7 @@ def trm_subsidiary_comparison(
             status_code=400,
             detail="Only the parent tenant can view the subsidiary comparison.",
         )
-    from app.core.models_enterprise import (
+    from app.core.models import (
         MAS_TRM_DOMAINS, Organisation, TrmControl,
     )
 
@@ -692,7 +692,7 @@ def _ensure_trm_controls(db: Session, org_id) -> int:
 
     Covers users who subscribed before the webhook fix in 2026-05.
     """
-    from app.core.models_enterprise import TrmControl as _TrmControl
+    from app.core.models import TrmControl as _TrmControl
     existing = db.query(_TrmControl).filter(_TrmControl.organisation_id == org_id).count()
     if existing > 0:
         return existing
@@ -815,7 +815,7 @@ def get_trm(
     current_user: User = Depends(get_current_user),
 ):
     """Return the user's 13 MAS TRM controls + a roll-up summary."""
-    from app.core.models_enterprise import TrmControl
+    from app.core.models import TrmControl
     # MAS TRM is part of the Standard/Pro Suite enterprise tier — gate on dashboard,
     # which is true for both suites.
     _require_feature(current_user, "dashboard", "MAS TRM dashboard")
@@ -834,7 +834,7 @@ def get_trm(
     rows = reorder_controls_by_sector(rows, getattr(org, "sector", None))
 
     # Evidence counts per control (single grouped query, avoids N+1).
-    from app.core.models_enterprise import TrmEvidence
+    from app.core.models import TrmEvidence
     from sqlalchemy import func as _func
     _ev_counts = dict(
         db.query(TrmEvidence.control_id, _func.count(TrmEvidence.id))
@@ -885,7 +885,7 @@ def update_trm_control(
     current_user: User = Depends(get_current_user),
 ):
     import uuid as _uuid
-    from app.core.models_enterprise import TrmControl
+    from app.core.models import TrmControl
     _require_feature(current_user, "dashboard", "MAS TRM dashboard")
     try:
         cid = _uuid.UUID(control_id)
@@ -926,7 +926,7 @@ async def run_trm_gap_analysis(
 ):
     """Run Claude haiku-4-5 gap analysis for a single control."""
     import uuid as _uuid
-    from app.core.models_enterprise import TrmControl
+    from app.core.models import TrmControl
     from app.trm_workflow_service import run_gap_analysis
     _require_feature(current_user, "ai_full", "AI gap analysis")
     try:
@@ -961,7 +961,7 @@ _TRM_EVIDENCE_MAX_BYTES = 50 * 1024 * 1024  # 50 MB, matches notarize.py
 def _owned_trm_control(db: Session, user: User, control_id: str):
     """Resolve a TrmControl scoped to the caller's org, or raise 404/422."""
     import uuid as _uuid
-    from app.core.models_enterprise import TrmControl
+    from app.core.models import TrmControl
     try:
         cid = _uuid.UUID(control_id)
     except ValueError:
@@ -985,7 +985,7 @@ async def upload_trm_evidence(
     current_user: User = Depends(get_current_user),
 ):
     """Attach an evidence file to a TRM control: validate → S3 → hash → row."""
-    from app.core.models_enterprise import TrmEvidence
+    from app.core.models import TrmEvidence
     from app.services.storage import S3Service
 
     _require_feature(current_user, "dashboard", "MAS TRM dashboard")
@@ -1036,7 +1036,7 @@ def list_trm_evidence(
     current_user: User = Depends(get_current_user),
 ):
     """List evidence files for a control, with short-lived download URLs."""
-    from app.core.models_enterprise import TrmEvidence
+    from app.core.models import TrmEvidence
     from app.services.storage import S3Service
 
     _require_feature(current_user, "dashboard", "MAS TRM dashboard")
@@ -1084,7 +1084,7 @@ def delete_trm_evidence(
 ):
     """Remove an evidence file (DB row + S3 object)."""
     import uuid as _uuid
-    from app.core.models_enterprise import TrmEvidence
+    from app.core.models import TrmEvidence
     from app.services.storage import S3Service
 
     _require_feature(current_user, "dashboard", "MAS TRM dashboard")

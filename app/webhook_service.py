@@ -13,7 +13,7 @@ from typing import Any, Dict
 import httpx
 from sqlalchemy.orm import Session
 
-from app.core.models_enterprise import WebhookDelivery, WebhookEndpoint
+from app.core.models import WebhookDelivery, WebhookEndpoint
 
 logger = logging.getLogger(__name__)
 

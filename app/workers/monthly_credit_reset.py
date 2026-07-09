@@ -17,7 +17,7 @@ from app.core.db import SessionLocal
 @celery_app.task(name="reset_monthly_notarization_credits")
 def reset_monthly_notarization_credits():
     from app.core.models import User
-    from app.core.models_v8 import NotarizationCredit, ENTERPRISE_NOTARIZATION_LIMITS
+    from app.core.models import NotarizationCredit, ENTERPRISE_NOTARIZATION_LIMITS
 
     current_month = datetime.now(timezone.utc).strftime("%Y-%m")
     eligible_plans = set(ENTERPRISE_NOTARIZATION_LIMITS.keys())

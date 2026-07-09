@@ -364,7 +364,7 @@ async def execute_import(
         auto_screen:  If True, run sanctions screening on each client name
     """
     import uuid as uuid_mod
-    from app.core.models_csp import CspClient
+    from app.core.models import CspClient
 
     valid_rows = [r for r in rows if r.is_valid]
     created_ids = []

@@ -28,9 +28,9 @@ def _log_tender_check_lookup(db: Session, tender_no: str, vendor_id: Optional[st
     competitor-awareness signal. Respects per-user opt-out and swallows
     errors so a logging failure never breaks the user-facing call."""
     try:
-        from app.core.models_vendor_pro import TenderCheckLookup
+        from app.core.models import TenderCheckLookup
         from app.core.models import User
-        from app.core.models_v6 import VerifyRecord  # type: ignore
+        from app.core.models import VerifyRecord  # type: ignore
 
         is_verified = False
         opted_out = False
@@ -128,8 +128,8 @@ def claim_profile(body: ClaimProfileRequest, db: Session = Depends(get_db)):
     gets personalised tender probability without full registration.
     """
     from app.core.models import User
-    from app.core.models_v8 import VendorStatusSnapshot
-    from app.core.models_v6 import LeadCapture
+    from app.core.models import VendorStatusSnapshot
+    from app.core.models import LeadCapture
     from app.core.auth import get_password_hash
 
     # Check if user already exists with this email

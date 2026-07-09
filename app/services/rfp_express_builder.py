@@ -429,7 +429,7 @@ class RFPExpressBuilder:
             return ctx
         try:
             from app.core.models import User, VendorScore
-            from app.core.models_v6 import VendorSector
+            from app.core.models import VendorSector
             import re as _re
             # vendor_id may be an email (for anonymous/no-account purchases) or a UUID
             if _re.match(r'^[0-9a-f-]{36}$', self.vendor_id or '', _re.IGNORECASE):
@@ -462,7 +462,7 @@ class RFPExpressBuilder:
             uen_to_check = ctx.get("uen") or (intake.get("uen") if intake else None)
             if uen_to_check:
                 try:
-                    from app.core.models_v10 import MarketplaceVendor
+                    from app.core.models import MarketplaceVendor
                     acra_row = db.query(MarketplaceVendor).filter(
                         MarketplaceVendor.uen == uen_to_check
                     ).first()
@@ -477,7 +477,7 @@ class RFPExpressBuilder:
 
             # Audit fix D: GeBIZ supplier history
             try:
-                from app.core.models_v10 import DiscoveredVendor
+                from app.core.models import DiscoveredVendor
                 disc = db.query(DiscoveredVendor).filter(
                     DiscoveredVendor.uen == uen_to_check
                 ).first()
@@ -1921,7 +1921,7 @@ class RFPExpressBuilder:
         if not _re.match(r'^[0-9a-f-]{36}$', self.vendor_id or '', _re.IGNORECASE):
             return
         try:
-            from app.core.models_v10 import CertificateLog
+            from app.core.models import CertificateLog
             import uuid as _uuid
             # Use the real S3 key set by _upload_pdf so downstream readers can
             # presign the URL. Falls back to the (legacy, wrong) express path

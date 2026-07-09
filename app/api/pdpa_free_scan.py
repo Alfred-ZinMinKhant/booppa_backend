@@ -56,7 +56,7 @@ def pdpa_free_scan(body: FreeScanRequest, request: Request, db: Session = Depend
     # Save lead if email provided
     if body.email:
         try:
-            from app.core.models_v6 import LeadCapture
+            from app.core.models import LeadCapture
             lead = LeadCapture(
                 id=uuid.uuid4(),
                 email=body.email,

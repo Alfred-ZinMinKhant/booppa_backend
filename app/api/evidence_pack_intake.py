@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.core.auth import verify_access_token
 from app.core.db import get_db
 from app.core.models import User
-from app.core.models_v13 import EvidencePack
+from app.core.models import EvidencePack
 
 logger = logging.getLogger(__name__)
 

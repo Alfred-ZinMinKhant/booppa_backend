@@ -21,9 +21,9 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db, get_current_user
 from app.core.models import User
-from app.core.models_gebiz import GebizAwardHistory, GebizTender
-from app.core.models_v6 import VendorSector
-from app.core.models_v10 import TenderShortlist, VendorTenderIntent
+from app.core.models import GebizAwardHistory, GebizTender
+from app.core.models import VendorSector
+from app.core.models import TenderShortlist, VendorTenderIntent
 from app.billing.enforcement import TENDER_INTELLIGENCE_PLAN_KEYS, TENDER_LITE_PLAN_KEYS
 from app.services.tender_service import compute_tender_win_probability
 from app.services.tender_service_bid_classifier import (

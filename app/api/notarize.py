@@ -209,7 +209,7 @@ def _check_enterprise_credits(db, user_id: str, plan: str) -> dict:
     Check if an enterprise user has notarization credits remaining this month.
     Returns {"has_credits": bool, "used": int, "limit": int, "month": str}.
     """
-    from app.core.models_v8 import NotarizationCredit, ENTERPRISE_NOTARIZATION_LIMITS
+    from app.core.models import NotarizationCredit, ENTERPRISE_NOTARIZATION_LIMITS
 
     monthly_limit = ENTERPRISE_NOTARIZATION_LIMITS.get(plan)
     if monthly_limit is None:
@@ -234,7 +234,7 @@ def _check_enterprise_credits(db, user_id: str, plan: str) -> dict:
 
 def _consume_credit(db, user_id: str, plan: str) -> None:
     """Increment the used count for this user's current month. Creates row if needed."""
-    from app.core.models_v8 import NotarizationCredit, ENTERPRISE_NOTARIZATION_LIMITS
+    from app.core.models import NotarizationCredit, ENTERPRISE_NOTARIZATION_LIMITS
 
     current_month = datetime.now(timezone.utc).strftime("%Y-%m")
     monthly_limit = ENTERPRISE_NOTARIZATION_LIMITS.get(plan, 0)
@@ -293,7 +293,7 @@ async def enterprise_upload_document(
             raise HTTPException(status_code=404, detail="User not found.")
 
         plan = getattr(user, "plan", "free") or "free"
-        from app.core.models_v8 import ENTERPRISE_NOTARIZATION_LIMITS
+        from app.core.models import ENTERPRISE_NOTARIZATION_LIMITS
         if plan not in ENTERPRISE_NOTARIZATION_LIMITS:
             raise HTTPException(status_code=403, detail="A plan with included monthly notarizations is required.")
 
@@ -623,7 +623,7 @@ async def get_enterprise_credits(email: str):
             raise HTTPException(status_code=404, detail="User not found.")
 
         plan = getattr(user, "plan", "free") or "free"
-        from app.core.models_v8 import ENTERPRISE_NOTARIZATION_LIMITS
+        from app.core.models import ENTERPRISE_NOTARIZATION_LIMITS
         if plan not in ENTERPRISE_NOTARIZATION_LIMITS:
             return {"has_credits": False, "used": 0, "limit": 0, "plan": plan, "enterprise": False}
 

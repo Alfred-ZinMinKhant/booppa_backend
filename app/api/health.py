@@ -27,9 +27,14 @@ async def health_check():
 
     # Check Redis
     try:
-        r = redis.from_url(settings.REDIS_URL)
-        r.ping()
-        health_status["services"]["redis"] = "healthy"
+        from app.core.cache.cache import get_redis_client
+        r = get_redis_client()
+        if r:
+            r.ping()
+            health_status["services"]["redis"] = "healthy"
+        else:
+            health_status["services"]["redis"] = "unhealthy: no connection pool"
+            health_status["status"] = "degraded"
     except Exception as e:
         health_status["services"]["redis"] = f"unhealthy: {str(e)}"
         health_status["status"] = "degraded"

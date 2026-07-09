@@ -60,7 +60,7 @@ async def dashboard(
     vendor_id = current_user.id
 
     # ── 1. Trust score ────────────────────────────────────────────────────────
-    from app.core.models_v6 import VendorScore, VerifyRecord, ProofView, GovernanceRecord, VerificationLevel
+    from app.core.models import VendorScore, VerifyRecord, ProofView, GovernanceRecord, VerificationLevel
     from app.services.scoring import VendorScoreEngine
 
     score_row = db.query(VendorScore).filter(VendorScore.vendor_id == vendor_id).first()
@@ -168,7 +168,7 @@ async def dashboard(
             })
 
     # ── 3. Active procurements — open GeBIZ tenders in vendor's sector ───────
-    from app.core.models_gebiz import GebizTender
+    from app.core.models import GebizTender
     from app.core.models import VendorSector
 
     vendor_sector_row = db.query(VendorSector).filter(
@@ -207,7 +207,7 @@ async def dashboard(
                 active_procurements = category_matches
 
     # ── 4. Trust score delta (compare to previous ScoreSnapshot) ─────────────
-    from app.core.models_v8 import ScoreSnapshot
+    from app.core.models import ScoreSnapshot
     trust_score_delta = None
     snapshots = (
         db.query(ScoreSnapshot)

@@ -15,8 +15,8 @@ from app.services.leaderboard import (
     get_vendor_achievements, get_current_quarter,
 )
 from app.core.models import User
-from app.core.models_v6 import VendorScore, VendorSector
-from app.core.models_v8 import VendorStatusSnapshot
+from app.core.models import VendorScore, VendorSector
+from app.core.models import VendorStatusSnapshot
 
 router = APIRouter()
 

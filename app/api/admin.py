@@ -184,7 +184,7 @@ def create_tender(
     _auth: bool = Depends(_admin_auth),
 ) -> dict:
     """Create a single TenderShortlist entry."""
-    from app.core.models_v10 import TenderShortlist
+    from app.core.models import TenderShortlist
     db = SessionLocal()
     try:
         existing = db.query(TenderShortlist).filter(
@@ -207,7 +207,7 @@ def bulk_create_tenders(
     _auth: bool = Depends(_admin_auth),
 ) -> dict:
     """Upsert a list of tender entries (insert or update by tender_no)."""
-    from app.core.models_v10 import TenderShortlist
+    from app.core.models import TenderShortlist
     db = SessionLocal()
     inserted = 0
     updated  = 0
@@ -238,7 +238,7 @@ def list_tenders(
     _auth: bool = Depends(_admin_auth),
 ) -> dict:
     """List TenderShortlist entries with optional sector/agency filters."""
-    from app.core.models_v10 import TenderShortlist
+    from app.core.models import TenderShortlist
     db = SessionLocal()
     try:
         q = db.query(TenderShortlist)
@@ -274,7 +274,7 @@ def update_tender(
     _auth: bool = Depends(_admin_auth),
 ) -> dict:
     """Update a single TenderShortlist entry by UUID."""
-    from app.core.models_v10 import TenderShortlist
+    from app.core.models import TenderShortlist
     import uuid as _uuid
     db = SessionLocal()
     try:
@@ -342,7 +342,7 @@ def delete_tender(
     _auth: bool = Depends(_admin_auth),
 ):
     """Delete a TenderShortlist entry by UUID."""
-    from app.core.models_v10 import TenderShortlist
+    from app.core.models import TenderShortlist
     import uuid as _uuid
     db = SessionLocal()
     try:
@@ -394,9 +394,9 @@ def scrape_stats(
     """Get scraping coverage stats."""
     from sqlalchemy import func
     if model == "marketplace":
-        from app.core.models_v10 import MarketplaceVendor as Model
+        from app.core.models import MarketplaceVendor as Model
     else:
-        from app.core.models_v10 import DiscoveredVendor as Model
+        from app.core.models import DiscoveredVendor as Model
 
     db = SessionLocal()
     try:
@@ -631,7 +631,7 @@ def admin_list_vendors(
     offset: int = Query(0, ge=0),
     _auth: bool = Depends(_admin_auth),
 ) -> dict:
-    from app.core.models_v10 import MarketplaceVendor
+    from app.core.models import MarketplaceVendor
     db = SessionLocal()
     try:
         query = db.query(MarketplaceVendor)
@@ -649,7 +649,7 @@ def admin_list_vendors(
 
 @router.post("/vendors", status_code=201)
 def admin_create_vendor(body: VendorIn, _auth: bool = Depends(_admin_auth)) -> dict:
-    from app.core.models_v10 import MarketplaceVendor
+    from app.core.models import MarketplaceVendor
     db = SessionLocal()
     try:
         slug = body.slug
@@ -676,7 +676,7 @@ def admin_create_vendor(body: VendorIn, _auth: bool = Depends(_admin_auth)) -> d
 
 @router.put("/vendors/{vendor_id}")
 def admin_update_vendor(vendor_id: str, body: VendorIn, _auth: bool = Depends(_admin_auth)) -> dict:
-    from app.core.models_v10 import MarketplaceVendor
+    from app.core.models import MarketplaceVendor
     import uuid as _uuid
     db = SessionLocal()
     try:
@@ -698,7 +698,7 @@ def admin_update_vendor(vendor_id: str, body: VendorIn, _auth: bool = Depends(_a
 
 @router.delete("/vendors/{vendor_id}", status_code=204)
 def admin_delete_vendor(vendor_id: str, _auth: bool = Depends(_admin_auth)):
-    from app.core.models_v10 import MarketplaceVendor
+    from app.core.models import MarketplaceVendor
     import uuid as _uuid
     db = SessionLocal()
     try:
@@ -772,7 +772,7 @@ async def simulate_purchase(
         defer_rfp_to_intake,
     )
     from app.core.models import Report, Subscription
-    from app.core.models_v12 import PendingRfpIntake
+    from app.core.models import PendingRfpIntake
 
     product_type = body.product_type
     if product_type not in MODE_MAP:
@@ -908,7 +908,7 @@ async def simulate_purchase(
             # cover sheet) — surface its id so the test-checkout can link to the
             # generated pack at /evidence-pack-intake/{id}.
             if product_type == "compliance_evidence_pack":
-                from app.core.models_v13 import EvidencePack
+                from app.core.models import EvidencePack
 
                 ep = (
                     db.query(EvidencePack)
@@ -1103,7 +1103,7 @@ async def create_pdpa_bulk_scan(
     file: UploadFile = FastAPIFile(...),
     _auth: bool = Depends(_admin_auth),
 ) -> dict:
-    from app.core.models_v12 import PdpaBulkScanBatch, PdpaBulkScanItem
+    from app.core.models import PdpaBulkScanBatch, PdpaBulkScanItem
     from app.workers.tasks import bulk_pdpa_scan_item_task
 
     content = await file.read()
@@ -1143,7 +1143,7 @@ def get_pdpa_bulk_scan(
     _auth: bool = Depends(_admin_auth),
 ) -> dict:
     from sqlalchemy import func
-    from app.core.models_v12 import PdpaBulkScanBatch, PdpaBulkScanItem
+    from app.core.models import PdpaBulkScanBatch, PdpaBulkScanItem
 
     db = SessionLocal()
     try:
@@ -1202,7 +1202,7 @@ def export_pdpa_bulk_scan(
     import csv
     import io
     from fastapi.responses import StreamingResponse
-    from app.core.models_v12 import PdpaBulkScanBatch, PdpaBulkScanItem
+    from app.core.models import PdpaBulkScanBatch, PdpaBulkScanItem
 
     db = SessionLocal()
     try:

@@ -11,9 +11,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 
 from app.core.models import User
-from app.core.models_v6 import VendorScore, VendorSector
-from app.core.models_v8 import VendorStatusSnapshot
-from app.core.models_v10 import (
+from app.core.models import VendorScore, VendorSector
+from app.core.models import VendorStatusSnapshot
+from app.core.models import (
     QuarterlyLeaderboard, Achievement, ScoreMilestone, PrestigeSlot,
 )
 

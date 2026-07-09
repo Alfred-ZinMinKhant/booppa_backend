@@ -8,9 +8,9 @@ import logging
 from typing import Optional
 from sqlalchemy.orm import Session
 from app.core.models import User
-from app.core.models_v6 import VendorScore, VerifyRecord, VendorSector
-from app.core.models_v8 import VendorStatusSnapshot, ScoreSnapshot
-from app.core.models_v10 import MarketplaceVendor
+from app.core.models import VendorScore, VerifyRecord, VendorSector
+from app.core.models import VendorStatusSnapshot, ScoreSnapshot
+from app.core.models import MarketplaceVendor
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ def compare_vendors(db: Session, vendor_ids: list[str], buyer_user=None) -> dict
     buyer_org_id = None
     if buyer_user is not None:
         try:
-            from app.core.models_enterprise import Organisation
+            from app.core.models import Organisation
             org = db.query(Organisation).filter(
                 Organisation.owner_user_id == buyer_user.id
             ).first()

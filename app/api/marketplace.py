@@ -20,9 +20,9 @@ router = APIRouter()
 def marketplace_stats(db: Session = Depends(get_db)):
     """Public platform stats for government landing page."""
     from sqlalchemy import func
-    from app.core.models_v10 import MarketplaceVendor
-    from app.core.models_v6 import VerifyRecord, LifecycleStatus
-    from app.core.models_gebiz import GebizTender
+    from app.core.models import MarketplaceVendor
+    from app.core.models import VerifyRecord, LifecycleStatus
+    from app.core.models import GebizTender
     from datetime import datetime, timezone
 
     total_vendors = db.query(func.count(MarketplaceVendor.id)).scalar() or 0

@@ -39,8 +39,8 @@ def plan_label(user: User) -> str:
 
 
 def build_badge_certificate(db: Session, user: User, company_override: str | None = None) -> tuple[str, bytes]:
-    from app.core.models_v8 import VendorStatusSnapshot
-    from app.core.models_v6 import VendorScore
+    from app.core.models import VendorStatusSnapshot
+    from app.core.models import VendorScore
 
     snap = (
         db.query(VendorStatusSnapshot)
@@ -81,7 +81,7 @@ def build_badge_certificate(db: Session, user: User, company_override: str | Non
 
 def build_priority_placement(db: Session, user: User, company_override: str | None = None) -> tuple[str, bytes]:
     from app.core.models import VerifyRecord, ProofView
-    from app.core.models_v8 import VendorStatusSnapshot
+    from app.core.models import VendorStatusSnapshot
 
     thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
     verify = db.query(VerifyRecord).filter(VerifyRecord.vendor_id == user.id).first()
@@ -119,7 +119,7 @@ def _vendor_sectors(db: Session, vendor_id) -> list[str]:
 def build_bid_timing(db: Session, user: User, months_back: int = 12, company_override: str | None = None) -> tuple[str, bytes]:
     from sqlalchemy import func
 
-    from app.core.models_gebiz import GebizAwardHistory
+    from app.core.models import GebizAwardHistory
 
     since = (datetime.now(timezone.utc) - timedelta(days=30 * months_back)).date()
     q = (

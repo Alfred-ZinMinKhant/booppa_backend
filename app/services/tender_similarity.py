@@ -10,8 +10,8 @@ default and rank by additional dimensions matched.
 from typing import Optional
 from sqlalchemy.orm import Session
 
-from app.core.models_v10 import TenderShortlist
-from app.core.models_gebiz import GebizTender
+from app.core.models import TenderShortlist
+from app.core.models import GebizTender
 
 
 def _amount_band(amt: Optional[float]) -> str:

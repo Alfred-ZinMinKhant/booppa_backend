@@ -33,7 +33,7 @@ from fastapi import (
 )
 from fastapi.responses import Response
 
-from app.core.models_csp import (
+from app.core.models import (
     CspProfile, CspClient, CspCddRecord, CspEddRecord, CspStrReport,
     CspNomineeDirector, CspNomineeShareholder, CspBeneficialOwner,
     CspAmlProgramme, CspRiskAssessment, CspComplianceCalendar,
@@ -42,7 +42,7 @@ from app.core.models_csp import (
     RegistrationStatus, CddStatus, StrDecision, NomineeAssessment, TrainingStatus,
     RiskRating,
 )
-from app.core.models_csp import CspOrganisation, CspOrgMembership
+from app.core.models import CspOrganisation, CspOrgMembership
 from app.api.csp_schemas import (
     CspProfileCreate, CspClientCreate, CspClientUpdate,
     CddCreate, StrCreate, NomineeDirectorCreate, NomineeAssessmentUpdate,
@@ -396,7 +396,7 @@ def get_dashboard(current_user: dict = Depends(get_current_user), db=Depends(get
     aml_prog     = next((p for p in profile.aml_programme if p.is_current), None)
 
     # CDD/EDD records — separate query (not eager-loaded on the client relationship)
-    from app.core.models_csp import CspCddRecord, CspEddRecord, CspBeneficialOwner
+    from app.core.models import CspCddRecord, CspEddRecord, CspBeneficialOwner
     cdd_records = db.query(CspCddRecord).filter(CspCddRecord.csp_id == profile.id).all()
     edd_records = db.query(CspEddRecord).filter(CspEddRecord.csp_id == profile.id).all()
     ubos        = db.query(CspBeneficialOwner).filter(CspBeneficialOwner.csp_id == profile.id).all()
@@ -1049,7 +1049,7 @@ def create_ubo(
     profile = _get_profile(db, current_user)
     _get_client(db, client_id, current_user)
 
-    from app.core.models_csp import CspBeneficialOwner
+    from app.core.models import CspBeneficialOwner
     ubo = CspBeneficialOwner(
         csp_id=profile.id,
         next_review=_add_one_year(datetime.now(timezone.utc)),  # FIX: safe year increment
@@ -1086,7 +1086,7 @@ def create_ubo(
 @router.get("/clients/{client_id}/ubos", summary="List UBOs for a client")
 def list_ubos(client_id: uuid.UUID, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     _get_client(db, client_id, current_user)
-    from app.core.models_csp import CspBeneficialOwner
+    from app.core.models import CspBeneficialOwner
     ubos = db.query(CspBeneficialOwner).filter(CspBeneficialOwner.client_id == client_id).all()
     return [_serialize_ubo(u) for u in ubos]
 

@@ -28,7 +28,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.models import Report
-from app.core.models_v8 import ComplianceDriftEvent, FindingRemediation
+from app.core.models import ComplianceDriftEvent, FindingRemediation
 from app.services.finding_keys import extract_finding_keys, label_for_key
 
 # Frameworks that count as a "PDPA scan" for trend/history purposes.

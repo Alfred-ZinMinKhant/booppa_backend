@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any
 
 from sqlalchemy.orm import Session
 
-from app.core.models_enterprise import WhiteLabelConfig, SsoConfig
+from app.core.models import WhiteLabelConfig, SsoConfig
 
 logger = logging.getLogger(__name__)
 

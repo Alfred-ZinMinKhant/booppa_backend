@@ -33,7 +33,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.billing.enforcement import SCAN_TYPES, scan_limit_for
-from app.core.models_v8 import VendorScanLedger
+from app.core.models import VendorScanLedger
 
 logger = logging.getLogger(__name__)
 

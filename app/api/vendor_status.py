@@ -260,7 +260,7 @@ async def vendor_badge(
     Only available when VerifyRecord is ACTIVE.
     """
     from app.core.models import VerifyRecord, LifecycleStatus
-    from app.core.models_v10 import MarketplaceVendor
+    from app.core.models import MarketplaceVendor
     from app.core.config import settings
 
     verify = db.query(VerifyRecord).filter(
@@ -482,7 +482,7 @@ async def update_profile(
     # Propagate industry to MarketplaceVendor if linked
     if body.industry is not None:
         try:
-            from app.core.models_v10 import MarketplaceVendor
+            from app.core.models import MarketplaceVendor
             mv = db.query(MarketplaceVendor).filter(
                 MarketplaceVendor.claimed_by_user_id == user.id
             ).first()
@@ -506,7 +506,7 @@ async def vendor_subscription(
     """Return the vendor's current plan, unlocked features, and quota usage."""
     from datetime import datetime as _dt, timezone as _tz
     from app.billing.enforcement import enforce_tier
-    from app.core.models_v8 import NotarizationCredit, ENTERPRISE_NOTARIZATION_LIMITS
+    from app.core.models import NotarizationCredit, ENTERPRISE_NOTARIZATION_LIMITS
     from app.services.pricing import get_product
 
     plan_value = (getattr(current_user, "plan", "free") or "free").lower()

@@ -54,7 +54,7 @@ def _per_dimension_flips(
     Tier 4 was deployed). Never raises — falls back to empty on any error.
     """
     try:
-        from app.core.models_v8 import PdpaDimensionHistory
+        from app.core.models import PdpaDimensionHistory
         from app.services.pdpa_dimension_snapshot import diff_snapshots
 
         def _load(report_id):
@@ -101,7 +101,7 @@ def detect_drift_for_vendor(
     that overall averaging can hide).
     """
     from app.core.models import Report
-    from app.core.models_v8 import ComplianceDriftEvent
+    from app.core.models import ComplianceDriftEvent
 
     reports = (
         db.query(Report)

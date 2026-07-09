@@ -8,7 +8,7 @@ from app.services.booppa_ai_service import BooppaAIService
 from app.services.storage import S3Service
 from app.services.email_service import EmailService
 from app.billing.enforcement import enforce_tier
-from app.core.models_v10 import Referral
+from app.core.models import Referral
 from datetime import datetime, timedelta, timezone
 import stripe
 import logging
@@ -853,7 +853,7 @@ async def _stripe_webhook_impl(
                         # NOT evicted — only the next invite is gated.
                         try:
                             from app.billing.enforcement import max_seats_for
-                            from app.core.models_enterprise import Organisation as _Org
+                            from app.core.models import Organisation as _Org
 
                             new_cap = max_seats_for(user.plan)
                             owned_orgs = (
@@ -883,7 +883,7 @@ async def _stripe_webhook_impl(
                         # a flag flip after the customer re-subscribes).
                         try:
                             from app.billing.enforcement import PRO_SUITE_PLAN_KEYS
-                            from app.core.models_enterprise import (
+                            from app.core.models import (
                                 Organisation as _Org2,
                                 SsoConfig as _SsoCfg,
                             )

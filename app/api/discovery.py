@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from typing import Optional
 from sqlalchemy.orm import Session
 from app.core.db import get_db
-from app.core.models_v10 import DiscoveredVendor, MarketplaceVendor
+from app.core.models import DiscoveredVendor, MarketplaceVendor
 
 router = APIRouter()
 

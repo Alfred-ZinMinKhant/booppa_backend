@@ -20,7 +20,7 @@ import logging
 from typing import Any
 
 from app.core.config import settings
-from app.core.models_enterprise import Organisation, SsoConfig
+from app.core.models import Organisation, SsoConfig
 
 logger = logging.getLogger(__name__)
 

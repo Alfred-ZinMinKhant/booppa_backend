@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 from app.core.auth import verify_access_token
 from app.core.db import get_db
 from app.core.models import User
-from app.core.models_v12 import PendingRfpIntake
+from app.core.models import PendingRfpIntake
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token", auto_error=False)

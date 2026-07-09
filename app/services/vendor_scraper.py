@@ -22,7 +22,7 @@ from urllib.robotparser import RobotFileParser
 import httpx
 from sqlalchemy.orm import Session
 
-from app.core.models_v10 import MarketplaceVendor, DiscoveredVendor
+from app.core.models import MarketplaceVendor, DiscoveredVendor
 
 logger = logging.getLogger(__name__)
 

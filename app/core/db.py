@@ -83,7 +83,7 @@ async def get_current_user(
         import hashlib
         from datetime import datetime as _dt
         from app.core.models import User
-        from app.core.models_v12 import ApiKey
+        from app.core.models import ApiKey
 
         hashed = hashlib.sha256(token.encode("utf-8")).hexdigest()
         key = (

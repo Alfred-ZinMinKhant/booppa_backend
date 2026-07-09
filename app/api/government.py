@@ -31,10 +31,10 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.models import User
-from app.core.models_v6 import VendorScore, VendorSector
-from app.core.models_v8 import VendorStatusSnapshot
-from app.core.models_v10 import DiscoveredVendor, MarketplaceVendor
-from app.core.models_gebiz import GebizTender
+from app.core.models import VendorScore, VendorSector
+from app.core.models import VendorStatusSnapshot
+from app.core.models import DiscoveredVendor, MarketplaceVendor
+from app.core.models import GebizTender
 from app.core.auth import (
     authenticate_user, register_user,
     create_access_token, create_refresh_token,
@@ -336,7 +336,7 @@ def _mock_tenders() -> list:
 def get_stats(db: Session = Depends(get_db)):
     """Real counts for the landing page stats panel."""
     from datetime import timezone as _tz
-    from app.core.models_v6 import VerifyRecord
+    from app.core.models import VerifyRecord
 
     total_vendors = (
         db.query(User)
@@ -354,7 +354,7 @@ def get_stats(db: Session = Depends(get_db)):
     # Fall back to VerifyRecord count if no snapshots yet
     if verified_vendors == 0:
         try:
-            from app.core.models_v6 import LifecycleStatus
+            from app.core.models import LifecycleStatus
             verified_vendors = (
                 db.query(VerifyRecord)
                 .filter(VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE)
@@ -430,7 +430,7 @@ async def verify_vendor(body: VerifyRequest, db: Session = Depends(get_db)):
             })
             # Try to fetch blockchain anchor via CertificateLog
             try:
-                from app.core.models_v10 import CertificateLog
+                from app.core.models import CertificateLog
                 log = (
                     db.query(CertificateLog)
                     .filter(CertificateLog.vendor_id == user.id)
@@ -459,7 +459,7 @@ async def verify_vendor(body: VerifyRequest, db: Session = Depends(get_db)):
     # ── Look up by TX hash via CertificateLog ─────────────────────────────────
     elif body.hash:
         try:
-            from app.core.models_v10 import CertificateLog
+            from app.core.models import CertificateLog
             log = db.query(CertificateLog).filter(
                 CertificateLog.tx_hash == body.hash  # type: ignore[union-attr]
             ).first()
@@ -505,7 +505,7 @@ def generate_shortlist_report(body: ShortlistReportRequest, db: Session = Depend
     # Pre-fetch TX hashes for all vendor UENs
     tx_map: dict[str, str] = {}
     try:
-        from app.core.models_v10 import CertificateLog
+        from app.core.models import CertificateLog
         uens = [v.get("uen") for v in body.vendors if v.get("uen")]
         if uens:
             users = db.query(User).filter(User.uen.in_(uens)).all()  # type: ignore[union-attr]

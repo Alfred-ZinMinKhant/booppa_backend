@@ -73,7 +73,7 @@ def compute_sector_benchmark(
     if my_score is None:
         return None
     try:
-        from app.core.models_v6 import VendorScore, VendorSector
+        from app.core.models import VendorScore, VendorSector
 
         def _scores_for_sector(sec: str) -> List[int]:
             rows = (

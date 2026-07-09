@@ -9,7 +9,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.core.models_enterprise import TrmControl, MAS_TRM_DOMAINS
+from app.core.models import TrmControl, MAS_TRM_DOMAINS
 
 logger = logging.getLogger(__name__)
 

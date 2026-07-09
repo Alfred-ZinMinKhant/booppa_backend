@@ -28,7 +28,7 @@ def get_score_trend(db, vendor_id: str) -> dict | None:
     first cycle (only one snapshot exists).
     """
     try:
-        from app.core.models_v8 import ScoreSnapshot
+        from app.core.models import ScoreSnapshot
 
         rows = (
             db.query(ScoreSnapshot)
@@ -71,8 +71,8 @@ def get_sector_benchmark(db, vendor_id: str) -> dict | None:
     when the vendor has no sector tag or no snapshot.
     """
     try:
-        from app.core.models_v6 import VendorSector
-        from app.core.models_v8 import ScoreSnapshot
+        from app.core.models import VendorSector
+        from app.core.models import ScoreSnapshot
 
         sector_row = (
             db.query(VendorSector).filter(VendorSector.vendor_id == vendor_id).first()
@@ -127,7 +127,7 @@ def get_trust_breakdown(db, vendor_id: str) -> dict | None:
     weights. Returns None when the vendor has no VendorScore row.
     """
     try:
-        from app.core.models_v6 import VendorScore
+        from app.core.models import VendorScore
         from app.services.scoring import VendorScoreEngine
 
         rec = db.query(VendorScore).filter(VendorScore.vendor_id == vendor_id).first()
@@ -173,7 +173,7 @@ def get_sector_rank(db, vendor_id: str) -> dict | None:
     line. Returns None when the vendor has no sector tag or no peers.
     """
     try:
-        from app.core.models_v6 import VendorScore, VendorSector
+        from app.core.models import VendorScore, VendorSector
 
         sector_row = (
             db.query(VendorSector).filter(VendorSector.vendor_id == vendor_id).first()
@@ -217,7 +217,7 @@ def get_search_impressions_30d(db, vendor_id: str) -> int | None:
     """
     try:
         from datetime import timedelta
-        from app.core.models_v10 import SearchImpression
+        from app.core.models import SearchImpression
 
         since = datetime.now(timezone.utc) - timedelta(days=30)
         return (
@@ -246,8 +246,8 @@ def get_tender_matches(db, vendor_id: str, limit: int = 5,
     ``win_probability`` percentage via `compute_tender_win_probability`.
     """
     try:
-        from app.core.models_gebiz import GebizTender
-        from app.core.models_v6 import VendorSector
+        from app.core.models import GebizTender
+        from app.core.models import VendorSector
         from app.services.tender_service_bid_classifier import (
             build_vendor_history,
             enrich_tender_digest_with_classifications,

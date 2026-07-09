@@ -22,7 +22,7 @@ import httpx
 from bs4 import BeautifulSoup
 from sqlalchemy.orm import Session
 
-from app.core.models_gebiz import GebizTender
+from app.core.models import GebizTender
 
 logger = logging.getLogger(__name__)
 

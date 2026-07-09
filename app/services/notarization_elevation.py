@@ -28,7 +28,7 @@ from datetime import datetime
 from typing import Optional
 from sqlalchemy.orm import Session
 
-from app.core.models_v8 import NotarizationMetadata, EvidencePackage
+from app.core.models import NotarizationMetadata, EvidencePackage
 from app.core.models import VerifyRecord, Proof
 
 logger = logging.getLogger(__name__)

@@ -271,8 +271,8 @@ async def me(
         raise HTTPException(status_code=401, detail="User not found")
     is_admin = bool(settings.ADMIN_USER and user.email == settings.ADMIN_USER)
 
-    from app.core.models_v10 import MarketplaceVendor
-    from app.core.models_v6 import VerifyRecord, LifecycleStatus
+    from app.core.models import MarketplaceVendor
+    from app.core.models import VerifyRecord, LifecycleStatus
     has_claimed_profile = db.query(MarketplaceVendor).filter(
         MarketplaceVendor.claimed_by_user_id == user.id
     ).first() is not None
@@ -338,7 +338,7 @@ async def update_me(
     # If it's a vendor, also update MarketplaceVendor industry if needed
     if body.industry is not None:
         try:
-            from app.core.models_v10 import MarketplaceVendor
+            from app.core.models import MarketplaceVendor
             mv = db.query(MarketplaceVendor).filter(
                 MarketplaceVendor.claimed_by_user_id == user.id
             ).first()
@@ -350,8 +350,8 @@ async def update_me(
 
     is_admin = bool(settings.ADMIN_USER and user.email == settings.ADMIN_USER)
 
-    from app.core.models_v10 import MarketplaceVendor
-    from app.core.models_v6 import VerifyRecord, LifecycleStatus
+    from app.core.models import MarketplaceVendor
+    from app.core.models import VerifyRecord, LifecycleStatus
     has_claimed_profile = db.query(MarketplaceVendor).filter(
         MarketplaceVendor.claimed_by_user_id == user.id
     ).first() is not None

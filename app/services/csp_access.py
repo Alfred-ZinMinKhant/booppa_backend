@@ -13,7 +13,7 @@ The router gates all endpoints with HTTP 402 until a paid Stripe purchase calls
 from __future__ import annotations
 
 from app.core.config import settings
-from app.core.models_csp import CspOrganisation, CspOrgMembership
+from app.core.models import CspOrganisation, CspOrgMembership
 
 
 def find_or_create_csp_org(db, user) -> CspOrganisation:

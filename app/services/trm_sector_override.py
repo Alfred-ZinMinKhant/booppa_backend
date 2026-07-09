@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterable
 
-from app.core.models_enterprise import MAS_TRM_DOMAINS
+from app.core.models import MAS_TRM_DOMAINS
 
 # Exact MAS_TRM_DOMAINS names, ordered by criticality per sector. Only domains
 # that should be surfaced first need listing; the remainder keep canonical order.

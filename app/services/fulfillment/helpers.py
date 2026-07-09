@@ -17,7 +17,7 @@ from app.services.fulfillment.single_products import _defer_rfp_to_intake
 
 from app.services.email_service import EmailService
 from app.billing.enforcement import enforce_tier
-from app.core.models_v10 import Referral
+from app.core.models import Referral
 from datetime import datetime, timedelta, timezone
 import stripe
 import logging
@@ -150,7 +150,7 @@ def _log_purchase_activity(
     if not vendor_id:
         return
     try:
-        from app.core.models_v6 import ActivityLog
+        from app.core.models import ActivityLog
 
         db.add(
             ActivityLog(
@@ -174,7 +174,7 @@ def _apply_subscription_score_lever(db, vendor_id, plan: str) -> None:
     if not target or not vendor_id:
         return
     try:
-        from app.core.models_v6 import VerifyRecord as _VR, VerificationLevel as _VL
+        from app.core.models import VerifyRecord as _VR, VerificationLevel as _VL
 
         vr = db.query(_VR).filter(_VR.vendor_id == vendor_id).first()
         if not vr:
@@ -214,7 +214,7 @@ def _revert_subscription_score_lever(db, vendor_id, remaining_plan: str | None) 
     if not vendor_id:
         return
     try:
-        from app.core.models_v6 import VerifyRecord as _VR, VerificationLevel as _VL
+        from app.core.models import VerifyRecord as _VR, VerificationLevel as _VL
         from app.services.vendor_status import compute_verification_depth
 
         vr = db.query(_VR).filter(_VR.vendor_id == vendor_id).first()
@@ -464,7 +464,7 @@ def _maybe_fire_cover_sheet(customer_email: str | None) -> None:
         # usually the last to finish — wait for it unless the grace window has
         # elapsed (buyer never completed the intake), so nobody is left without
         # a cover sheet.
-        from app.core.models_v13 import EvidencePack
+        from app.core.models import EvidencePack
 
         # Only *wait* when a non-ready pack row actually exists. A buyer with no
         # pack row at all is not owed a 7-doc pack (nothing is coming), so the
@@ -535,7 +535,7 @@ async def _fire_strategy_6(sector: str | None, buyer_rfp_title: str) -> None:
 
     db = SessionLocal()
     try:
-        from app.core.models_v6 import (
+        from app.core.models import (
             VerifyRecord,
             LifecycleStatus,
             VendorSector,

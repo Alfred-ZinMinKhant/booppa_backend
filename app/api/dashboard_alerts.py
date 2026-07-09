@@ -48,13 +48,13 @@ async def dashboard_alerts(
     sector = getattr(current_user, "industry", None)
 
     # ── 2. Trust score ───────────────────────────────────────────────────────
-    from app.core.models_v6 import VendorScore
+    from app.core.models import VendorScore
 
     score_row = db.query(VendorScore).filter(VendorScore.vendor_id == vendor_id).first()
     trust_score = score_row.total_score if score_row else 0
 
     # ── 3. Verification depth ────────────────────────────────────────────────
-    from app.core.models_v8 import VendorStatusSnapshot
+    from app.core.models import VendorStatusSnapshot
 
     snapshot = (
         db.query(VendorStatusSnapshot)
@@ -90,7 +90,7 @@ async def dashboard_alerts(
     )
 
     # ── 5. Notarization count ────────────────────────────────────────────────
-    from app.core.models_v6 import VerifyRecord, Proof, ProofView
+    from app.core.models import VerifyRecord, Proof, ProofView
 
     verify = db.query(VerifyRecord).filter(VerifyRecord.vendor_id == vendor_id).first()
     notarization_count = 0
@@ -100,7 +100,7 @@ async def dashboard_alerts(
         )
 
     # ── 6. RFP count (completed evidence packages) ───────────────────────────
-    from app.core.models_v8 import EvidencePackage
+    from app.core.models import EvidencePackage
 
     rfp_count = (
         db.query(EvidencePackage)
@@ -120,7 +120,7 @@ async def dashboard_alerts(
     primary_sector = sector_row.sector if sector_row else sector
 
     # Sector percentile from score snapshot
-    from app.core.models_v8 import ScoreSnapshot
+    from app.core.models import ScoreSnapshot
 
     latest_score_snap = (
         db.query(ScoreSnapshot)
@@ -135,7 +135,7 @@ async def dashboard_alerts(
     )
 
     # Open tenders in sector
-    from app.core.models_gebiz import GebizTender
+    from app.core.models import GebizTender
 
     now = datetime.now(timezone.utc)
     open_tenders = (

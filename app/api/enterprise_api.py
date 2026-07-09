@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db, get_current_user
 from app.core.config import settings
 from app.core.models import User
-from app.core.models_enterprise import (
+from app.core.models import (
     Organisation, OrganisationMember, Subsidiary,
     WebhookEndpoint, WebhookDelivery,
     TrmControl, TrmEvidence,

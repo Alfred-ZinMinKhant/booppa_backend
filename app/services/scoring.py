@@ -15,7 +15,7 @@ def _record_score_snapshot_lazy(db: Session, vendor_id: str, score_record):
     """Write a ScoreSnapshot and refresh VendorStatusSnapshot after every score update."""
     try:
         from app.services.vendor_status import record_score_snapshot, upsert_status_snapshot
-        from app.core.models_v6 import VendorSector
+        from app.core.models import VendorSector
         sector_row = db.query(VendorSector).filter(
             VendorSector.vendor_id == vendor_id
         ).first()
@@ -33,7 +33,7 @@ def _record_score_snapshot_lazy(db: Session, vendor_id: str, score_record):
     # Sync VerifyRecord.verification_level to match actual depth (fixes stale BASIC level)
     try:
         from app.services.notarization_elevation import compute_verification_depth
-        from app.core.models_v6 import VerifyRecord as _VR, VerificationLevel as _VL
+        from app.core.models import VerifyRecord as _VR, VerificationLevel as _VL
         _depth = compute_verification_depth(db, str(vendor_id))
         _depth_to_level = {
             "STANDARD":  _VL.STANDARD,
@@ -91,12 +91,12 @@ class VendorScoreEngine:
         if not buyer_org_id:
             return cls.WEIGHTS
         try:
-            from app.core.models_v12 import VendorEvaluationFramework
-            from app.core.models_enterprise import Organisation
+            from app.core.models import VendorEvaluationFramework
+            from app.core.models import Organisation
 
             # 1. Sector-matched framework (e.g. MAS_TRM for fintech vendors).
             if vendor_id is not None:
-                from app.core.models_v6 import VendorSector
+                from app.core.models import VendorSector
 
                 sectors = [
                     s[0] for s in db.query(VendorSector.sector)

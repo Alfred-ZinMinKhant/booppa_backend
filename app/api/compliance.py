@@ -154,7 +154,7 @@ async def cover_sheet_status(email: str, response: Response):
             # write. The CertificateLog row is always written, so use it as a
             # fallback so the bundle progress page can show "completed".
             try:
-                from app.core.models_v10 import CertificateLog
+                from app.core.models import CertificateLog
                 cert = (
                     db.query(CertificateLog)
                     .filter(
@@ -291,7 +291,7 @@ async def cover_sheet_status(email: str, response: Response):
         # /stripe/checkout/verify endpoint, and the same trap applies here.)
         rfp_brief_intake_id = None
         try:
-            from app.core.models_v12 import PendingRfpIntake
+            from app.core.models import PendingRfpIntake
             latest_ce_intake = (
                 db.query(PendingRfpIntake)
                 .filter(

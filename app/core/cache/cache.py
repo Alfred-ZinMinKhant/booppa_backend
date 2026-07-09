@@ -25,6 +25,10 @@ except Exception as e:
     _redis = None
 
 
+def get_redis_client():
+    """Return the global Redis client singleton (or None if unavailable)."""
+    return _redis
+
 def cache_key(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 

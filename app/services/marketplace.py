@@ -14,10 +14,10 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
-from app.core.models_v10 import MarketplaceVendor, ImportBatch
-from app.core.models_v6 import VerifyRecord, Proof, LifecycleStatus
-from app.core.models_v6 import VendorScore
-from app.core.models_v8 import VendorStatusSnapshot
+from app.core.models import MarketplaceVendor, ImportBatch
+from app.core.models import VerifyRecord, Proof, LifecycleStatus
+from app.core.models import VendorScore
+from app.core.models import VendorStatusSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ def record_search_impressions(db: Session, vendor_ids, source: str, query: Optio
     its own rows and rolls back on error so the caller's session stays clean.
     """
     try:
-        from app.core.models_v10 import SearchImpression
+        from app.core.models import SearchImpression
 
         seen = set()
         rows = []
