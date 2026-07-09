@@ -18,7 +18,7 @@ def test_one_time_standalone_handler_called(
     """vendor_proof / pdpa_quick_scan / compliance_notarization_* all flow through
     `_fulfill_standalone_no_report` when no report_id is on the metadata."""
     fake_handler = mocker.patch(
-        "app.services.fulfillment.bundles._fulfill_standalone_no_report",
+        "app.api.stripe_webhook._fulfill_standalone_no_report",
         new=mocker.AsyncMock(return_value=True),
     )
 
@@ -42,7 +42,7 @@ def test_rfp_express_with_brief_still_defers(
     fake_task = mocker.patch("app.workers.tasks.fulfill_rfp_task")
     fake_task.delay = mocker.MagicMock()
     fake_defer = mocker.patch(
-        "app.services.fulfillment.single_products._defer_rfp_to_intake",
+        "app.api.stripe_webhook._defer_rfp_to_intake",
         new=mocker.AsyncMock(return_value=None),
     )
 
@@ -62,7 +62,7 @@ def test_rfp_complete_without_brief_defers(
     client, post_webhook, stripe_session_factory, mocker
 ):
     fake_defer = mocker.patch(
-        "app.services.fulfillment.single_products._defer_rfp_to_intake",
+        "app.api.stripe_webhook._defer_rfp_to_intake",
         new=mocker.AsyncMock(return_value=None),
     )
 

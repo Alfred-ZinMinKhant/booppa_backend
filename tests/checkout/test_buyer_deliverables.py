@@ -45,7 +45,7 @@ def test_webhook_demo_flag_tracks_livemode_strictly(
     from unittest.mock import AsyncMock
 
     fake_activate = AsyncMock(return_value=None)
-    mocker.patch("app.services.fulfillment.subscriptions._activate_subscription", fake_activate)
+    mocker.patch("app.api.stripe_webhook._activate_subscription", fake_activate)
 
     session = stripe_session_factory(BUYER_SUB)
     event = wrap_event(session)

@@ -1,7 +1,5 @@
 """Backward compatibility shim. Use app.core.providers.get_storage() directly."""
-from app.ports.storage_port import StoragePort
+from app.adapters.s3_storage import S3StorageAdapter
 
-class S3Service:
-    def __new__(cls) -> StoragePort:
-        from app.core.providers import get_storage
-        return get_storage()
+class S3Service(S3StorageAdapter):
+    pass

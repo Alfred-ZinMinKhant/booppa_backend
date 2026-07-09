@@ -8,6 +8,7 @@ from app.services.blockchain import BlockchainService
 from app.services.pdf_service import PDFService
 from app.services.storage import S3Service
 from app.services.email_service import EmailService
+from app.core.repositories.user_repository import UserRepository
 from app.services.screenshot_service import capture_screenshot_base64, looks_like_image
 from app.core.config import settings
 from app.billing.enforcement import enforce_tier
