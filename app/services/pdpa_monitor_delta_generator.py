@@ -80,7 +80,7 @@ def generate_pdpa_monitor_report_pdf(data: Dict[str, Any]) -> bytes:
                        >14 days (rendered as a red alert box at the top)
       score_history: ordered list of {label, score} for the drift line chart
     """
-    s = _styles()
+    s = get_booppa_styles()
     company = data.get("company_name") or "Your Organisation"
     gen_at = data.get("generated_at") or datetime.now(timezone.utc).strftime("%d %B %Y")
     month_label = datetime.now(timezone.utc).strftime("%B %Y")

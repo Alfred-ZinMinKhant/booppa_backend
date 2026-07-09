@@ -293,14 +293,6 @@ def get_booppa_doc_template(buffer, title, report_type_label="AUDIT REPORT", is_
 # ── PDFService ──
 
 
-class PDFService:
-    """Generate branded Booppa PDF reports."""
-
-    def __init__(self):
-        self._s = get_booppa_styles()
-
-    # ── Styles ─────────────────────────────────────────────────────────────────
-
 def get_booppa_styles() -> dict:
     from reportlab.lib.styles import getSampleStyleSheet
     base = getSampleStyleSheet()
@@ -430,6 +422,14 @@ def get_booppa_styles() -> dict:
         }
 
     # ── Layout helpers ─────────────────────────────────────────────────────────
+
+class PDFService:
+    """Generate branded Booppa PDF reports."""
+
+    def __init__(self):
+        self._s = get_booppa_styles()
+
+    # ── Styles ─────────────────────────────────────────────────────────────────
 
     def _section_header(self, title: str):
         """Emerald left-bar + label on light background.
