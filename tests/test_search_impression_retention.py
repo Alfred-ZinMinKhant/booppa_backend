@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import sessionmaker
 
 import app.workers.tasks as tasks_mod
-from app.core.models_v10 import SearchImpression
+from app.core.models import SearchImpression
 
 
 def test_cleanup_prunes_only_stale_impressions(test_db, monkeypatch):

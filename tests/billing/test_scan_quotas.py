@@ -18,7 +18,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.billing.scan_credits import consume_scan, scan_usage
-from app.core.models_v8 import VendorScanLedger
+from app.core.models import VendorScanLedger
 
 from tests._test_helpers import make_user, auth_headers
 

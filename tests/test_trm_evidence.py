@@ -16,7 +16,7 @@ def _suite_user(db, email):
 
 
 def _control(db, org):
-    from app.core.models_enterprise import TrmControl
+    from app.core.models import TrmControl
     ctrl = TrmControl(organisation_id=org.id, domain="Technology Risk Governance",
                       control_ref="TRM-1", status="not_started")
     db.add(ctrl); db.commit(); db.refresh(ctrl)

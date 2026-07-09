@@ -16,7 +16,7 @@ from sqlalchemy.orm import sessionmaker
 import app.api.stripe_webhook as wh
 import app.workers.tasks as tasks_mod
 from app.core.models import User, Report
-from app.core.models_v13 import EvidencePack
+from app.core.models import EvidencePack
 
 
 def _seed_ready_pdpa_and_rfp(test_db, *, pdpa_age_days: int = 0) -> User:

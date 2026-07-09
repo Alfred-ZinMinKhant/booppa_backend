@@ -14,7 +14,7 @@ def _suite_user(db, email, plan="pro_suite", company="Acme Group", parent=None):
 
 
 def _control(db, org, domain, status, risk=None):
-    from app.core.models_enterprise import TrmControl
+    from app.core.models import TrmControl
     c = TrmControl(organisation_id=org.id, domain=domain,
                    control_ref="TRM-X", status=status, risk_rating=risk)
     db.add(c); db.commit()

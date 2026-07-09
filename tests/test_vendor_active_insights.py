@@ -10,7 +10,7 @@ from pypdf import PdfReader
 
 def _mk_vendor(test_db, email, sector=None, scores=None):
     from app.core.models import User
-    from app.core.models_v6 import VendorScore, VendorSector
+    from app.core.models import VendorScore, VendorSector
 
     user = User(email=email, hashed_password="x", role="VENDOR",
                 plan="vendor_active", company="Co " + email)

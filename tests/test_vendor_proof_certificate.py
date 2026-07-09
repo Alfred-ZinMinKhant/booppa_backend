@@ -49,7 +49,7 @@ def test_score_uses_real_pdpa_not_hardcoded_30(test_db, mocker):
     """A vendor with a strong PDPA scan must get that score on VerifyRecord and
     VendorScore — not the legacy hardcoded 30."""
     from app.core.models import Report
-    from app.core.models_v6 import VerifyRecord, VendorScore
+    from app.core.models import VerifyRecord, VendorScore
 
     email = "vpcert+strong@booppa.io"
     user = _make_user(test_db, email)
@@ -69,7 +69,7 @@ def test_score_uses_real_pdpa_not_hardcoded_30(test_db, mocker):
 
 
 def test_no_scan_keeps_identity_floor_30(test_db, mocker):
-    from app.core.models_v6 import VerifyRecord
+    from app.core.models import VerifyRecord
     email = "vpcert+noscan@booppa.io"
     user = _make_user(test_db, email)
     rpt = _vp_report(test_db, user.id)
@@ -85,7 +85,7 @@ def test_acra_lookup_populates_assessment_data(test_db, mocker):
     """When the UEN matches an imported ACRA row, registration details are
     persisted on the report and acra_verified flips true."""
     from app.core.models import Report
-    from app.core.models_v10 import DiscoveredVendor
+    from app.core.models import DiscoveredVendor
 
     uen = "201912345A"
     test_db.add(DiscoveredVendor(

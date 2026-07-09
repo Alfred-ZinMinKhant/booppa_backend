@@ -26,8 +26,6 @@ celery_app.conf.update(
     worker_max_tasks_per_child=100,
     broker_pool_limit=1,
     redis_max_connections=5,
-    worker_enable_gossip=False,
-    worker_enable_mingle=False,
     worker_send_task_events=False,
     # Fallback queue for any task without an explicit route below. MUST be
     # "fast_queue" (a queue the worker consumes via `-Q fast_queue`), not
@@ -242,3 +240,15 @@ celery_app.conf.update(
         },
     },
 )
+
+# CRITICAL FIX for Redis Connection Exhaustion on Free Tier (30 connections)
+# worker_enable_mingle=False and worker_enable_gossip=False are often ignored by Celery 5.x 
+# unless explicitly passed as CLI flags. To ensure they are universally disabled across 
+# AWS ECS, local Docker, and any other environment, we programmatically discard the bootsteps.
+from celery.worker.consumer.mingle import Mingle
+from celery.worker.consumer.gossip import Gossip
+from celery.worker.consumer.heart import Heart
+
+celery_app.steps['consumer'].discard(Mingle)
+celery_app.steps['consumer'].discard(Gossip)
+celery_app.steps['consumer'].discard(Heart)

@@ -15,7 +15,7 @@ import pytest
 
 from app.api.stripe_webhook import _activate_subscription  # noqa: F401  # import for side effects
 from app.core.models import Subscription, User
-from app.core.models_enterprise import Organisation, SsoConfig
+from app.core.models import Organisation, SsoConfig
 
 from tests._test_helpers import make_user, make_org
 

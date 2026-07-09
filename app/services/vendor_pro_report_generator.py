@@ -24,6 +24,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from app.services.pdf_styles import get_unified_styles
 from app.services.pdf_logo import draw_logo_header
 from app.core.company import COMPANY_NAME
 
@@ -41,18 +42,6 @@ def _xml_escape(s) -> str:
     return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _styles():
-    base = getSampleStyleSheet()
-    return {
-        "title": ParagraphStyle("vp_title", parent=base["Title"], fontSize=20, textColor=_INK, spaceAfter=4),
-        "sub": ParagraphStyle("vp_sub", parent=base["Normal"], fontSize=10, textColor=colors.HexColor("#475569"), spaceAfter=2),
-        "h2": ParagraphStyle("vp_h2", parent=base["Heading2"], fontSize=13, textColor=_INK, spaceBefore=16, spaceAfter=6),
-        "body": ParagraphStyle("vp_body", parent=base["Normal"], fontSize=9.5, textColor=colors.HexColor("#334155"), leading=14),
-        "metric": ParagraphStyle("vp_metric", parent=base["Normal"], fontSize=22, textColor=_INK, leading=24),
-        "metric_lbl": ParagraphStyle("vp_metric_lbl", parent=base["Normal"], fontSize=8, textColor=_MUTED, leading=11),
-        "small": ParagraphStyle("vp_small", parent=base["Normal"], fontSize=7.5, textColor=_MUTED, leading=10),
-        "cell": ParagraphStyle("vp_cell", parent=base["Normal"], fontSize=8.5, textColor=colors.HexColor("#334155"), leading=11),
-    }
 
 
 def _table(rows: list, col_widths: list, header: bool = True) -> Table:
@@ -88,7 +77,7 @@ def generate_vendor_pro_report_pdf(data: Dict[str, Any]) -> bytes:
       competitor_pulse: {top_suppliers, win_rate_by_size, sector_trend, sector, total_awards},
       pdpa_drift: {current_score, previous_score, dimension_changes},
     """
-    s = _styles()
+    s = get_unified_styles("vp_")
     company = data.get("company_name") or "Your Company"
     plan_label = data.get("plan_label") or "Vendor Pro"
     gen_at = data.get("generated_at") or datetime.now(timezone.utc).strftime("%d %B %Y")

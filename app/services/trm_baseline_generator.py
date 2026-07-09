@@ -25,6 +25,7 @@ from reportlab.platypus import (
     Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
 )
 
+from app.services.pdf_styles import get_unified_styles
 from app.core.company import COMPANY_NAME
 from app.services.pdf_logo import draw_logo_header
 
@@ -82,23 +83,6 @@ def _xml_escape(s: str) -> str:
     return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _styles():
-    base = getSampleStyleSheet()
-    s = {
-        "title": ParagraphStyle("trm_title", parent=base["Title"], fontSize=20,
-                                textColor=colors.HexColor("#0f172a"), spaceAfter=4),
-        "sub": ParagraphStyle("trm_sub", parent=base["Normal"], fontSize=10,
-                              textColor=colors.HexColor("#475569"), spaceAfter=2),
-        "h2": ParagraphStyle("trm_h2", parent=base["Heading2"], fontSize=13,
-                            textColor=colors.HexColor("#0f172a"), spaceBefore=14, spaceAfter=6),
-        "body": ParagraphStyle("trm_body", parent=base["Normal"], fontSize=9.5,
-                              textColor=colors.HexColor("#334155"), leading=14),
-        "cell": ParagraphStyle("trm_cell", parent=base["Normal"], fontSize=8.5, leading=11),
-        "cell_b": ParagraphStyle("trm_cell_b", parent=base["Normal"], fontSize=8.5,
-                                leading=11, textColor=colors.HexColor("#0f172a")),
-        "small": ParagraphStyle("trm_small", parent=base["Normal"], fontSize=7.5,
-                              textColor=colors.HexColor("#64748b"), leading=10),
-    }
     return s
 
 
@@ -111,7 +95,7 @@ def generate_trm_baseline_pdf(data: Dict[str, Any]) -> bytes:
       generated_at: ISO str (optional)
       controls:     list of {domain, control_ref, status, risk_rating, gap_analysis}
     """
-    s = _styles()
+    s = get_unified_styles("trm_")
     company = data.get("company_name") or "Your Organisation"
     plan_label = data.get("plan_label") or "Suite"
     controls: List[Dict[str, Any]] = data.get("controls") or []

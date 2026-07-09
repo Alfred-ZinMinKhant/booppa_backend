@@ -8,7 +8,7 @@ from io import BytesIO
 
 from pypdf import PdfReader
 
-from app.core.models_enterprise import MAS_TRM_DOMAINS
+from app.core.models import MAS_TRM_DOMAINS
 
 
 def test_baseline_pdf_renders_all_domains():
@@ -44,7 +44,7 @@ def test_baseline_pdf_renders_all_domains():
 
 def test_baseline_task_generates_uploads_and_emails(test_db, mocker):
     from app.core.models import User
-    from app.core.models_enterprise import Organisation, TrmControl
+    from app.core.models import Organisation, TrmControl
 
     captured = {}
 

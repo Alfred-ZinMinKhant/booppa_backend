@@ -6,7 +6,7 @@ from tests._test_helpers import make_user, auth_headers
 
 
 def _intake(db, user, session_id, status="submitted"):
-    from app.core.models_v12 import PendingRfpIntake
+    from app.core.models import PendingRfpIntake
     row = PendingRfpIntake(
         user_id=user.id,
         session_id=session_id,

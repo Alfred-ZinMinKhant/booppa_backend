@@ -140,7 +140,7 @@ def test_snapshot_task_sends_in_demo_mode(test_db, email_capture):
 # ── 5. Tender-push dedup ledger enforced at the schema level ──────────────────
 
 def test_buyer_tender_push_ledger_is_unique_per_buyer_tender(test_db):
-    from app.core.models_v12 import BuyerTenderPush
+    from app.core.models import BuyerTenderPush
     user = _seed_buyer(test_db)
     test_db.add(BuyerTenderPush(buyer_user_id=user.id, tender_no="T-0001", sector="IT"))
     test_db.commit()

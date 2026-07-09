@@ -39,7 +39,7 @@ def _run(report_id, email, mocker):
 
 
 def _snapshot(db, vendor_id):
-    from app.core.models_v8 import VendorStatusSnapshot
+    from app.core.models import VendorStatusSnapshot
     db.expire_all()
     return (
         db.query(VendorStatusSnapshot)

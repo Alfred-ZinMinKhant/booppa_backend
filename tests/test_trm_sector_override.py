@@ -1,5 +1,5 @@
 """Sector-priority ordering of the MAS TRM domains (Sprint 9b)."""
-from app.core.models_enterprise import MAS_TRM_DOMAINS
+from app.core.models import MAS_TRM_DOMAINS
 from app.services.trm_sector_override import (
     critical_domains,
     normalise_sector,

@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from app.core.models_v10 import SearchImpression
+from app.core.models import SearchImpression
 from app.services.marketplace import record_search_impressions
 from app.services.vendor_active_insights import get_search_impressions_30d
 

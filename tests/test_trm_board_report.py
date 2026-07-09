@@ -1,5 +1,5 @@
 """MAS TRM monthly board report — data shaping + PDF render (Sprint 9d)."""
-from app.core.models_enterprise import MAS_TRM_DOMAINS
+from app.core.models import MAS_TRM_DOMAINS
 from app.services.trm_board_report_generator import (
     board_data_from_controls,
     generate_trm_board_report_pdf,

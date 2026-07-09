@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import create_access_token, get_password_hash
 from app.core.models import User
-from app.core.models_enterprise import Organisation, OrganisationMember
+from app.core.models import Organisation, OrganisationMember
 
 
 def make_user(

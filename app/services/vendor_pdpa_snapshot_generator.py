@@ -25,6 +25,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from app.services.pdf_styles import get_unified_styles
 from app.core.company import COMPANY_NAME
 from app.services.pdf_logo import draw_logo_header
 from app.services.tx_utils import is_real_onchain_tx
@@ -38,26 +39,6 @@ def _xml_escape(s: str) -> str:
     return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _styles():
-    base = getSampleStyleSheet()
-    return {
-        "title": ParagraphStyle("vps_title", parent=base["Title"], fontSize=20,
-                                textColor=colors.HexColor("#0f172a"), spaceAfter=4),
-        "sub": ParagraphStyle("vps_sub", parent=base["Normal"], fontSize=10,
-                              textColor=colors.HexColor("#475569"), spaceAfter=2),
-        "h2": ParagraphStyle("vps_h2", parent=base["Heading2"], fontSize=13,
-                            textColor=colors.HexColor("#0f172a"), spaceBefore=14, spaceAfter=6),
-        "body": ParagraphStyle("vps_body", parent=base["Normal"], fontSize=9.5,
-                              textColor=colors.HexColor("#334155"), leading=14),
-        "metric": ParagraphStyle("vps_metric", parent=base["Normal"], fontSize=22,
-                                textColor=colors.HexColor("#0f172a"), leading=24),
-        "metric_lbl": ParagraphStyle("vps_metric_lbl", parent=base["Normal"], fontSize=8,
-                                    textColor=colors.HexColor("#64748b"), leading=11),
-        "cell": ParagraphStyle("vps_cell", parent=base["Normal"], fontSize=8.5, leading=11,
-                              textColor=colors.HexColor("#334155")),
-        "small": ParagraphStyle("vps_small", parent=base["Normal"], fontSize=7.5,
-                              textColor=colors.HexColor("#64748b"), leading=10),
-    }
 
 
 def _metric_card(s, value: str, label: str) -> List:
@@ -115,7 +96,7 @@ def generate_vendor_pdpa_snapshot_pdf(data: Dict[str, Any]) -> bytes:
       is_baseline:       bool   (no prior scan to diff against)
       anchor_tx:         str|None   (Amoy testnet tx hash, if anchored)
     """
-    s = _styles()
+    s = get_unified_styles("vps_")
     company = data.get("company_name") or "Your Company"
     gen_at = data.get("generated_at") or datetime.now(timezone.utc).strftime("%d %B %Y")
     is_baseline = bool(data.get("is_baseline"))

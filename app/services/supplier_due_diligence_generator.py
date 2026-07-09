@@ -32,6 +32,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from app.services.pdf_styles import get_unified_styles
 from app.services.pdf_logo import draw_logo_header
 from app.core.company import COMPANY_NAME
 
@@ -59,19 +60,6 @@ def demo_tx_hash(evidence_hash: str) -> str:
     return "0x" + digest[:64]
 
 
-def _styles():
-    base = getSampleStyleSheet()
-    return {
-        "title": ParagraphStyle("dd_title", parent=base["Title"], fontSize=19, textColor=_INK, spaceAfter=2),
-        "sub": ParagraphStyle("dd_sub", parent=base["Normal"], fontSize=10, textColor=colors.HexColor("#475569"), spaceAfter=2),
-        "h2": ParagraphStyle("dd_h2", parent=base["Heading2"], fontSize=12, textColor=_INK, spaceBefore=14, spaceAfter=6),
-        "body": ParagraphStyle("dd_body", parent=base["Normal"], fontSize=9.5, textColor=colors.HexColor("#334155"), leading=14),
-        "metric": ParagraphStyle("dd_metric", parent=base["Normal"], fontSize=22, textColor=_INK, leading=24),
-        "metric_lbl": ParagraphStyle("dd_metric_lbl", parent=base["Normal"], fontSize=8, textColor=_MUTED, leading=11),
-        "small": ParagraphStyle("dd_small", parent=base["Normal"], fontSize=7.5, textColor=_MUTED, leading=10),
-        "mono": ParagraphStyle("dd_mono", parent=base["Normal"], fontSize=7.5, textColor=colors.HexColor("#334155"), fontName="Courier", leading=10),
-        "cell": ParagraphStyle("dd_cell", parent=base["Normal"], fontSize=8.5, textColor=colors.HexColor("#334155"), leading=11),
-    }
 
 
 def _delta_str(d) -> str:
@@ -91,7 +79,7 @@ def generate_certificate_pdf(data: Dict[str, Any]) -> bytes:
       tx_hash (str | None), anchored (bool), is_certificate (bool — cert vs snapshot),
       notes.
     """
-    s = _styles()
+    s = get_unified_styles("dd_")
     supplier = data.get("supplier_name") or "Supplier"
     buyer = data.get("buyer_company") or "Your Organisation"
     resolved = bool(data.get("resolved"))

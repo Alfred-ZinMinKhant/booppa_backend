@@ -25,6 +25,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from app.services.pdf_styles import get_unified_styles
 from app.core.company import COMPANY_NAME
 from app.services.pdf_logo import draw_logo_header
 
@@ -37,26 +38,6 @@ def _xml_escape(s: str) -> str:
     return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _styles():
-    base = getSampleStyleSheet()
-    return {
-        "title": ParagraphStyle("va_title", parent=base["Title"], fontSize=20,
-                                textColor=colors.HexColor("#0f172a"), spaceAfter=4),
-        "sub": ParagraphStyle("va_sub", parent=base["Normal"], fontSize=10,
-                              textColor=colors.HexColor("#475569"), spaceAfter=2),
-        "h2": ParagraphStyle("va_h2", parent=base["Heading2"], fontSize=13,
-                            textColor=colors.HexColor("#0f172a"), spaceBefore=14, spaceAfter=6),
-        "body": ParagraphStyle("va_body", parent=base["Normal"], fontSize=9.5,
-                              textColor=colors.HexColor("#334155"), leading=14),
-        "metric": ParagraphStyle("va_metric", parent=base["Normal"], fontSize=22,
-                                textColor=colors.HexColor("#0f172a"), leading=24),
-        "metric_lbl": ParagraphStyle("va_metric_lbl", parent=base["Normal"], fontSize=8,
-                                    textColor=colors.HexColor("#64748b"), leading=11),
-        "cell": ParagraphStyle("va_cell", parent=base["Normal"], fontSize=8.5, leading=11,
-                              textColor=colors.HexColor("#334155")),
-        "small": ParagraphStyle("va_small", parent=base["Normal"], fontSize=7.5,
-                              textColor=colors.HexColor("#64748b"), leading=10),
-    }
 
 
 def _doc(buf: BytesIO, title: str) -> SimpleDocTemplate:
@@ -143,7 +124,7 @@ def generate_badge_certificate_pdf(data: Dict[str, Any]) -> bytes:
     it does not assert PDPA/MAS compliance (audit: badge must not mislead
     procurement officers).
     """
-    s = _styles()
+    s = get_unified_styles("va_")
     company = data.get("company_name") or "Your Company"
     depth = str(data.get("verification_depth") or "BASIC")
     readiness = str(data.get("procurement_readiness") or "CONDITIONAL")
@@ -192,7 +173,7 @@ def generate_priority_placement_pdf(data: Dict[str, Any]) -> bytes:
     Expected `data`: company_name, plan_label, profile_views_30d, verification_depth,
     placement_active (bool), generated_at, anchor_tx (optional).
     """
-    s = _styles()
+    s = get_unified_styles("va_")
     company = data.get("company_name") or "Your Company"
     plan_label = data.get("plan_label") or "Vendor"
     gen_at = data.get("generated_at") or datetime.now(timezone.utc).strftime("%d %B %Y")
@@ -236,7 +217,7 @@ def generate_competitor_signals_pdf(data: Dict[str, Any]) -> bytes:
     {focal, focal_verified, similar, similar_verified}, sector,
     sector_active_verified, generated_at. All figures are anonymised counts.
     """
-    s = _styles()
+    s = get_unified_styles("va_")
     company = data.get("company_name") or "Your Company"
     tender_no = data.get("tender_no") or "—"
     window = data.get("window_days") or 30
@@ -287,7 +268,7 @@ def generate_bid_timing_pdf(data: Dict[str, Any]) -> bytes:
     Expected `data`: company_name, period_label, total_awards, busiest_month,
     months [{month, awards, value}], generated_at.
     """
-    s = _styles()
+    s = get_unified_styles("va_")
     company = data.get("company_name") or "Your Company"
     period_label = data.get("period_label") or "Recent GeBIZ awards"
     busiest = data.get("busiest_month") or "—"
