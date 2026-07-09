@@ -18,7 +18,7 @@ DEFAULT_TTL = 7 * 24 * 3600
 _redis = None
 try:
     import redis as _redis_lib
-    _redis = _redis_lib.from_url(settings.REDIS_URL, decode_responses=True, socket_connect_timeout=2)
+    _redis = _redis_lib.from_url(settings.REDIS_URL, decode_responses=True, socket_connect_timeout=2, max_connections=5)
     _redis.ping()
 except Exception as e:
     logger.warning(f"[cache] Redis unavailable, falling back to file cache: {e}")

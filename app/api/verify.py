@@ -90,7 +90,7 @@ async def verify_cover_sheet_by_report_id(report_id: str):
         tx_confirmed = None
         if tx_hash:
             blockchain = BlockchainService()
-            status = blockchain.get_anchor_status(report.audit_hash or "", tx_hash=tx_hash)
+            status = await blockchain.get_anchor_status(report.audit_hash or "", tx_hash=tx_hash)
             anchored = status.get("anchored", False)
             anchored_at = status.get("anchored_at")
             tx_confirmed = status.get("tx_confirmed")
@@ -139,7 +139,7 @@ async def verify_report(audit_hash: str):
         tx_confirmed = None
         if tx_hash:
             blockchain = BlockchainService()
-            status = blockchain.get_anchor_status(audit_hash, tx_hash=tx_hash)
+            status = await blockchain.get_anchor_status(audit_hash, tx_hash=tx_hash)
             anchored = status.get("anchored", False)
             anchored_at = status.get("anchored_at")
             tx_confirmed = status.get("tx_confirmed")

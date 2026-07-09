@@ -3,5 +3,5 @@ from typing import Any
 
 class BlockchainPort(ABC):
     @abstractmethod
-    def anchor_evidence(self, evidence_data: dict[str, Any], vendor_id: str | None = None) -> str:
+    async def anchor_evidence(self, evidence_hash: str, metadata: str = "", force: bool = False) -> str:
         pass

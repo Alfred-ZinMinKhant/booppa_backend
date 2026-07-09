@@ -24,6 +24,11 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     broker_connection_retry_on_startup=True,
     worker_max_tasks_per_child=100,
+    broker_pool_limit=1,
+    redis_max_connections=5,
+    worker_enable_gossip=False,
+    worker_enable_mingle=False,
+    worker_send_task_events=False,
     # Fallback queue for any task without an explicit route below. MUST be
     # "fast_queue" (a queue the worker consumes via `-Q fast_queue`), not
     # Celery's built-in "celery" queue — otherwise explicitly-named tasks that

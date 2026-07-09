@@ -108,7 +108,7 @@ class PolygonBlockchainAdapter(BlockchainPort):
             # Idempotency check: Don't spend gas if already anchored, unless
             # the caller explicitly wants a fresh tx (force=True).
             if not force:
-                status = self.get_anchor_status(evidence_hash)
+                status = await self.get_anchor_status(evidence_hash)
                 if status.get("anchored"):
                     logger.info(f"Evidence {evidence_hash} already anchored. Skipping transaction.")
                     return None  # already on-chain; no new tx_hash available
@@ -117,7 +117,8 @@ class PolygonBlockchainAdapter(BlockchainPort):
             private_key = self._get_private_key()
             account = self.w3.eth.account.from_key(private_key)
 
-            nonce = self.w3.eth.get_transaction_count(account.address, 'pending')
+            import asyncio
+            nonce = await asyncio.to_thread(self.w3.eth.get_transaction_count, account.address, 'pending')
             txn = self.contract.functions.anchorHash(file_hash, metadata).build_transaction(
                 {
                     "from": account.address,
@@ -127,7 +128,8 @@ class PolygonBlockchainAdapter(BlockchainPort):
                 }
             )
             signed = self.w3.eth.account.sign_transaction(txn, private_key)
-            tx_hash = self.w3.eth.send_raw_transaction(_raw_txn(signed))
+            import asyncio
+            tx_hash = await asyncio.to_thread(self.w3.eth.send_raw_transaction, _raw_txn(signed))
             tx_hex = tx_hash.hex()
 
             logger.info("Evidence anchored on blockchain: %s", tx_hex)
@@ -143,7 +145,7 @@ class PolygonBlockchainAdapter(BlockchainPort):
             hashes_to_anchor = []
             for h in evidence_hashes:
                 # Idempotency check: Skip if already anchored
-                status = self.get_anchor_status(h)
+                status = await self.get_anchor_status(h)
                 if not status.get("anchored"):
                     hashes_to_anchor.append(self._hash_to_bytes32(h))
             
@@ -154,7 +156,8 @@ class PolygonBlockchainAdapter(BlockchainPort):
             private_key = self._get_private_key()
             account = self.w3.eth.account.from_key(private_key)
 
-            nonce = self.w3.eth.get_transaction_count(account.address)
+            import asyncio
+            nonce = await asyncio.to_thread(self.w3.eth.get_transaction_count, account.address)
             txn = self.contract.functions.batchAnchor(hashes_to_anchor, batch_metadata).build_transaction(
                 {
                     "from": account.address,
@@ -164,7 +167,8 @@ class PolygonBlockchainAdapter(BlockchainPort):
                 }
             )
             signed = self.w3.eth.account.sign_transaction(txn, private_key)
-            tx_hash = self.w3.eth.send_raw_transaction(_raw_txn(signed))
+            import asyncio
+            tx_hash = await asyncio.to_thread(self.w3.eth.send_raw_transaction, _raw_txn(signed))
             tx_hex = tx_hash.hex()
 
             logger.info("Batch of %s hashes anchored: %s", len(hashes_to_anchor), tx_hex)
@@ -174,14 +178,15 @@ class PolygonBlockchainAdapter(BlockchainPort):
             logger.error("Blockchain batch anchoring failed: %s", e)
             raise
 
-    def get_anchor_status(self, evidence_hash: str, tx_hash: Optional[str] = None) -> Dict[str, Any]:
+    async def get_anchor_status(self, evidence_hash: str, tx_hash: Optional[str] = None) -> Dict[str, Any]:
         """Verify if evidence is anchored on blockchain and optionally confirm tx."""
         anchored = False
         anchored_at = None
         tx_confirmed = None
         try:
             file_hash = self._hash_to_bytes32(evidence_hash)
-            anchored, raw_ts = self.contract.functions.isAnchored(file_hash).call()
+            import asyncio
+            anchored, raw_ts = await asyncio.to_thread(self.contract.functions.isAnchored(file_hash).call)
             if anchored and raw_ts:
                 from datetime import datetime, timezone
                 anchored_at = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc).isoformat()
@@ -190,7 +195,8 @@ class PolygonBlockchainAdapter(BlockchainPort):
 
         if tx_hash:
             try:
-                receipt = self.w3.eth.get_transaction_receipt(tx_hash)
+                import asyncio
+                receipt = await asyncio.to_thread(self.w3.eth.get_transaction_receipt, tx_hash)
                 tx_confirmed = bool(receipt and receipt.status == 1)
             except Exception as e:
                 logger.warning("Transaction receipt lookup failed: %s", e)

@@ -1137,14 +1137,6 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             from app.services.vendor_proof_generator import generate_vendor_proof_certificate
             from app.services.storage import S3Service
 
-from app.services.fulfillment.helpers import (
-    _create_stub_report,
-    _alert_payment_fulfillment_issue,
-    _maybe_fire_cover_sheet,
-    _fire_strategy_6,
-)
-from app.services.fulfillment.single_products import _defer_rfp_to_intake
-
             from app.core.models import User as _User
             import hashlib as _hashlib
 
@@ -1450,7 +1442,8 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
                         capture_screenshot_base64,
                     )
 
-                    ss = capture_screenshot_base64(website_url)
+                    import asyncio
+                    ss = await asyncio.to_thread(capture_screenshot_base64, website_url)
                     if ss:
                         pdf_data["site_screenshot"] = ss
                         assessment["site_screenshot"] = ss
