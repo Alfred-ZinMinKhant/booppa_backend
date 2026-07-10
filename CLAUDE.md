@@ -32,7 +32,7 @@ docker compose up app worker
 ```
 
 - `app` runs `uvicorn app.main:app --host 0.0.0.0 --port 8000`.
-- `worker` runs `python -m celery -A app.workers.celery_app worker -B --loglevel=info -Q reports,default` — note `-B` (beat embedded in the worker, no separate beat process).
+- `worker` runs `python -m celery -A app.workers.celery_app worker -B --loglevel=info -Q fast_queue,heavy_queue` — note `-B` (beat embedded in the worker, no separate beat process). Locally, `docker-compose.yml` splits this into two services (one `-Q fast_queue` with `-B`, one `-Q heavy_queue`); in ECS a single worker consumes both queues.
 - Compose also includes `postgres:15`, `redis:7-alpine`, `django_admin`, and `browserless/chrome` (used by the PDPA scanner for headless renders).
 
 ### Migrations
@@ -86,8 +86,8 @@ Convention: when adding a table tied to a product version N rollout, add it to `
 
 `REDIS_URL` is both broker **and** result backend. Two queues:
 
-- `reports` — blocking work: PDF generation, blockchain anchoring, S3 uploads.
-- `default` — async side effects.
+- `heavy_queue` — blocking work: PDF generation, blockchain anchoring, S3 uploads.
+- `fast_queue` — async side effects; also the default queue (`task_default_queue="fast_queue"`) for any task without an explicit route in `celery_app.py:task_routes`.
 
 Major flows live in `app/workers/tasks.py`:
 
