@@ -119,6 +119,13 @@ def fetch_from_rss(db: Session) -> int:
     count = 0
     now = datetime.now(timezone.utc)
 
+    # A single tender_no can appear in more than one category feed within the
+    # same run. The `existing` query below only sees committed rows, so two
+    # adds of the same tender_no in one uncommitted session would both insert
+    # and collide on the unique constraint at commit. Track what we've handled
+    # this run to keep the batch conflict-free.
+    seen_tender_nos: set = set()
+
     for category in _GEBIZ_RSS_CATEGORIES:
         feed_url = _GEBIZ_RSS_BASE.format(category=category)
         try:
@@ -154,6 +161,13 @@ def fetch_from_rss(db: Session) -> int:
 
             if not tender_no:
                 continue
+
+            # Skip a tender_no already handled earlier in this same run (it
+            # appeared under another category feed) — the pending add isn't
+            # visible to the `existing` query yet and would double-insert.
+            if tender_no in seen_tender_nos:
+                continue
+            seen_tender_nos.add(tender_no)
 
             # closing_date: from parsed description
             closing_date = parsed.get("closing_date")

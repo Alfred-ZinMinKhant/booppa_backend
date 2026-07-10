@@ -12,7 +12,11 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+import logging
+from app.core.config import settings
 from app.core.db import get_db, get_current_user
+
+logger = logging.getLogger(__name__)
 from app.services.vendor_status import get_vendor_status
 from app.services.sector_pressure import (
     get_sector_competitive_pressure,
@@ -263,7 +267,6 @@ async def vendor_badge(
     """
     from app.core.models import VerifyRecord, LifecycleStatus
     from app.core.models import MarketplaceVendor
-    from app.core.config import settings
 
     verify = db.query(VerifyRecord).filter(
         VerifyRecord.vendor_id == current_user.id,

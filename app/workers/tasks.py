@@ -11,6 +11,7 @@ from app.services.pdf_service import PDFService
 from app.services.storage import S3Service
 from app.services.email_service import EmailService
 from app.core.repositories.user_repository import UserRepository
+from app.core.repositories.report_repository import ReportRepository
 from app.services.screenshot_service import capture_screenshot_base64, looks_like_image
 from app.core.config import settings
 from app.billing.enforcement import enforce_tier
@@ -5961,8 +5962,29 @@ def sync_gebiz_tenders():
     Fetch live GeBIZ open tenders via RSS (primary) then scrape the public
     listing (supplementary). Runs every 30 minutes via Celery Beat.
     Respects robots.txt: only public pages are accessed.
+
+    Guarded by a short-lived Redis lock so overlapping runs can't stampede:
+    if a queue backlog delivers many stranded beat ticks at once (as happened
+    during the queue-name migration outage), only one runs at a time. Without
+    this, a dozen concurrent runs each open Redis/HTTP/DB connections and
+    exhaust the Redis client limit ("max number of clients reached").
     """
     from app.services.gebiz_service import fetch_from_rss, scrape_gebiz_page
+
+    # Redis SETNX lock (auto-expires so a crashed run can't wedge the schedule
+    # forever). The sync runs every 30 min; a 20-min TTL comfortably covers a
+    # slow run while still self-healing well before the next scheduled tick.
+    lock_key = "lock:sync_gebiz_tenders"
+    redis_client = celery_app.backend.client
+    try:
+        got_lock = redis_client.set(lock_key, "1", nx=True, ex=1200)
+    except Exception as lock_err:  # pragma: no cover - lock is best-effort
+        logger.warning(f"[GeBIZ] lock acquire failed, running without lock: {lock_err}")
+        got_lock = True
+
+    if not got_lock:
+        logger.info("[GeBIZ] sync already in progress; skipping this run")
+        return
 
     db = SessionLocal()
     try:
@@ -5986,6 +6008,10 @@ def sync_gebiz_tenders():
         db.rollback()
     finally:
         db.close()
+        try:
+            redis_client.delete(lock_key)
+        except Exception:  # pragma: no cover - lock will expire on its own
+            pass
 
 
 def _bridge_gebiz_to_shortlist(db) -> None:
@@ -6126,12 +6152,25 @@ def cleanup_old_tasks():
     """Clean up old completed reports and temporary data"""
     db = SessionLocal()
     try:
+        from app.core.models import AuditChainEvent
+
         # Delete reports older than 30 days
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=30)
 
+        # Reports anchored to the audit chain are referenced by
+        # audit_chain_events (a hash-chained, append-only evidence trail with a
+        # non-cascading FK). Deleting them raises ForeignKeyViolation and, worse,
+        # would sever the audit chain — so exclude any report that has audit
+        # events. Only unanchored, purely-transient reports are pruned.
+        anchored_ids = db.query(AuditChainEvent.report_id).distinct().subquery()
+
         old_reports = (
             db.query(Report)
-            .filter(Report.status == "completed", Report.created_at < cutoff_date)
+            .filter(
+                Report.status == "completed",
+                Report.created_at < cutoff_date,
+                ~Report.id.in_(db.query(anchored_ids.c.report_id)),
+            )
             .all()
         )
 
