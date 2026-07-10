@@ -4652,17 +4652,20 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
 
         # Atomic same-day reservation (closes the check-then-create race between
         # the daily anniversary cron and the Vendor-Pro quarterly cron, which can
-        # both queue this task for the same vendor on a quarter-start day). Redis
-        # SET NX: exactly one caller wins; the loser drops. Test-harness runs
-        # (override_company set) are exempt so admin Test Identity can rescan on
-        # demand. Degrades to the DB check below when Redis is unavailable.
-        if not override_company:
-            from app.core.cache import cache as _cache
-            _day = datetime.now(timezone.utc).strftime("%Y%m%d")
-            _lock_key = f"pdpa_rescan_lock:{vendor_id}:{_day}"
-            if not _cache.add(_lock_key, {"queued": True}, ttl=86400):
-                logger.info(f"[PdpaMonitor] Atomic drop: rescan already reserved today for {vendor_id}")
-                return
+        # both queue this task for the same vendor on a quarter-start day, and
+        # between two concurrent test-checkout activations / a Stripe webhook
+        # redelivery after idempotency rollback). Redis SET NX: exactly one caller
+        # wins; the loser drops. This applies to ALL callers including test-harness
+        # runs (override_company) — the same-day DB check below already blocks a
+        # second scan on the same day, so exempting test runs bought no on-demand
+        # rescan ability while leaving the race open. Degrades to the DB check
+        # below when Redis is unavailable.
+        from app.core.cache import cache as _cache
+        _day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        _lock_key = f"pdpa_rescan_lock:{vendor_id}:{_day}"
+        if not _cache.add(_lock_key, {"queued": True}, ttl=86400):
+            logger.info(f"[PdpaMonitor] Atomic drop: rescan already reserved today for {vendor_id}")
+            return
 
         # Idempotency lock: drop if a scan is already pending or recently run (24h)
         from datetime import datetime, timezone, timedelta

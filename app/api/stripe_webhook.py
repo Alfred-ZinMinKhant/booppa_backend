@@ -1,6 +1,5 @@
-from app.core.idempotency import IdempotencyGuard
 from app.core.route_classes import RetryAPIRoute
-from fastapi import APIRouter, Request, HTTPException, Depends
+from fastapi import APIRouter, Request, HTTPException
 from app.core.config import settings
 from app.core.db import SessionLocal
 from app.core.models import Report, User
@@ -177,7 +176,13 @@ def _rollback_webhook_idempotency(event_id: str | None) -> None:
         logger.error(f"[Webhook] Idempotency rollback failed for {event_id}: {e}")
 
 
-@router.post("/webhook", dependencies=[Depends(IdempotencyGuard(key_header="Stripe-Signature"))])
+# NOTE: idempotency is enforced by ProcessedWebhookEvent (atomic INSERT ... ON
+# CONFLICT on the stable Stripe event_id inside _stripe_webhook_impl). The old
+# IdempotencyGuard keyed on the Stripe-Signature header was both ineffective and
+# harmful: Stripe re-signs every redelivery (the signature carries a timestamp),
+# so it never deduped real retries, and it set an IN_PROGRESS marker it never
+# cleared — a second delivery of the same signature 409'd for 24h.
+@router.post("/webhook")
 async def stripe_webhook(request: Request):
     """
     Thin wrapper around the actual webhook handler. Owns idempotency rollback
