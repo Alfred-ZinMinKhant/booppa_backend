@@ -53,16 +53,16 @@ def build_badge_certificate(db: Session, user: User, company_override: str | Non
         .filter(VendorScore.vendor_id == user.id)
         .first()
     )
-    confidence = getattr(snap, "confidence_score", 0)
-    if not confidence and score_record:
-        confidence = getattr(score_record, "compliance_score", 0)
+    confidence = getattr(snap, "confidence_score", None)
+    if confidence is None and score_record:
+        confidence = getattr(score_record, "compliance_score", None)
 
     # Re-evaluate procurement readiness if derived from fallback score
     readiness = getattr(snap, "procurement_readiness", None) or "CONDITIONAL"
-    if not getattr(snap, "confidence_score", 0) and score_record:
-        if confidence >= 80:
+    if getattr(snap, "confidence_score", None) is None and score_record:
+        if confidence is not None and confidence >= 80:
             readiness = "READY"
-        elif confidence >= 60:
+        elif confidence is not None and confidence >= 60:
             readiness = "CONDITIONAL"
         else:
             readiness = "NEEDS_ATTENTION"

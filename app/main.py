@@ -19,11 +19,13 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
+from app.core.middleware import RequestIDMiddleware
 
 setup_json_logging(level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
-limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+from app.core.limiter import limiter
 
 app = FastAPI(
     title="BOOPPA v10.0 Enterprise",
@@ -35,6 +37,9 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(RequestIDMiddleware)
+
+Instrumentator().instrument(app).expose(app)
 
 # CORS middleware
 app.add_middleware(

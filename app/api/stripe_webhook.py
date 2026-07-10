@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Request, HTTPException
+from app.core.idempotency import IdempotencyGuard
+from app.core.route_classes import RetryAPIRoute
+from fastapi import APIRouter, Request, HTTPException, Depends
 from app.core.config import settings
 from app.core.db import SessionLocal
 from app.core.models import Report, User
@@ -17,7 +19,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 RFP_PRODUCT_TYPES = {"rfp_express", "rfp_complete"}
@@ -175,7 +177,7 @@ def _rollback_webhook_idempotency(event_id: str | None) -> None:
         logger.error(f"[Webhook] Idempotency rollback failed for {event_id}: {e}")
 
 
-@router.post("/webhook")
+@router.post("/webhook", dependencies=[Depends(IdempotencyGuard(key_header="Stripe-Signature"))])
 async def stripe_webhook(request: Request):
     """
     Thin wrapper around the actual webhook handler. Owns idempotency rollback

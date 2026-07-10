@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 Vendor Status Routes — V8
 ==========================
@@ -27,7 +28,7 @@ from app.services.cal import (
 from app.services.notarization_elevation import fetch_elevation_metadata
 from app.core.models import VendorSector
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 @router.get("/status")

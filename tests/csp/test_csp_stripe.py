@@ -33,7 +33,7 @@ def _auth_header(email: str) -> dict:
 
 
 def _org_for(db, user_id):
-    from app.core.models_csp import CspOrganisation
+    from app.core.models import CspOrganisation
     return (
         db.query(CspOrganisation)
         .filter(CspOrganisation.owner_user_id == user_id)

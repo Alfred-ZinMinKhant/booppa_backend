@@ -1,3 +1,5 @@
+from __future__ import annotations
+from app.core.route_classes import RetryAPIRoute
 """
 Booppa CSP Compliance Pack — FastAPI Router (v3)
 
@@ -19,7 +21,6 @@ Mounted via app/api/__init__.py (the composite api_router is dual-mounted at /ap
 /api/v1/csp/... and /api/csp/... — do NOT add a separate include_router call.
 """
 
-from __future__ import annotations
 
 import hashlib
 import json
@@ -66,7 +67,7 @@ except ImportError:
     _HAS_RELATIVEDELTA = False
 
 
-router = APIRouter(prefix="/csp")
+router = APIRouter(prefix="/csp", route_class=RetryAPIRoute)
 
 
 # ── AUTH ADAPTER ────────────────────────────────────────────────────────────────

@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional
@@ -20,7 +21,7 @@ from app.services.scoring import VendorScoreEngine
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 # Models
 class LoginRequest(BaseModel):

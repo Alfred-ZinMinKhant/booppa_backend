@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 from fastapi import APIRouter, HTTPException
 from app.core.db import SessionLocal
 from app.core.models import Report, User
@@ -9,7 +10,7 @@ import logging
 import time
 import uuid
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 logger = logging.getLogger(__name__)
 
 # Simple in-memory rate limit: owner_id → last email timestamp

@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 Supply Chain / Managed Vendors API — V11
 ==========================================
@@ -25,7 +26,7 @@ from app.core.models import User, Report
 from app.core.models import ManagedVendor
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 # ── Pydantic schemas ───────────────────────────────────────────────────────────

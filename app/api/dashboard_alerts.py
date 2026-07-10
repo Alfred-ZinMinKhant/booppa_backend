@@ -1,3 +1,5 @@
+from __future__ import annotations
+from app.core.route_classes import RetryAPIRoute
 """
 Vendor Dashboard Alerts — consolidated endpoint
 =================================================
@@ -14,7 +16,6 @@ Returns all vendor state needed by the frontend alert engine:
   - subscription list
 """
 
-from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
@@ -26,7 +27,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db, get_current_user
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 @router.get("/dashboard-alerts")

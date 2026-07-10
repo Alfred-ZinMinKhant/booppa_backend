@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import List, Optional
@@ -11,7 +12,7 @@ from app.core.config import settings
 from app.core.db import SessionLocal
 from app.core.models import DemoBooking
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 def _parse_int_list(value: str, fallback: List[int]) -> List[int]:

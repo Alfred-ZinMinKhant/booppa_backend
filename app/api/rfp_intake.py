@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """RFP intake endpoints for bundle buyers.
 
 Bundle SKUs that include an RFP component defer kit generation: at webhook time
@@ -19,7 +20,7 @@ from app.core.db import get_db
 from app.core.models import User
 from app.core.models import PendingRfpIntake
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token", auto_error=False)
 
 

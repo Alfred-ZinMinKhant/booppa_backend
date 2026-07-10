@@ -1,3 +1,5 @@
+from app.core.limiter import limiter
+from app.core.route_classes import RetryAPIRoute
 import logging
 import redis as _redis_lib
 from fastapi import APIRouter, Depends, HTTPException, status, Body, Security
@@ -16,7 +18,7 @@ from app.core.db import get_db
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token", auto_error=False)
 
 # ── Refresh token store (Redis with in-memory fallback) ───────────────────────

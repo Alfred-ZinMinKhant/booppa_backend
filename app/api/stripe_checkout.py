@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 from fastapi import APIRouter, Request, HTTPException, Depends, Security
 from fastapi.responses import JSONResponse, RedirectResponse
 from slowapi import Limiter
@@ -12,7 +13,7 @@ import stripe
 import logging
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 _limiter = Limiter(key_func=get_remote_address)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token", auto_error=False)
 

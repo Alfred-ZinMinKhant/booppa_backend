@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
@@ -8,7 +9,7 @@ from app.core.config import settings
 import uuid
 import secrets
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 security = HTTPBasic()
 
 

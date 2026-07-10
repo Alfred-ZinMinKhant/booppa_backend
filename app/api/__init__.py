@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from .reports import router as reports_router
@@ -42,7 +43,7 @@ from .rfp_intake import router as rfp_intake_router
 from .ropa_intake import router as ropa_intake_router
 from .pdpa_declaration_intake import router as pdpa_declaration_intake_router
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 router.include_router(health_router, prefix="/health", tags=["health"])
 router.include_router(auth_router, prefix="/auth", tags=["authentication"])

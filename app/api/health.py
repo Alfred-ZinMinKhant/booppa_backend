@@ -1,10 +1,11 @@
+from app.core.route_classes import RetryAPIRoute
 from fastapi import APIRouter
 from app.core.db import SessionLocal
 from sqlalchemy import text
 import redis
 from app.core.config import settings
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 @router.get("")
 async def health_check():

@@ -40,7 +40,7 @@ async def run_scan_async(url: str) -> ScanResultModel:
             privacy = metadata.get("privacy_policy", {})
             if not privacy.get("found"):
                 violations += 1
-                detected_laws.append("PDPA Section 13")
+                detected_laws.append("PDPA 2012 s.13")
             
             # Check cookie consent
             consent = metadata.get("consent_mechanism", {})
@@ -52,7 +52,7 @@ async def run_scan_async(url: str) -> ScanResultModel:
             nric_found = metadata.get("collects_nric", False)
             if nric_found:
                 violations += 1
-                detected_laws.append("PDPA Section 13")
+                detected_laws.append("PDPA 2012 s.13")
             
             # Check DNC compliance
             dnc = metadata.get("dnc_mention", {})

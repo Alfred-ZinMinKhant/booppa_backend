@@ -33,6 +33,6 @@ def test_report_model(test_db):
     test_db.flush()
 
     assert report.framework == "MTCS"
-    assert report.company_name == "Test Company"
+    assert report.company == "Test Company"
     assert report.status == "pending"
     assert report.id is not None

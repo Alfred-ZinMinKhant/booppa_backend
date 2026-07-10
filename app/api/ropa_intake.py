@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 ropa_intake.py — TASK 1: /api/ropa/intake endpoints.
 
@@ -22,10 +23,10 @@ logger = logging.getLogger(__name__)
 from app.core.auth import verify_access_token
 from app.core.db import get_db
 from app.core.models import User
-from app.core.ropa_models import RopaActivities  # add RopaActivities to models_v12.py per ropa_models.py
+from app.core.models import RopaActivities  # add RopaActivities to models_v12.py per ropa_models.py
 from app.services.ropa_generator import ROPA_INTAKE_SCHEMA, PDPA_LEGAL_BASIS_OPTIONS, validate_ropa_intake
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token", auto_error=False)
 
 

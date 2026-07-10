@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 Feature Flag API Routes
 =======================
@@ -13,7 +14,7 @@ from app.services.feature_flags import (
     check_auto_activation, get_growth_metrics,
 )
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 class SetFlagRequest(BaseModel):

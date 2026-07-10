@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 from datetime import datetime, timedelta, timezone
 import asyncio
 import logging
@@ -16,7 +17,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 from typing import Optional, Union

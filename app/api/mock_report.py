@@ -1,10 +1,11 @@
+from app.core.route_classes import RetryAPIRoute
 from fastapi import APIRouter, Response
 from fastapi.responses import StreamingResponse
 from io import BytesIO
 from app.services.pdf_service import PDFService
 from app.core.config import settings
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 @router.get("/report", summary="Generate mock PDF report")

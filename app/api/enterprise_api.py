@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 Enterprise API — V12
 17 endpoints under /api/v1/enterprise/
@@ -23,8 +24,8 @@ from app.core.models import (
     MAS_TRM_DOMAINS,
 )
 
-router = APIRouter()
-sso_router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
+sso_router = APIRouter(route_class=RetryAPIRoute)
 logger = logging.getLogger(__name__)
 
 

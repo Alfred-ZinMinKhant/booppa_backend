@@ -9,6 +9,12 @@ class JSONFormatter(logging.Formatter):
             "message": record.getMessage(),
             "logger": record.name,
         }
+        
+        from app.core.middleware import request_id_ctx
+        req_id = request_id_ctx.get()
+        if req_id:
+            log_record["request_id"] = req_id
+
         if record.exc_info:
             log_record["exception"] = self.formatException(record.exc_info)
         return json.dumps(log_record)

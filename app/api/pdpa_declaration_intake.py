@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 pdpa_declaration_intake.py — /api/pdpa-declaration endpoints (PDPA Level-2).
 
@@ -16,14 +17,14 @@ logger = logging.getLogger(__name__)
 from app.core.auth import verify_access_token
 from app.core.db import get_db
 from app.core.models import User
-from app.core.pdpa_declaration_models import PdpaSelfDeclaration
+from app.core.models import PdpaSelfDeclaration
 from app.services.pdpa_declaration_generator import (
     PDPA_DECLARATION_SCHEMA,
     PDPA_LEGAL_BASIS_OPTIONS,
     validate_pdpa_declaration,
 )
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token", auto_error=False)
 
 _FIELD_KEYS = [f["key"] for f in PDPA_DECLARATION_SCHEMA]

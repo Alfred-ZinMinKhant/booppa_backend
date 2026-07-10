@@ -13,7 +13,7 @@ from pypdf import PdfReader
 
 
 def _seed_awards(db):
-    from app.core.models_gebiz import GebizAwardHistory
+    from app.core.models import GebizAwardHistory
 
     # Clean slate: the digest computes latest_award across ALL rows, and the
     # table has a unique (tender_no, supplier_name, awarded_date) constraint —

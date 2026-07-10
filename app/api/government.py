@@ -1,3 +1,5 @@
+from __future__ import annotations
+from app.core.route_classes import RetryAPIRoute
 """
 Government Portal API
 =====================
@@ -17,7 +19,6 @@ POST /api/government/verify           — verify vendor by UEN or blockchain TX 
 POST /api/government/shortlist-report — generate plain-text evaluation report
 """
 
-from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
@@ -41,7 +42,7 @@ from app.core.auth import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 

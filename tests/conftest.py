@@ -1,3 +1,6 @@
+import os
+os.environ["DATABASE_URL"] = "postgresql+psycopg2://booppa:password@localhost:5432/booppa_test"
+
 """Test fixtures for booppa_backend.
 
 Extends the original conftest with:
@@ -402,3 +405,8 @@ def post_webhook(client, signed_webhook):
         )
 
     return _post
+
+@pytest.fixture(autouse=True)
+def _patch_sessionlocal(monkeypatch):
+    from app.core import db
+    monkeypatch.setattr(db, "SessionLocal", TestingSessionLocal)

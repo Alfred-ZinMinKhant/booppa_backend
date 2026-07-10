@@ -90,7 +90,8 @@ async def _check_robots(base_url: str, path: str) -> bool:
         rp = RobotFileParser()
         rp.set_url(f"{base_url}/robots.txt")
         # Fetch robots.txt manually since RobotFileParser.read() is blocking
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        from app.core.http_client import get_async_client
+        async with get_async_client(timeout=5.0) as client:
             resp = await client.get(f"{base_url}/robots.txt", headers={"User-Agent": USER_AGENT})
             if resp.status_code == 200:
                 rp.parse(resp.text.splitlines())
@@ -126,12 +127,13 @@ async def resolve_website(company_name: str, domain: Optional[str] = None) -> Op
         else:
             candidates.append(cleaned)
 
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
+    from app.core.http_client import get_async_client
+    async with get_async_client(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
         for url in candidates:
             try:
                 resp = await client.head(url, headers={"User-Agent": USER_AGENT})
                 if resp.status_code < 400:
-                    return str(resp.url)
+                    return str(resp.url).rstrip("/")
             except Exception:
                 continue
 
@@ -157,10 +159,11 @@ async def scrape_vendor_contacts(website_url: str) -> dict:
     all_emails: list[dict] = []
     pages_crawled = 0
 
-    async with httpx.AsyncClient(
+    from app.core.http_client import get_async_client
+    async with get_async_client(
         timeout=REQUEST_TIMEOUT,
         follow_redirects=True,
-        limits=httpx.Limits(max_connections=2),
+        max_connections=2,
     ) as client:
         for path in CONTACT_PATHS:
             if pages_crawled >= MAX_PAGES_PER_VENDOR:

@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 Marketplace API Routes
 ======================
@@ -13,7 +14,7 @@ from app.services.marketplace import (
     import_csv_data, search_marketplace, get_vendor_by_slug, get_industries, get_trust_status,
 )
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 @router.get("/stats")

@@ -17,7 +17,8 @@ class DeepSeekProvider:
             return None
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            from app.core.http_client import get_deepseek_client
+            async with get_deepseek_client() as client:
                 response = await client.post(
                     "https://api.deepseek.com/chat/completions",
                     headers={

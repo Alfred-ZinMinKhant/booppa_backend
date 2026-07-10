@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import secrets
@@ -13,7 +14,7 @@ from app.core.db import SessionLocal
 from app.core.models import SupportTicket, SupportTicketReply
 from app.api.admin import _admin_auth
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 class TicketCreate(BaseModel):

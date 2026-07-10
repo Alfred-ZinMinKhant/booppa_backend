@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 Referral API Routes
 ===================
@@ -13,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.models import Referral
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 class CreateReferralRequest(BaseModel):

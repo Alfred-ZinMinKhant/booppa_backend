@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 Comparison API Routes
 =====================
@@ -10,7 +11,7 @@ from app.core.db import get_db, get_current_user
 from app.services.feature_flags import require_feature
 from app.services.vendor_comparison import compare_vendors, find_comparable_vendors
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 @router.get("/")

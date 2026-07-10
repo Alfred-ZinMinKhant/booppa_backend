@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 Leaderboard & Rankings API Routes
 ==================================
@@ -18,7 +19,7 @@ from app.core.models import User
 from app.core.models import VendorScore, VendorSector
 from app.core.models import VendorStatusSnapshot
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 @router.get("/leaderboard/all")

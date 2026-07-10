@@ -1,3 +1,5 @@
+from __future__ import annotations
+from app.core.route_classes import RetryAPIRoute
 """
 GeBIZ Tenders API
 =================
@@ -6,7 +8,6 @@ GET /api/gebiz/latest-tenders  — Returns open tenders sorted by closing_date a
                                   indicating sector alignment with their profile.
 """
 
-from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
@@ -19,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.models import GebizTender
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 logger = logging.getLogger(__name__)
 
 

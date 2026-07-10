@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """Verifiable offline artefacts — on-demand exportable PDF endpoints.
 
 Closes the audit gap "declared but not verifiable offline": each dashboard-only
@@ -29,7 +30,7 @@ from app.services.vendor_artifacts_builder import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 def _pdf_response(pdf_bytes: bytes, filename: str) -> StreamingResponse:

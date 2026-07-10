@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -5,7 +6,7 @@ from typing import Optional
 from app.core.db import get_db
 from app.core.models import HardenedConsent
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 class HardenedConsentIn(BaseModel):

@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 from fastapi import (
     APIRouter, Request, HTTPException, Query, Depends, UploadFile,
     File as FastAPIFile,
@@ -15,7 +16,7 @@ import secrets
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 security = HTTPBasic(auto_error=False)
 
 

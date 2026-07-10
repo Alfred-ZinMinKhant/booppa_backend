@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 from fastapi import APIRouter, Request, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -6,7 +7,7 @@ from app.core.models import ConsentLog
 from datetime import datetime, timezone
 import re
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 class ConsentIn(BaseModel):

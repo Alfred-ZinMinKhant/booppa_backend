@@ -1,3 +1,5 @@
+from __future__ import annotations
+from app.core.route_classes import RetryAPIRoute
 """
 Remediation Tracking API
 ========================
@@ -22,7 +24,6 @@ Endpoints (all under `/remediations` prefix):
          body: {status?: str, notes?: str}
          → update fields the user can change
 """
-from __future__ import annotations
 
 import logging
 import uuid
@@ -44,7 +45,7 @@ from app.services.finding_keys import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 ALLOWED_STATUS = {"fixed", "wontfix", "open"}
 

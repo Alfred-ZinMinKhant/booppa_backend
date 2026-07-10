@@ -2331,11 +2331,11 @@ class PDFService:
         refs = [
             {"title": "Personal Data Protection Act 2012 (Singapore)",
              "url": "https://sso.agc.gov.sg/Act/PDPA2012"},
-            {"title": "PDPA Section 11 — Openness Obligation",
+            {"title": "PDPA 2012 s.11 — Openness Obligation",
              "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr11-"},
-            {"title": "PDPA Section 13 — Consent Obligation",
+            {"title": "PDPA 2012 s.13 — Consent Obligation",
              "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr13-"},
-            {"title": "PDPA Section 24 — Protection Obligation",
+            {"title": "PDPA 2012 s.24 — Protection Obligation",
              "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr24-"},
             {"title": "PDPC Advisory Guidelines on Cookies (2021)",
              "url": "https://www.pdpc.gov.sg/-/media/Files/PDPC/PDF-Files/Advisory-Guidelines/AG-on-Cookies-2021.pdf"},
@@ -2365,7 +2365,7 @@ class PDFService:
                          "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/2018/01/advisory-guidelines-for-nric-numbers"})
 
         if "dpo" in combined or "data protection officer" in combined or "organizational" in combined:
-            refs.append({"title": "PDPA Section 11(3) — DPO Designation & Public Disclosure",
+            refs.append({"title": "PDPA 2012 s.11(3) — DPO Designation & Public Disclosure",
                          "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr11-"})
 
         if "breach" in combined or "notification" in combined:

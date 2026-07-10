@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 Compliance Locker API — V11
 ============================
@@ -19,7 +20,7 @@ from app.core.db import get_db, get_current_user
 from app.core.models import Report
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 # ── Regulation seed data ───────────────────────────────────────────────────────
 # Loaded once at import time — avoids a DB round-trip for the public endpoint.

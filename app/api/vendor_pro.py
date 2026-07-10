@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 Vendor Pro — subscriber-only endpoints.
 
@@ -25,7 +26,7 @@ from app.billing.enforcement import VENDOR_PRO_PLAN_KEYS
 from app.services.tender_similarity import find_similar_tenders
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 def require_vendor_pro(user: User = Depends(get_current_user)) -> User:

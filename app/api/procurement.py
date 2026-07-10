@@ -1,3 +1,5 @@
+from app.services.pdf_styles import get_unified_styles
+from app.core.route_classes import RetryAPIRoute
 """
 Procurement Dashboard Routes — V8 — Enterprise Pro Layer
 =========================================================
@@ -47,7 +49,7 @@ from app.services.notarization_elevation import (
 )
 from app.services.sector_pressure import get_sector_competitive_pressure
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 ORDERING_POLICY = {
     "version":     "1.0",
@@ -862,7 +864,7 @@ async def export_pdf(
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), topMargin=48, bottomMargin=30)
-    styles = getSampleStyleSheet()
+    styles = get_unified_styles()
     elements = []
 
     # Title

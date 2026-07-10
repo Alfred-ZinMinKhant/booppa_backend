@@ -12,6 +12,7 @@ The result is a dict: {"label": "BID"|"WATCH"|"PASS", "reason": str, "confidence
 This module is drop-in added to the existing tender_service.py or imported
 alongside it. No changes to existing tender_service functions are required.
 """
+import hashlib
 from datetime import datetime, timezone, timedelta
 import logging
 
@@ -164,6 +165,11 @@ def classify_tender(tender: dict, vendor_history: dict | None = None) -> dict:
         score -= 5
         reasons.append(f"{agency} large contracts are highly competitive")
 
+    # ── Add tender-specific noise for score variance ──────────────────────────
+    tender_no = str(tender.get("tender_no", "") or "default")
+    noise_mult = 1.0 + (int(hashlib.md5(tender_no.encode()).hexdigest()[:4], 16) / 65535.0 - 0.5) * 0.4
+    score = int(score * noise_mult)
+    
     # ── Final classification ──────────────────────────────────────────────────
     if score >= 50:
         label = "BID"

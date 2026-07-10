@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status, Response
 from pydantic import BaseModel
 from typing import Optional
@@ -21,7 +22,7 @@ import asyncio
 from datetime import datetime, timezone
 
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 logger = logging.getLogger(__name__)
 

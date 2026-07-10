@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 Tender Intelligence API — Standalone subscription product.
 
@@ -34,7 +35,7 @@ from app.services.tender_service_bid_classifier import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 # Win-probability thresholds for bid/watch/pass recommendation.

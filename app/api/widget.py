@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 Widget API Routes
 =================
@@ -12,7 +13,7 @@ from app.core.models import User
 from app.core.models import VerifyRecord, VendorScore
 from app.core.models import VendorStatusSnapshot
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 @router.get("/badge/{vendor_id}.svg")

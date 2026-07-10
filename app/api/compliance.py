@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 Compliance Evidence Pack — dedicated endpoints
 ==============================================
@@ -25,7 +26,7 @@ from app.core.repositories.user_repository import UserRepository
 from app.services.storage import S3Service
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 ALLOWED_EXTENSIONS = {".pdf"}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB

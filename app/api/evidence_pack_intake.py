@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """Evidence Pack intake endpoints for Compliance Evidence Pack buyers.
 
 The `compliance_evidence_pack` SKU now produces the BCEP 7-document governance
@@ -24,7 +25,7 @@ from app.core.models import EvidencePack
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token", auto_error=False)
 
 # Fields the buyer must supply before the 7-document pack can be generated.

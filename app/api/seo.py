@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 SEO API Routes
 ==============
@@ -13,7 +14,7 @@ from app.services.seo_engine import (
     get_country_vendors, generate_sitemap_data,
 )
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 @router.get("/industry/{industry_slug}")

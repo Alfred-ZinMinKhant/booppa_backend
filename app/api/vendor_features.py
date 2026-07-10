@@ -1,3 +1,5 @@
+from __future__ import annotations
+from app.core.route_classes import RetryAPIRoute
 """
 Vendor enterprise features — API keys, webhooks, multi-subsidiary, SSO.
 
@@ -7,7 +9,6 @@ Organisation so the API surfaces as user-centric while storage remains
 properly tenant-scoped.
 """
 
-from __future__ import annotations
 
 import hashlib
 import hmac
@@ -31,7 +32,7 @@ from app.core.models import (
 from app.billing.enforcement import enforce_tier
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

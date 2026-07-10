@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 SSE (Server-Sent Events) Routes
 ================================
@@ -13,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.core.db import get_db
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 logger = logging.getLogger(__name__)
 
 # Simple in-memory event queue (use Redis pub/sub for multi-process)

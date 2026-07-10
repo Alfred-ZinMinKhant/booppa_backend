@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 RFP Requirements Routes — V8
 =============================
@@ -32,7 +33,7 @@ from app.core.models import (
     VendorStatusSnapshot,
 )
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 DEPTH_ORDER = {
     "NONE":       -1,

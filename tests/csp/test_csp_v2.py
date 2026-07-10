@@ -205,7 +205,7 @@ class TestPiiEncryption:
 
     def test_model_pii_fields_use_encrypted_type(self):
         """Verify models use EncryptedString for all PII fields."""
-        from app.core.models_csp import CspCddRecord, CspNomineeDirector, CspBeneficialOwner
+        from app.core.models import CspCddRecord, CspNomineeDirector, CspBeneficialOwner
         from app.core.encryption import EncryptedString, EncryptedText
 
         # CDD Record
@@ -688,7 +688,7 @@ class TestTippingOffProtection:
 
     def test_client_notified_always_false_in_model(self):
         """client_notified defaults to False and cannot be True."""
-        from app.core.models_csp import CspStrReport
+        from app.core.models import CspStrReport
         col = CspStrReport.__table__.columns["client_notified"]
         assert col.default.arg is False
 
@@ -799,7 +799,7 @@ class TestIntegrationV2:
         assert callable(_build_record_hash)
 
     def test_all_models_importable(self):
-        from app.core.models_csp import (
+        from app.core.models import (
             CspProfile, CspClient, CspCddRecord, CspEddRecord, CspStrReport,
             CspNomineeDirector, CspNomineeShareholder, CspBeneficialOwner,
             CspAmlProgramme, CspRiskAssessment, CspComplianceCalendar,
@@ -814,7 +814,7 @@ class TestIntegrationV2:
     def test_three_fixes_summary(self):
         """Smoke test confirming all three fixes are implemented."""
         # Fix 1: EncryptedString in models
-        from app.core.models_csp import CspCddRecord
+        from app.core.models import CspCddRecord
         from app.core.encryption import EncryptedString
         nric_col = CspCddRecord.__table__.columns["individual_nric_or_passport"]
         assert isinstance(nric_col.type, EncryptedString), "Fix #1 not applied"

@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -5,7 +6,7 @@ from typing import List, Dict, Any
 from app.core.db import get_db
 import logging
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 logger = logging.getLogger(__name__)
 
 @router.get("/")

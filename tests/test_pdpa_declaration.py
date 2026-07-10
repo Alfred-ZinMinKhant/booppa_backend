@@ -92,7 +92,7 @@ def test_submit_without_draft_is_422(client, test_db):
 def test_status_reflects_lifecycle(client, test_db):
     """status: empty → draft → completed (once the anchored Report exists)."""
     from app.core.models import Report
-    from app.core.pdpa_declaration_models import PdpaSelfDeclaration
+    from app.core.models import PdpaSelfDeclaration
 
     user = make_user(test_db, email="pdpa-l2-status@booppa.io", company="Acme")
     headers = auth_headers(user)
@@ -122,7 +122,7 @@ def test_status_reflects_lifecycle(client, test_db):
 
 def test_fulfillment_creates_anchored_report(test_db, mocker):
     from app.core.models import Report
-    from app.core.pdpa_declaration_models import PdpaSelfDeclaration
+    from app.core.models import PdpaSelfDeclaration
 
     user = make_user(test_db, email="pdpa-l2-fulfil@booppa.io", company="Acme")
     test_db.add(PdpaSelfDeclaration(user_id=user.id, source="pdpa_quick_scan",

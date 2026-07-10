@@ -1,3 +1,5 @@
+from __future__ import annotations
+from app.core.route_classes import RetryAPIRoute
 """
 Vendor Dashboard — real data endpoint
 ======================================
@@ -8,7 +10,6 @@ Returns:
   chartData:      7-day daily view + trigger counts
   recentActivity: last 10 proof views with domain / intent label
 """
-from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
@@ -21,7 +22,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db, get_current_user
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 # Day-of-week labels (Mon = 0)
 _DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]

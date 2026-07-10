@@ -51,7 +51,17 @@ def _drift_chart(score_history: List[Dict[str, Any]]):
         lc = HorizontalLineChart()
         lc.x, lc.y, lc.width, lc.height = 35, 25, 390, 125
         lc.data = [[p[1] for p in pts]]
-        lc.categoryAxis.categoryNames = [str(p[0]) for p in pts]
+        
+        categories = []
+        last_cat = None
+        for p in pts:
+            cat = str(p[0])
+            if cat == last_cat:
+                categories.append("")
+            else:
+                categories.append(cat)
+                last_cat = cat
+        lc.categoryAxis.categoryNames = categories
         lc.valueAxis.valueMin = 0
         lc.valueAxis.valueMax = 100
         lc.valueAxis.valueStep = 20

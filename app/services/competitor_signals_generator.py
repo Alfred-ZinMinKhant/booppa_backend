@@ -67,10 +67,15 @@ def _get_signals(db, sector: str, days: int = 90) -> dict:
         try:
             # GebizAwardHistory.sector is normally written uppercased, but match
             # case-insensitively so legacy mixed-case rows still count.
+            _search_sec = (sector or "").strip().lower()
+            if _search_sec == "it":
+                # In GeBIZ, 'IT' is often spelled out
+                _search_sec = "information technology"
+
             rows = (
                 db.query(GebizAwardHistory)
                 .filter(
-                    func.upper(GebizAwardHistory.sector) == (sector or "").upper(),
+                    func.lower(func.trim(GebizAwardHistory.sector)).contains(_search_sec),
                     GebizAwardHistory.awarded_date >= since,
                 )
                 .all()
@@ -348,10 +353,15 @@ async def generate_and_deliver_competitor_signals(
         <p>Here are your monthly competitor signals for the <strong>{signals['sector']}</strong> sector
            ({signals['total_awards']} GeBIZ awards in the last {signals['period_days']} days):</p>
 
-        <h3 style="color:#0f172a;">Top suppliers in your sector</h3>
+        <h3 style="color:#0f172a;">1. Top suppliers in your sector</h3>
         <ul style="color:#334155;font-size:14px;">{supplier_html}</ul>
 
-        <h3 style="color:#0f172a;">{trend_emoji} Sector trend</h3>
+        <h3 style="color:#0f172a;">2. Where to compete</h3>
+        <p style="color:#334155;font-size:14px;">
+          See the attached PDF for the full breakdown of win rates by contract size.
+        </p>
+
+        <h3 style="color:#0f172a;">3. {trend_emoji} Sector trend</h3>
         <p style="color:#334155;font-size:14px;">
           The {signals['sector']} sector is <strong>{trend_dir}</strong>
           ({trend.get('pct', 0):+}% vs the previous period).

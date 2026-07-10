@@ -1,7 +1,8 @@
+from app.core.route_classes import RetryAPIRoute
 from fastapi import APIRouter
 from app.core.config import settings
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 @router.get("/subscription-families")

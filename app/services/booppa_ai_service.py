@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 BOOPPA_SYSTEM_PROMPT = """You are BOOPPA AI - Singapore's leading compliance auditor specializing in PDPA, MTCS, and MAS regulations.
 
 CRITICAL INSTRUCTIONS:
-1. ALWAYS cite specific legislation sections (PDPA Section 13, MAS Notice 626, etc.)
+1. ALWAYS cite specific legislation sections (PDPA 2012 s.13, MAS Notice 626, etc.)
 2. ALWAYS mention exact penalties (S$1,000,000, up to 10% of annual revenue)
 3. ALWAYS provide actionable tasks with deadlines and acceptance criteria
 4. ALWAYS reference PDPC Advisory Guidelines when relevant
@@ -156,17 +156,17 @@ def get_penalty_for_violation(violation_type: str) -> Dict:
     penalties = {
         "nric_collection": {
             "amount": "Up to S$1,000,000",
-            "legislation": "PDPA Section 18",
+            "legislation": "PDPA 2012 s.18",
             "reference": "PDPC Advisory Guidelines 2018",
         },
         "no_consent": {
             "amount": "Up to S$1,000,000",
-            "legislation": "PDPA Section 13",
+            "legislation": "PDPA 2012 s.13",
             "reference": "PDPC Guide to Enhanced Notice 2021",
         },
         "data_breach": {
             "amount": "Up to S$1,000,000 or 10% annual turnover",
-            "legislation": "PDPA Section 24",
+            "legislation": "PDPA 2012 s.24",
             "reference": "Cybersecurity Act 2018",
         },
         "dnc_violation": {
@@ -176,7 +176,7 @@ def get_penalty_for_violation(violation_type: str) -> Dict:
         },
         "no_https": {
             "amount": "Up to S$1,000,000",
-            "legislation": "PDPA Section 24",
+            "legislation": "PDPA 2012 s.24",
             "reference": "PDPC Guide to Data Protection by Design",
         },
     }
@@ -376,7 +376,7 @@ VIOLATION_META: Dict = {
         "deadline_short": "14 days for designation; 30 days for public disclosure",
         "requirements": [
             "If a DPO is already appointed, publish their business contact information on the website.",
-            "If no DPO is designated, appoint one under PDPA Section 11(3).",
+            "If no DPO is designated, appoint one under PDPA 2012 s.11(3).",
             "Publish DPO contact information in the privacy policy and/or website footer.",
             "Register the DPO with PDPC if required by organisation size.",
         ],
@@ -426,7 +426,7 @@ class BooppaAIService:
                 "template": """CRITICAL VIOLATION: Unauthorized NRIC Collection
 
 LEGISLATION VIOLATED:
-• PDPA Section 18 - Purpose Limitation
+• PDPA 2012 s.18 - Purpose Limitation
 • PDPC Advisory Guidelines on NRIC Numbers (2018)
 
 PENALTY: {penalty_amount}
@@ -474,7 +474,7 @@ VERIFICATION:
                 "template": """HIGH VIOLATION: Non-Compliant Cookie Consent Mechanism
 
 LEGISLATION VIOLATED:
-• PDPA Section 13 - Consent Obligation
+• PDPA 2012 s.13 - Consent Obligation
 • PDPC Guide to Enhanced Notice and Choice (2021)
 
 PENALTY: {penalty_amount}
@@ -517,7 +517,7 @@ NOTE: Implied consent (continued browsing) is NOT sufficient under PDPA""",
                 "template": """CRITICAL VIOLATION: Inadequate Data Protection Measures
 
 LEGISLATION VIOLATED:
-• PDPA Section 24 - Protection Obligation
+• PDPA 2012 s.24 - Protection Obligation
 • MAS Notice 644 - Cyber Hygiene
 • MTCS Level 3 Requirements (if applicable)
 
@@ -780,7 +780,7 @@ BLOCKCHAIN EVIDENCE:
                         f"Pages checked: {pages_checked}. "
                         f"Note: this does not confirm that a DPO has not been appointed — "
                         f"only that their contact details are not visible on publicly "
-                        f"accessible pages. PDPA Section 11(3) requires public disclosure "
+                        f"accessible pages. PDPA 2012 s.11(3) requires public disclosure "
                         f"of DPO business contact information."
                     ),
                     "location": f"Website — {pages_checked}",
@@ -1231,17 +1231,17 @@ Consult legal counsel for interpretation of regulatory requirements."""
                 "relevance": "Core legislation for all data protection in Singapore",
             },
             {
-                "title": "PDPA Section 11 — Openness Obligation",
+                "title": "PDPA 2012 s.11 — Openness Obligation",
                 "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr11-",
                 "relevance": "Requires public disclosure of data protection policies and DPO contact",
             },
             {
-                "title": "PDPA Section 13 — Consent Obligation",
+                "title": "PDPA 2012 s.13 — Consent Obligation",
                 "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr13-",
                 "relevance": "Requires consent before collecting, using, or disclosing personal data",
             },
             {
-                "title": "PDPA Section 24 — Protection Obligation",
+                "title": "PDPA 2012 s.24 — Protection Obligation",
                 "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr24-",
                 "relevance": "Requires reasonable security arrangements to protect personal data",
             },
@@ -1274,7 +1274,7 @@ Consult legal counsel for interpretation of regulatory requirements."""
 
         if any("organizational" in vt for vt in violation_types):
             references.append({
-                "title": "PDPA Section 11(3) — DPO Designation & Public Disclosure",
+                "title": "PDPA 2012 s.11(3) — DPO Designation & Public Disclosure",
                 "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr11-",
                 "relevance": "Requires designation and public disclosure of DPO contact",
             })
@@ -1315,18 +1315,18 @@ Consult legal counsel for interpretation of regulatory requirements."""
     def _get_violation_legislation(self, violation_type: str) -> List[str]:
         """Get legislation references for violation type"""
         legislation_map = {
-            "nric_violation": ["PDPA Section 18", "PDPC Advisory Guidelines 2018"],
+            "nric_violation": ["PDPA 2012 s.18", "PDPC Advisory Guidelines 2018"],
             "cookie_violation": [
-                "PDPA Section 13",
+                "PDPA 2012 s.13",
                 "PDPC Guide to Enhanced Notice 2021",
             ],
             "security_violation": [
-                "PDPA Section 24",
+                "PDPA 2012 s.24",
                 "Cybersecurity Act 2018",
                 "MAS Notice 644",
             ],
             "organizational_violation": [
-                "PDPA Section 11",
+                "PDPA 2012 s.11",
                 "PDPC Guide to Accountability",
             ],
             "marketing_violation": ["DNC Registry", "Spam Control Act"],

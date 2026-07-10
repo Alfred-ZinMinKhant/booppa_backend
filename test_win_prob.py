@@ -2,7 +2,7 @@ from app.core.db import SessionLocal
 from app.services.tender_service import compute_tender_win_probability
 from app.core.models import User
 db = SessionLocal()
-user = db.query(User).filter(User.company_name.ilike('%ecloudvalley%')).first()
+user = db.query(User).filter(User.company.ilike('%ecloudvalley%')).first()
 if user:
     print(f"Vendor: {user.company_name}, ID: {user.id}")
     from app.services.vendor_active_insights import get_tender_matches

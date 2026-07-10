@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 Notarization API
 =================
@@ -26,7 +27,7 @@ except ImportError:
     qrcode = None
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".png", ".jpg", ".jpeg", ".txt", ".csv", ".xlsx"}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB

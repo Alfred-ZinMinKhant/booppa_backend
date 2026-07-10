@@ -1,3 +1,5 @@
+from app.services.pdf_styles import get_unified_styles
+from app.core.http_client import get_async_client
 from .celery_app import celery_app
 from celery.exceptions import Retry
 from app.core.db import SessionLocal
@@ -169,7 +171,7 @@ async def _fetch_thum_io_base64(url: str, timeout: int = 30) -> tuple[str | None
             return None
         return base64.b64encode(body).decode()
 
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+    async with get_async_client(timeout=timeout, follow_redirects=True) as client:
 
         # 1. Microlink — returns JSON with CDN screenshot URL
         try:
@@ -425,7 +427,7 @@ async def _detect_cookie_banner(url: str | None) -> dict:
 
     # Fallback to static HTTP scan (browser-like headers to avoid 403)
     try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        async with get_async_client(timeout=15.0, follow_redirects=True) as client:
             resp = await client.get(url, headers=_BROWSER_UA_HEADERS)
             if resp.status_code == 403:
                 resp = await client.get(url, headers={"User-Agent": "BooppaComplianceBot/1.0"})
@@ -516,7 +518,7 @@ async def _scan_site_metadata(url: str | None, company_name: str | None = None) 
     http_status = 0
 
     try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        async with get_async_client(timeout=15.0, follow_redirects=True) as client:
             # Use browser-like headers to avoid 403 from WAFs
             resp = await client.get(url, headers=_BROWSER_UA_HEADERS)
             http_status = resp.status_code
@@ -624,7 +626,7 @@ async def _scan_site_metadata(url: str | None, company_name: str | None = None) 
             try:
                 en_href = alt_match.group(1)
                 en_url = en_href if en_href.startswith("http") else urljoin(url, en_href)
-                async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                async with get_async_client(timeout=15.0, follow_redirects=True) as client:
                     en_resp = await client.get(en_url, headers=_BROWSER_UA_HEADERS)
                 if en_resp.status_code < 400:
                     combined_html += "\n" + (en_resp.text or "").lower()
@@ -651,7 +653,7 @@ async def _scan_site_metadata(url: str | None, company_name: str | None = None) 
                 if privacy_link.startswith("http")
                 else urljoin(url, privacy_link)
             )
-            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            async with get_async_client(timeout=15.0, follow_redirects=True) as client:
                 resp = await client.get(
                     privacy_url, headers=_BROWSER_UA_HEADERS
                 )
@@ -814,7 +816,7 @@ async def _resolve_website_url(raw_url: str | None) -> dict:
             candidates.append(f"https://www.{root_domain}")
         candidates += [f"https://{root_domain}", f"http://{root_domain}"]
 
-    async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+    async with get_async_client(timeout=8.0, follow_redirects=True) as client:
         for candidate in candidates:
             try:
                 # Use browser-like headers to avoid 403 from WAFs/CDNs
@@ -830,7 +832,7 @@ async def _resolve_website_url(raw_url: str | None) -> dict:
                     logger.info(f"URL {candidate} returned 404, trying next candidate")
                     continue
                 
-                final_url = str(resp.url)
+                final_url = str(resp.url).rstrip("/")
                 return {
                     "resolved_url": final_url,
                     "uses_https": final_url.lower().startswith("https://"),
@@ -2132,7 +2134,7 @@ def _build_compliance_bundle_zip(db, user_id, company_name, cover_pdf_bytes):
         _buf = _B()
         _doc = SimpleDocTemplate(_buf, pagesize=A4, leftMargin=0.8 * inch, rightMargin=0.8 * inch,
                                  topMargin=0.8 * inch, bottomMargin=0.8 * inch)
-        _st = getSampleStyleSheet()
+        _st = get_unified_styles()
         _doc.build([
             Paragraph(f"Compliance Evidence Bundle — {company_name or 'Your Organisation'}", _st["Title"]),
             Paragraph(f"Generated {date_str} · Booppa", _st["Normal"]),
@@ -2263,7 +2265,7 @@ def fulfill_cover_sheet_task(
                 # changes to that query's logic. No-op if the buyer hasn't
                 # submitted any ROPA rows, or if a ropa_lite Report already
                 # exists (idempotent across retries).
-                from app.core.ropa_models import RopaActivities
+                from app.core.models import RopaActivities
                 existing_ropa_report = (
                     db.query(Report)
                     .filter(
@@ -4648,6 +4650,24 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
         user = UserRepository.get_by_id(db, str(vendor_id))
         company = (override_company or "").strip() or (getattr(user, "company", "Customer") if user else "Customer")
 
+        # Idempotency lock: drop if a scan is already pending or recently run (24h)
+        from datetime import datetime, timezone, timedelta
+        recent_threshold = datetime.now(timezone.utc) - timedelta(hours=24)
+        recent_scan = (
+            db.query(Report)
+            .filter(
+                Report.owner_id == _uuid.UUID(vendor_id),
+                Report.framework == "pdpa_quick_scan",
+                Report.created_at >= recent_threshold
+            )
+            .order_by(Report.created_at.desc())
+            .first()
+        )
+        if recent_scan and isinstance(recent_scan.assessment_data, dict):
+            if recent_scan.assessment_data.get("triggered_by") == "pdpa_monitor_monthly":
+                logger.info(f"[PdpaMonitor] Idempotency drop: scan already exists for {vendor_id} within 24h")
+                return
+
         stub = Report(
             owner_id=_uuid.UUID(vendor_id),
             framework="pdpa_quick_scan",
@@ -5710,7 +5730,7 @@ def refresh_gebiz_base_rates():
 
             fetched_any = False
             award_total = 0
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with get_async_client(timeout=30.0) as client:
                 for dataset_id in GEBIZ_DATASET_IDS:
                     offset = 0
                     while True:
@@ -6722,7 +6742,7 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                     leftMargin=0.6 * inch, rightMargin=0.6 * inch,
                     topMargin=0.6 * inch, bottomMargin=0.6 * inch,
                 )
-                styles = getSampleStyleSheet()
+                styles = get_unified_styles()
                 h_style = ParagraphStyle(
                     "h", parent=styles["Heading1"], fontSize=18, textColor=colors.HexColor("#0f172a"),
                     spaceAfter=6,
@@ -7135,7 +7155,7 @@ def fulfill_pdpa_declaration_task(user_id: str, customer_email: str | None = Non
     a pdpa_self_declaration Report with a tx_hash already exists.
     """
     from app.core.models import User, Report
-    from app.core.pdpa_declaration_models import PdpaSelfDeclaration
+    from app.core.models import PdpaSelfDeclaration
     from app.services.pdpa_declaration_generator import generate_pdpa_declaration_pdf
 
     db = SessionLocal()

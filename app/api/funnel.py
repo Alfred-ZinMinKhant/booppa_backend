@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 Funnel & Analytics API Routes
 =============================
@@ -14,7 +15,7 @@ from app.services.funnel_analytics import (
     get_revenue_summary, compute_monthly_snapshot,
 )
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 class FunnelEventRequest(BaseModel):

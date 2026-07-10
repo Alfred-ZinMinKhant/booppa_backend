@@ -1,7 +1,8 @@
+from app.core.route_classes import RetryAPIRoute
 from fastapi import APIRouter, HTTPException
 from app.services.pricing import get_all_products, get_product
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 @router.get("/products")

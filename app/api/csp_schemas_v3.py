@@ -1,10 +1,10 @@
+from __future__ import annotations
 """
 Booppa CSP Compliance Pack — Pydantic schemas v3 (additions)
 Layer 1: AML Programme approval attestation
 Layer 2: Risk classification audit
 Layer 3: ToS acceptance
 """
-from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID

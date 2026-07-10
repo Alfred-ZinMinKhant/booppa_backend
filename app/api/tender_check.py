@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 Tender Check API — V10
 ======================
@@ -20,7 +21,7 @@ from app.services.tender_service import compute_tender_win_probability
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 
 def _log_tender_check_lookup(db: Session, tender_no: str, vendor_id: Optional[str], result: dict) -> None:

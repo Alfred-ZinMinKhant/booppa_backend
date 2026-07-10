@@ -1,7 +1,7 @@
 """
 Privacy Policy §13 Clause Classifier
 ====================================
-The PDPA Section 11/13 Notification Obligation requires every privacy policy
+The PDPA 2012 s.11/13 Notification Obligation requires every privacy policy
 to disclose specific items. This module checks whether a fetched policy
 actually contains each required clause, rather than just confirming a policy
 link exists.
@@ -139,7 +139,7 @@ def harvest_clause_snippets(policy_html: str) -> dict[str, list[str]]:
 
 
 _CLASSIFIER_PROMPT = (
-    "You are auditing a Singapore privacy policy for PDPA Section 11/13/21/22/25/26 compliance. "
+    "You are auditing a Singapore privacy policy for PDPA 2012 s.11/13/21/22/25/26 compliance. "
     "For each clause below, decide whether the supplied snippets demonstrate that the policy "
     "MEETS the obligation. Return ONLY a JSON object keyed by clause name:\n"
     "  {\"purpose\": {\"present\": bool, \"confidence\": 0.0-1.0, \"note\": \"short reason\"}, "
@@ -161,7 +161,7 @@ _CLASSIFIER_PROMPT = (
 # is expected to handle the multilingual reasoning and still return English
 # JSON. Truncates input to avoid prompt-size blowups on long policies.
 _MULTILINGUAL_PROMPT = (
-    "You are auditing a Singapore privacy policy for PDPA Section 11/13/21/22/25/26 "
+    "You are auditing a Singapore privacy policy for PDPA 2012 s.11/13/21/22/25/26 "
     "compliance. The policy may be written in English, Chinese (zh), Malay (ms), or "
     "Tamil (ta). Read the full text and decide whether each required clause is present. "
     "Return ONLY a JSON object (in English) keyed by clause name:\n"

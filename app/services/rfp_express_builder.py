@@ -1963,7 +1963,7 @@ class RFPExpressBuilder:
                 Bucket=s3_svc.bucket,
                 Key=key,
                 Body=docx_bytes,
-                ContentType="application/octet-stream",
+                ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
             url = s3_svc.s3_client.generate_presigned_url(
                 "get_object",

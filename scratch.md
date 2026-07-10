@@ -1,0 +1,6 @@
+All remaining items have been successfully addressed:
+
+5. **Idempotency lock added to PDPA Monitor**: Inserted a 24-hour Postgres-backed check in `pdpa_monitor_monthly_rescan_task` (`app/workers/tasks.py`) to drop the duplicate job if a monitor scan for that vendor is already pending or was run within the last 24 hours.
+6. **Standardised PDPA legal citations**: I ran a regex replacement script across all AI prompts, document generators, and scanner logic to rewrite all variations of `PDPA Section X` into the standardized `PDPA 2012 s.X` format.
+7. **Fixed URL crawler trailing slashes (404)**: Found and patched the issue in `app/workers/tasks.py` (line ~833) and `app/services/vendor_scraper.py` where the crawler resolution (`final_url = str(resp.url)`) was returning the `httpx` default trailing slash on root paths. I've stripped the trailing slash (`.rstrip("/")`) before returning `resolved_url`, preventing invalid URL concatenations down the line.
+8. **Fixed Compliance trend chart repeating month labels**: Modified the `_drift_chart` rendering code in `pdpa_monitor_delta_generator.py`. It now properly deduplicates overlapping month labels along the X-axis (by outputting an empty string for repeated months).

@@ -1,3 +1,4 @@
+from app.core.route_classes import RetryAPIRoute
 """
 PDPA Free Scan API
 ==================
@@ -20,7 +21,7 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 # Redis-backed per-IP rate limit. Shared across ECS tasks so the effective
 # limit is "5 scans / hour / IP" globally, not "5 × N_pods" as the previous

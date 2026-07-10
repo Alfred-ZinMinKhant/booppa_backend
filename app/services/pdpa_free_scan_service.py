@@ -87,9 +87,9 @@ def _check_https(initial_url: str, final_url: str) -> dict | None:
             "description": (
                 "Your website is served over unencrypted HTTP or fails to redirect to a secure "
                 "HTTPS connection. All personal data transmitted between users and your site "
-                "can be intercepted. This violates PDPA Section 24 (Protection Obligation)."
+                "can be intercepted. This violates PDPA 2012 s.24 (Protection Obligation)."
             ),
-            "legislation": "PDPA Section 24 — Protection Obligation",
+            "legislation": "PDPA 2012 s.24 — Protection Obligation",
             "action": "Obtain an SSL/TLS certificate and enforce HTTPS across all pages.",
         }
     return None
@@ -109,7 +109,7 @@ def _check_headers(headers: dict) -> list[dict]:
                 "this header is required to tell browsers to ALWAYS use secure connections, "
                 "preventing potential downgrades to unencrypted links."
             ),
-            "legislation": "PDPA Section 24 — Protection Obligation",
+            "legislation": "PDPA 2012 s.24 — Protection Obligation",
             "action": "Add Strict-Transport-Security header with a minimum max-age of 31536000.",
         })
 
@@ -123,7 +123,7 @@ def _check_headers(headers: dict) -> list[dict]:
                 "No Content-Security-Policy header found. Your site is vulnerable to "
                 "cross-site scripting (XSS) attacks that could exfiltrate personal data."
             ),
-            "legislation": "PDPA Section 24 — Protection Obligation",
+            "legislation": "PDPA 2012 s.24 — Protection Obligation",
             "action": "Implement a Content-Security-Policy header restricting script sources.",
         })
 
@@ -137,7 +137,7 @@ def _check_headers(headers: dict) -> list[dict]:
                 "Your site can be embedded in iframes on other domains, "
                 "making it susceptible to clickjacking attacks."
             ),
-            "legislation": "PDPA Section 24 — Protection Obligation",
+            "legislation": "PDPA 2012 s.24 — Protection Obligation",
             "action": "Add X-Frame-Options: DENY or SAMEORIGIN header.",
         })
 
@@ -148,7 +148,7 @@ def _check_headers(headers: dict) -> list[dict]:
             "severity": "LOW",
             "category": "Security Headers",
             "description": "Browser MIME-type sniffing is not disabled, which could lead to security issues.",
-            "legislation": "PDPA Section 24 — Protection Obligation",
+            "legislation": "PDPA 2012 s.24 — Protection Obligation",
             "action": "Add X-Content-Type-Options: nosniff header.",
         })
 
@@ -162,7 +162,7 @@ def _check_headers(headers: dict) -> list[dict]:
                 "Without a Referrer-Policy, full URLs (which may contain personal data "
                 "in query parameters) are sent to third-party sites via the Referer header."
             ),
-            "legislation": "PDPA Section 18 — Purpose Limitation Obligation",
+            "legislation": "PDPA 2012 s.18 — Purpose Limitation Obligation",
             "action": "Add Referrer-Policy: strict-origin-when-cross-origin or no-referrer.",
         })
 
@@ -177,7 +177,7 @@ def _check_headers(headers: dict) -> list[dict]:
                 "control which browser features (camera, microphone, geolocation) can be "
                 "used. Missing this header increases the risk of unauthorized feature access."
             ),
-            "legislation": "PDPA Section 24 — Protection Obligation",
+            "legislation": "PDPA 2012 s.24 — Protection Obligation",
             "action": "Add Permissions-Policy header to restrict unused browser features.",
         })
 
@@ -205,7 +205,7 @@ def _check_cookies(headers: dict) -> list[dict]:
                 "Third-party tracking cookies (analytics/advertising) are set on page load "
                 "before obtaining user consent. This violates PDPA consent requirements."
             ),
-            "legislation": "PDPA Section 13 — Consent Obligation",
+            "legislation": "PDPA 2012 s.13 — Consent Obligation",
             "action": "Defer tracking cookies until the user provides affirmative consent.",
         })
 
@@ -216,7 +216,7 @@ def _check_cookies(headers: dict) -> list[dict]:
             "severity": "MEDIUM",
             "category": "Cookie Security",
             "description": "Some cookies are missing the Secure flag, meaning they could potentially be sent over unencrypted connections if a secure session is not strictly enforced.",
-            "legislation": "PDPA Section 24 — Protection Obligation",
+            "legislation": "PDPA 2012 s.24 — Protection Obligation",
             "action": "Set the Secure flag on all cookies containing personal or session data.",
         })
 
@@ -270,7 +270,7 @@ def _check_body(html: str) -> list[dict]:
                 "Under PDPA, organisations must obtain consent before collecting personal data "
                 "via cookies and similar technologies."
             ),
-            "legislation": "PDPA Section 13 — Consent Obligation",
+            "legislation": "PDPA 2012 s.13 — Consent Obligation",
             "action": "Implement a cookie consent banner that blocks non-essential cookies until consent is given.",
         })
 
@@ -290,7 +290,7 @@ def _check_body(html: str) -> list[dict]:
                 "No link to a privacy or data protection policy was found on the homepage. "
                 "PDPA requires organisations to make their data protection policies available."
             ),
-            "legislation": "PDPA Section 11 — Openness Obligation",
+            "legislation": "PDPA 2012 s.11 — Openness Obligation",
             "action": "Add a clearly visible link to your privacy/data protection policy in the footer.",
         })
 
@@ -310,15 +310,15 @@ def _check_body(html: str) -> list[dict]:
                 "No Data Protection Officer (DPO) contact information was found on the "
                 "publicly accessible pages of this website. Note: this does not necessarily "
                 "mean a DPO has not been appointed — the organisation may have a DPO who is "
-                "not disclosed online. However, PDPA Section 11(3) requires organisations to "
+                "not disclosed online. However, PDPA 2012 s.11(3) requires organisations to "
                 "make the business contact information of their DPO publicly available so that "
                 "individuals can contact them regarding data protection matters."
             ),
-            "legislation": "PDPA Section 11(3) — Openness Obligation (DPO Disclosure)",
+            "legislation": "PDPA 2012 s.11(3) — Openness Obligation (DPO Disclosure)",
             "action": (
                 "Publish your DPO's business contact information (e.g., email address) on "
                 "the website, typically in the privacy policy or site footer. If a DPO has "
-                "not yet been appointed, designate one under PDPA Section 11(3)."
+                "not yet been appointed, designate one under PDPA 2012 s.11(3)."
             ),
         })
 

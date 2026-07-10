@@ -1,3 +1,5 @@
+from __future__ import annotations
+from app.core.route_classes import RetryAPIRoute
 """
 PDPA Monitor / Compliance Dashboard — API
 =========================================
@@ -8,7 +10,6 @@ PDPA Monitor / Compliance Dashboard — API
 
 Gated by `require_pdpa_access` — active PDPA Monitor *or* Vendor Pro plan.
 """
-from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
@@ -22,7 +23,7 @@ from app.api.vendor_pro import require_pdpa_access
 from app.services.pdpa_dashboard_service import build_pdpa_dashboard
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(route_class=RetryAPIRoute)
 
 _PDPA_FRAMEWORKS = ("pdpa_quick_scan", "pdpa_snapshot")
 _RESCAN_COOLDOWN_HOURS = 24

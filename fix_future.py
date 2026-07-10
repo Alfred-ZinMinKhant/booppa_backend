@@ -1,32 +1,20 @@
-import glob
+import os
+import re
 
-for filepath in glob.glob("app/services/**/*.py", recursive=True):
-    with open(filepath, "r") as f:
-        lines = f.readlines()
-        
-    future_line = None
-    for i, line in enumerate(lines):
-        if line.startswith("from __future__ import"):
-            future_line = line
-            lines.pop(i)
-            break
+directory = 'app/api'
+for root, dirs, files in os.walk(directory):
+    for file in files:
+        if file.endswith('.py'):
+            path = os.path.join(root, file)
+            with open(path, 'r') as f:
+                content = f.read()
             
-    if future_line:
-        # insert after docstring or at the top
-        insert_idx = 0
-        if lines[0].startswith('"""'):
-            for i in range(1, len(lines)):
-                if lines[i].startswith('"""'):
-                    insert_idx = i + 1
-                    break
-        elif lines[0].startswith("'''"):
-            for i in range(1, len(lines)):
-                if lines[i].startswith("'''"):
-                    insert_idx = i + 1
-                    break
-                    
-        lines.insert(insert_idx, future_line)
-        
-        with open(filepath, "w") as f:
-            f.writelines(lines)
-        print(f"Fixed {filepath}")
+            if 'from __future__ import annotations' in content:
+                # Remove it and put it at the very top
+                content = re.sub(r'^from __future__ import annotations\n', '', content, flags=re.MULTILINE)
+                content = "from __future__ import annotations\n" + content
+                
+                with open(path, 'w') as f:
+                    f.write(content)
+                print(f"Fixed {path}")
+
