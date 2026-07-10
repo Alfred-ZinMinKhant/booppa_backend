@@ -344,47 +344,43 @@ async def generate_and_deliver_competitor_signals(
         for s in top_sup[:3]
     ) or "<li>No data available for this period.</li>"
 
-    body_html = f"""
-    <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
-      <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-        <h1 style="color:#10b981;margin:0;font-size:18px;">Competitor Awareness Signals — {month_label}</h1>
-      </div>
-      <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
-        <p>Hello <strong>{company_name}</strong>,</p>
-        <p>Here are your monthly competitor signals for the <strong>{signals['sector']}</strong> sector
+    from app.services.email_layout import branded_email_html, email_button
+    body_html = branded_email_html(
+        f"""
+        <h2 style="color:#0f172a;margin:0 0 16px;font-size:18px;">Competitor Awareness Signals — {month_label}</h2>
+        <p style="margin:0 0 12px;color:#334155;font-size:15px;line-height:1.6;">Hello <strong>{company_name}</strong>,</p>
+        <p style="margin:0 0 20px;color:#334155;font-size:15px;line-height:1.6;">Here are your monthly competitor signals for the <strong>{signals['sector']}</strong> sector
            ({signals['total_awards']} GeBIZ awards in the last {signals['period_days']} days):</p>
 
-        <h3 style="color:#0f172a;">1. Top suppliers in your sector</h3>
-        <ul style="color:#334155;font-size:14px;">{supplier_html}</ul>
+        <h3 style="color:#0f172a;font-size:15px;margin:0 0 8px;">1. Top suppliers in your sector</h3>
+        <ul style="color:#334155;font-size:14px;line-height:1.8;">{supplier_html}</ul>
 
-        <h3 style="color:#0f172a;">2. Where to compete</h3>
-        <p style="color:#334155;font-size:14px;">
+        <h3 style="color:#0f172a;font-size:15px;margin:20px 0 8px;">2. Where to compete</h3>
+        <p style="color:#334155;font-size:14px;line-height:1.6;">
           See the attached PDF for the full breakdown of win rates by contract size.
         </p>
 
-        <h3 style="color:#0f172a;">3. {trend_emoji} Sector trend</h3>
-        <p style="color:#334155;font-size:14px;">
+        <h3 style="color:#0f172a;font-size:15px;margin:20px 0 8px;">3. {trend_emoji} Sector trend</h3>
+        <p style="color:#334155;font-size:14px;line-height:1.6;">
           The {signals['sector']} sector is <strong>{trend_dir}</strong>
           ({trend.get('pct', 0):+}% vs the previous period).
         </p>
 
-        <p style="font-size:13px;color:#64748b;">
+        <p style="font-size:13px;color:#64748b;line-height:1.6;margin:16px 0 20px;">
           The full PDF report (attached) includes contract size analysis and award timing signals.
           {"" if pdf_url else "Note: PDF attachment unavailable this month — contact support."}
         </p>
 
-        {"<p><a href='" + pdf_url + "' style='background:#10b981;color:#fff;padding:10px 20px;text-decoration:none;border-radius:6px;display:inline-block;font-weight:bold;'>Download PDF report</a></p>" if pdf_url else ""}
+        {email_button(pdf_url, "Download PDF report") if pdf_url else ""}
 
-        <p style="margin-top:24px;">
-          <a href="https://www.booppa.io/vendor/dashboard"
-             style="color:#0f172a;font-weight:bold;">View dashboard →</a>
-        </p>
-        <p style="color:#64748b;font-size:12px;margin-top:24px;">
+        {email_button("https://www.booppa.io/vendor/dashboard", "View dashboard →", primary=False)}
+        <p style="color:#64748b;font-size:12px;margin:16px 0 0;">
           Vendor Pro · Competitor Awareness Signals · booppa.io
         </p>
-      </div>
-    </body></html>
-    """
+        """,
+        title=f"Competitor Awareness Signals — {month_label}",
+        preheader=f"Monthly competitor signals for the {signals['sector']} sector.",
+    )
 
     # Send with PDF attached
     email_svc = EmailService()

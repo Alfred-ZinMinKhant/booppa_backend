@@ -428,16 +428,19 @@ async def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get
             or "http://localhost:3000"
         )
         reset_url = f"{base.rstrip('/')}/reset-password?token={token}"
-        body_html = f"""
-        <html><body style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#0f172a">
-            <h2>Reset your BOOPPA password</h2>
-            <p>We received a request to reset the password for <b>{user.email}</b>.</p>
-            <p>Click the button below to choose a new password. This link expires in 30 minutes and can only be used once.</p>
-            <p><a href="{reset_url}" style="background:#10b981;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:600">Reset password</a></p>
-            <p>If you didn&apos;t request this, you can safely ignore this email.</p>
-            <p style="color:#64748b;font-size:12px">Or copy this link: {reset_url}</p>
-        </body></html>
-        """
+        from app.services.email_layout import branded_email_html, email_button
+        body_html = branded_email_html(
+            f"""
+            <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Reset your BOOPPA password</h2>
+            <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">We received a request to reset the password for <b>{user.email}</b>.</p>
+            <p style="margin:0 0 20px;color:#334155;font-size:15px;line-height:1.6;">Click the button below to choose a new password. This link expires in 30 minutes and can only be used once.</p>
+            {email_button(reset_url, "Reset password")}
+            <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">If you didn&apos;t request this, you can safely ignore this email.</p>
+            <p style="margin:0;color:#64748b;font-size:12px;word-break:break-all;">Or copy this link: {reset_url}</p>
+            """,
+            title="Reset your password",
+            preheader="Reset your BOOPPA password — link expires in 30 minutes.",
+        )
         try:
             await EmailService().send_html_email(user.email, "Reset your BOOPPA password", body_html)
         except Exception as exc:

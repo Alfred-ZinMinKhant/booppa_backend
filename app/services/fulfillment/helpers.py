@@ -9,6 +9,11 @@ from app.services.storage import S3Service
 
 
 from app.services.email_service import EmailService
+from app.services.email_layout import (
+    branded_email_html,
+    email_button,
+    email_info_box,
+)
 from app.billing.enforcement import enforce_tier
 from app.core.models import Referral
 from datetime import datetime, timedelta, timezone
@@ -308,23 +313,25 @@ async def _alert_payment_fulfillment_issue(
             await EmailService().send_html_email(
                 to_email=customer_email,
                 subject="We received your payment — one small delay",
-                body_html=f"""
-                <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;">
-                  <h2 style="color:#0f172a;">Thank you for your purchase</h2>
-                  <p style="color:#334155;">
+                body_html=branded_email_html(
+                    f"""
+                  <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Thank you for your purchase</h2>
+                  <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">
                     Your payment for <strong>{(product_type or '').replace('_', ' ').title() or 'your order'}</strong>
                     has been received. We hit a small snag finalising your account and our team
                     has been alerted — we will follow up within a few hours and make sure
                     everything is sorted.
                   </p>
-                  <p style="color:#334155;">
+                  <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">
                     If you have any questions in the meantime, just reply to this email.
                   </p>
-                  <p style="color:#64748b;font-size:13px;margin-top:24px;">
+                  <p style="margin:24px 0 0;color:#64748b;font-size:13px;">
                     Order reference: <span style="font-family:monospace;">{session_id or 'n/a'}</span>
                   </p>
-                </div>
-                """,
+                    """,
+                    title="We received your payment",
+                    preheader="Your payment is received — we're finalising your account.",
+                ),
             )
         except Exception as cust_err:
             logger.warning(f"[Fulfillment-ALERT] customer email failed: {cust_err}")
@@ -566,32 +573,27 @@ async def _fire_strategy_6(sector: str | None, buyer_rfp_title: str) -> None:
             if not user.email:
                 continue
             try:
-                body_html = f"""
-                <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
-                  <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-                    <h1 style="color:#10b981;margin:0;font-size:18px;">You Were Shortlisted</h1>
-                  </div>
-                  <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
-                    <p>A procurement team is actively evaluating vendors in the <strong>{sector}</strong> sector for a new opportunity.</p>
-                    <p>Your verified status on BOOPPA placed you in the <strong>top 5 shortlisted vendors</strong> for this opportunity.</p>
-                    <div style="background:#f0fdf4;border-left:3px solid #10b981;padding:12px 16px;border-radius:4px;margin:20px 0;">
-                      <strong>Opportunity:</strong> {buyer_rfp_title or 'New procurement in your sector'}<br>
-                      <strong>Your sector:</strong> {sector}<br>
-                      <strong>Buyer:</strong> Identity confidential — standard procurement practice
-                    </div>
-                    <p>To improve your position in future shortlists, strengthen your evidence package:</p>
-                    <p>
-                      <a href="https://www.booppa.io/vendor/dashboard" style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">
-                        View Dashboard →
-                      </a>
-                    </p>
-                    <p style="color:#64748b;font-size:11px;margin-top:24px;">
+                body_html = branded_email_html(
+                    f"""
+                    <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">You Were Shortlisted</h2>
+                    <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">A procurement team is actively evaluating vendors in the <strong>{sector}</strong> sector for a new opportunity.</p>
+                    <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Your verified status on BOOPPA placed you in the <strong>top 5 shortlisted vendors</strong> for this opportunity.</p>
+                    {email_info_box(
+                        f"<strong>Opportunity:</strong> {buyer_rfp_title or 'New procurement in your sector'}<br>"
+                        f"<strong>Your sector:</strong> {sector}<br>"
+                        "<strong>Buyer:</strong> Identity confidential — standard procurement practice",
+                        tone="success",
+                    )}
+                    <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">To improve your position in future shortlists, strengthen your evidence package:</p>
+                    {email_button("https://www.booppa.io/vendor/dashboard", "View Dashboard →")}
+                    <p style="margin:24px 0 0;color:#64748b;font-size:11px;">
                       You are receiving this because your vendor profile is verified on BOOPPA.<br>
                       Buyer details are kept confidential per procurement best practice.
                     </p>
-                  </div>
-                </body></html>
-                """
+                    """,
+                    title="You were shortlisted",
+                    preheader=f"You're in the top 5 shortlisted vendors in {sector}.",
+                )
                 await email_svc.send_html_email(
                     to_email=user.email,
                     subject="You Were Shortlisted — New Procurement Opportunity",

@@ -29,26 +29,19 @@ async def _notify_owner_of_qr_scan(owner_id: str, company_name: str, owner_email
         return  # rate-limited
     _qr_scan_email_sent[owner_id] = now
     try:
-        body_html = f"""
-        <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
-          <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-            <h1 style="color:#10b981;margin:0;font-size:18px;">Your Profile Was Just Verified</h1>
-          </div>
-          <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
-            <p>Hi {company_name},</p>
-            <p>A buyer just scanned your <strong>BOOPPA verification QR badge</strong> and viewed your compliance evidence.</p>
-            <p>This means a procurement team is actively evaluating you.</p>
-            <p>
-              <a href="https://www.booppa.io/vendor/dashboard"
-                 style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;
-                        border-radius:8px;font-weight:bold;display:inline-block;">
-                View Your Dashboard →
-              </a>
-            </p>
-            <p style="color:#64748b;font-size:12px;margin-top:24px;">booppa.io</p>
-          </div>
-        </body></html>
-        """
+        from app.services.email_layout import branded_email_html, email_button
+        body_html = branded_email_html(
+            f"""
+            <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Your Profile Was Just Verified</h2>
+            <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Hi {company_name},</p>
+            <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">A buyer just scanned your <strong>BOOPPA verification QR badge</strong> and viewed your compliance evidence.</p>
+            <p style="margin:0 0 20px;color:#334155;font-size:15px;line-height:1.6;">This means a procurement team is actively evaluating you.</p>
+            {email_button("https://www.booppa.io/vendor/dashboard", "View Your Dashboard →")}
+            <p style="margin:8px 0 0;color:#64748b;font-size:12px;">booppa.io</p>
+            """,
+            title="Your profile was just verified",
+            preheader="A buyer just scanned your BOOPPA verification badge.",
+        )
         await EmailService().send_html_email(
             to_email=owner_email,
             subject="A buyer just verified your BOOPPA profile — BOOPPA",

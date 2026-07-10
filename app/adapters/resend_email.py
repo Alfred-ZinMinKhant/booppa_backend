@@ -171,22 +171,26 @@ class ResendEmailAdapter(EmailPort):
     async def send_report_ready_email(
         self, to_email: str, report_url: str | None, user_name: str, report_id: str
     ) -> bool:
+        # Imported at call time to avoid an import cycle (email_layout may import
+        # adapters indirectly).
+        from app.services.email_layout import branded_email_html, email_button
         download_section = (
-            f'<p><a href="{report_url}" style="background-color:#4CAF50;color:#fff;'
-            f'padding:10px 20px;text-decoration:none;border-radius:5px;">Download Report</a></p>'
+            email_button(report_url, "Download Report")
             if report_url
-            else "<p>Your report is ready on the BOOPPA website. Please return to your report page to view it.</p>"
+            else '<p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Your report is ready on the BOOPPA website. Please return to your report page to view it.</p>'
         )
-        body_html = f"""
-        <html><body>
-            <h2>Your Audit Report is Ready</h2>
-            <p>Hello {user_name},</p>
-            <p>Your compliance audit report has been generated and is ready for download.</p>
-            <p><strong>Report ID:</strong> {report_id}</p>
+        body_html = branded_email_html(
+            f"""
+            <h2 style="margin:0 0 16px;font-size:20px;color:#0f172a;">Your Audit Report is Ready</h2>
+            <p style="margin:0 0 12px;color:#334155;font-size:15px;line-height:1.6;">Hello {user_name},</p>
+            <p style="margin:0 0 12px;color:#334155;font-size:15px;line-height:1.6;">Your compliance audit report has been generated and is ready for download.</p>
+            <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;"><strong>Report ID:</strong> {report_id}</p>
             {download_section}
-            <p>Thank you for using BOOPPA.</p>
-        </body></html>
-        """
+            <p style="margin:16px 0 0;color:#334155;font-size:15px;line-height:1.6;">Thank you for using BOOPPA.</p>
+            """,
+            title="Your Audit Report is Ready",
+            preheader=f"Report {report_id} is ready for download.",
+        )
         return await self.send_html_email(
             to_email, f"BOOPPA Audit Report Ready - {report_id}", body_html
         )

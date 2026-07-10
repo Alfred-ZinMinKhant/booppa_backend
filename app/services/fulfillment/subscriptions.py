@@ -19,6 +19,10 @@ from app.services.fulfillment.helpers import (
 from app.services.fulfillment.single_products import _defer_rfp_to_intake
 
 from app.services.email_service import EmailService
+from app.services.email_layout import (
+    branded_email_html,
+    email_button,
+)
 from app.billing.enforcement import enforce_tier
 from app.core.models import Referral
 from datetime import datetime, timedelta, timezone
@@ -150,12 +154,21 @@ _LEVEL_RANK = {"BASIC": 0, "STANDARD": 1, "PREMIUM": 2, "GOVERNMENT": 3}
 def _csp_activation_email_html(plan: str) -> str:
     """Plain activation email for a CSP Compliance Pack purchase."""
     label = "CSP Monitoring Add-On" if plan == "csp_monitoring" else "CSP Compliance Pack — Full"
-    return (
-        f"<p>Your <strong>{label}</strong> is now active.</p>"
-        "<p>Sign in and open the CSP Compliance dashboard to accept the Terms of "
-        "Service, set up your CSP profile, and start onboarding clients with full "
-        "AML/CFT, CDD/EDD, sanctions screening, and blockchain-notarized records.</p>"
-        "<p>— The Booppa Team</p>"
+    inner = (
+        f'<h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">{label} is active</h2>'
+        f'<p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Your '
+        f'<strong>{label}</strong> is now active.</p>'
+        '<p style="margin:0 0 20px;color:#334155;font-size:15px;line-height:1.6;">Sign in and '
+        'open the CSP Compliance dashboard to accept the Terms of Service, set up your CSP '
+        'profile, and start onboarding clients with full AML/CFT, CDD/EDD, sanctions '
+        'screening, and blockchain-notarized records.</p>'
+        + email_button("https://www.booppa.io/csp/dashboard", "Open CSP dashboard →")
+        + '<p style="margin:8px 0 0;color:#334155;font-size:15px;">— The Booppa Team</p>'
+    )
+    return branded_email_html(
+        inner,
+        title="CSP Compliance Pack active",
+        preheader=f"Your {label} is now active.",
     )
 
 
@@ -553,25 +566,17 @@ async def _activate_subscription(
 
             try:
                 email_svc = EmailService()
-                body_html = f"""
-                <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
-                  <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-                    <h1 style="color:#10b981;margin:0;font-size:20px;">{label} — Activated</h1>
-                  </div>
-                  <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
-                    <p>Your <strong>{label}</strong> subscription is now active.</p>
+                body_html = branded_email_html(
+                    f"""
+                    <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">{label} — Activated</h2>
+                    <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Your <strong>{label}</strong> subscription is now active.</p>
                     {pdf_section}
-                    <p>
-                      <a href="https://www.booppa.io/vendor/dashboard"
-                         style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;
-                                border-radius:8px;font-weight:bold;display:inline-block;">
-                        Go to Dashboard →
-                      </a>
-                    </p>
-                    <p style="color:#64748b;font-size:12px;margin-top:24px;">booppa.io</p>
-                  </div>
-                </body></html>
-                """
+                    {email_button("https://www.booppa.io/vendor/dashboard", "Go to Dashboard →")}
+                    <p style="color:#64748b;font-size:12px;margin:8px 0 0;">booppa.io</p>
+                    """,
+                    title=f"{label} activated",
+                    preheader=f"Your {label} subscription is now active.",
+                )
                 await email_svc.send_html_email(
                     to_email=customer_email,
                     subject=f"Your {label} subscription is active — BOOPPA",

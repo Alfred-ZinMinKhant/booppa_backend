@@ -542,17 +542,17 @@ def create_invite(org_id: str, body: InviteCreate, db: Session = Depends(get_db)
         import asyncio as _asyncio
         from app.services.email_service import EmailService
         accept_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/orgs/invites/{token}"
-        body_html = f"""<html><body style="font-family:Arial;max-width:600px;margin:0 auto;color:#0f172a;">
-        <div style="padding:32px;border:1px solid #e2e8f0;border-radius:12px;">
-          <h1 style="font-size:20px;margin:0 0 16px;">You've been invited to {org.name} on BOOPPA</h1>
-          <p>{current_user.email} invited you to join <strong>{org.name}</strong> as a {body.role}.</p>
-          <a href="{accept_url}"
-             style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;
-                    border-radius:8px;font-weight:bold;display:inline-block;margin-top:12px;">
-            Accept invite
-          </a>
-          <p style="margin-top:24px;font-size:12px;color:#94a3b8;">This invite expires in {INVITE_TTL_DAYS} days.</p>
-        </div></body></html>"""
+        from app.services.email_layout import branded_email_html, email_button
+        body_html = branded_email_html(
+            f"""
+          <h2 style="font-size:20px;margin:0 0 16px;color:#0f172a;">You've been invited to {org.name} on BOOPPA</h2>
+          <p style="margin:0 0 20px;color:#334155;font-size:15px;line-height:1.6;">{current_user.email} invited you to join <strong>{org.name}</strong> as a {body.role}.</p>
+          {email_button(accept_url, "Accept invite")}
+          <p style="margin:8px 0 0;font-size:12px;color:#94a3b8;">This invite expires in {INVITE_TTL_DAYS} days.</p>
+            """,
+            title=f"Invitation to join {org.name}",
+            preheader=f"{current_user.email} invited you to join {org.name} on BOOPPA.",
+        )
         _asyncio.run(EmailService().send_html_email(
             to_email=email,
             subject=f"Invitation to join {org.name} on BOOPPA",

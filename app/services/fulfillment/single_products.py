@@ -16,6 +16,12 @@ from app.services.fulfillment.helpers import (
 )
 
 from app.services.email_service import EmailService
+from app.services.email_layout import (
+    branded_email_html,
+    email_button,
+    email_info_box,
+    email_kv,
+)
 from app.billing.enforcement import enforce_tier
 from app.core.models import Referral
 from datetime import datetime, timedelta, timezone
@@ -218,24 +224,21 @@ async def _defer_rfp_to_intake(
         sent = await EmailService().send_html_email(
             to_email=customer_email,
             subject=f"One more step: complete your {kit_label} brief",
-            body_html=f"""
-            <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;">
-              <h2 style="color:#0f172a;">Tell us about your RFP</h2>
-              <p style="color:#334155;">
+            body_html=branded_email_html(
+                f"""
+              <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Tell us about your RFP</h2>
+              <p style="margin:0 0 20px;color:#334155;font-size:15px;line-height:1.6;">
                 Thanks for your purchase. Share a few details about the procurement and
                 we'll generate your <strong>{kit_label}</strong>.
               </p>
-              <div style="text-align:center;margin:24px 0;">
-                <a href="{intake_url}"
-                   style="display:inline-block;background:#0ea5e9;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">
-                  Complete your RFP brief
-                </a>
-              </div>
-              <p style="color:#64748b;font-size:13px;">
+              {email_button(intake_url, "Complete your RFP brief")}
+              <p style="margin:0;color:#64748b;font-size:13px;">
                 Takes about 2 minutes. Your kit is generated as soon as you submit.
               </p>
-            </div>
-            """,
+                """,
+                title="Complete your RFP brief",
+                preheader=f"Share a few details and we'll generate your {kit_label}.",
+            ),
         )
         # send_html_email returns False on Resend/SES rejection without
         # raising — the buyer would never see the brief link and the page
@@ -418,28 +421,36 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
             try:
                 email_svc = EmailService()
                 download_section = (
-                    f'<p><a href="{pdf_url}" style="background-color:#10b981;color:#fff;'
-                    f'padding:10px 24px;text-decoration:none;border-radius:6px;font-weight:bold;">'
-                    f"Download Notarization Certificate (PDF)</a></p>"
+                    email_button(pdf_url, "Download Notarization Certificate (PDF)")
                     if pdf_url
-                    else "<p>Your certificate will be available on the BOOPPA website once processing is complete.</p>"
+                    else '<p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Your certificate will be available on the BOOPPA website once processing is complete.</p>'
                 )
-                body_html = f"""
-                <html><body style="font-family:Arial,sans-serif;color:#0f172a;">
-                  <h2 style="color:#10b981;">Your Notarization Certificate is Ready</h2>
-                  <p>Hello {report.company_name or "Customer"},</p>
-                  <p>Your blockchain notarization certificate for
+                tx_line = (
+                    email_info_box(
+                        f'<strong>Blockchain TX:</strong> <a href="{polygonscan_url}" '
+                        f'style="color:#10b981;word-break:break-all;">{tx_hash or ""}</a>',
+                        tone="success",
+                    )
+                    if polygonscan_url else ""
+                )
+                body_html = branded_email_html(
+                    f"""
+                  <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Your Notarization Certificate is Ready</h2>
+                  <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Hello {report.company_name or "Customer"},</p>
+                  <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Your blockchain notarization certificate for
                      <strong>{original_filename}</strong> has been generated.</p>
-                  <p><strong>SHA-256 Hash:</strong> <code>{file_hash}</code></p>
-                  {'<p><strong>Blockchain TX:</strong> <a href="' + polygonscan_url + '">' + (tx_hash or '') + '</a></p>' if polygonscan_url else ''}
+                  {email_kv([("SHA-256 Hash", f"<code>{file_hash}</code>")])}
+                  {tx_line}
                   {download_section}
-                  <p style="color:#64748b;font-size:12px;">
+                  <p style="margin:20px 0 0;color:#64748b;font-size:12px;">
                     Certificate ID: {report_id}<br>
                     Network: {settings.active_polygon_network_name}
                   </p>
-                  <p>Thank you for using BOOPPA.</p>
-                </body></html>
-                """
+                  <p style="margin:16px 0 0;color:#334155;font-size:15px;">Thank you for using BOOPPA.</p>
+                    """,
+                    title="Notarization certificate ready",
+                    preheader=f"Your notarization certificate for {original_filename} is ready.",
+                )
                 sent = await email_svc.send_html_email(
                     to_email=contact_email,
                     subject=f"Your Notarization Certificate is Ready — {original_filename}",
@@ -833,28 +844,12 @@ async def _handle_blocked_rfp(
             f"<li style=\"margin:4px 0;\">{_html.escape(f)}</li>" for f in missing_fields
         ) or "<li>Some verification details were missing.</li>"
         cta_html = (
-            f'<p style="text-align:center;margin:24px 0;"><a href="{intake_link}" '
-            f'style="background:#10b981;color:#fff;padding:12px 28px;text-decoration:none;'
-            f'border-radius:8px;font-weight:bold;display:inline-block;">Complete your RFP brief</a></p>'
+            email_button(intake_link, "Complete your RFP brief")
             if intake_link else
-            '<p>Please return to your RFP brief on booppa.io to complete the missing details.</p>'
+            '<p style="margin:0 0 16px;color:#334155;font-size:15px;">Please return to your RFP brief on booppa.io to complete the missing details.</p>'
         )
-        body_html = f"""
-        <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
-          <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-            <h1 style="color:#10b981;margin:0;font-size:20px;">A few details needed to finish your RFP Kit</h1>
-          </div>
-          <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
-            <p>Hello <strong>{_html.escape(company_name or "there")}</strong>,</p>
-            <p>Your RFP Complete Kit is almost ready. To make it usable for a real GeBIZ tender, we
-               need you to confirm a few verification details we could not source automatically.
-               Your kit will be generated and delivered as soon as you complete these:</p>
-            <ul style="font-size:14px;color:#334155;padding-left:20px;">{fields_html}</ul>
-            {cta_html}
-            <p style="color:#64748b;font-size:12px;">We don't deliver kits with unverified
-               placeholders — GeBIZ procurement officers reject them. This step keeps yours submission-ready.</p>
-          </div>
-        </body></html>"""
+        from app.services.email_templates import get_rfp_kit_needs_info_html
+        body_html = get_rfp_kit_needs_info_html(company_name, fields_html, cta_html)
         sent = await EmailService().send_html_email(
             to_email=vendor_email,
             subject="Action needed: complete your RFP Kit details",
@@ -1251,47 +1246,11 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                 f'font-family:Arial,sans-serif;font-size:13px;font-weight:600;">'
                 f'<span style="color:#10b981;">✓</span> {company_name} — Identity Verified on BOOPPA</a>'
             )
-            body_html = f"""
-            <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
-              <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-                <h1 style="color:#10b981;margin:0;font-size:20px;">Vendor Proof Activated</h1>
-              </div>
-              <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
-                <p>Hello <strong>{company_name}</strong>,</p>
-                <p>Your Vendor Proof is now <strong style="color:#10b981;">active</strong>. You are now visible to procurement officers who filter by verified vendors on the BOOPPA platform.</p>
-                <h3 style="color:#0f172a;">What changed on your profile</h3>
-                <ul>
-                  <li>Verification status: <strong>BASIC (Identity Verified, Active)</strong></li>
-                  <li>Compliance score: <strong>{vp_score_display}</strong></li>
-                  <li>Procurement readiness: <strong>{vp_readiness_label}</strong></li>
-                  <li>CAL Level 1 activated — personalised upgrade recommendations will appear in your dashboard</li>
-                </ul>
-                <p style="color:#475569;font-size:13px;background:#f8fafc;border-left:3px solid #94a3b8;padding:10px 14px;border-radius:4px;">
-                  <strong>What Vendor Proof attests:</strong> your identity and registration on BOOPPA — not a
-                  compliance endorsement. Your procurement readiness above reflects your latest PDPA scan
-                  {"(run a PDPA scan to establish it)" if _pdpa_compliance is None else ""}. Procurement officers
-                  see your real standing on your verification page.
-                </p>
-                <h3 style="color:#0f172a;">Embed your Booppa Verified badge</h3>
-                <p>Add this to your website or RFP proposals:</p>
-                <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px;font-family:monospace;font-size:12px;word-break:break-all;">
-                  {badge_html.replace('<', '&lt;').replace('>', '&gt;')}
-                </div>
-                <div style="margin-top:16px;">{badge_html}</div>
-                {("<p style='margin-top:20px;color:#475569;font-size:13px;'>Your Vendor Proof certificate (valid until " + _vp_expires_display + ") is <strong>attached to this email as a PDF</strong>." + ("<br>You can also <a href='" + cert_url + "'>download it here</a>." if cert_url else "") + "</p>") if cert_pdf else ""}
-                <p style="margin-top:24px;">
-                  <a href="https://www.booppa.io/vendor/dashboard" style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">
-                    Go to Dashboard →
-                  </a>
-                </p>
-                <p style="color:#64748b;font-size:12px;margin-top:24px;">
-                  Verification ID: {report_id}<br>
-                  Verified on: {datetime.now(timezone.utc).strftime('%d %B %Y')}<br>
-                  booppa.io
-                </p>
-              </div>
-            </body></html>
-            """
+            from app.services.email_templates import get_vendor_proof_activated_html
+            body_html = get_vendor_proof_activated_html(
+                company_name, vp_score_display, vp_readiness_label, _pdpa_compliance,
+                badge_html, _vp_expires_display, cert_url, cert_pdf, report_id,
+            )
             try:
                 email_svc = EmailService()
                 # Deliver the certificate as a direct PDF attachment (not just an
@@ -1526,12 +1485,9 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
         if contact_email and send_email:
             try:
                 download_section = (
-                    f'<p style="margin-top:24px;">'
-                    f'<a href="{pdf_url}" style="background-color:#10b981;color:#fff;'
-                    f"padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;"
-                    f'display:inline-block;">Download PDPA Snapshot Report (PDF)</a></p>'
+                    email_button(pdf_url, "Download PDPA Snapshot Report (PDF)")
                     if pdf_url
-                    else "<p>Your report will be available on the BOOPPA dashboard shortly.</p>"
+                    else '<p style="margin:0 0 16px;color:#334155;font-size:15px;">Your report will be available on the BOOPPA dashboard shortly.</p>'
                 )
                 # Show the SAME compliance score the PDF + Cover Sheet show
                 # (dimension-weighted, persisted), not a separate 100-risk figure
@@ -1540,37 +1496,10 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
                 if not isinstance(_email_compliance, (int, float)):
                     _email_compliance = 100 - int(risk_score or 50)
                 _email_compliance = int(_email_compliance)
-                body_html = f"""
-                <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
-                  <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-                    <h1 style="color:#10b981;margin:0;font-size:20px;">Your PDPA Snapshot is Ready</h1>
-                  </div>
-                  <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
-                    <p>Hello <strong>{company_name}</strong>,</p>
-                    <p>Your PDPA Snapshot report for <strong>{website_url}</strong> has been generated.</p>
-                    <p>The report evaluates your compliance across 8 PDPA dimensions — consent, data flow,
-                       DSAR procedures, breach notification, retention, third-party processors, DPO, and
-                       privacy notice — and provides specific recommendations with legislative references.</p>
-                    <div style="background:#f0fdf4;border-left:3px solid #10b981;padding:12px 16px;
-                                border-radius:4px;margin:20px 0;">
-                      <strong>Compliance Score:</strong> {_email_compliance}/100<br>
-                      <strong>Report ID:</strong> {report_id[:8].upper()}<br>
-                      <strong>Generated:</strong> {datetime.now(timezone.utc).strftime('%d %B %Y')}
-                    </div>
-                    <p>Your compliance score on BOOPPA has been updated to reflect this scan.
-                       Procurement officers searching for verified vendors will see your improved standing.</p>
-                    {download_section}
-                    <p style="margin-top:24px;">
-                      <a href="https://www.booppa.io/vendor/dashboard"
-                         style="color:#10b981;text-decoration:underline;">View your dashboard →</a>
-                    </p>
-                    <p style="color:#64748b;font-size:11px;margin-top:24px;">
-                      This report is for informational purposes only and does not constitute legal advice
-                      or PDPC certification. BOOPPA is not a law firm.
-                    </p>
-                  </div>
-                </body></html>
-                """
+                from app.services.email_templates import get_pdpa_snapshot_ready_html
+                body_html = get_pdpa_snapshot_ready_html(
+                    company_name, website_url, _email_compliance, report_id, download_section,
+                )
                 email_svc = EmailService()
                 _attachments = None
                 if pdf_bytes:

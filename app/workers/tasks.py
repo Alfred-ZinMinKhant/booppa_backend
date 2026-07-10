@@ -1879,16 +1879,14 @@ def fire_strategy_6_task(self, sector: str | None, rfp_title: str):
 @celery_app.task(bind=True, max_retries=2, name="send_referral_reward_email_task")
 def send_referral_reward_email_task(self, referrer_email: str):
     """Celery task: send referral conversion reward notification email."""
-    body_html = (
-        "<html><body style='font-family:Arial;max-width:600px;'>"
-        "<h2 style='color:#0f172a;'>Your referral paid off!</h2>"
-        "<p>A vendor you referred just made their first purchase. "
-        "30 free days have been added to your account.</p>"
-        "<a href='https://www.booppa.io/vendor/dashboard' "
-        "style='background:#10b981;color:#fff;padding:10px 20px;"
-        "text-decoration:none;border-radius:6px;font-weight:bold;'>"
-        "View dashboard</a>"
-        "</body></html>"
+    from app.services.email_layout import branded_email_html, email_button
+    body_html = branded_email_html(
+        "<h2 style='margin:0 0 12px;font-size:20px;color:#0f172a;'>Your referral paid off!</h2>"
+        "<p style='margin:0 0 20px;color:#334155;font-size:15px;line-height:1.6;'>A vendor you "
+        "referred just made their first purchase. 30 free days have been added to your account.</p>"
+        + email_button("https://www.booppa.io/vendor/dashboard", "View dashboard"),
+        title="Your referral converted",
+        preheader="A vendor you referred purchased — 30 free days added.",
     )
     try:
         asyncio.run(EmailService().send_html_email(
@@ -2963,35 +2961,36 @@ def fulfill_cover_sheet_task(
                 except Exception as _zip_err:
                     logger.warning("[CoverSheet] evidence ZIP build failed (non-blocking): %s", _zip_err)
 
+                from app.services.email_layout import branded_email_html, email_button, email_info_box
                 asyncio.run(email_svc.send_html_email(
                     to_email=customer_email,
                     subject="Your Compliance Evidence Pack — final blockchain receipt",
                     attachments=_zip_attachment,
-                    body_html=(
-                        f"<div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;'>"
-                        f"<h2 style='color:#0f172a;'>Compliance Evidence Pack — complete</h2>"
-                        f"<p style='color:#334155;'>Your signed Cover Sheet is anchored on "
+                    body_html=branded_email_html(
+                        f"<h2 style='margin:0 0 12px;font-size:20px;color:#0f172a;'>Compliance Evidence Pack — complete</h2>"
+                        f"<p style='margin:0 0 20px;color:#334155;font-size:15px;line-height:1.6;'>Your signed Cover Sheet is anchored on "
                         f"{settings.active_polygon_network_name}. Download the regenerated cover sheet — "
                         f"Section 5 now lists every blockchain anchor below.</p>"
-                        f"<p><a href='{email_download_url}' style='background:#10b981;color:#fff;padding:12px 24px;"
-                        f"text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;'>"
-                        f"Download Updated Cover Sheet</a></p>"
-                        f"<div style='background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;padding:16px;margin:20px 0;'>"
-                        f"<p style='margin:0 0 8px;font-weight:bold;color:#065f46;'>Blockchain anchors</p>"
-                        f"<ul style='margin:0;padding-left:20px;color:#047857;font-size:13px;'>"
-                        f"{_tx_link('PDPA Snapshot', pdpa_tx_hash)}"
-                        f"{_tx_link('RFP Complete Kit', rfp_tx_hash)}"
-                        f"{_tx_link('Cover Sheet (issued)', cs_anchor_tx)}"
-                        f"{_tx_link('Cover Sheet (signed)', signed_cs_tx)}"
-                        f"</ul></div>"
+                        + email_button(email_download_url, "Download Updated Cover Sheet")
+                        + email_info_box(
+                            "<strong>Blockchain anchors</strong>"
+                            "<ul style='margin:8px 0 0;padding-left:20px;'>"
+                            f"{_tx_link('PDPA Snapshot', pdpa_tx_hash)}"
+                            f"{_tx_link('RFP Complete Kit', rfp_tx_hash)}"
+                            f"{_tx_link('Cover Sheet (issued)', cs_anchor_tx)}"
+                            f"{_tx_link('Cover Sheet (signed)', signed_cs_tx)}"
+                            "</ul>",
+                            tone="success",
+                        )
                         + (
-                            "<p style='color:#334155;font-size:13px;'>📎 Your complete evidence archive "
+                            "<p style='margin:0 0 16px;color:#334155;font-size:13px;line-height:1.6;'>📎 Your complete evidence archive "
                             "(cover letter + Cover Sheet + PDPA Snapshot + RFP Kit + ROPA) is attached "
                             "as a single ZIP — forward it to enterprise buyers, procurement teams, or the PDPC.</p>"
                             if _zip_attachment else ""
                         )
-                        + f"<p style='color:#64748b;font-size:13px;'>Keep this email — the four anchors above are your full audit trail.</p>"
-                        f"</div>"
+                        + "<p style='margin:0;color:#64748b;font-size:13px;'>Keep this email — the four anchors above are your full audit trail.</p>",
+                        title="Compliance Evidence Pack — complete",
+                        preheader="Your signed Cover Sheet is anchored — full audit trail inside.",
                     ),
                 ))
                 logger.info(
@@ -3004,28 +3003,29 @@ def fulfill_cover_sheet_task(
                     _safe_co = (company_name or "Kit").replace("/", "-").replace(" ", "-")
                     _draft_attachment = [(f"Cover_Sheet_Unsigned_{_safe_co}.pdf", pdf_bytes)]
 
+                from app.services.email_layout import branded_email_html, email_button, email_info_box
                 asyncio.run(email_svc.send_html_email(
                     to_email=customer_email,
                     subject="Your Compliance Evidence Pack — sign & notarize the Cover Sheet",
                     attachments=_draft_attachment,
-                    body_html=(
-                        f"<div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;'>"
-                        f"<h2 style='color:#0f172a;'>Cover Sheet ready — final step inside</h2>"
-                        f"<p style='color:#334155;'>Your PDPA Snapshot and RFP Complete kit are anchored on "
+                    body_html=branded_email_html(
+                        f"<h2 style='margin:0 0 12px;font-size:20px;color:#0f172a;'>Cover Sheet ready — final step inside</h2>"
+                        f"<p style='margin:0 0 20px;color:#334155;font-size:15px;line-height:1.6;'>Your PDPA Snapshot and RFP Complete kit are anchored on "
                         f"{settings.active_polygon_network_name}. The 9-section regulator-ready Cover Sheet below "
                         f"summarises both and is itself anchored on-chain.</p>"
-                        f"<p><a href='{email_download_url}' style='background:#10b981;color:#fff;padding:12px 24px;"
-                        f"text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;'>"
-                        f"Download Cover Sheet PDF</a></p>"
-                        f"<div style='background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:16px;margin:20px 0;'>"
-                        f"<p style='margin:0 0 8px;font-weight:bold;color:#92400e;'>Final step</p>"
-                        f"<ol style='margin:0;padding-left:20px;color:#78350f;font-size:14px;'>"
-                        f"<li>Sign the downloaded PDF (digital or wet signature).</li>"
-                        f"<li>Go to <a href='https://www.booppa.io/compliance/cover-sheet'>booppa.io/compliance/cover-sheet</a> and upload the signed copy.</li>"
-                        f"<li>Your 1 included notarization credit is auto-applied — no payment.</li>"
-                        f"</ol></div>"
-                        f"<p style='color:#64748b;font-size:13px;'>You'll receive a final blockchain receipt once the signed Cover Sheet is anchored.</p>"
-                        f"</div>"
+                        + email_button(email_download_url, "Download Cover Sheet PDF")
+                        + email_info_box(
+                            "<strong>Final step</strong>"
+                            "<ol style='margin:8px 0 0;padding-left:20px;'>"
+                            "<li>Sign the downloaded PDF (digital or wet signature).</li>"
+                            "<li>Go to <a href='https://www.booppa.io/compliance/cover-sheet'>booppa.io/compliance/cover-sheet</a> and upload the signed copy.</li>"
+                            "<li>Your 1 included notarization credit is auto-applied — no payment.</li>"
+                            "</ol>",
+                            tone="warn",
+                        )
+                        + "<p style='margin:0;color:#64748b;font-size:13px;'>You'll receive a final blockchain receipt once the signed Cover Sheet is anchored.</p>",
+                        title="Cover Sheet ready — final step",
+                        preheader="Sign and upload your Cover Sheet to complete your Evidence Pack.",
                     ),
                 ))
                 logger.info(f"Cover sheet delivered to {customer_email} for {bundle_type} — awaiting signed upload")
@@ -4590,38 +4590,32 @@ def pdpa_monitor_monthly_alert_task(self, vendor_id: str, vendor_email: str):
     Triggered on every invoice.payment_succeeded renewal cycle.
     """
     month_label = datetime.now(timezone.utc).strftime("%B %Y")
-    body_html = f"""
-    <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
-      <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-        <h1 style="color:#10b981;margin:0;font-size:20px;">PDPA Monitor — {month_label} Regulatory Alert</h1>
-      </div>
-      <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
-        <p>Your monthly PDPA compliance briefing from BOOPPA.</p>
-        <h3 style="color:#0f172a;">Key PDPC Updates This Month</h3>
-        <ul>
+    from app.services.email_layout import branded_email_html, email_button
+    body_html = branded_email_html(
+        f"""
+        <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">PDPA Monitor — {month_label} Regulatory Alert</h2>
+        <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Your monthly PDPA compliance briefing from BOOPPA.</p>
+        <h3 style="color:#0f172a;font-size:16px;margin:0 0 8px;">Key PDPC Updates This Month</h3>
+        <ul style="color:#334155;font-size:14px;line-height:1.6;padding-left:20px;margin:0 0 16px;">
           <li>Review your data breach notification procedures — PDPC enforcement actions increased 18% YoY.</li>
           <li>Ensure your Data Protection Officer (DPO) contact details are current on the PDPC register.</li>
           <li>Check that third-party data processors have signed updated data processing agreements.</li>
           <li>Verify your consent management records for any new marketing campaigns.</li>
         </ul>
-        <h3 style="color:#0f172a;">Action Items</h3>
-        <ul>
+        <h3 style="color:#0f172a;font-size:16px;margin:0 0 8px;">Action Items</h3>
+        <ul style="color:#334155;font-size:14px;line-height:1.6;padding-left:20px;margin:0 0 20px;">
           <li>Log in to your BOOPPA dashboard to review your current compliance score.</li>
           <li>Upload any new compliance documents to maintain your verified status.</li>
         </ul>
-        <p style="margin-top:24px;">
-          <a href="https://www.booppa.io/vendor/dashboard"
-             style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">
-            View Dashboard →
-          </a>
-        </p>
-        <p style="color:#64748b;font-size:12px;margin-top:24px;">
+        {email_button("https://www.booppa.io/vendor/dashboard", "View Dashboard →")}
+        <p style="color:#64748b;font-size:12px;margin:8px 0 0;">
           This alert is part of your PDPA Monitor subscription.<br>
           booppa.io · Singapore
         </p>
-      </div>
-    </body></html>
-    """
+        """,
+        title=f"PDPA Monitor — {month_label}",
+        preheader=f"Your {month_label} PDPA regulatory alert from BOOPPA.",
+    )
     try:
         asyncio.run(EmailService().send_html_email(
             to_email=vendor_email,
@@ -5028,29 +5022,27 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
             # The PDF is attached directly to the email (audit fix: the report must
             # arrive as a downloadable file, not a dashboard-only link). The S3 link,
             # when available, is kept as a secondary access path.
+            from app.services.email_layout import branded_email_html, email_button
             link_block = (
-                f"""<p style="text-align:center;margin:26px 0;">
-                  <a href="{report_url}" style="background:#10b981;color:#fff;padding:12px 28px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">View your Monitor Report online</a>
-                </p>"""
+                email_button(report_url, "View your Monitor Report online")
                 if report_url else ""
             )
-            body_html = f"""
-            <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
-              <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-                <h1 style="color:#10b981;margin:0;font-size:20px;">PDPA Monitor Report — {month_label}</h1>
-              </div>
-              <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
-                <p>Hello <strong>{company}</strong>,</p>
-                <p>Your monthly PDPA Monitor report is <strong>attached to this email as a PDF</strong> —
+            body_html = branded_email_html(
+                f"""
+                <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">PDPA Monitor Report — {month_label}</h2>
+                <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Hello <strong>{company}</strong>,</p>
+                <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Your monthly PDPA Monitor report is <strong>attached to this email as a PDF</strong> —
                    it compares this month's scan against last month's, so you can see exactly what moved.</p>
                 {link_block}
                 <h3 style="color:#0f172a;font-size:15px;margin:24px 0 6px;">This month's regulatory briefing</h3>
-                <ul style="font-size:13px;color:#334155;margin:0 0 8px;padding-left:18px;">
+                <ul style="font-size:13px;color:#334155;line-height:1.6;margin:0 0 8px;padding-left:18px;">
                   {briefing_html}
                 </ul>
-                <p style="color:#64748b;font-size:12px;">PDPA Monitor — monthly compliance tracking + regulatory briefing · booppa.io</p>
-              </div>
-            </body></html>"""
+                <p style="color:#64748b;font-size:12px;margin:16px 0 0;">PDPA Monitor — monthly compliance tracking + regulatory briefing · booppa.io</p>
+                """,
+                title=f"PDPA Monitor Report — {month_label}",
+                preheader=f"Your {month_label} PDPA Monitor report is attached.",
+            )
             _safe_company = (company or "report").replace("/", "-").replace(" ", "-")
             sent = asyncio.run(EmailService().send_html_email(
                 to_email=email,
@@ -5180,19 +5172,19 @@ def run_vendor_pro_pdpa_snapshot_for_user(self, vendor_id: str, vendor_email: st
 
         edition = "Baseline" if previous is None else "Drift"
         quarter_label = datetime.now(timezone.utc).strftime("%b %Y")
-        body_html = f"""
-        <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
-          <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-            <h1 style="color:#10b981;margin:0;font-size:20px;">Your Quarterly PDPA Snapshot</h1>
-          </div>
-          <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
-            <p>Hello <strong>{company}</strong>,</p>
-            <p>Your Vendor Pro <strong>Quarterly PDPA Snapshot with drift</strong> is
+        from app.services.email_layout import branded_email_html
+        body_html = branded_email_html(
+            f"""
+            <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Your Quarterly PDPA Snapshot</h2>
+            <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Hello <strong>{company}</strong>,</p>
+            <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Your Vendor Pro <strong>Quarterly PDPA Snapshot with drift</strong> is
                <strong>attached to this email as a PDF</strong>. It compares your latest PDPA scan
                against the previous one and flags any dimensions that moved.</p>
-            <p style="color:#64748b;font-size:12px;">Vendor Pro — quarterly PDPA drift tracking · booppa.io</p>
-          </div>
-        </body></html>"""
+            <p style="color:#64748b;font-size:12px;margin:0;">Vendor Pro — quarterly PDPA drift tracking · booppa.io</p>
+            """,
+            title="Your Quarterly PDPA Snapshot",
+            preheader="Your quarterly PDPA drift snapshot is attached.",
+        )
         _safe_company = (company or "vendor").replace("/", "-").replace(" ", "-")
         sent = asyncio.run(EmailService().send_html_email(
             to_email=email,
@@ -5304,12 +5296,11 @@ def check_compliance_drift_task(self, vendor_id: str, vendor_email: str, framewo
         else:
             dim_block = ""
 
-        body_html = f"""<html><body style="font-family:Arial;max-width:600px;margin:0 auto;color:#0f172a;">
-        <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-          <h1 style="color:{color};margin:0;font-size:18px;">PDPA compliance drift detected — {severity}</h1>
-        </div>
-        <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
-          <p>Your latest monthly PDPA Monitor scan shows a material change in risk posture.</p>
+        from app.services.email_layout import branded_email_html, email_button
+        body_html = branded_email_html(
+            f"""
+          <h2 style="margin:0 0 12px;font-size:20px;color:{color};">PDPA compliance drift detected — {severity}</h2>
+          <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Your latest monthly PDPA Monitor scan shows a material change in risk posture.</p>
           <table style="width:100%;border-collapse:collapse;margin:16px 0;">
             <tr><td style="padding:8px 0;color:#64748b;">Previous risk score</td>
                 <td style="padding:8px 0;text-align:right;font-weight:bold;">{prev:.1f}</td></tr>
@@ -5318,20 +5309,18 @@ def check_compliance_drift_task(self, vendor_id: str, vendor_email: str, framewo
             <tr><td style="padding:8px 0;color:#64748b;">Change</td>
                 <td style="padding:8px 0;text-align:right;font-weight:bold;color:{color};">+{delta_pct:.1f}%</td></tr>
           </table>{improvements_block}{dim_block}
-          <p style="font-size:14px;color:#475569;">
+          <p style="font-size:14px;color:#475569;line-height:1.6;margin:0 0 20px;">
             Higher risk scores indicate degraded PDPA posture. Review the latest report
             and address the highlighted findings to restore your compliance baseline.
           </p>
-          <a href="https://www.booppa.io/vendor/dashboard"
-             style="background:#0f172a;color:#fff;padding:10px 20px;text-decoration:none;
-                    border-radius:6px;font-weight:bold;display:inline-block;margin-top:16px;">
-            Review report
-          </a>
-          <p style="margin-top:24px;font-size:11px;color:#94a3b8;">
+          {email_button("https://www.booppa.io/vendor/dashboard", "Review report", primary=False)}
+          <p style="margin:8px 0 0;font-size:11px;color:#94a3b8;">
             You're receiving this because you subscribe to PDPA Monitor.
           </p>
-        </div>
-        </body></html>"""
+            """,
+            title=f"PDPA compliance drift — {severity}",
+            preheader="Your latest PDPA Monitor scan shows a change in risk posture.",
+        )
 
         try:
             asyncio.run(email_svc.send_html_email(
@@ -5431,24 +5420,22 @@ def check_vendor_proof_expiry():
                 continue
             company = v.company_name or getattr(user, "company", None) or "your company"
             exp_str = v.expires_at.strftime("%d %B %Y")
-            body_html = f"""
-            <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
-              <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-                <h1 style="color:#10b981;margin:0;font-size:20px;">Your Vendor Proof expires in 30 days</h1>
-              </div>
-              <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
-                <p>Hello <strong>{company}</strong>,</p>
-                <p>Your Booppa Vendor Proof certificate is valid until <strong>{exp_str}</strong>.
+            from app.services.email_layout import branded_email_html, email_button
+            body_html = branded_email_html(
+                f"""
+                <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Your Vendor Proof expires in 30 days</h2>
+                <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Hello <strong>{company}</strong>,</p>
+                <p style="margin:0 0 20px;color:#334155;font-size:15px;line-height:1.6;">Your Booppa Vendor Proof certificate is valid until <strong>{exp_str}</strong>.
                    Renew now to keep your verification active — a renewal reruns your PDPA
                    scan so the certificate reflects your current compliance standing.</p>
-                <p style="margin-top:20px;">
-                  <a href="https://www.booppa.io/vendor/dashboard" style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">Renew Vendor Proof →</a>
-                </p>
-                <p style="color:#64748b;font-size:12px;margin-top:24px;">
+                {email_button("https://www.booppa.io/vendor/dashboard", "Renew Vendor Proof →")}
+                <p style="color:#64748b;font-size:12px;margin:8px 0 0;">
                   After {exp_str}, your public verification page will show "Expired" until you renew. · booppa.io
                 </p>
-              </div>
-            </body></html>"""
+                """,
+                title="Your Vendor Proof expires in 30 days",
+                preheader=f"Renew your Vendor Proof before {exp_str} to stay verified.",
+            )
             try:
                 ok = asyncio.run(email_svc.send_html_email(
                     to_email=user.email,
@@ -5649,23 +5636,25 @@ def run_compliance_evidence_monthly_refresh():
                 logger.warning(
                     f"[CE Refresh] Skipping {user.email} — no website on profile; cycle deferred"
                 )
-                body_html = f"""<!DOCTYPE html><html><body style="font-family:-apple-system,Segoe UI,sans-serif;background:#f8fafc;padding:24px;">
-                <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:8px;padding:28px;border:1px solid #e2e8f0;">
-                  <h2 style="margin:0 0 12px;color:#0f172a;">Action required: add your website</h2>
-                  <p style="color:#334155;line-height:1.55;">
+                from app.services.email_layout import branded_email_html, email_button
+                body_html = branded_email_html(
+                    """
+                  <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Action required: add your website</h2>
+                  <p style="margin:0 0 20px;color:#334155;font-size:15px;line-height:1.6;">
                     Your Compliance Evidence subscription cycle could not run this month because
                     no website is on your profile. We need it to refresh your PDPA Snapshot and
                     RFP Complete Kit before issuing this month's Cover Sheet.
                   </p>
-                  <a href="https://www.booppa.io/vendor/profile"
-                     style="background:#0f172a;color:#fff;padding:10px 20px;text-decoration:none;
-                            border-radius:6px;font-weight:bold;display:inline-block;margin-top:12px;">
-                    Update profile
-                  </a>
-                  <p style="margin-top:24px;font-size:11px;color:#94a3b8;">
+                  """
+                    + email_button("https://www.booppa.io/vendor/profile", "Update profile", primary=False)
+                    + """
+                  <p style="margin:8px 0 0;font-size:11px;color:#94a3b8;">
                     Once your website is saved, your next cycle will resume automatically.
                   </p>
-                </div></body></html>"""
+                    """,
+                    title="Action required: add your website",
+                    preheader="Add your website to resume your monthly Compliance Evidence cycle.",
+                )
                 try:
                     asyncio.run(email_svc.send_html_email(
                         to_email=user.email,
@@ -6342,38 +6331,35 @@ def send_weekly_vendor_scores():
         for user, score in rows:
             try:
                 subject = f"Your BOOPPA Vendor Score This Week — {score.total_score} pts"
-                body_html = f"""
-                <html><body style="font-family:Arial,sans-serif;background:#0a0a0a;color:#e5e5e5;padding:32px;">
-                <div style="max-width:560px;margin:0 auto;">
-                  <h2 style="color:#ffffff;">Your Weekly Vendor Score</h2>
-                  <p>Hi {user.full_name or user.company or user.email},</p>
-                  <p>Here's how your BOOPPA compliance profile performed this week:</p>
+                from app.services.email_layout import branded_email_html, email_button
+                body_html = branded_email_html(
+                    f"""
+                  <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Your Weekly Vendor Score</h2>
+                  <p style="margin:0 0 12px;color:#334155;font-size:15px;line-height:1.6;">Hi {user.full_name or user.company or user.email},</p>
+                  <p style="margin:0 0 12px;color:#334155;font-size:15px;line-height:1.6;">Here's how your BOOPPA compliance profile performed this week:</p>
                   <table style="width:100%;border-collapse:collapse;margin:16px 0;">
-                    <tr><td style="padding:8px 0;color:#a3a3a3;">Compliance</td>
-                        <td style="padding:8px 0;text-align:right;font-weight:bold;color:#60a5fa;">{score.compliance_score}</td></tr>
-                    <tr><td style="padding:8px 0;color:#a3a3a3;">Visibility</td>
-                        <td style="padding:8px 0;text-align:right;font-weight:bold;color:#60a5fa;">{score.visibility_score}</td></tr>
-                    <tr><td style="padding:8px 0;color:#a3a3a3;">Engagement</td>
-                        <td style="padding:8px 0;text-align:right;font-weight:bold;color:#60a5fa;">{score.engagement_score}</td></tr>
-                    <tr><td style="padding:8px 0;color:#a3a3a3;">Procurement Interest</td>
-                        <td style="padding:8px 0;text-align:right;font-weight:bold;color:#60a5fa;">{score.procurement_interest_score}</td></tr>
-                    <tr style="border-top:1px solid #262626;">
-                      <td style="padding:12px 0;color:#ffffff;font-weight:bold;">Total Score</td>
-                      <td style="padding:12px 0;text-align:right;font-size:1.4em;font-weight:bold;color:#a78bfa;">{score.total_score}</td>
+                    <tr><td style="padding:8px 0;color:#64748b;">Compliance</td>
+                        <td style="padding:8px 0;text-align:right;font-weight:bold;color:#2563eb;">{score.compliance_score}</td></tr>
+                    <tr><td style="padding:8px 0;color:#64748b;">Visibility</td>
+                        <td style="padding:8px 0;text-align:right;font-weight:bold;color:#2563eb;">{score.visibility_score}</td></tr>
+                    <tr><td style="padding:8px 0;color:#64748b;">Engagement</td>
+                        <td style="padding:8px 0;text-align:right;font-weight:bold;color:#2563eb;">{score.engagement_score}</td></tr>
+                    <tr><td style="padding:8px 0;color:#64748b;">Procurement Interest</td>
+                        <td style="padding:8px 0;text-align:right;font-weight:bold;color:#2563eb;">{score.procurement_interest_score}</td></tr>
+                    <tr style="border-top:1px solid #e2e8f0;">
+                      <td style="padding:12px 0;color:#0f172a;font-weight:bold;">Total Score</td>
+                      <td style="padding:12px 0;text-align:right;font-size:1.4em;font-weight:bold;color:#7c3aed;">{score.total_score}</td>
                     </tr>
                   </table>
-                  <a href="https://www.booppa.io/vendor/dashboard"
-                     style="display:inline-block;background:#7c3aed;color:#ffffff;padding:12px 24px;
-                            border-radius:8px;text-decoration:none;font-weight:bold;margin-top:8px;">
-                    View Full Dashboard
-                  </a>
-                  <p style="margin-top:24px;font-size:0.8em;color:#525252;">
+                  {email_button("https://www.booppa.io/vendor/dashboard", "View Full Dashboard")}
+                  <p style="margin:8px 0 0;font-size:12px;color:#94a3b8;">
                     You're receiving this because you have an active BOOPPA vendor profile.
                     <a href="https://www.booppa.io/vendor/profile" style="color:#7c3aed;">Manage preferences</a>
                   </p>
-                </div>
-                </body></html>
-                """
+                    """,
+                    title="Your Weekly Vendor Score",
+                    preheader=f"Your BOOPPA vendor score this week — {score.total_score} pts.",
+                )
                 import asyncio as _asyncio
                 _asyncio.run(email_svc.send_html_email(user.email, subject, body_html))
                 sent += 1
@@ -6414,13 +6400,12 @@ def post_payment_drip(vendor_email: str, product_type: str = "",
     label = labels.get(product_type, "your BOOPPA product")
     name = company_name or vendor_email
 
-    body_html = f"""<html><body style="font-family:Arial;max-width:600px;margin:0 auto;color:#0f172a;">
-    <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-      <h1 style="color:#10b981;margin:0;font-size:18px;">What to do next with your {label}</h1>
-    </div>
-    <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
-      <p>Hello {name},</p>
-      <ol style="line-height:2;">
+    from app.services.email_layout import branded_email_html, email_button
+    body_html = branded_email_html(
+        f"""
+      <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">What to do next with your {label}</h2>
+      <p style="margin:0 0 12px;color:#334155;font-size:15px;line-height:1.6;">Hello {name},</p>
+      <ol style="line-height:1.9;color:#334155;font-size:15px;padding-left:20px;margin:0 0 20px;">
         <li><strong>Add your QR badge to your email signature.</strong>
             Every email is a buyer touchpoint.</li>
         <li><strong>Check your sector percentile</strong> on your dashboard.
@@ -6428,16 +6413,12 @@ def post_payment_drip(vendor_email: str, product_type: str = "",
         <li><strong>Run the Tender Win Calculator</strong> at
             booppa.io/tender-check to see your exact win probability.</li>
       </ol>
-      <p>
-        <a href="https://www.booppa.io/vendor/dashboard"
-           style="background:#10b981;color:#fff;padding:12px 24px;text-decoration:none;
-                  border-radius:6px;font-weight:bold;display:inline-block;">
-          Go to your dashboard
-        </a>
-      </p>
-      <p style="color:#64748b;font-size:12px;margin-top:24px;">booppa.io</p>
-    </div>
-    </body></html>"""
+      {email_button("https://www.booppa.io/vendor/dashboard", "Go to your dashboard")}
+      <p style="color:#64748b;font-size:12px;margin:8px 0 0;">booppa.io</p>
+        """,
+        title=f"What to do next with your {label}",
+        preheader=f"3 steps to get the most from your {label}.",
+    )
 
     try:
         email_svc = EmailService()
@@ -6493,14 +6474,14 @@ def send_gebiz_alert_newsletter():
             tender_url = t.url or f"https://www.gebiz.gov.sg"
             rows_html += f"""
             <tr>
-              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#e5e5e5;">
-                <a href="{tender_url}" style="color:#a78bfa;text-decoration:none;font-weight:500;">{t.tender_no}</a><br>
-                <span style="font-size:0.85em;color:#a3a3a3;">{t.title[:120]}</span>
+              <td style="padding:10px 8px;border-bottom:1px solid #e2e8f0;color:#0f172a;">
+                <a href="{tender_url}" style="color:#7c3aed;text-decoration:none;font-weight:500;">{t.tender_no}</a><br>
+                <span style="font-size:0.85em;color:#64748b;">{t.title[:120]}</span>
               </td>
-              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#a3a3a3;white-space:nowrap;">{t.agency}</td>
-              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#60a5fa;white-space:nowrap;">{value_str}</td>
-              <td style="padding:10px 8px;border-bottom:1px solid #262626;white-space:nowrap;">
-                <span style="color:{'#ef4444' if isinstance(days_left, int) and days_left <= 3 else '#f59e0b' if isinstance(days_left, int) and days_left <= 7 else '#10b981'}">
+              <td style="padding:10px 8px;border-bottom:1px solid #e2e8f0;color:#64748b;white-space:nowrap;">{t.agency}</td>
+              <td style="padding:10px 8px;border-bottom:1px solid #e2e8f0;color:#2563eb;white-space:nowrap;">{value_str}</td>
+              <td style="padding:10px 8px;border-bottom:1px solid #e2e8f0;white-space:nowrap;">
+                <span style="color:{'#ef4444' if isinstance(days_left, int) and days_left <= 3 else '#d97706' if isinstance(days_left, int) and days_left <= 7 else '#059669'}">
                   {days_left}d left
                 </span>
               </td>
@@ -6512,14 +6493,11 @@ def send_gebiz_alert_newsletter():
         for vendor in vendors:
             try:
                 subject = f"GeBIZ Alert: {len(tenders)} tenders closing in the next 14 days"
-                body_html = f"""
-                <html><body style="font-family:Arial,sans-serif;background:#0a0a0a;color:#e5e5e5;padding:32px;">
-                <div style="max-width:640px;margin:0 auto;">
-                  <p style="font-size:0.8em;color:#525252;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px;">
-                    BOOPPA · GeBIZ Intelligence
-                  </p>
-                  <h2 style="color:#ffffff;margin-top:0;">Tenders Closing Soon</h2>
-                  <p style="color:#a3a3a3;">
+                from app.services.email_layout import branded_email_html, email_button
+                body_html = branded_email_html(
+                    f"""
+                  <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Tenders Closing Soon</h2>
+                  <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">
                     Hi {vendor.full_name or vendor.company or vendor.email},<br>
                     Here are the GeBIZ opportunities closing within the next 14 days.
                     Check your win probability before you bid.
@@ -6527,36 +6505,27 @@ def send_gebiz_alert_newsletter():
 
                   <table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:0.9em;">
                     <thead>
-                      <tr style="border-bottom:1px solid #404040;">
-                        <th style="padding:8px;text-align:left;color:#737373;font-weight:600;">Tender</th>
-                        <th style="padding:8px;text-align:left;color:#737373;font-weight:600;">Agency</th>
-                        <th style="padding:8px;text-align:left;color:#737373;font-weight:600;">Est. Value</th>
-                        <th style="padding:8px;text-align:left;color:#737373;font-weight:600;">Deadline</th>
+                      <tr style="border-bottom:1px solid #e2e8f0;">
+                        <th style="padding:8px;text-align:left;color:#64748b;font-weight:600;">Tender</th>
+                        <th style="padding:8px;text-align:left;color:#64748b;font-weight:600;">Agency</th>
+                        <th style="padding:8px;text-align:left;color:#64748b;font-weight:600;">Est. Value</th>
+                        <th style="padding:8px;text-align:left;color:#64748b;font-weight:600;">Deadline</th>
                       </tr>
                     </thead>
                     <tbody>{rows_html}</tbody>
                   </table>
 
-                  <div style="margin:24px 0;display:flex;gap:12px;">
-                    <a href="https://www.booppa.io/tender-check"
-                       style="display:inline-block;background:#7c3aed;color:#ffffff;padding:12px 24px;
-                              border-radius:8px;text-decoration:none;font-weight:bold;">
-                      Check Win Probability →
-                    </a>
-                    <a href="https://www.booppa.io/opportunities"
-                       style="display:inline-block;background:#1a1a1a;color:#a78bfa;padding:12px 24px;
-                              border-radius:8px;text-decoration:none;font-weight:bold;border:1px solid #404040;">
-                      View All Open Tenders
-                    </a>
-                  </div>
+                  {email_button("https://www.booppa.io/tender-check", "Check Win Probability →")}
+                  {email_button("https://www.booppa.io/opportunities", "View All Open Tenders", primary=False)}
 
-                  <p style="margin-top:24px;font-size:0.8em;color:#525252;">
+                  <p style="margin:8px 0 0;font-size:12px;color:#94a3b8;">
                     You're receiving this because you have an active BOOPPA vendor profile.
                     <a href="https://www.booppa.io/vendor/profile" style="color:#7c3aed;">Manage preferences</a>
                   </p>
-                </div>
-                </body></html>
-                """
+                    """,
+                    title="GeBIZ · Tenders closing soon",
+                    preheader=f"{len(tenders)} GeBIZ tenders closing in the next 14 days.",
+                )
                 import asyncio as _asyncio
                 _asyncio.run(email_svc.send_html_email(vendor.email, subject, body_html))
                 sent += 1
@@ -6957,31 +6926,31 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
         def _row(label: str, e: dict) -> str:
             return f"""
             <tr>
-              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#e5e5e5;">{label}</td>
-              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#60a5fa;text-align:right;">{e['count']}</td>
-              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#a3a3a3;text-align:right;">S${e['value']:,.0f}</td>
+              <td style="padding:10px 8px;border-bottom:1px solid #e2e8f0;color:#0f172a;">{label}</td>
+              <td style="padding:10px 8px;border-bottom:1px solid #e2e8f0;color:#2563eb;text-align:right;">{e['count']}</td>
+              <td style="padding:10px 8px;border-bottom:1px solid #e2e8f0;color:#64748b;text-align:right;">S${e['value']:,.0f}</td>
             </tr>"""
 
         def _row4(c0, c1, c2, c3) -> str:
             return f"""
             <tr>
-              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#e5e5e5;">{c0}</td>
-              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#60a5fa;text-align:right;">{c1}</td>
-              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#a3a3a3;text-align:right;">{c2}</td>
-              <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#a3a3a3;text-align:right;">{c3}</td>
+              <td style="padding:10px 8px;border-bottom:1px solid #e2e8f0;color:#0f172a;">{c0}</td>
+              <td style="padding:10px 8px;border-bottom:1px solid #e2e8f0;color:#2563eb;text-align:right;">{c1}</td>
+              <td style="padding:10px 8px;border-bottom:1px solid #e2e8f0;color:#64748b;text-align:right;">{c2}</td>
+              <td style="padding:10px 8px;border-bottom:1px solid #e2e8f0;color:#64748b;text-align:right;">{c3}</td>
             </tr>"""
 
         def _email_section(title: str, header_cols: list[str], rows_html: str) -> str:
             if not rows_html:
                 return ""
             ths = "".join(
-                f'<th style="padding:8px;text-align:{"left" if i == 0 else "right"};color:#737373;">{h}</th>'
+                f'<th style="padding:8px;text-align:{"left" if i == 0 else "right"};color:#64748b;">{h}</th>'
                 for i, h in enumerate(header_cols)
             )
             return f"""
-                  <h3 style="color:#ffffff;margin-top:32px;font-size:1.05em;">{title}</h3>
+                  <h3 style="color:#0f172a;margin-top:32px;font-size:1.05em;">{title}</h3>
                   <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
-                    <thead><tr style="border-bottom:1px solid #404040;">{ths}</tr></thead>
+                    <thead><tr style="border-bottom:1px solid #e2e8f0;">{ths}</tr></thead>
                     <tbody>{rows_html}</tbody>
                   </table>"""
 
@@ -7004,9 +6973,9 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
             extra = ""
             if agg["busiest_label"]:
                 extra += (
-                    f'<p style="color:#a3a3a3;margin-top:32px;">⏱ '
-                    f'<strong style="color:#fff;">Bid timing:</strong> the busiest award month in this '
-                    f'window was <strong style="color:#60a5fa;">{agg["busiest_label"]}</strong> — plan submissions '
+                    f'<p style="color:#334155;margin-top:32px;">⏱ '
+                    f'<strong style="color:#0f172a;">Bid timing:</strong> the busiest award month in this '
+                    f'window was <strong style="color:#2563eb;">{agg["busiest_label"]}</strong> — plan submissions '
                     f'to land ahead of peak procurement cycles.</p>'
                 )
             extra += _email_section(
@@ -7143,7 +7112,7 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                 )
 
                 disclaimer_placeholder = (
-                    '<p style="font-size:11px;color:#737373;margin-top:6px;">'
+                    '<p style="font-size:11px;color:#94a3b8;margin-top:6px;">'
                     'BID/WATCH/PASS is a rule-based estimate using sector averages and your '
                     'self-reported history (if provided at signup) — not a guarantee of '
                     'outcome. <a href="https://www.booppa.io/vendor/profile" style="color:#7c3aed;">'
@@ -7156,82 +7125,77 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                     _close_str = _t["closing_date"].strftime("%d %b") if _t.get("closing_date") else "—"
                     _val_str = f"S${_t['estimated_value']:,.0f}" if _t.get("estimated_value") else "—"
                     _tender_url = _t.get("url") or "https://www.gebiz.gov.sg"
-                    _title_cell = f'<a href="{_tender_url}" style="color:#a78bfa;">{(_t.get("title") or "")[:60]}</a>'
+                    _title_cell = f'<a href="{_tender_url}" style="color:#7c3aed;">{(_t.get("title") or "")[:60]}</a>'
                     bid_rows_html += f"""
                         <tr>
-                          <td style="padding:8px;border-bottom:1px solid #262626;font-size:13px;">{_title_cell}</td>
-                          <td style="padding:8px;border-bottom:1px solid #262626;font-size:12px;color:#a3a3a3;">{(_t.get("agency") or "")[:20]}</td>
-                          <td style="padding:8px;border-bottom:1px solid #262626;font-size:12px;text-align:right;">{_val_str}</td>
-                          <td style="padding:8px;border-bottom:1px solid #262626;font-size:12px;text-align:right;">{_close_str}</td>
-                          <td style="padding:8px;border-bottom:1px solid #262626;text-align:center;">{_badge}</td>
+                          <td style="padding:8px;border-bottom:1px solid #e2e8f0;font-size:13px;color:#0f172a;">{_title_cell}</td>
+                          <td style="padding:8px;border-bottom:1px solid #e2e8f0;font-size:12px;color:#64748b;">{(_t.get("agency") or "")[:20]}</td>
+                          <td style="padding:8px;border-bottom:1px solid #e2e8f0;font-size:12px;text-align:right;color:#0f172a;">{_val_str}</td>
+                          <td style="padding:8px;border-bottom:1px solid #e2e8f0;font-size:12px;text-align:right;color:#0f172a;">{_close_str}</td>
+                          <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;">{_badge}</td>
                         </tr>"""
 
                 bid_table_html = "" if not bid_rows_html else f"""
-                  <h3 style="color:#ffffff;margin-top:32px;font-size:1.05em;">Live tenders — your recommendation</h3>
+                  <h3 style="color:#0f172a;margin-top:32px;font-size:1.05em;">Live tenders — your recommendation</h3>
                   <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
-                    <thead><tr style="border-bottom:1px solid #404040;">
-                      <th style="padding:8px;text-align:left;color:#737373;">Tender</th>
-                      <th style="padding:8px;text-align:left;color:#737373;">Agency</th>
-                      <th style="padding:8px;text-align:right;color:#737373;">Value</th>
-                      <th style="padding:8px;text-align:right;color:#737373;">Closes</th>
-                      <th style="padding:8px;text-align:center;color:#737373;">Action</th>
+                    <thead><tr style="border-bottom:1px solid #e2e8f0;">
+                      <th style="padding:8px;text-align:left;color:#64748b;">Tender</th>
+                      <th style="padding:8px;text-align:left;color:#64748b;">Agency</th>
+                      <th style="padding:8px;text-align:right;color:#64748b;">Value</th>
+                      <th style="padding:8px;text-align:right;color:#64748b;">Closes</th>
+                      <th style="padding:8px;text-align:center;color:#64748b;">Action</th>
                     </tr></thead>
                     <tbody>{bid_rows_html}</tbody>
                   </table>
-                  <p style="font-size:12px;color:#525252;">BID = strong fit · WATCH = monitor · PASS = skip this cycle</p>
+                  <p style="font-size:12px;color:#94a3b8;">BID = strong fit · WATCH = monitor · PASS = skip this cycle</p>
                   {disclaimer_placeholder}"""
 
-                body_html = f"""
-                <html><body style="font-family:Arial,sans-serif;background:#0a0a0a;color:#e5e5e5;padding:32px;">
-                <div style="max-width:640px;margin:0 auto;">
-                  <p style="font-size:0.8em;color:#525252;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px;">
-                    BOOPPA · Tender Intelligence
-                  </p>
-                  <h2 style="color:#ffffff;margin-top:0;">Monthly Sector Trends — {period}</h2>
-                  <p style="color:#a3a3a3;">
+                from app.services.email_layout import branded_email_html, email_button
+                _pdf_btn = email_button(pdf_url, "Download PDF report", primary=False) if pdf_url else ""
+                body_html = branded_email_html(
+                    f"""
+                  <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Monthly Sector Trends — {period}</h2>
+                  <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">
                     Hi {sub.full_name or sub.company or sub.email},<br>
-                    Across {period_label} ({_scope}), GeBIZ awarded <strong style="color:#ffffff;">{_award_count} contracts</strong>
-                    totalling <strong style="color:#60a5fa;">S${total_value:,.0f}</strong>.
+                    Across {period_label} ({_scope}), GeBIZ awarded <strong style="color:#0f172a;">{_award_count} contracts</strong>
+                    totalling <strong style="color:#2563eb;">S${total_value:,.0f}</strong>.
                   </p>
 
-                  <h3 style="color:#ffffff;margin-top:32px;font-size:1.05em;">Top sectors</h3>
+                  <h3 style="color:#0f172a;margin-top:32px;font-size:1.05em;">Top sectors</h3>
                   <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
-                    <thead><tr style="border-bottom:1px solid #404040;">
-                      <th style="padding:8px;text-align:left;color:#737373;">Sector</th>
-                      <th style="padding:8px;text-align:right;color:#737373;">Awards</th>
-                      <th style="padding:8px;text-align:right;color:#737373;">Total value</th>
+                    <thead><tr style="border-bottom:1px solid #e2e8f0;">
+                      <th style="padding:8px;text-align:left;color:#64748b;">Sector</th>
+                      <th style="padding:8px;text-align:right;color:#64748b;">Awards</th>
+                      <th style="padding:8px;text-align:right;color:#64748b;">Total value</th>
                     </tr></thead>
                     <tbody>{sector_rows}</tbody>
                   </table>
 
-                  <h3 style="color:#ffffff;margin-top:32px;font-size:1.05em;">Top procuring entities</h3>
+                  <h3 style="color:#0f172a;margin-top:32px;font-size:1.05em;">Top procuring entities</h3>
                   <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
-                    <thead><tr style="border-bottom:1px solid #404040;">
-                      <th style="padding:8px;text-align:left;color:#737373;">Agency</th>
-                      <th style="padding:8px;text-align:right;color:#737373;">Awards</th>
-                      <th style="padding:8px;text-align:right;color:#737373;">Total value</th>
+                    <thead><tr style="border-bottom:1px solid #e2e8f0;">
+                      <th style="padding:8px;text-align:left;color:#64748b;">Agency</th>
+                      <th style="padding:8px;text-align:right;color:#64748b;">Awards</th>
+                      <th style="padding:8px;text-align:right;color:#64748b;">Total value</th>
                     </tr></thead>
                     <tbody>{agency_rows}</tbody>
                   </table>
                   {extra_sections_html}
                   {bid_table_html}
 
-                  <div style="margin:32px 0;display:flex;gap:12px;flex-wrap:wrap;">
-                    <a href="https://www.booppa.io/tender-intelligence"
-                       style="display:inline-block;background:#7c3aed;color:#ffffff;padding:12px 24px;
-                              border-radius:8px;text-decoration:none;font-weight:bold;">
-                      Open the dashboard →
-                    </a>
-                    {("<a href='" + pdf_url + "' style='display:inline-block;background:#1a1a1a;color:#a78bfa;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;border:1px solid #404040;'>Download PDF report</a>") if pdf_url else ""}
+                  <div style="margin:28px 0 0;">
+                  {email_button("https://www.booppa.io/tender-intelligence", "Open the dashboard →")}
+                  {_pdf_btn}
                   </div>
 
-                  <p style="margin-top:24px;font-size:0.8em;color:#525252;">
+                  <p style="margin:8px 0 0;font-size:12px;color:#94a3b8;">
                     You're receiving this as a Tender Intelligence subscriber.
                     <a href="https://www.booppa.io/account/billing" style="color:#7c3aed;">Manage subscription</a>
                   </p>
-                </div>
-                </body></html>
-                """
+                    """,
+                    title=f"Tender Intelligence — {period}",
+                    preheader=f"Monthly GeBIZ sector trends for {period_label}.",
+                )
                 _asyncio.run(email_svc.send_html_email(sub.email, subject, body_html))
                 sent += 1
             except Exception as exc:
@@ -7339,19 +7303,19 @@ def fulfill_pdpa_declaration_task(user_id: str, customer_email: str | None = Non
         logger.info("[PDPADeclaration] Generated + anchored for %s (rows=%d)", email, len(dicts))
 
         if email:
-            body_html = f"""
-            <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;">
-              <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-                <h1 style="color:#10b981;margin:0;font-size:20px;">PDPA Level-2 Self-Declaration Ready</h1>
-              </div>
-              <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
-                <p>Hello <strong>{company_name}</strong>,</p>
-                <p>Your PDPA Level-2 self-declaration ({len(dicts)} processing activities) is attached
+            from app.services.email_layout import branded_email_html
+            body_html = branded_email_html(
+                f"""
+                <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">PDPA Level-2 Self-Declaration Ready</h2>
+                <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Hello <strong>{company_name}</strong>,</p>
+                <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Your PDPA Level-2 self-declaration ({len(dicts)} processing activities) is attached
                    as a tamper-evident, blockchain-anchored PDF — it complements your PDPA Snapshot
                    (Level 1) to demonstrate PDPC Level 2 accountability.</p>
-                <p style="color:#64748b;font-size:12px;">Booppa · PDPA Level 2 · booppa.io</p>
-              </div>
-            </body></html>"""
+                <p style="color:#64748b;font-size:12px;margin:0;">Booppa · PDPA Level 2 · booppa.io</p>
+                """,
+                title="PDPA Level-2 Self-Declaration ready",
+                preheader="Your blockchain-anchored PDPA Level-2 declaration is attached.",
+            )
             try:
                 ok = asyncio.run(EmailService().send_with_pdf_attachment(
                     to_email=email,
@@ -7519,12 +7483,12 @@ def send_vendor_pro_daily_alerts():
                     verified = int(r.verified or 0)
                     if total == 0:
                         continue
-                    badge_color = "#ef4444" if verified >= 3 else "#f59e0b" if verified >= 1 else "#737373"
+                    badge_color = "#ef4444" if verified >= 3 else "#d97706" if verified >= 1 else "#64748b"
                     row_html += f"""
                     <tr>
-                      <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#e5e5e5;font-weight:500;">{r.tno}</td>
-                      <td style="padding:10px 8px;border-bottom:1px solid #262626;color:#60a5fa;text-align:right;">{total}</td>
-                      <td style="padding:10px 8px;border-bottom:1px solid #262626;text-align:right;">
+                      <td style="padding:10px 8px;border-bottom:1px solid #e2e8f0;color:#0f172a;font-weight:500;">{r.tno}</td>
+                      <td style="padding:10px 8px;border-bottom:1px solid #e2e8f0;color:#2563eb;text-align:right;">{total}</td>
+                      <td style="padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:right;">
                         <span style="color:{badge_color};font-weight:600;">{verified}</span>
                       </td>
                     </tr>"""
@@ -7533,40 +7497,32 @@ def send_vendor_pro_daily_alerts():
                     continue
 
                 subject = "Competitor activity on tenders you're tracking"
-                body_html = f"""
-                <html><body style="font-family:Arial,sans-serif;background:#0a0a0a;color:#e5e5e5;padding:32px;">
-                <div style="max-width:640px;margin:0 auto;">
-                  <p style="font-size:0.8em;color:#525252;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px;">
-                    BOOPPA · Vendor Pro
-                  </p>
-                  <h2 style="color:#ffffff;margin-top:0;">Competitor activity — last 24 hours</h2>
-                  <p style="color:#a3a3a3;">
+                from app.services.email_layout import branded_email_html, email_button
+                body_html = branded_email_html(
+                    f"""
+                  <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Competitor activity — last 24 hours</h2>
+                  <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">
                     Hi {sub.full_name or sub.company or sub.email},<br>
                     Other vendors ran probability checks on tenders you're tracking. Counts only — no identities shown.
                   </p>
                   <table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:0.9em;">
                     <thead>
-                      <tr style="border-bottom:1px solid #404040;">
-                        <th style="padding:8px;text-align:left;color:#737373;font-weight:600;">Tender</th>
-                        <th style="padding:8px;text-align:right;color:#737373;font-weight:600;">Lookups</th>
-                        <th style="padding:8px;text-align:right;color:#737373;font-weight:600;">Verified</th>
+                      <tr style="border-bottom:1px solid #e2e8f0;">
+                        <th style="padding:8px;text-align:left;color:#64748b;font-weight:600;">Tender</th>
+                        <th style="padding:8px;text-align:right;color:#64748b;font-weight:600;">Lookups</th>
+                        <th style="padding:8px;text-align:right;color:#64748b;font-weight:600;">Verified</th>
                       </tr>
                     </thead>
                     <tbody>{row_html}</tbody>
                   </table>
-                  <div style="margin:24px 0;">
-                    <a href="https://www.booppa.io/vendor/dashboard"
-                       style="display:inline-block;background:#7c3aed;color:#ffffff;padding:12px 24px;
-                              border-radius:8px;text-decoration:none;font-weight:bold;">
-                      Open Vendor Pro dashboard →
-                    </a>
-                  </div>
-                  <p style="margin-top:24px;font-size:0.8em;color:#525252;">
+                  {email_button("https://www.booppa.io/vendor/dashboard", "Open Vendor Pro dashboard →")}
+                  <p style="margin:8px 0 0;font-size:12px;color:#94a3b8;">
                     You can opt out of being counted in these signals from your dashboard.
                   </p>
-                </div>
-                </body></html>
-                """
+                    """,
+                    title="Competitor activity — last 24 hours",
+                    preheader="Other vendors checked tenders you're tracking.",
+                )
                 _asyncio.run(email_svc.send_html_email(sub.email, subject, body_html))
                 sent += 1
             except Exception as exc:
@@ -7628,26 +7584,21 @@ def weekly_intelligence_brief():
                 else:
                     position = "bottom 25% — take action now"
 
-                body_html = f"""<html><body style="font-family:Arial;max-width:600px;margin:0 auto;">
-                <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-                  <h1 style="color:#10b981;margin:0;font-size:16px;">Weekly intelligence brief</h1>
-                </div>
-                <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;color:#0f172a;">
-                  <p>Trust Score: <strong>{score}/100</strong> — {position}.</p>
-                  <p style="font-size:14px;color:#475569;">
-                    {"Your score is strong. Consider adding notarized documents to reach DEEP verification." if score >= 60
-                     else "Add PDPA Snapshot or Notarization to improve your score and move above median."}
-                  </p>
-                  <a href="https://www.booppa.io/vendor/dashboard"
-                     style="background:#0f172a;color:#fff;padding:10px 20px;text-decoration:none;
-                            border-radius:6px;font-weight:bold;display:inline-block;margin-top:16px;">
-                    View dashboard
-                  </a>
-                  <p style="margin-top:24px;font-size:11px;color:#94a3b8;">
-                    You're receiving this because you have an active BOOPPA vendor profile.
-                  </p>
-                </div>
-                </body></html>"""
+                from app.services.email_layout import branded_email_html, email_button
+                _tip = ("Your score is strong. Consider adding notarized documents to reach DEEP verification."
+                        if score >= 60
+                        else "Add PDPA Snapshot or Notarization to improve your score and move above median.")
+                body_html = branded_email_html(
+                    f"""
+                    <h2 style="margin:0 0 16px;font-size:20px;color:#0f172a;">Weekly intelligence brief</h2>
+                    <p style="margin:0 0 12px;color:#334155;font-size:15px;line-height:1.6;">Trust Score: <strong>{score}/100</strong> — {position}.</p>
+                    <p style="margin:0 0 20px;color:#475569;font-size:14px;line-height:1.6;">{_tip}</p>
+                    {email_button("https://www.booppa.io/vendor/dashboard", "View dashboard", primary=False)}
+                    <p style="margin:16px 0 0;color:#94a3b8;font-size:11px;">You're receiving this because you have an active BOOPPA vendor profile.</p>
+                    """,
+                    title="Weekly intelligence brief",
+                    preheader=f"Your Trust Score is {score}/100 — {position}.",
+                )
 
                 _asyncio.run(email_svc.send_html_email(
                     to_email=user.email,
@@ -8087,23 +8038,24 @@ def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | 
             logger.error("[TRMBaseline] S3 upload failed for %s: %s", user.email, up_err)
 
         if download_url:
-            body_html = f"""
-            <html><body style="font-family:Arial,sans-serif;background:#0a0f1e;color:#e5e5e5;padding:32px;">
-            <div style="max-width:600px;margin:0 auto;background:#0d1424;border:1px solid #1e293b;border-radius:12px;padding:28px;">
-              <p style="margin:0 0 4px;color:#64748b;text-transform:uppercase;letter-spacing:.1em;font-size:11px;">BOOPPA · {plan_label}</p>
-              <h1 style="margin:0 0 12px;color:#10b981;font-size:20px;">Your MAS TRM Baseline is ready</h1>
-              <p style="color:#cbd5e1;line-height:1.6;margin:0 0 18px;">
-                We've prepared a baseline assessment of all 13 MAS Technology Risk Management control
-                domains for <strong>{company_name}</strong>. Use it as your starting inventory — then
-                work each domain (with AI gap analysis) in your TRM workspace.
-              </p>
-              <div style="text-align:center;margin:24px 0;">
-                <a href="{download_url}" style="display:inline-block;background:#10b981;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;">Download your TRM Baseline (PDF)</a>
-              </div>
-              <p style="color:#94a3b8;font-size:13px;margin:0;">
-                Open your <a href="https://www.booppa.io/vendor/trm" style="color:#10b981;">TRM workspace</a> to begin.
-              </p>
-            </div></body></html>"""
+            from app.services.email_layout import branded_email_html, email_button
+            body_html = branded_email_html(
+                f"""
+                <p style="margin:0 0 4px;color:#64748b;text-transform:uppercase;letter-spacing:.1em;font-size:11px;">BOOPPA · {plan_label}</p>
+                <h2 style="margin:0 0 12px;color:#0f172a;font-size:20px;">Your MAS TRM Baseline is ready</h2>
+                <p style="color:#334155;line-height:1.6;margin:0 0 20px;font-size:15px;">
+                  We've prepared a baseline assessment of all 13 MAS Technology Risk Management control
+                  domains for <strong>{company_name}</strong>. Use it as your starting inventory — then
+                  work each domain (with AI gap analysis) in your TRM workspace.
+                </p>
+                {email_button(download_url, "Download your TRM Baseline (PDF)")}
+                <p style="color:#64748b;font-size:13px;margin:8px 0 0;line-height:1.6;">
+                  Open your <a href="https://www.booppa.io/vendor/trm" style="color:#10b981;">TRM workspace</a> to begin.
+                </p>
+                """,
+                title="Your MAS TRM Baseline is ready",
+                preheader=f"Baseline assessment of all 13 MAS TRM domains for {company_name}.",
+            )
             sent = asyncio.run(EmailService().send_html_email(
                 to_email=user.email,
                 subject=f"Your MAS TRM Baseline Assessment — {plan_label}",
@@ -8139,6 +8091,7 @@ def run_trm_board_report_for_user(self, user_id: str, override_company: str | No
         generate_trm_board_report_pdf,
     )
     from app.services.storage import S3Service
+    from app.services.email_layout import branded_email_html
 
     db = SessionLocal()
     try:
@@ -8226,15 +8179,17 @@ def run_trm_board_report_for_user(self, user_id: str, override_company: str | No
         sent = asyncio.run(EmailService().send_html_email(
             to_email=user.email,
             subject=f"Your MAS TRM Board Report — {month_label} ({plan_label})",
-            body_html=(
-                f"<html><body style=\"font-family:Arial,sans-serif;color:#0f172a;max-width:600px;margin:0 auto;\">"
-                f"<p>Hello <strong>{company_name}</strong>,</p>"
-                f"<p>Your monthly MAS TRM board report for {month_label} is "
-                f"<strong>attached as a PDF</strong> — overall compliance {board['compliant_pct']}%, "
-                f"RAG status per domain, top open risks, and next month's focus.</p>"
-                f"<p style=\"color:#64748b;font-size:12px;\">Open your "
-                f"<a href=\"https://www.booppa.io/vendor/trm\">TRM workspace</a> to update controls.</p>"
-                f"</body></html>"
+            body_html=branded_email_html(
+                f"""
+                <p style="margin:0 0 12px;color:#334155;font-size:15px;line-height:1.6;">Hello <strong>{company_name}</strong>,</p>
+                <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Your monthly MAS TRM board report for {month_label} is
+                <strong>attached as a PDF</strong> — overall compliance {board['compliant_pct']}%,
+                RAG status per domain, top open risks, and next month's focus.</p>
+                <p style="color:#64748b;font-size:12px;line-height:1.6;">Open your
+                <a href="https://www.booppa.io/vendor/trm" style="color:#10b981;">TRM workspace</a> to update controls.</p>
+                """,
+                title=f"Your MAS TRM Board Report — {month_label}",
+                preheader=f"Overall compliance {board['compliant_pct']}% — attached as PDF.",
             ),
             attachments=[(f"MAS-TRM-Board-Report-{_safe}-{month_label}.pdf", pdf_bytes)],
         ))
@@ -8511,26 +8466,26 @@ def fulfill_evidence_pack_task(self, evidence_pack_id: str):
                 for dt, u in download_urls.items()
             )
             network = settings.active_polygon_network_name
-            body_html = f"""
-            <html><body style="font-family:Arial,sans-serif;color:#0f172a;max-width:620px;margin:0 auto;">
-              <div style="background:#0f172a;padding:24px 32px;border-radius:12px 12px 0 0;">
-                <h1 style="color:#10b981;margin:0;font-size:20px;">Your PDPA Compliance Evidence Pack is ready</h1>
-              </div>
-              <div style="padding:32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
-                <p>Hello <strong>{pack['organisation']}</strong>,</p>
-                <p>Your Evidence Pack of seven PDPA governance documents has been generated and
+            from app.services.email_layout import branded_email_html
+            body_html = branded_email_html(
+                f"""
+                <h2 style="color:#0f172a;margin:0 0 16px;font-size:20px;">Your PDPA Compliance Evidence Pack is ready</h2>
+                <p style="margin:0 0 12px;color:#334155;font-size:15px;line-height:1.6;">Hello <strong>{pack['organisation']}</strong>,</p>
+                <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Your Evidence Pack of seven PDPA governance documents has been generated and
                    anchored. Each document is an <strong>AI-generated DRAFT</strong> — your
                    authorised representative must review, correct, and sign it before it carries
                    evidentiary value.</p>
-                <ul style="font-size:14px;padding-left:20px;">{links}</ul>
-                <p style="color:#334155;font-size:14px;">Your Compliance Evidence Pack also includes a
+                <ul style="font-size:14px;padding-left:20px;color:#334155;line-height:1.8;">{links}</ul>
+                <p style="color:#334155;font-size:14px;line-height:1.6;">Your Compliance Evidence Pack also includes a
                    <strong>PDPA Snapshot scan</strong> and an <strong>RFP Complete kit</strong>. These
                    arrive in their own emails as each finishes generating.</p>
-                <p style="color:#64748b;font-size:12px;">Anchored on the {network} for
+                <p style="color:#64748b;font-size:12px;line-height:1.6;">Anchored on the {network} for
                    tamper-checking. A testnet timestamp evidences existence; it is not a mainnet or
                    RFC 3161 timestamp. Not legal advice; does not certify PDPA compliance.</p>
-              </div>
-            </body></html>"""
+                """,
+                title="Your PDPA Compliance Evidence Pack is ready",
+                preheader="Seven PDPA governance documents, generated and anchored.",
+            )
             sent = asyncio.run(EmailService().send_html_email(
                 to_email=to_email,
                 subject="Your PDPA Compliance Evidence Pack (7 documents)",

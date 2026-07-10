@@ -17,6 +17,11 @@ from app.services.fulfillment.helpers import (
 from app.services.fulfillment.single_products import _defer_rfp_to_intake
 
 from app.services.email_service import EmailService
+from app.services.email_layout import (
+    branded_email_html,
+    email_button,
+    email_info_box,
+)
 from app.billing.enforcement import enforce_tier
 from app.core.models import Referral
 from datetime import datetime, timedelta, timezone
@@ -240,28 +245,28 @@ async def _fulfill_standalone_no_report(
                 sent = await EmailService().send_html_email(
                     to_email=customer_email,
                     subject=f"Your {count} notarization{'s' if count != 1 else ''} ready to redeem",
-                    body_html=f"""
-                    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;">
-                      <h2 style="color:#0f172a;">Notarization credits issued</h2>
-                      <p style="color:#334155;">
+                    body_html=branded_email_html(
+                        f"""
+                      <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Notarization credits issued</h2>
+                      <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">
                         Thanks for your purchase. You now have
                         <strong>{count} notarization credit{'s' if count != 1 else ''}</strong>
                         on your account. Each lets you anchor any compliance document (PDF, DOCX, image, etc.)
                         on the blockchain with SHA-256 proof.
                       </p>
-                      <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:16px;margin:20px 0;">
-                        <p style="margin:0 0 12px;font-weight:bold;color:#0369a1;">How to redeem</p>
-                        <p style="margin:0;color:#334155;font-size:14px;">
-                          Visit <a href="https://www.booppa.io/notarize" style="color:#0ea5e9;font-weight:bold;">booppa.io/notarize</a>,
-                          upload your document, and enter this email ({customer_email}).
-                          Your credit will be applied automatically — no payment required.
-                        </p>
-                      </div>
-                      <p style="color:#64748b;font-size:13px;">
+                      {email_info_box(
+                          '<strong>How to redeem</strong><br>'
+                          'Visit <a href="https://www.booppa.io/notarize" style="color:#10b981;font-weight:bold;">booppa.io/notarize</a>, '
+                          f'upload your document, and enter this email ({customer_email}). '
+                          'Your credit will be applied automatically — no payment required.'
+                      )}
+                      <p style="margin:0;color:#64748b;font-size:13px;">
                         Credits don't expire. You can use them one at a time or all at once.
                       </p>
-                    </div>
-                    """,
+                        """,
+                        title="Notarization credits issued",
+                        preheader=f"You now have {count} notarization credit(s) to redeem.",
+                    ),
                 )
                 if sent:
                     logger.info(
@@ -795,12 +800,11 @@ async def _fulfill_bundle(
         if pending_intake_id and customer_email:
             kit_label = "RFP Complete Kit" if rfp_product == "rfp_complete" else "RFP Express Kit"
             intake_url = f"https://www.booppa.io/rfp-intake/{pending_intake_id}"
-            brief_cta = f"""
-                      <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:16px;margin:16px 0;">
-                        <p style="margin:0 0 8px;font-weight:bold;color:#92400e;">One step to unlock your {kit_label}</p>
-                        <p style="margin:0 0 12px;color:#334155;font-size:14px;">Share a few details about the procurement (about 2 minutes) and we'll generate the kit.</p>
-                        <a href="{intake_url}" style="display:inline-block;background:#0ea5e9;color:#fff;padding:11px 22px;border-radius:8px;text-decoration:none;font-weight:bold;">Complete your RFP brief →</a>
-                      </div>"""
+            brief_cta = email_info_box(
+                f'<strong>One step to unlock your {kit_label}</strong><br>'
+                "Share a few details about the procurement (about 2 minutes) and we'll "
+                "generate the kit.", tone="warn",
+            ) + email_button(intake_url, "Complete your RFP brief →")
 
         if (sections or brief_cta) and customer_email:
             bundle_label = product_type.replace('_', ' ').title()
@@ -808,14 +812,17 @@ async def _fulfill_bundle(
                 sent = await EmailService().send_html_email(
                     to_email=customer_email,
                     subject=f"Your {bundle_label} — what's included & next steps",
-                    body_html=f"""
-                    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;">
-                      <h2 style="color:#0f172a;">Your {bundle_label} is being prepared</h2>
-                      <p style="color:#334155;">Here's everything included and what happens next:</p>
+                    body_html=branded_email_html(
+                        f"""
+                      <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Your {bundle_label} is being prepared</h2>
+                      <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Here's everything included and what happens next:</p>
                       {''.join(sections)}
                       {brief_cta}
-                      <p style="color:#64748b;font-size:13px;margin-top:20px;">booppa.io</p>
-                    </div>""",
+                      <p style="color:#64748b;font-size:13px;margin:20px 0 0;">booppa.io</p>
+                        """,
+                        title=f"Your {bundle_label}",
+                        preheader=f"Your {bundle_label} is being prepared — here's what's next.",
+                    ),
                 )
                 if not sent:
                     logger.error(

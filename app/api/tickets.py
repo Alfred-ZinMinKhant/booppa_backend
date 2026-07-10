@@ -1,10 +1,12 @@
 from app.core.route_classes import RetryAPIRoute
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+import asyncio
+import html as _html
+import logging
 import secrets
 import uuid
 
-import boto3
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func
@@ -12,7 +14,11 @@ from sqlalchemy import func
 from app.core.config import settings
 from app.core.db import SessionLocal
 from app.core.models import SupportTicket, SupportTicketReply
+from app.services.email_service import EmailService
+from app.services.email_layout import branded_email_html
 from app.api.admin import _admin_auth
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(route_class=RetryAPIRoute)
 
@@ -38,19 +44,24 @@ class ReplyCreate(BaseModel):
     is_internal: bool = False
 
 
-def _send_email(to_address: str, subject: str, html_body: str) -> None:
+def _send_email(to_address: str, subject: str, inner_html: str, *, title: str = "") -> None:
+    """Send a support email through EmailService (Resend primary, SES fallback).
+
+    ``inner_html`` is inner content — it is wrapped in the shared brand shell
+    here. Best-effort: never raises so it can't block ticket creation.
+    """
     try:
-        ses = boto3.client("ses", region_name=settings.AWS_SES_REGION)
-        ses.send_email(
-            Source=settings.SUPPORT_EMAIL,
-            Destination={"ToAddresses": [to_address]},
-            Message={
-                "Subject": {"Data": subject, "Charset": "UTF-8"},
-                "Body": {"Html": {"Data": html_body, "Charset": "UTF-8"}},
-            },
+        body_html = branded_email_html(inner_html, title=title or subject)
+        asyncio.run(
+            EmailService().send_html_email(
+                to_email=to_address,
+                subject=subject,
+                body_html=body_html,
+            )
         )
-    except Exception:
+    except Exception as exc:
         # Fail silently to avoid blocking ticket creation
+        logger.warning(f"[Tickets] email to {to_address} failed: {exc}")
         return
 
 
@@ -111,29 +122,32 @@ def submit_ticket(request: Request, payload: TicketCreate):
         tracking_url = f"https://booppa.io/support/track/{ticket_code}?token={tracking_token}"
 
         # Notify support and user (best-effort)
+        _p = 'style="margin:0 0 10px;color:#334155;font-size:15px;line-height:1.6;"'
         _send_email(
             settings.SUPPORT_EMAIL,
             f"[{ticket_code}] {payload.subject}",
             f"""
-            <h2>New Support Ticket</h2>
-            <p><strong>ID:</strong> {ticket_code}</p>
-            <p><strong>From:</strong> {payload.name} ({payload.email})</p>
-            <p><strong>Category:</strong> {payload.category}</p>
-            <p><strong>Priority:</strong> {priority}</p>
-            <p><strong>Subject:</strong> {payload.subject}</p>
-            <p><strong>Message:</strong></p>
-            <p>{payload.message}</p>
+            <h2 style="margin:0 0 16px;font-size:20px;color:#0f172a;">New Support Ticket</h2>
+            <p {_p}><strong>ID:</strong> {ticket_code}</p>
+            <p {_p}><strong>From:</strong> {_html.escape(payload.name)} ({_html.escape(str(payload.email))})</p>
+            <p {_p}><strong>Category:</strong> {_html.escape(payload.category)}</p>
+            <p {_p}><strong>Priority:</strong> {priority}</p>
+            <p {_p}><strong>Subject:</strong> {_html.escape(payload.subject)}</p>
+            <p {_p}><strong>Message:</strong></p>
+            <p {_p}>{_html.escape(payload.message)}</p>
             """,
+            title="New support ticket",
         )
         _send_email(
             str(payload.email),
             f"Ticket {ticket_code} received",
             f"""
-            <h2>Thanks for contacting BOOPPA Support</h2>
-            <p>We’ve received your ticket <strong>{ticket_code}</strong>.</p>
-            <p><strong>Subject:</strong> {payload.subject}</p>
-            <p>Track your ticket: <a href="{tracking_url}">{tracking_url}</a></p>
+            <h2 style="margin:0 0 16px;font-size:20px;color:#0f172a;">Thanks for contacting BOOPPA Support</h2>
+            <p {_p}>We’ve received your ticket <strong>{ticket_code}</strong>.</p>
+            <p {_p}><strong>Subject:</strong> {_html.escape(payload.subject)}</p>
+            <p {_p}>Track your ticket: <a href="{tracking_url}" style="color:#10b981;word-break:break-all;">{tracking_url}</a></p>
             """,
+            title="Ticket received",
         )
 
         return TicketResponse(status="success", ticket_id=ticket_code, tracking_url=tracking_url)
@@ -206,16 +220,18 @@ def add_reply(payload: ReplyCreate, request: Request, _auth: bool = Depends(_adm
 
         if not payload.is_internal:
             tracking_url = f"https://booppa.io/support/track/{ticket.ticket_id}?token={ticket.tracking_token}"
+            _p = 'style="margin:0 0 10px;color:#334155;font-size:15px;line-height:1.6;"'
             _send_email(
                 ticket.email,
                 f"Ticket update {ticket.ticket_id}",
                 f"""
-                <h2>New update on your ticket</h2>
-                <p><strong>Ticket:</strong> {ticket.ticket_id}</p>
-                <p><strong>Message:</strong></p>
-                <p>{payload.message}</p>
-                <p>Track: <a href=\"{tracking_url}\">{tracking_url}</a></p>
+                <h2 style="margin:0 0 16px;font-size:20px;color:#0f172a;">New update on your ticket</h2>
+                <p {_p}><strong>Ticket:</strong> {ticket.ticket_id}</p>
+                <p {_p}><strong>Message:</strong></p>
+                <p {_p}>{_html.escape(payload.message)}</p>
+                <p {_p}>Track: <a href="{tracking_url}" style="color:#10b981;word-break:break-all;">{tracking_url}</a></p>
                 """,
+                title="Ticket update",
             )
 
         return {"status": "success"}
