@@ -105,6 +105,7 @@ async def vendor_insights(
                 "reason": m.get("bid_reason"),
                 "confidence": m.get("bid_confidence"),
                 "winProbability": m.get("win_probability"),
+                "winLikelihoodTier": m.get("win_likelihood_tier"),
             }
             for m in matches
         ],

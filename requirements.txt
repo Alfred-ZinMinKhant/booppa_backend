@@ -77,4 +77,4 @@ playwright
 django-ckeditor
 mangum==0.17.0
 openpyxl
-prometheus-fastapi-instrumentator==7.0.0
+prometheus-fastapi-instrumentator==6.1.0

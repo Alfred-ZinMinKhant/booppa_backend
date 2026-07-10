@@ -324,6 +324,7 @@ def get_tender_matches(db, vendor_id: str, limit: int = 5,
                     wp = compute_tender_win_probability(db, m.get("tender_no"), vendor_id)
                     if isinstance(wp, dict) and "currentProbability" in wp:
                         m["win_probability"] = wp["currentProbability"]
+                        m["win_likelihood_tier"] = wp.get("winLikelihoodTier")
                 except Exception as we:
                     logger.warning("[VendorInsights] win-prob failed for %s: %s", m.get("tender_no"), we)
         return result

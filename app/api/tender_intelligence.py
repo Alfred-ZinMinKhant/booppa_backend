@@ -579,6 +579,7 @@ def timing_recommendation(
         "classifier_reason": classifier_reason,
         "classifier_confidence": classifier_confidence,
         "win_probability_pct": win_pct,
+        "win_likelihood_tier": result.get("winLikelihoodTier"),
         "thresholds": {"bid": _BID_THRESHOLD, "watch": _WATCH_THRESHOLD},
         "agency": agency_val,
         "sector": sector_val,

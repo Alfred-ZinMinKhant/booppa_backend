@@ -9,7 +9,7 @@ import httpx
 import logging
 import re
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
 
@@ -359,6 +359,28 @@ def _check_body(html: str) -> list[dict]:
     return findings
 
 
+def _toggle_www(url: str) -> str | None:
+    """Return the same URL with the ``www.`` host prefix toggled, or None if the
+    host makes toggling meaningless (empty host, or a multi-label subdomain like
+    ``app.example.com`` where adding ``www.`` is not a sensible homepage guess).
+
+    Bare-domain vs ``www`` is the most common reason an entry URL 404s while the
+    real homepage lives on the other host — this lets the scanner recover it."""
+    p = urlparse(url)
+    host = p.netloc
+    if not host:
+        return None
+    if host.lower().startswith("www."):
+        new_host = host[4:]
+    else:
+        # Only add www to an apex domain (exactly one dot, e.g. example.com);
+        # don't prepend www to an existing subdomain.
+        if host.count(".") != 1:
+            return None
+        new_host = f"www.{host}"
+    return urlunparse(p._replace(netloc=new_host))
+
+
 def run_free_scan(website_url: str) -> dict[str, Any]:
     """
     Run a lightweight PDPA compliance scan on the given website URL.
@@ -401,6 +423,49 @@ def run_free_scan(website_url: str) -> dict[str, Any]:
                     "legislation": "N/A",
                     "action": "If you own this website, whitelist the scanner or provide direct access.",
                 })
+
+            # The entry URL resolved (after redirects) to an error page. Analysing
+            # its body would produce confidently-wrong compliance findings against
+            # a 404/error page instead of the real homepage. The 404 is commonly a
+            # bare-domain vs www mismatch, so try the toggled host once before
+            # giving up. (403 is handled above and is a live-but-blocked page, not
+            # a missing one — leave it alone.)
+            if resp.status_code >= 400 and resp.status_code != 403:
+                alt_url = _toggle_www(str(resp.url))
+                if alt_url:
+                    logger.info(
+                        f"Got {resp.status_code} for {website_url}, retrying homepage at {alt_url}"
+                    )
+                    try:
+                        alt_resp = client.get(alt_url, headers=_BROWSER_HEADERS)
+                        if alt_resp.status_code < 400:
+                            resp = alt_resp
+                            website_url = alt_url
+                    except httpx.HTTPError as alt_exc:
+                        logger.info(f"www-toggle retry failed for {alt_url}: {alt_exc}")
+
+                if resp.status_code >= 400 and resp.status_code != 403:
+                    # Still an error page — flag it and skip body/header/cookie
+                    # checks so we never report findings mined from a 404 page.
+                    logger.info(
+                        f"Entry URL for {website_url} returned {resp.status_code}; skipping content checks"
+                    )
+                    findings.append({
+                        "check_id": "not_found",
+                        "title": f"Homepage returned HTTP {resp.status_code}",
+                        "severity": "MEDIUM",
+                        "category": "Availability",
+                        "description": (
+                            f"The scanned URL resolved to an HTTP {resp.status_code} error page rather "
+                            "than a live homepage, so no reliable PDPA content checks could be run. "
+                            "Verify the exact homepage URL (e.g. with or without 'www')."
+                        ),
+                        "legislation": "N/A",
+                        "action": "Provide the correct, reachable homepage URL and re-run the scan.",
+                    })
+                    final_url = str(resp.url)
+                    score = min(100, sum(_severity_weight(f["severity"]) for f in findings))
+                    return _build_response(website_url, findings, score)
 
             final_url = str(resp.url)
             response_headers = {k.lower(): v for k, v in resp.headers.items()}

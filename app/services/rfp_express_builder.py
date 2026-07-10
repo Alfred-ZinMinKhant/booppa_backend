@@ -2036,6 +2036,7 @@ class RFPExpressBuilder:
                 product_type=product_type,
                 declaration_url=declaration_url,
                 appendix_d_url=appendix_d_url,
+                docx_url=docx_url,
                 pdf_bytes=pdf_bytes,
             )
         except Exception as e:

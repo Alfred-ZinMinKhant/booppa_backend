@@ -4650,6 +4650,20 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
         user = UserRepository.get_by_id(db, str(vendor_id))
         company = (override_company or "").strip() or (getattr(user, "company", "Customer") if user else "Customer")
 
+        # Atomic same-day reservation (closes the check-then-create race between
+        # the daily anniversary cron and the Vendor-Pro quarterly cron, which can
+        # both queue this task for the same vendor on a quarter-start day). Redis
+        # SET NX: exactly one caller wins; the loser drops. Test-harness runs
+        # (override_company set) are exempt so admin Test Identity can rescan on
+        # demand. Degrades to the DB check below when Redis is unavailable.
+        if not override_company:
+            from app.core.cache import cache as _cache
+            _day = datetime.now(timezone.utc).strftime("%Y%m%d")
+            _lock_key = f"pdpa_rescan_lock:{vendor_id}:{_day}"
+            if not _cache.add(_lock_key, {"queued": True}, ttl=86400):
+                logger.info(f"[PdpaMonitor] Atomic drop: rescan already reserved today for {vendor_id}")
+                return
+
         # Idempotency lock: drop if a scan is already pending or recently run (24h)
         from datetime import datetime, timezone, timedelta
         recent_threshold = datetime.now(timezone.utc) - timedelta(hours=24)
@@ -4746,11 +4760,24 @@ def _pdpa_monitor_briefing_bullets(company, sector, findings, current_score, pre
     def _xe(s):
         return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
+    import re as _re
+
+    # Extract the normalised PDPA section tokens ("24", "26D", "11") from a
+    # legislation string, ignoring sub-clauses. This is the authoritative set the
+    # email briefing is allowed to cite — anything else the model emits is a
+    # hallucination and must be dropped (closes the PDF-vs-email citation
+    # mismatch: the PDF renders the finding's own legislation, so the email must
+    # cite from the same source, not invent section numbers).
+    def _sections(text):
+        return {m.upper() for m in _re.findall(r"(?:§|s\.?)\s*(\d+[A-Z]?)", str(text or ""))}
+
     flist = findings if isinstance(findings, list) else []
     if not flist:
         return _GENERIC_MONITOR_BRIEFING
 
     lines = []
+    allowed_sections: set[str] = set()
+    deterministic: list[str] = []
     for f in flist[:8]:
         if not isinstance(f, dict):
             continue
@@ -4760,7 +4787,24 @@ def _pdpa_monitor_briefing_bullets(company, sector, findings, current_score, pre
         leg = f.get("legislation") or f.get("legislation_violated") or ""
         leg_str = f" (Legislation: {leg})" if leg else ""
         lines.append(f"- [{sev}] {dim}: {desc}{leg_str}".strip())
+        allowed_sections |= _sections(leg)
+        # Deterministic backfill bullet — cites the finding's own legislation, so
+        # it can never diverge from the PDF.
+        if leg and leg.strip().upper() not in ("", "N/A"):
+            deterministic.append(_xe(f"Remediate {dim}: {desc or 'address the flagged gap'} ({leg})."))
     findings_blob = "\n".join(lines) or "(no structured findings)"
+
+    def _validate(bullets: list) -> list:
+        """Keep only bullets whose PDPA section citations are all in the
+        authoritative allow-list; a bullet with no section citation is advisory
+        (nothing to mismatch) and is kept."""
+        out = []
+        for b in bullets:
+            cited = _sections(b)
+            if cited and not cited.issubset(allowed_sections):
+                continue  # cites a section not grounded in the findings — drop
+            out.append(b)
+        return out
 
     if isinstance(current_score, int) and isinstance(previous_score, int):
         delta = f" Compliance score moved {previous_score} -> {current_score}/100."
@@ -4769,9 +4813,9 @@ def _pdpa_monitor_briefing_bullets(company, sector, findings, current_score, pre
     else:
         delta = ""
 
+    allow_str = ", ".join(f"§{s}" for s in sorted(allowed_sections)) or "(none provided)"
     try:
         import json as _json
-        import re as _re
 
         from app.services.booppa_ai_service import BooppaAIService
         ai = BooppaAIService()
@@ -4782,6 +4826,7 @@ def _pdpa_monitor_briefing_bullets(company, sector, findings, current_score, pre
             "remediation time. Be specific to the findings — no generic advice. "
             "CRITICAL: You MUST use the exact Legislation provided in the findings. "
             "Do NOT invent or hallucinate section numbers. "
+            f"The ONLY PDPA sections you may cite are: {allow_str}. Do not cite any other section. "
             "Return ONLY a JSON array of 3 short strings, no prose, no code fences."
         )
         user = (
@@ -4800,10 +4845,24 @@ def _pdpa_monitor_briefing_bullets(company, sector, findings, current_score, pre
                 cand = next((v for v in cand.values() if isinstance(v, list)), None)
             if isinstance(cand, list):
                 bullets = [_xe(str(x)) for x in cand if str(x).strip()][:3]
+                # Drop any bullet citing a section not grounded in the findings,
+                # then backfill from the finding-derived deterministic bullets so
+                # the email never contradicts the PDF's citations.
+                bullets = _validate(bullets)
+                for d in deterministic:
+                    if len(bullets) >= 3:
+                        break
+                    if d not in bullets:
+                        bullets.append(d)
                 if bullets:
-                    return bullets
+                    return bullets[:3]
     except Exception as exc:
         logger.warning("[MonitorReport] personalised briefing failed: %s — using generic", exc)
+    # Findings exist but the model failed: prefer deterministic finding-grounded
+    # bullets over the fixed generic list (which hard-codes §26D regardless of the
+    # org's actual findings, the second citation-drift vector).
+    if deterministic:
+        return deterministic[:3]
     return _GENERIC_MONITOR_BRIEFING
 
 

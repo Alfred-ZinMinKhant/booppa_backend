@@ -65,17 +65,18 @@ def _get_signals(db, sector: str, days: int = 90) -> dict:
     for fallback_days in [days, 365, 730]:
         since = datetime.now(timezone.utc).date() - timedelta(days=fallback_days)
         try:
-            # GebizAwardHistory.sector is normally written uppercased, but match
-            # case-insensitively so legacy mixed-case rows still count.
+            # GebizAwardHistory.sector stores the classifier KEY (e.g. "IT",
+            # "CONSTRUCTION") written by refresh_gebiz_base_rates — NOT the raw
+            # GeBIZ free-text. So match the vendor sector against that key
+            # case-insensitively. (The old "it" → "information technology" remap
+            # searched for text that is never stored, so IT vendors always got
+            # zero rows — empty competitor intel + a missing Signal 2.)
             _search_sec = (sector or "").strip().lower()
-            if _search_sec == "it":
-                # In GeBIZ, 'IT' is often spelled out
-                _search_sec = "information technology"
 
             rows = (
                 db.query(GebizAwardHistory)
                 .filter(
-                    func.lower(func.trim(GebizAwardHistory.sector)).contains(_search_sec),
+                    func.lower(func.trim(GebizAwardHistory.sector)) == _search_sec,
                     GebizAwardHistory.awarded_date >= since,
                 )
                 .all()

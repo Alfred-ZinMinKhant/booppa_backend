@@ -53,13 +53,17 @@ def build_badge_certificate(db: Session, user: User, company_override: str | Non
         .filter(VendorScore.vendor_id == user.id)
         .first()
     )
+    # A snapshot that stores 0 (not None) must still fall back to the real
+    # compliance score — otherwise the badge prints "0/100" while Trust/
+    # Compliance scores elsewhere show the true value. Treat non-positive as
+    # missing.
     confidence = getattr(snap, "confidence_score", None)
-    if confidence is None and score_record:
+    if (confidence is None or confidence <= 0) and score_record:
         confidence = getattr(score_record, "compliance_score", None)
 
     # Re-evaluate procurement readiness if derived from fallback score
     readiness = getattr(snap, "procurement_readiness", None) or "CONDITIONAL"
-    if getattr(snap, "confidence_score", None) is None and score_record:
+    if not getattr(snap, "confidence_score", None) and score_record:
         if confidence is not None and confidence >= 80:
             readiness = "READY"
         elif confidence is not None and confidence >= 60:

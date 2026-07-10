@@ -22,6 +22,7 @@ class RFPExpressEmailer:
         product_type: str = "rfp_express",
         declaration_url: Optional[str] = None,
         appendix_d_url: Optional[str] = None,
+        docx_url: Optional[str] = None,
         pdf_bytes: Optional[bytes] = None,
     ) -> bool:
         try:
@@ -50,6 +51,18 @@ class RFPExpressEmailer:
                     f"your specific tender.</p>"
                 )
 
+            docx_section = ""
+            if docx_url:
+                docx_section = (
+                    f"<p><a href=\"{docx_url}\" "
+                    f"style=\"background:#0f172a;color:#fff;padding:10px 22px;"
+                    f"text-decoration:none;border-radius:6px;font-weight:bold;\">"
+                    f"Download Editable Evidence Pack (DOCX)</a></p>"
+                    f"<p style=\"color:#64748b;font-size:12px;\">An editable Word "
+                    f"version of your evidence pack — adapt the wording to a specific "
+                    f"tender before submission.</p>"
+                )
+
             apx_section = ""
             if appendix_d_url:
                 apx_section = (
@@ -76,6 +89,7 @@ class RFPExpressEmailer:
                 </a>
               </p>
               {bc_section}
+              {docx_section}
               {decl_section}
               {apx_section}
               <p>The certificate includes blockchain-verified evidence of your PDPA

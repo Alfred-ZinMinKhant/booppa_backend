@@ -184,16 +184,29 @@ def _compute_raw_probability(
     s_mult  = _sector_mult(sector_percentile)
     e_mult  = _evidence_mult(evidence_count)
     r_pen   = RISK_PENALTY.get(risk_signal, 1.0)
-    
-    # Deterministic noise based on tender_no to simulate tender-specific characteristics
-    import hashlib
-    noise_mult = 1.0
-    if tender_no:
-        h = int(hashlib.md5(tender_no.encode('utf-8')).hexdigest(), 16)
-        noise_mult = 0.95 + (h % 100) / 1000.0  # 0.95 to 1.049
 
-    raw     = base_rate * p_mult * s_mult * e_mult * r_pen * value_fit_mult * deadline_mult * noise_mult
+    # NOTE: no synthetic per-tender "noise" multiplier. GeBIZ does not publish a
+    # value for live open tenders, so the only honest per-tender signals are the
+    # value-fit (when a value is known) and deadline-comfort multipliers passed
+    # in. Two tenders with identical real signals SHOULD score identically —
+    # fabricating a ±5% hash jitter presented distinct-looking precise numbers
+    # that read as a bug. Differentiation is surfaced qualitatively via the
+    # win-likelihood tier and the BID/WATCH/PASS classifier instead.
+    raw     = base_rate * p_mult * s_mult * e_mult * r_pen * value_fit_mult * deadline_mult
     return min(raw, MAX_PROBABILITY)
+
+
+def _win_likelihood_tier(probability_pct: float) -> str:
+    """Qualitative band for a win probability, so near-equal numeric odds aren't
+    presented as spuriously precise. Bands align with the BID/WATCH thresholds
+    used across the tender surfaces (35% / 15%)."""
+    if probability_pct >= 35.0:
+        return "HIGH"
+    if probability_pct >= 25.0:
+        return "MODERATE"
+    if probability_pct >= 15.0:
+        return "LOWER"
+    return "LOW"
 
 
 def _build_gap_reasons(
@@ -448,6 +461,7 @@ def compute_tender_win_probability(
         "sector":            tender.sector,
         "agency":            tender.agency,
         "currentProbability": round(current_prob * 100, 1),
+        "winLikelihoodTier": _win_likelihood_tier(round(current_prob * 100, 1)),
         "vendorProfile": {
             "verificationDepth": verification_depth,
             "evidenceCount":     evidence_count,
