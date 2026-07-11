@@ -1883,8 +1883,9 @@ class RFPExpressBuilder:
             doc.add_heading("Compliance Q&A", level=1)
             for key, answer in qa_answers.items():
                 doc.add_heading(self._q_label(key), level=2)
-                p = doc.add_paragraph(answer)
-                p.runs[0].font.size = Pt(11)
+                p = doc.add_paragraph(answer if (answer and answer.strip()) else "Not provided.")
+                if p.runs:
+                    p.runs[0].font.size = Pt(11)
                 doc.add_paragraph("")  # spacer
 
             # Attestation section
