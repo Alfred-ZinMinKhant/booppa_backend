@@ -27,15 +27,27 @@ env:
   ECS_CLUSTER: booppa-cluster
   ECS_SERVICE: booppa-app
   WORKER_ECS_SERVICE: booppa-worker
+  BEAT_ECS_SERVICE: booppa-beat
   CMS_ECS_SERVICE: booppa-cms
   CLOUDFLARE_TUNNEL_SECRET_ARN: ${{ secrets.CLOUDFLARE_TUNNEL_SECRET_ARN }}
   CLOUDFLARE_TUNNEL_CONFIG_SECRET_ARN: ${{ secrets.CLOUDFLARE_TUNNEL_CONFIG_SECRET_ARN }}
   CLOUDFLARE_TUNNEL_ORIGINCERT_SECRET_ARN: ${{ secrets.CLOUDFLARE_TUNNEL_ORIGINCERT_SECRET_ARN }}
 
 jobs:
+  # Gate: the full backend test suite must pass before we build/push/deploy.
+  # Reuses .github/workflows/test.yml (Postgres + Redis services, alembic, pytest).
+  test:
+    uses: ./.github/workflows/test.yml
+    secrets: inherit
+
   build-and-deploy:
+    needs: test
     runs-on: ubuntu-latest
-    permissions: write-all
+    # Least privilege: this job talks to AWS via configured credentials and, for the
+    # optional contract-address persistence step, a dedicated GH_SECRETS_TOKEN PAT —
+    # neither needs the ambient GITHUB_TOKEN write scopes that `write-all` granted.
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -125,9 +137,69 @@ jobs:
 
 
 
+      # Push the sensitive credentials (kept in GitHub secrets as the source of
+      # truth) into a single Secrets Manager secret on every deploy. The task
+      # definitions reference these by ARN via `secrets[]`/`valueFrom` instead of
+      # baking plaintext into `environment[]`, so `describe-task-definition` no
+      # longer exposes any credential. Non-secret config (price IDs, URLs, flags)
+      # stays in `environment[]`.
+      - name: Sync app secrets to Secrets Manager
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          APP_SECRETS_ARN: ${{ secrets.AWS_SECRETSMANAGER_APP_SECRETS_ARN }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          BLOCKCHAIN_PRIVATE_KEY: ${{ secrets.BLOCKCHAIN_PRIVATE_KEY }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          CMS_ADMIN_TOKEN: ${{ secrets.CMS_ADMIN_TOKEN }}
+          CSP_PII_KEY_LOCAL: ${{ secrets.CSP_PII_KEY_LOCAL }}
+          CSP_PII_SEARCH_PEPPER: ${{ secrets.CSP_PII_SEARCH_PEPPER }}
+        run: |
+          if [ -z "$APP_SECRETS_ARN" ]; then
+            echo "AWS_SECRETSMANAGER_APP_SECRETS_ARN is not set." >&2
+            echo "Create the secret once (aws secretsmanager create-secret --name booppa/app-secrets --secret-string '{}')" >&2
+            echo "then store its ARN in the AWS_SECRETSMANAGER_APP_SECRETS_ARN GitHub secret." >&2
+            exit 1
+          fi
+          payload=$(jq -n \
+            --arg STRIPE_SECRET_KEY "$STRIPE_SECRET_KEY" \
+            --arg STRIPE_WEBHOOK_SECRET "$STRIPE_WEBHOOK_SECRET" \
+            --arg RESEND_API_KEY "$RESEND_API_KEY" \
+            --arg VIRUSTOTAL_API_KEY "$VIRUSTOTAL_API_KEY" \
+            --arg DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY" \
+            --arg SECRET_KEY "$SECRET_KEY" \
+            --arg BLOCKCHAIN_PRIVATE_KEY "$BLOCKCHAIN_PRIVATE_KEY" \
+            --arg ADMIN_PASSWORD "$ADMIN_PASSWORD" \
+            --arg CMS_ADMIN_TOKEN "$CMS_ADMIN_TOKEN" \
+            --arg CSP_PII_KEY_LOCAL "$CSP_PII_KEY_LOCAL" \
+            --arg CSP_PII_SEARCH_PEPPER "$CSP_PII_SEARCH_PEPPER" \
+            '{
+               STRIPE_SECRET_KEY: $STRIPE_SECRET_KEY,
+               STRIPE_WEBHOOK_SECRET: $STRIPE_WEBHOOK_SECRET,
+               RESEND_API_KEY: $RESEND_API_KEY,
+               VIRUSTOTAL_API_KEY: $VIRUSTOTAL_API_KEY,
+               DEEPSEEK_API_KEY: $DEEPSEEK_API_KEY,
+               SECRET_KEY: $SECRET_KEY,
+               BLOCKCHAIN_PRIVATE_KEY: $BLOCKCHAIN_PRIVATE_KEY,
+               ADMIN_PASSWORD: $ADMIN_PASSWORD,
+               CMS_ADMIN_TOKEN: $CMS_ADMIN_TOKEN,
+               CSP_PII_KEY_LOCAL: $CSP_PII_KEY_LOCAL,
+               CSP_PII_SEARCH_PEPPER: $CSP_PII_SEARCH_PEPPER
+             }')
+          aws secretsmanager put-secret-value \
+            --secret-id "$APP_SECRETS_ARN" \
+            --secret-string "$payload" \
+            --region "$AWS_REGION" >/dev/null
+          echo "Synced app secrets to Secrets Manager ($APP_SECRETS_ARN)."
+
       - name: Register ECS task definition - app
         env:
           APP_IMAGE: ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}
+          APP_SECRETS_ARN: ${{ secrets.AWS_SECRETSMANAGER_APP_SECRETS_ARN }}
           EXECUTION_ROLE_ARN: ${{ secrets.AWS_ECS_EXECUTION_ROLE_ARN }}
           TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -224,8 +296,6 @@ jobs:
                 "image": "${APP_IMAGE}",
                 "essential": true,
                 "environment": [
-                  { "name": "STRIPE_SECRET_KEY", "value": "${STRIPE_SECRET_KEY}" },
-                  { "name": "STRIPE_WEBHOOK_SECRET", "value": "${STRIPE_WEBHOOK_SECRET}" },
                   { "name": "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY", "value": "${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}" },
                   { "name": "STRIPE_PDPA_QUICK_SCAN", "value": "${STRIPE_PDPA_QUICK_SCAN}" },
                   { "name": "STRIPE_COMPLIANCE_NOTARIZATION_1", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_1}" },
@@ -258,42 +328,38 @@ jobs:
                   { "name": "STRIPE_BUYER_PRO_MONTHLY", "value": "${STRIPE_BUYER_PRO_MONTHLY}" },
                   { "name": "STRIPE_BUYER_PRO_ANNUAL", "value": "${STRIPE_BUYER_PRO_ANNUAL}" },
                   { "name": "STRIPE_BUYER_ENTERPRISE_MONTHLY", "value": "${STRIPE_BUYER_ENTERPRISE_MONTHLY}" },
-                  { "name": "STRIPE_BUYER_ENTERPRISE_ANNUAL", "value": "${STRIPE_BUYER_ENTERPRISE_ANNUAL}" },
-                  { "name": "RESEND_API_KEY", "value": "${RESEND_API_KEY}" },
-                  { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" },
-                  { "name": "VIRUSTOTAL_API_KEY", "value": "${VIRUSTOTAL_API_KEY}" },
-                  { "name": "DEEPSEEK_API_KEY", "value": "${DEEPSEEK_API_KEY}" },
-                  { "name": "NEXT_PUBLIC_BASE_URL", "value": "${NEXT_PUBLIC_BASE_URL}" },
+                  { "name": "STRIPE_BUYER_ENTERPRISE_ANNUAL", "value": "${STRIPE_BUYER_ENTERPRISE_ANNUAL}" },                  { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" },                  { "name": "NEXT_PUBLIC_BASE_URL", "value": "${NEXT_PUBLIC_BASE_URL}" },
                   { "name": "BACKEND_BASE_URL", "value": "${BACKEND_BASE_URL}" },
                   { "name": "VERIFY_BASE_URL", "value": "${VERIFY_BASE_URL}" },
                   { "name": "REDIS_URL", "value": "${REDIS_URL}" },
-                  { "name": "POLYGON_RPC_URL", "value": "${POLYGON_RPC_URL}" },
-                  { "name": "BLOCKCHAIN_PRIVATE_KEY", "value": "${BLOCKCHAIN_PRIVATE_KEY}" },
-                  { "name": "ANCHOR_CONTRACT_ADDRESS", "value": "${ANCHOR_CONTRACT_ADDRESS}" },
+                  { "name": "POLYGON_RPC_URL", "value": "${POLYGON_RPC_URL}" },                  { "name": "ANCHOR_CONTRACT_ADDRESS", "value": "${ANCHOR_CONTRACT_ADDRESS}" },
                   { "name": "S3_BUCKET", "value": "${S3_BUCKET}" },
                   { "name": "DB_POOL_SIZE", "value": "${DB_POOL_SIZE}" },
                   { "name": "DB_MAX_OVERFLOW", "value": "${DB_MAX_OVERFLOW}" },
                   { "name": "DB_POOL_TIMEOUT", "value": "${DB_POOL_TIMEOUT}" },
                   { "name": "DB_POOL_RECYCLE", "value": "${DB_POOL_RECYCLE}" },
-                  { "name": "FEATURE_SEO", "value": "${FEATURE_SEO}" },
-                  { "name": "SECRET_KEY", "value": "${SECRET_KEY}" },
-                  { "name": "ENVIRONMENT", "value": "production" },
+                  { "name": "FEATURE_SEO", "value": "${FEATURE_SEO}" },                  { "name": "ENVIRONMENT", "value": "production" },
                   { "name": "ALLOWED_HOSTS", "value": "api.booppa.io" },
                   { "name": "ALLOWED_ORIGINS", "value": "https://booppa.io,https://www.booppa.io,https://api.booppa.io,https://cms.booppa.io" },
                   { "name": "CSRF_TRUSTED_ORIGINS", "value": "https://api.booppa.io,https://booppa.io,https://www.booppa.io" },
                   { "name": "CORS_ALLOWED_ORIGINS", "value": "https://api.booppa.io,https://booppa.io,https://www.booppa.io" },
-                  { "name": "ADMIN_USER", "value": "${ADMIN_USER}" },
-                  { "name": "ADMIN_PASSWORD", "value": "${ADMIN_PASSWORD}" },
-                  { "name": "CMS_ADMIN_TOKEN", "value": "${CMS_ADMIN_TOKEN}" },
-                  { "name": "STRIPE_CSP_PACK_ONETIME", "value": "${STRIPE_CSP_PACK_ONETIME}" },
+                  { "name": "ADMIN_USER", "value": "${ADMIN_USER}" },                  { "name": "STRIPE_CSP_PACK_ONETIME", "value": "${STRIPE_CSP_PACK_ONETIME}" },
                   { "name": "STRIPE_CSP_PACK_MONTHLY", "value": "${STRIPE_CSP_PACK_MONTHLY}" },
-                  { "name": "STRIPE_CSP_MONITORING_MONTHLY", "value": "${STRIPE_CSP_MONITORING_MONTHLY}" },
-                  { "name": "CSP_PII_KEY_LOCAL", "value": "${CSP_PII_KEY_LOCAL}" },
-                  { "name": "CSP_PII_SEARCH_PEPPER", "value": "${CSP_PII_SEARCH_PEPPER}" },
-                  { "name": "EU_SANCTIONS_XML_URL", "value": "https://webgate.ec.europa.eu/fsd/fsf/public/files/xmlFullSanctionsList_1_1/content?token=dG9rZW4tMjAxNw" }
+                  { "name": "STRIPE_CSP_MONITORING_MONTHLY", "value": "${STRIPE_CSP_MONITORING_MONTHLY}" },                  { "name": "EU_SANCTIONS_XML_URL", "value": "https://webgate.ec.europa.eu/fsd/fsf/public/files/xmlFullSanctionsList_1_1/content?token=dG9rZW4tMjAxNw" }
                 ],
                 "secrets": [
-                  { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" }
+                  { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" },
+                  { "name": "STRIPE_SECRET_KEY", "valueFrom": "${APP_SECRETS_ARN}:STRIPE_SECRET_KEY::" },
+                  { "name": "STRIPE_WEBHOOK_SECRET", "valueFrom": "${APP_SECRETS_ARN}:STRIPE_WEBHOOK_SECRET::" },
+                  { "name": "RESEND_API_KEY", "valueFrom": "${APP_SECRETS_ARN}:RESEND_API_KEY::" },
+                  { "name": "VIRUSTOTAL_API_KEY", "valueFrom": "${APP_SECRETS_ARN}:VIRUSTOTAL_API_KEY::" },
+                  { "name": "DEEPSEEK_API_KEY", "valueFrom": "${APP_SECRETS_ARN}:DEEPSEEK_API_KEY::" },
+                  { "name": "SECRET_KEY", "valueFrom": "${APP_SECRETS_ARN}:SECRET_KEY::" },
+                  { "name": "BLOCKCHAIN_PRIVATE_KEY", "valueFrom": "${APP_SECRETS_ARN}:BLOCKCHAIN_PRIVATE_KEY::" },
+                  { "name": "ADMIN_PASSWORD", "valueFrom": "${APP_SECRETS_ARN}:ADMIN_PASSWORD::" },
+                  { "name": "CMS_ADMIN_TOKEN", "valueFrom": "${APP_SECRETS_ARN}:CMS_ADMIN_TOKEN::" },
+                  { "name": "CSP_PII_KEY_LOCAL", "valueFrom": "${APP_SECRETS_ARN}:CSP_PII_KEY_LOCAL::" },
+                  { "name": "CSP_PII_SEARCH_PEPPER", "valueFrom": "${APP_SECRETS_ARN}:CSP_PII_SEARCH_PEPPER::" }
                 ],
                 "portMappings": [{ "containerPort": 8000, "protocol": "tcp" }],
                 "logConfiguration": { "logDriver": "awslogs", "options": { "awslogs-group": "/ecs/${{ env.APP_ECR_REPO }}", "awslogs-region": "${AWS_REGION}", "awslogs-stream-prefix": "ecs" } }
@@ -309,6 +375,7 @@ jobs:
       - name: Register ECS task definition - worker
         env:
           APP_IMAGE: ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}
+          APP_SECRETS_ARN: ${{ secrets.AWS_SECRETSMANAGER_APP_SECRETS_ARN }}
           EXECUTION_ROLE_ARN: ${{ secrets.AWS_ECS_EXECUTION_ROLE_ARN }}
           TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -398,11 +465,8 @@ jobs:
                 "name": "worker",
                 "image": "${APP_IMAGE}",
                 "essential": true,
-                "command": ["python", "-m", "celery", "-A", "app.workers.celery_app", "worker", "--beat", "--loglevel=info", "-Q", "fast_queue,heavy_queue"],
-                "environment": [
-                  { "name": "STRIPE_SECRET_KEY", "value": "${STRIPE_SECRET_KEY}" },
-                  { "name": "STRIPE_WEBHOOK_SECRET", "value": "${STRIPE_WEBHOOK_SECRET}" },
-                  { "name": "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY", "value": "${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}" },
+                "command": ["python", "-m", "celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info", "-Q", "fast_queue,heavy_queue"],
+                "environment": [                  { "name": "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY", "value": "${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}" },
                   { "name": "STRIPE_PDPA_QUICK_SCAN", "value": "${STRIPE_PDPA_QUICK_SCAN}" },
                   { "name": "STRIPE_COMPLIANCE_NOTARIZATION_1", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_1}" },
                   { "name": "STRIPE_NOTARIZATION_ADDON_1", "value": "${STRIPE_NOTARIZATION_ADDON_1}" },
@@ -434,36 +498,33 @@ jobs:
                   { "name": "STRIPE_BUYER_PRO_MONTHLY", "value": "${STRIPE_BUYER_PRO_MONTHLY}" },
                   { "name": "STRIPE_BUYER_PRO_ANNUAL", "value": "${STRIPE_BUYER_PRO_ANNUAL}" },
                   { "name": "STRIPE_BUYER_ENTERPRISE_MONTHLY", "value": "${STRIPE_BUYER_ENTERPRISE_MONTHLY}" },
-                  { "name": "STRIPE_BUYER_ENTERPRISE_ANNUAL", "value": "${STRIPE_BUYER_ENTERPRISE_ANNUAL}" },
-                  { "name": "RESEND_API_KEY", "value": "${RESEND_API_KEY}" },
-                  { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" },
-                  { "name": "VIRUSTOTAL_API_KEY", "value": "${VIRUSTOTAL_API_KEY}" },
-                  { "name": "DEEPSEEK_API_KEY", "value": "${DEEPSEEK_API_KEY}" },
-                  { "name": "NEXT_PUBLIC_BASE_URL", "value": "${NEXT_PUBLIC_BASE_URL}" },
+                  { "name": "STRIPE_BUYER_ENTERPRISE_ANNUAL", "value": "${STRIPE_BUYER_ENTERPRISE_ANNUAL}" },                  { "name": "NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN", "value": "${NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN}" },                  { "name": "NEXT_PUBLIC_BASE_URL", "value": "${NEXT_PUBLIC_BASE_URL}" },
                   { "name": "BACKEND_BASE_URL", "value": "${BACKEND_BASE_URL}" },
                   { "name": "VERIFY_BASE_URL", "value": "${VERIFY_BASE_URL}" },
                   { "name": "REDIS_URL", "value": "${REDIS_URL}" },
-                  { "name": "POLYGON_RPC_URL", "value": "${POLYGON_RPC_URL}" },
-                  { "name": "BLOCKCHAIN_PRIVATE_KEY", "value": "${BLOCKCHAIN_PRIVATE_KEY}" },
-                  { "name": "ANCHOR_CONTRACT_ADDRESS", "value": "${ANCHOR_CONTRACT_ADDRESS}" },
+                  { "name": "POLYGON_RPC_URL", "value": "${POLYGON_RPC_URL}" },                  { "name": "ANCHOR_CONTRACT_ADDRESS", "value": "${ANCHOR_CONTRACT_ADDRESS}" },
                   { "name": "S3_BUCKET", "value": "${S3_BUCKET}" },
                   { "name": "DB_POOL_SIZE", "value": "${DB_POOL_SIZE}" },
                   { "name": "DB_MAX_OVERFLOW", "value": "${DB_MAX_OVERFLOW}" },
                   { "name": "DB_POOL_TIMEOUT", "value": "${DB_POOL_TIMEOUT}" },
                   { "name": "DB_POOL_RECYCLE", "value": "${DB_POOL_RECYCLE}" },
-                  { "name": "FEATURE_SEO", "value": "${FEATURE_SEO}" },
-                  { "name": "SECRET_KEY", "value": "${SECRET_KEY}" },
-                  { "name": "ENVIRONMENT", "value": "production" },
+                  { "name": "FEATURE_SEO", "value": "${FEATURE_SEO}" },                  { "name": "ENVIRONMENT", "value": "production" },
                   { "name": "PLAYWRIGHT_BROWSERS_PATH", "value": "/opt/playwright" },
                   { "name": "STRIPE_CSP_PACK_ONETIME", "value": "${STRIPE_CSP_PACK_ONETIME}" },
                   { "name": "STRIPE_CSP_PACK_MONTHLY", "value": "${STRIPE_CSP_PACK_MONTHLY}" },
-                  { "name": "STRIPE_CSP_MONITORING_MONTHLY", "value": "${STRIPE_CSP_MONITORING_MONTHLY}" },
-                  { "name": "CSP_PII_KEY_LOCAL", "value": "${CSP_PII_KEY_LOCAL}" },
-                  { "name": "CSP_PII_SEARCH_PEPPER", "value": "${CSP_PII_SEARCH_PEPPER}" },
-                  { "name": "EU_SANCTIONS_XML_URL", "value": "https://webgate.ec.europa.eu/fsd/fsf/public/files/xmlFullSanctionsList_1_1/content?token=dG9rZW4tMjAxNw" }
+                  { "name": "STRIPE_CSP_MONITORING_MONTHLY", "value": "${STRIPE_CSP_MONITORING_MONTHLY}" },                  { "name": "EU_SANCTIONS_XML_URL", "value": "https://webgate.ec.europa.eu/fsd/fsf/public/files/xmlFullSanctionsList_1_1/content?token=dG9rZW4tMjAxNw" }
                 ],
                 "secrets": [
-                  { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" }
+                  { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" },
+                  { "name": "STRIPE_SECRET_KEY", "valueFrom": "${APP_SECRETS_ARN}:STRIPE_SECRET_KEY::" },
+                  { "name": "STRIPE_WEBHOOK_SECRET", "valueFrom": "${APP_SECRETS_ARN}:STRIPE_WEBHOOK_SECRET::" },
+                  { "name": "RESEND_API_KEY", "valueFrom": "${APP_SECRETS_ARN}:RESEND_API_KEY::" },
+                  { "name": "VIRUSTOTAL_API_KEY", "valueFrom": "${APP_SECRETS_ARN}:VIRUSTOTAL_API_KEY::" },
+                  { "name": "DEEPSEEK_API_KEY", "valueFrom": "${APP_SECRETS_ARN}:DEEPSEEK_API_KEY::" },
+                  { "name": "SECRET_KEY", "valueFrom": "${APP_SECRETS_ARN}:SECRET_KEY::" },
+                  { "name": "BLOCKCHAIN_PRIVATE_KEY", "valueFrom": "${APP_SECRETS_ARN}:BLOCKCHAIN_PRIVATE_KEY::" },
+                  { "name": "CSP_PII_KEY_LOCAL", "valueFrom": "${APP_SECRETS_ARN}:CSP_PII_KEY_LOCAL::" },
+                  { "name": "CSP_PII_SEARCH_PEPPER", "valueFrom": "${APP_SECRETS_ARN}:CSP_PII_SEARCH_PEPPER::" }
                 ],
                 "logConfiguration": { "logDriver": "awslogs", "options": { "awslogs-group": "/ecs/booppa-worker", "awslogs-region": "${AWS_REGION}", "awslogs-stream-prefix": "ecs" } }
               }
@@ -475,6 +536,21 @@ jobs:
           jq -r '.taskDefinition.taskDefinitionArn' task-def-worker-out.json > task-def-worker-arn.txt
           echo "WORKER_TASK_DEF_ARN=$(cat task-def-worker-arn.txt)" >> $GITHUB_ENV
 
+          # Celery beat runs as its own single-replica service (NOT embedded in the
+          # worker), so workers can scale horizontally without firing every cron N
+          # times. Derive the beat task def from the worker one — same image/env/secrets,
+          # only the family, container name, command and log group differ.
+          jq '
+            .family = "booppa-beat"
+            | .containerDefinitions[0].name = "beat"
+            | .containerDefinitions[0].command = ["python","-m","celery","-A","app.workers.celery_app","beat","--loglevel=info"]
+            | .containerDefinitions[0].logConfiguration.options["awslogs-group"] = "/ecs/booppa-beat"
+          ' task-def-worker.json > task-def-beat.json
+
+          aws ecs register-task-definition --cli-input-json file://task-def-beat.json --region $AWS_REGION > task-def-beat-out.json
+          jq -r '.taskDefinition.taskDefinitionArn' task-def-beat-out.json > task-def-beat-arn.txt
+          echo "BEAT_TASK_DEF_ARN=$(cat task-def-beat-arn.txt)" >> $GITHUB_ENV
+
 
       - name: Register ECS task definition - cms
         env:
@@ -483,6 +559,7 @@ jobs:
           TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           DB_SECRET_ARN: ${{ secrets.AWS_SECRETSMANAGER_DATABASE_URL_ARN }}
+          APP_SECRETS_ARN: ${{ secrets.AWS_SECRETSMANAGER_APP_SECRETS_ARN }}
           CMS_ADMIN_TOKEN: ${{ secrets.CMS_ADMIN_TOKEN }}
         run: |
           CPU=256
@@ -515,11 +592,11 @@ jobs:
                   { "name": "ALLOWED_HOSTS", "value": "cms.booppa.io" },
                   { "name": "ALLOWED_ORIGINS", "value": "https://booppa.io,https://www.booppa.io,https://api.booppa.io,https://cms.booppa.io" },
                   { "name": "CSRF_TRUSTED_ORIGINS", "value": "https://cms.booppa.io,https://booppa.io,https://api.booppa.io,https://www.booppa.io" },
-                  { "name": "CORS_ALLOWED_ORIGINS", "value": "https://cms.booppa.io,https://booppa.io,https://api.booppa.io,https://www.booppa.io" },
-                  { "name": "CMS_ADMIN_TOKEN", "value": "${CMS_ADMIN_TOKEN}" }
+                  { "name": "CORS_ALLOWED_ORIGINS", "value": "https://cms.booppa.io,https://booppa.io,https://api.booppa.io,https://www.booppa.io" }
                 ],
                 "secrets": [
-                  { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" }
+                  { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" },
+                  { "name": "CMS_ADMIN_TOKEN", "valueFrom": "${APP_SECRETS_ARN}:CMS_ADMIN_TOKEN::" }
                 ],
                 "mountPoints": [
                   {
@@ -695,6 +772,15 @@ jobs:
         run: |
           echo "Updating worker service to task definition ARN: $WORKER_TASK_DEF_ARN"
           aws ecs update-service --cluster $CLUSTER --service $SERVICE --task-definition "$WORKER_TASK_DEF_ARN" --force-new-deployment --region $AWS_REGION
+
+      - name: Update ECS service to use new task definition (beat)
+        env:
+          CLUSTER: ${{ env.ECS_CLUSTER }}
+          SERVICE: ${{ env.BEAT_ECS_SERVICE }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          echo "Updating beat service to task definition ARN: $BEAT_TASK_DEF_ARN"
+          aws ecs update-service --cluster $CLUSTER --service $SERVICE --task-definition "$BEAT_TASK_DEF_ARN" --force-new-deployment --region $AWS_REGION
 
 
       - name: Update ECS cms service to use new task definition (cms)

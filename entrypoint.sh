@@ -8,10 +8,13 @@ if [ -n "${DATABASE_URL:-}" ]; then
   echo "DATABASE_URL is set"
 fi
 
-# Run alembic migrations if present
-if [ -f /app/alembic.ini ]; then
+# Run alembic migrations only when explicitly requested (opt-in), and fail fast.
+# Migrations are normally applied by the dedicated one-off ECS task in CI, so
+# every replica should NOT race `alembic upgrade head` on boot. A failed
+# migration must abort the boot rather than serve traffic on a half-migrated schema.
+if [ -f /app/alembic.ini ] && [ "${RUN_MIGRATIONS_ON_BOOT:-0}" = "1" ]; then
   echo "Running alembic migrations"
-  alembic upgrade head || echo "alembic upgrade failed; continuing"
+  alembic upgrade head
 fi
 
 echo "Starting Uvicorn"

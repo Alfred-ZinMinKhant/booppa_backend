@@ -56,18 +56,18 @@ resource "aws_db_subnet_group" "rds" {
 }
 
 resource "aws_db_instance" "postgres" {
-  identifier              = "${local.project}-postgres"
-  engine                  = "postgres"
-  instance_class          = "db.t4g.micro"
-  allocated_storage       = var.db_allocated_storage
-  db_name                 = "${local.project}db"
-  username                = var.db_username
-  password                = var.db_password
-  skip_final_snapshot     = true
-  publicly_accessible     = false
-  multi_az                = var.rds_multi_az
-  db_subnet_group_name    = aws_db_subnet_group.rds.id
-  depends_on              = [aws_db_subnet_group.rds]
+  identifier           = "${local.project}-postgres"
+  engine               = "postgres"
+  instance_class       = "db.t4g.micro"
+  allocated_storage    = var.db_allocated_storage
+  db_name              = "${local.project}db"
+  username             = var.db_username
+  password             = var.db_password
+  skip_final_snapshot  = true
+  publicly_accessible  = false
+  multi_az             = var.rds_multi_az
+  db_subnet_group_name = aws_db_subnet_group.rds.id
+  depends_on           = [aws_db_subnet_group.rds]
 }
 
 # ElastiCache Redis (basic replication-less cluster example)
@@ -81,10 +81,10 @@ resource "random_id" "elasticache_suffix" {
 }
 
 resource "aws_elasticache_cluster" "redis" {
-  cluster_id           = "${local.project}-redis-${random_id.elasticache_suffix.hex}"
-  engine               = "redis"
-  node_type            = "cache.t4g.micro"
-  num_cache_nodes      = 1
-  subnet_group_name    = aws_elasticache_subnet_group.redis.name
-  depends_on           = [aws_elasticache_subnet_group.redis]
+  cluster_id        = "${local.project}-redis-${random_id.elasticache_suffix.hex}"
+  engine            = "redis"
+  node_type         = "cache.t4g.micro"
+  num_cache_nodes   = 1
+  subnet_group_name = aws_elasticache_subnet_group.redis.name
+  depends_on        = [aws_elasticache_subnet_group.redis]
 }

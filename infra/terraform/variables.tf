@@ -84,6 +84,12 @@ variable "app_desired_count" {
   default     = 1
 }
 
+variable "worker_desired_count" {
+  description = "ECS desired count for the Celery worker service (safe to scale >1 now that beat runs separately)"
+  type        = number
+  default     = 2
+}
+
 variable "app_cpu" {
   type    = number
   default = 256
