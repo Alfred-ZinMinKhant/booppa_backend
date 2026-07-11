@@ -777,10 +777,30 @@ jobs:
         env:
           CLUSTER: ${{ env.ECS_CLUSTER }}
           SERVICE: ${{ env.BEAT_ECS_SERVICE }}
+          WORKER_SERVICE: ${{ env.WORKER_ECS_SERVICE }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
-          echo "Updating beat service to task definition ARN: $BEAT_TASK_DEF_ARN"
-          aws ecs update-service --cluster $CLUSTER --service $SERVICE --task-definition "$BEAT_TASK_DEF_ARN" --force-new-deployment --region $AWS_REGION
+          # Beat is a single-replica service introduced by the worker/beat split.
+          # If it doesn't exist yet, create it (once) reusing the worker service's
+          # own network configuration so no extra secrets/vars are needed. On every
+          # subsequent deploy the service exists and we just roll it forward.
+          if aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --region "$AWS_REGION" \
+               --query 'services[?status==`ACTIVE`].serviceName' --output text | grep -q "$SERVICE"; then
+            echo "Updating beat service to task definition ARN: $BEAT_TASK_DEF_ARN"
+            aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --task-definition "$BEAT_TASK_DEF_ARN" --force-new-deployment --region "$AWS_REGION"
+          else
+            echo "Beat service not found — creating it (single replica) from worker network config"
+            NET_CONFIG=$(aws ecs describe-services --cluster "$CLUSTER" --services "$WORKER_SERVICE" --region "$AWS_REGION" \
+              --query 'services[0].networkConfiguration' --output json)
+            aws ecs create-service \
+              --cluster "$CLUSTER" \
+              --service-name "$SERVICE" \
+              --task-definition "$BEAT_TASK_DEF_ARN" \
+              --desired-count 1 \
+              --launch-type FARGATE \
+              --network-configuration "$NET_CONFIG" \
+              --region "$AWS_REGION"
+          fi
 
 
       - name: Update ECS cms service to use new task definition (cms)
