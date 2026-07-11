@@ -19,7 +19,14 @@ from typing import Iterable, Sequence, Tuple
 from app.core.config import settings
 
 _BASE = (getattr(settings, "VERIFY_BASE_URL", "https://www.booppa.io") or "https://www.booppa.io").rstrip("/")
-_LOGO_URL = f"{_BASE}/logo.png"
+# The header logo is embedded as an inline (CID) attachment rather than a remote
+# URL: Gmail/Outlook proxy remote images through their own fetchers, which get
+# bot-challenged by Cloudflare in front of booppa.io and cached as broken. A
+# ``cid:`` reference is delivered inside the message and never leaves the client.
+# ``EmailService.send_html_email`` detects this marker and attaches the bundled
+# ``static/email_logo.png`` automatically (see app/adapters/resend_email.py).
+EMAIL_LOGO_CID = "booppa-logo"
+_LOGO_URL = f"cid:{EMAIL_LOGO_CID}"
 
 # Brand palette (kept here so every email pulls from one source).
 _TEAL = "#10b981"

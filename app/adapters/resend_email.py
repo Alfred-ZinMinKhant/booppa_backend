@@ -41,6 +41,44 @@ def _filter_attachments(attachments: list[Attachment] | None) -> list[Attachment
 
 from app.ports.email_port import EmailPort
 
+# Inline (CID) logo support. Branded emails reference ``cid:booppa-logo`` in the
+# header; when that marker is present we attach the bundled email logo as an
+# inline image so the client renders it without proxying a remote URL.
+_INLINE_LOGO_CID = "booppa-logo"
+_INLINE_LOGO_FILENAME = "booppa-logo.png"
+
+
+def _load_inline_logo() -> bytes | None:
+    """Return the bundled email logo bytes, or ``None`` if unavailable.
+
+    Cached on the function object so the file is read from disk only once.
+    """
+    cached = getattr(_load_inline_logo, "_bytes", False)
+    if cached is not False:
+        return cached
+    data: bytes | None = None
+    try:
+        import os
+
+        here = os.path.dirname(os.path.dirname(__file__))  # app/
+        candidates = [
+            os.path.join(here, "..", "static", "email_logo.png"),
+            "/app/static/email_logo.png",
+            os.path.join(here, "..", "static", "logo.png"),
+            "/app/static/logo.png",
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                with open(path, "rb") as fh:
+                    data = fh.read()
+                break
+    except Exception as e:  # never let a logo problem break email delivery
+        logger.warning("[Email] Could not load inline logo: %s", e)
+        data = None
+    _load_inline_logo._bytes = data  # type: ignore[attr-defined]
+    return data
+
+
 class ResendEmailAdapter(EmailPort):
     """Email service — uses Resend if RESEND_API_KEY is set, falls back to AWS SES."""
 
@@ -75,11 +113,20 @@ class ResendEmailAdapter(EmailPort):
                 "subject": subject,
                 "html": body_html,
             }
-            if attachments:
-                payload["attachments"] = [
-                    {"filename": fn, "content": base64.b64encode(data).decode("ascii")}
-                    for fn, data in attachments
-                ]
+            payload_attachments = [
+                {"filename": fn, "content": base64.b64encode(data).decode("ascii")}
+                for fn, data in (attachments or [])
+            ]
+            logo = _load_inline_logo() if f"cid:{_INLINE_LOGO_CID}" in body_html else None
+            if logo:
+                payload_attachments.append({
+                    "filename": _INLINE_LOGO_FILENAME,
+                    "content": base64.b64encode(logo).decode("ascii"),
+                    "content_type": "image/png",
+                    "content_id": _INLINE_LOGO_CID,
+                })
+            if payload_attachments:
+                payload["attachments"] = payload_attachments
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
                     "https://api.resend.com/emails",
@@ -120,8 +167,13 @@ class ResendEmailAdapter(EmailPort):
                 )
             ses = boto3.client("ses", **client_kwargs)
 
-            if attachments:
-                raw = self._build_raw_mime(to_email, subject, body_html, attachments)
+            inline_logo = (
+                _load_inline_logo() if f"cid:{_INLINE_LOGO_CID}" in body_html else None
+            )
+            if attachments or inline_logo:
+                raw = self._build_raw_mime(
+                    to_email, subject, body_html, attachments or [], inline_logo
+                )
                 response = ses.send_raw_email(
                     Source=settings.SUPPORT_EMAIL,
                     Destinations=[to_email],
@@ -148,17 +200,34 @@ class ResendEmailAdapter(EmailPort):
         subject: str,
         body_html: str,
         attachments: list[Attachment],
+        inline_logo: bytes | None = None,
     ) -> bytes:
-        """Build a multipart MIME message with PDF (or other) attachments for SES."""
+        """Build a multipart MIME message with attachments (and optional inline logo) for SES.
+
+        When ``inline_logo`` is given, the HTML and image are wrapped in a
+        ``multipart/related`` part so the ``cid:booppa-logo`` reference resolves.
+        """
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
         from email.mime.application import MIMEApplication
+        from email.mime.image import MIMEImage
 
         msg = MIMEMultipart("mixed")
         msg["Subject"] = subject
         msg["From"] = f"BOOPPA <{settings.SUPPORT_EMAIL}>"
         msg["To"] = to_email
-        msg.attach(MIMEText(body_html, "html"))
+
+        if inline_logo:
+            related = MIMEMultipart("related")
+            related.attach(MIMEText(body_html, "html"))
+            img = MIMEImage(inline_logo, _subtype="png")
+            img.add_header("Content-ID", f"<{_INLINE_LOGO_CID}>")
+            img.add_header("Content-Disposition", "inline", filename=_INLINE_LOGO_FILENAME)
+            related.attach(img)
+            msg.attach(related)
+        else:
+            msg.attach(MIMEText(body_html, "html"))
+
         for filename, data in attachments:
             subtype = "pdf" if filename.lower().endswith(".pdf") else "octet-stream"
             part = MIMEApplication(data, _subtype=subtype)
