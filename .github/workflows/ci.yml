@@ -784,6 +784,10 @@ jobs:
           # If it doesn't exist yet, create it (once) reusing the worker service's
           # own network configuration so no extra secrets/vars are needed. On every
           # subsequent deploy the service exists and we just roll it forward.
+          #
+          # Ensure the beat log group exists (idempotent); the task fails to start
+          # with ResourceNotFoundException otherwise.
+          aws logs create-log-group --log-group-name "/ecs/booppa-beat" --region "$AWS_REGION" 2>/dev/null || true
           if aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --region "$AWS_REGION" \
                --query 'services[?status==`ACTIVE`].serviceName' --output text | grep -q "$SERVICE"; then
             echo "Updating beat service to task definition ARN: $BEAT_TASK_DEF_ARN"
