@@ -100,6 +100,12 @@ variable "app_memory" {
   default = 512
 }
 
+variable "db_backup_retention_period" {
+  description = "Days of automated RDS backups / point-in-time-recovery window. 0 disables backups (do not do this in prod)."
+  type        = number
+  default     = 7
+}
+
 variable "rds_multi_az" {
   description = "Whether to enable multi-AZ for RDS"
   type        = bool

@@ -1,4 +1,10 @@
-// IAM roles and policies for ECS tasks
+// IAM roles and policies for ECS tasks.
+//
+// NOTE: This directory is reference/documentation only — CI (ci.yml) is the
+// source of truth for the running ECS stack (see the banner in ecs.tf). The
+// execution role below already carries the Secrets Manager read grant in the
+// live account (verified by app/worker/beat starting cleanly with valueFrom),
+// so this file records the intended IAM shape rather than driving it.
 resource "aws_iam_role" "ecs_task_execution" {
   name               = "${var.project}-ecs-exec-role"
   assume_role_policy = data.aws_iam_policy_document.ecs_task_assume_role.json

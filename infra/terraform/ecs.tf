@@ -1,3 +1,18 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// SOURCE OF TRUTH: CI (.github/workflows/ci.yml) — NOT Terraform.
+//
+// The live ECS task definitions and services (booppa-app, booppa-worker,
+// booppa-beat, booppa-cms) are registered and updated imperatively by ci.yml on
+// every deploy. This Terraform is DRIFTED from production and is kept only as
+// reference / documentation of the intended shape. It has never been `apply`ed
+// against the live account and the local state here is stale.
+//
+// DO NOT run `terraform apply` against this directory expecting it to be a no-op.
+// Doing so can revert running services to bootstrap task definitions and clobber
+// the secrets[] / valueFrom wiring that CI maintains. If you need to change a live
+// service, change it in ci.yml (or via the AWS CLI/console) and mirror it here.
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ECS task definition and service for the app
 resource "aws_ecs_task_definition" "app" {
   family                   = "${var.project}-app"

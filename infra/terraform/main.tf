@@ -56,21 +56,35 @@ resource "aws_db_subnet_group" "rds" {
 }
 
 resource "aws_db_instance" "postgres" {
-  identifier           = "${local.project}-postgres"
-  engine               = "postgres"
-  instance_class       = "db.t4g.micro"
-  allocated_storage    = var.db_allocated_storage
-  db_name              = "${local.project}db"
-  username             = var.db_username
-  password             = var.db_password
-  skip_final_snapshot  = true
-  publicly_accessible  = false
-  multi_az             = var.rds_multi_az
+  identifier          = "${local.project}-postgres"
+  engine              = "postgres"
+  instance_class      = "db.t4g.micro"
+  allocated_storage   = var.db_allocated_storage
+  db_name             = "${local.project}db"
+  username            = var.db_username
+  password            = var.db_password
+  publicly_accessible = false
+
+  # Durability (Phase 3, item #3). Multi-AZ deliberately left off to stay within
+  # the Lean Mode (<$80/mo) budget — these settings buy data-loss protection, not
+  # availability, at near-zero cost and no downtime.
+  backup_retention_period   = var.db_backup_retention_period      # automated daily snapshots, PITR
+  backup_window             = "17:00-17:30"                       # ~01:00-01:30 SGT, low traffic
+  copy_tags_to_snapshot     = true
+  deletion_protection       = true                                # guard against accidental delete
+  skip_final_snapshot       = false                               # take a snapshot if ever destroyed
+  final_snapshot_identifier = "${local.project}-postgres-final"
+
+  multi_az             = var.rds_multi_az                          # stays false under Lean Mode
   db_subnet_group_name = aws_db_subnet_group.rds.id
   depends_on           = [aws_db_subnet_group.rds]
 }
 
-# ElastiCache Redis (basic replication-less cluster example)
+# ElastiCache Redis (single node). HA (a replication group with automatic
+# failover) is Phase 3 item #4 but is intentionally DEFERRED under Lean Mode —
+# it roughly doubles the cache bill and requires a recreate window. Redis here is
+# only the Celery broker/result backend, so a node loss costs in-flight tasks,
+# not persisted data. Revisit when the budget can absorb HA.
 resource "aws_elasticache_subnet_group" "redis" {
   name       = "${local.project}-redis-subnet-group"
   subnet_ids = var.create_vpc ? [for s in aws_subnet.private : s.id] : var.private_subnet_ids
