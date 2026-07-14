@@ -26,7 +26,13 @@ logger = logging.getLogger(__name__)
 
 
 def _base_url() -> str:
-    return (getattr(settings, "VERIFY_BASE_URL", None) or "https://app.booppa.io").rstrip("/")
+    # SP entityID / ACS are BACKEND /api/v1/enterprise/sso endpoints — they must
+    # resolve at the API origin, not the frontend (which doesn't serve /api).
+    return (
+        getattr(settings, "API_PUBLIC_BASE_URL", None)
+        or getattr(settings, "VERIFY_BASE_URL", None)
+        or "https://api.booppa.io"
+    ).rstrip("/")
 
 
 def sp_entity_id(org_slug: str) -> str:

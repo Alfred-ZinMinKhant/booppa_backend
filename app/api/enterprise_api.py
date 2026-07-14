@@ -357,7 +357,8 @@ def get_sso_config(org_id: str, db: Session = Depends(get_db), current_user: Use
         from app.core.config import settings as _s
         acs_url = sp_acs_url(org.slug)
         metadata_url = sp_entity_id(org.slug)
-        login_url = f"{_s.VERIFY_BASE_URL.rstrip('/')}/api/v1/enterprise/sso/saml/login/{org.slug}"
+        _api = (_s.API_PUBLIC_BASE_URL or _s.VERIFY_BASE_URL).rstrip("/")
+        login_url = f"{_api}/api/v1/enterprise/sso/saml/login/{org.slug}"
     return {
         "configured": True,
         "organisation_id": org_id,
@@ -786,7 +787,8 @@ async def oidc_callback(code: str, state: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="SSO not configured for this organisation")
     from app.white_label_and_sso import exchange_oidc_code, get_saml_acs_url
     from app.core.config import settings as _s
-    redirect_uri = f"{_s.VERIFY_BASE_URL.rstrip('/')}/api/v1/enterprise/sso/oidc/callback"
+    _api = (_s.API_PUBLIC_BASE_URL or _s.VERIFY_BASE_URL).rstrip("/")
+    redirect_uri = f"{_api}/api/v1/enterprise/sso/oidc/callback"
     tokens = await exchange_oidc_code(cfg, code, redirect_uri)
     if not tokens:
         raise HTTPException(status_code=400, detail="Token exchange failed")

@@ -79,11 +79,17 @@ async def embed_widget(vendor_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Vendor not found")
 
     from app.core.config import settings
+    # Frontend origin for the human-facing /verify page…
     base_url = settings.VERIFY_BASE_URL.rstrip("/")
+    # …but the badge <img> is a BACKEND endpoint (/api/v1/widget/badge), only
+    # reachable at the API origin. Falling back to VERIFY_BASE_URL points the
+    # image at the frontend, which doesn't serve /api — so the badge breaks on
+    # embedding sites. Prefer the API origin, matching the DOCX/unsubscribe links.
+    api_base = (settings.API_PUBLIC_BASE_URL or settings.VERIFY_BASE_URL).rstrip("/")
 
     embed_html = f'''<!-- Booppa Verification Badge -->
 <a href="{base_url}/verify/{vendor_id}" target="_blank" rel="noopener">
-  <img src="{base_url}/api/v1/widget/badge/{vendor_id}.svg" alt="Booppa Verified" width="200" height="28" />
+  <img src="{api_base}/api/v1/widget/badge/{vendor_id}.svg" alt="Booppa Verified" width="200" height="28" />
 </a>'''
 
     return {
