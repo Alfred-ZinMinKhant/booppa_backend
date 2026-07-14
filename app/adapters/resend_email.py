@@ -126,7 +126,19 @@ class ResendEmailAdapter(EmailPort):
                 logger.warning("[Email] Could not build unsubscribe headers: %s", e)
 
         attachments = _filter_attachments(attachments)
-        if getattr(settings, "RESEND_API_KEY", None):
+
+        # Provider selection — the easy switch. EMAIL_PROVIDER forces a provider;
+        # "auto" (default) keeps the historical behaviour of preferring Resend
+        # whenever a key is configured and otherwise falling back to SES.
+        provider = str(getattr(settings, "EMAIL_PROVIDER", "auto") or "auto").lower()
+        if provider == "resend":
+            use_resend = True
+        elif provider == "ses":
+            use_resend = False
+        else:  # "auto"
+            use_resend = bool(getattr(settings, "RESEND_API_KEY", None))
+
+        if use_resend:
             return await self._send_resend(to_email, subject, body_html, attachments, headers)
         return await self._send_ses(to_email, subject, body_html, attachments, headers)
 

@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     # Resend (preferred over SES — set RESEND_API_KEY to enable)
     RESEND_API_KEY: Optional[str] = None
 
+    # Email provider selection — the easy switch.
+    #   "auto"   → use Resend if RESEND_API_KEY is set, otherwise SES (default)
+    #   "resend" → force Resend
+    #   "ses"    → force AWS SES (uses AWS_ACCESS_KEY_ID/SECRET + AWS_SES_REGION)
+    EMAIL_PROVIDER: str = "auto"
+
     # ── Blockchain — Testnet (default, cost-free) ─────────────────────────
     # Today: Polygon Amoy Testnet. Gas = zero. Suitable for all customers.
     # Set USE_MAINNET=true in .env only after completing the mainnet migration

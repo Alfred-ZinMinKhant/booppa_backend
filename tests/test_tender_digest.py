@@ -59,7 +59,7 @@ def test_digest_includes_benchmarking_price_and_timing(test_db, mocker):
         captured["pdf"] = pdf_bytes
         return f"https://s3.example/{report_id}.pdf"
 
-    async def fake_email(self, to_email, subject, body_html):
+    async def fake_email(self, to_email, subject, body_html, *args, **kwargs):
         captured["to"] = to_email
         captured["subject"] = subject
         captured["body"] = body_html
