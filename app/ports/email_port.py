@@ -11,5 +11,7 @@ class EmailPort(ABC):
         subject: str,
         body_html: str,
         attachments: Optional[list[Attachment]] = None,
+        category: str = "transactional",
+        list_unsubscribe: Optional[bool] = None,
     ) -> bool:
         pass

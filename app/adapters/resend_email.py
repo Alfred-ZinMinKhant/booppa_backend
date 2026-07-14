@@ -88,14 +88,47 @@ class ResendEmailAdapter(EmailPort):
         subject: str,
         body_html: str,
         attachments: list[Attachment] | None = None,
+        category: str = "transactional",
+        list_unsubscribe: bool | None = None,
     ) -> bool:
+        """Send an HTML email.
+
+        ``category`` is "transactional" (default) or "marketing"; recurring
+        digests / marketing should pass "marketing" so a one-click unsubscribe
+        actually stops them. ``list_unsubscribe`` adds one-click unsubscribe
+        headers — it defaults to True for marketing sends. A suppressed
+        recipient is skipped and reported as success (there is nothing to
+        retry and no fulfillment failure to alert on).
+        """
         if getattr(settings, "SKIP_EMAIL", False):
             logger.info(f"[Email] Skipped (SKIP_EMAIL=True): to={to_email} subject={subject}")
             return True
+
+        # Suppression gate — bounces/complaints (scope=all) block everything;
+        # unsubscribes (scope=marketing) block only marketing sends.
+        try:
+            from app.services.email_suppression import is_suppressed
+            if is_suppressed(to_email, category):
+                logger.info(
+                    "[Email] Suppressed (%s): to=%s subject=%s", category, to_email, subject
+                )
+                return True
+        except Exception as e:  # never let the gate break delivery
+            logger.warning("[Email] Suppression gate error (sending anyway): %s", e)
+
+        headers: dict[str, str] | None = None
+        want_unsub = list_unsubscribe if list_unsubscribe is not None else (category == "marketing")
+        if want_unsub:
+            try:
+                from app.services.email_suppression import list_unsubscribe_headers
+                headers = list_unsubscribe_headers(to_email)
+            except Exception as e:
+                logger.warning("[Email] Could not build unsubscribe headers: %s", e)
+
         attachments = _filter_attachments(attachments)
         if getattr(settings, "RESEND_API_KEY", None):
-            return await self._send_resend(to_email, subject, body_html, attachments)
-        return await self._send_ses(to_email, subject, body_html, attachments)
+            return await self._send_resend(to_email, subject, body_html, attachments, headers)
+        return await self._send_ses(to_email, subject, body_html, attachments, headers)
 
     # ── Resend ────────────────────────────────────────────────────────────────
 
@@ -105,6 +138,7 @@ class ResendEmailAdapter(EmailPort):
         subject: str,
         body_html: str,
         attachments: list[Attachment] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> bool:
         try:
             payload = {
@@ -113,6 +147,8 @@ class ResendEmailAdapter(EmailPort):
                 "subject": subject,
                 "html": body_html,
             }
+            if headers:
+                payload["headers"] = headers
             payload_attachments = [
                 {"filename": fn, "content": base64.b64encode(data).decode("ascii")}
                 for fn, data in (attachments or [])
@@ -153,6 +189,7 @@ class ResendEmailAdapter(EmailPort):
         subject: str,
         body_html: str,
         attachments: list[Attachment] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> bool:
         try:
             import boto3
@@ -170,9 +207,10 @@ class ResendEmailAdapter(EmailPort):
             inline_logo = (
                 _load_inline_logo() if f"cid:{_INLINE_LOGO_CID}" in body_html else None
             )
-            if attachments or inline_logo:
+            # Custom headers (List-Unsubscribe) require the raw MIME path.
+            if attachments or inline_logo or headers:
                 raw = self._build_raw_mime(
-                    to_email, subject, body_html, attachments or [], inline_logo
+                    to_email, subject, body_html, attachments or [], inline_logo, headers
                 )
                 response = ses.send_raw_email(
                     Source=settings.SUPPORT_EMAIL,
@@ -201,11 +239,13 @@ class ResendEmailAdapter(EmailPort):
         body_html: str,
         attachments: list[Attachment],
         inline_logo: bytes | None = None,
+        headers: dict[str, str] | None = None,
     ) -> bytes:
         """Build a multipart MIME message with attachments (and optional inline logo) for SES.
 
         When ``inline_logo`` is given, the HTML and image are wrapped in a
         ``multipart/related`` part so the ``cid:booppa-logo`` reference resolves.
+        ``headers`` adds extra top-level headers (e.g. List-Unsubscribe).
         """
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
@@ -216,6 +256,8 @@ class ResendEmailAdapter(EmailPort):
         msg["Subject"] = subject
         msg["From"] = f"BOOPPA <{settings.SUPPORT_EMAIL}>"
         msg["To"] = to_email
+        for hk, hv in (headers or {}).items():
+            msg[hk] = hv
 
         if inline_logo:
             related = MIMEMultipart("related")

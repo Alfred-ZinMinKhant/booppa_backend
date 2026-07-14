@@ -2564,6 +2564,35 @@ class EvidencePack(Base):
 Index("ix_evidence_packs_user_status", EvidencePack.user_id, EvidencePack.status)
 
 
+class EmailSuppression(Base):
+    """Recipients we must not (or should not) email.
+
+    Populated from SES/SNS bounce + complaint notifications (`scope="all"`,
+    hard — never email again) and from one-click List-Unsubscribe requests
+    (`scope="marketing"`, only recurring/marketing sends are stopped;
+    transactional receipts still flow). `send_html_email` consults this table
+    before every dispatch. Email is stored lowercased for case-insensitive
+    matching; (email, scope) is unique so re-notification is idempotent.
+    """
+
+    __tablename__ = "email_suppressions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String(255), nullable=False, index=True)
+    scope = Column(String(20), nullable=False, default="all", server_default="all")
+    source = Column(String(30), nullable=False)  # bounce | complaint | unsubscribe | manual
+    reason = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+Index(
+    "ux_email_suppressions_email_scope",
+    EmailSuppression.email,
+    EmailSuppression.scope,
+    unique=True,
+)
+
+
 import enum
 # ============================================================
 # Extracted from models_v6.py

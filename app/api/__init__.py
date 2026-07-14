@@ -197,6 +197,13 @@ from .enterprise_api import router as enterprise_router, sso_router
 router.include_router(enterprise_router, prefix="/enterprise", tags=["enterprise"])
 router.include_router(sso_router, prefix="/enterprise", tags=["enterprise-sso"])
 
+# Email deliverability — SES bounce/complaint (SNS) + one-click unsubscribe
+from .email_sns import router as email_sns_router
+from .email_unsubscribe import router as email_unsubscribe_router
+
+router.include_router(email_sns_router, prefix="/email", tags=["email-deliverability"])
+router.include_router(email_unsubscribe_router, prefix="/email", tags=["email-deliverability"])
+
 
 # ── Lightweight public platform stats (no auth) ─────────────────────────────
 @router.get("/platform-stats", tags=["public"])

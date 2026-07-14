@@ -3848,6 +3848,7 @@ def buyer_supplier_snapshot_task(
         ok = asyncio.run(email_svc.send_html_email(
             to_email=buyer_email,
             subject=f"{demo_tag}Supplier {doc_label}: {supplier_name}",
+            category="marketing",
             body_html=branded_email_html(
                 body_inner, title=f"{demo_tag}{header}",
                 preheader=f"{plan_label} · {supplier_name} verified state on file",
@@ -3999,6 +4000,7 @@ def buyer_supplier_drift_alert_task(
         ok = asyncio.run(email_svc.send_html_email(
             to_email=buyer_email,
             subject=f"{demo_tag}Supplier alert: {vendor_name} — {headline}",
+            category="marketing",
             body_html=branded_email_html(
                 body_inner,
                 title=f"{demo_tag}Supplier alert: {vendor_name}",
@@ -4230,6 +4232,7 @@ def buyer_tender_fit_push_task(
         ok = asyncio.run(email_svc.send_html_email(
             to_email=buyer_email,
             subject=subject,
+            category="marketing",
             body_html=branded_email_html(
                 body_inner, title="High-fit tender alert",
                 preheader=f"{sector_txt} · {agency}",
@@ -6366,7 +6369,7 @@ def send_weekly_vendor_scores():
                     preheader=f"Your BOOPPA vendor score this week — {score.total_score} pts.",
                 )
                 import asyncio as _asyncio
-                _asyncio.run(email_svc.send_html_email(user.email, subject, body_html))
+                _asyncio.run(email_svc.send_html_email(user.email, subject, body_html, category="marketing"))
                 sent += 1
             except Exception as exc:
                 logger.warning(f"[WeeklyScore] Failed to send to {user.email}: {exc}")
@@ -6532,7 +6535,7 @@ def send_gebiz_alert_newsletter():
                     preheader=f"{len(tenders)} GeBIZ tenders closing in the next 14 days.",
                 )
                 import asyncio as _asyncio
-                _asyncio.run(email_svc.send_html_email(vendor.email, subject, body_html))
+                _asyncio.run(email_svc.send_html_email(vendor.email, subject, body_html, category="marketing"))
                 sent += 1
             except Exception as exc:
                 logger.warning(f"[GeBIZAlert] Failed to send to {vendor.email}: {exc}")
@@ -6654,7 +6657,7 @@ def send_tender_alerts():
                     "</div>"
                 )
                 subject = f"{len(new_bids)} new tender(s) to bid on — Booppa Tender Intelligence"
-                ok = _asyncio.run(email_svc.send_html_email(sub.email, subject, body_html))
+                ok = _asyncio.run(email_svc.send_html_email(sub.email, subject, body_html, category="marketing"))
                 if ok:
                     for t, _c in new_bids:
                         db.add(VendorTenderAlertSent(vendor_id=sub.id, tender_no=t.tender_no))
@@ -7201,7 +7204,7 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                     title=f"Tender Intelligence — {period}",
                     preheader=f"Monthly GeBIZ sector trends for {period_label}.",
                 )
-                _asyncio.run(email_svc.send_html_email(sub.email, subject, body_html))
+                _asyncio.run(email_svc.send_html_email(sub.email, subject, body_html, category="marketing"))
                 sent += 1
             except Exception as exc:
                 logger.warning(f"[TenderIntelDigest] Failed for {sub.email}: {exc}")
@@ -7528,7 +7531,7 @@ def send_vendor_pro_daily_alerts():
                     title="Competitor activity — last 24 hours",
                     preheader="Other vendors checked tenders you're tracking.",
                 )
-                _asyncio.run(email_svc.send_html_email(sub.email, subject, body_html))
+                _asyncio.run(email_svc.send_html_email(sub.email, subject, body_html, category="marketing"))
                 sent += 1
             except Exception as exc:
                 logger.warning(f"[VendorProDaily] Failed for {sub.email}: {exc}")
@@ -7609,6 +7612,7 @@ def weekly_intelligence_brief():
                     to_email=user.email,
                     subject="Your weekly BOOPPA profile brief",
                     body_html=body_html,
+                    category="marketing",
                 ))
                 sent += 1
             except Exception as exc:
