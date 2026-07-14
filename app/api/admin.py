@@ -741,6 +741,11 @@ async def simulate_purchase(
     from app.core.models import PendingRfpIntake
 
     product_type = body.product_type
+    # `pdpa_snapshot` is a valid PDPA_PRODUCT_TYPES alias but is not a MODE_MAP key
+    # (only the canonical `pdpa_quick_scan` SKU is priced). Normalise so a test
+    # checkout submitting the alias isn't rejected 422.
+    if product_type == "pdpa_snapshot":
+        product_type = "pdpa_quick_scan"
     if product_type not in MODE_MAP:
         raise HTTPException(
             status_code=422,

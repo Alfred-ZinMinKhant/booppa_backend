@@ -1913,16 +1913,21 @@ def fulfill_vendor_proof_task(self, report_id: str, customer_email: str | None =
         raise self.retry(exc=exc, countdown=countdown)
 
 
-@celery_app.task(bind=True, max_retries=20, name="fulfill_pdpa_task")
+@celery_app.task(bind=True, max_retries=10, name="fulfill_pdpa_task")
 def fulfill_pdpa_task(self, report_id: str, customer_email: str | None = None):
-    """Celery task: generate PDPA PDF, update compliance score, write CertificateLog, send email."""
+    """Celery task: generate PDPA PDF, update compliance score, write CertificateLog, send email.
+
+    Fulfillment is chained to the scan (see `_fulfill_pdpa`), so this retry path is
+    only a fallback. Backoff is capped at 10 min so a fallback retry can't push the
+    confirmation email hours out.
+    """
     try:
         from app.services.fulfillment import fulfill_pdpa
         asyncio.run(fulfill_pdpa(report_id=report_id, customer_email=customer_email, raise_if_incomplete=True))
         logger.info(f"PDPA snapshot fulfilled for report {report_id}")
     except Exception as exc:
         logger.error(f"PDPA fulfillment failed for {report_id}: {exc}")
-        countdown = 60 * (2 ** self.request.retries)
+        countdown = min(60 * (2 ** self.request.retries), 600)
         raise self.retry(exc=exc, countdown=countdown)
 
 

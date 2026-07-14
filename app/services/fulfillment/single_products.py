@@ -1279,8 +1279,24 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         logger.info(f"[VendorProof] Fulfilled {report_id} for vendor {vendor_id}")
         _maybe_fire_cover_sheet(contact_email)
     except Exception as e:
+        # A failure in the core persistence steps (VerifyRecord/snapshot/score/
+        # commit) lands here. Previously this only logged and returned, so the
+        # buyer paid, no badge email went out, the Celery task saw "success" and
+        # never retried, and nobody was alerted — a silent paid-but-unfulfilled
+        # Vendor Proof. Surface it and re-raise so `fulfill_vendor_proof_task`
+        # retries (transient DB/anchor errors) and support is paged either way.
         logger.error(f"[VendorProof] Fulfillment error for {report_id}: {e}")
         db.rollback()
+        try:
+            await _alert_payment_fulfillment_issue(
+                reason=f"Vendor Proof fulfillment raised before delivery: {e}",
+                product_type="vendor_proof",
+                customer_email=customer_email,
+                extra={"report_id": report_id},
+            )
+        except Exception as _alert_err:
+            logger.error(f"[VendorProof] Alert dispatch failed for {report_id}: {_alert_err}")
+        raise
     finally:
         db.close()
 
@@ -1329,20 +1345,43 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
             else None
         )
         if risk_score is None:
-            # Scan not yet run — queue generic processing; it will generate PDF too
+            # Scan not yet run. Rather than raise and lean on blind exponential
+            # backoff (which pushed the confirmation email hours out — or never,
+            # if no worker drained the retry), chain fulfillment to the scan so
+            # it re-runs the moment `risk_score` is written. The `link` fires only
+            # on successful completion of process_report_task.
+            already_chained = bool(assessment.get("_pdpa_fulfill_chained"))
             try:
-                from app.workers.tasks import process_report_task
+                from app.workers.tasks import process_report_task, fulfill_pdpa_task
 
+                if not already_chained:
+                    # One-shot flag so a re-entry can't chain endlessly.
+                    assessment["_pdpa_fulfill_chained"] = True
+                    report.assessment_data = assessment
+                    from sqlalchemy.orm.attributes import flag_modified as _fm
+
+                    _fm(report, "assessment_data")
+                    db.commit()
+                    process_report_task.apply_async(
+                        args=[str(report.id)],
+                        link=fulfill_pdpa_task.si(str(report.id), customer_email),
+                    )
+                    logger.info(
+                        f"[PDPA] Chained scan→fulfillment for {report_id} (risk_score missing)"
+                    )
+                    return
+                # Scan already ran once but risk_score still missing — queue
+                # another scan and fall through to the bounded task-retry safety net.
                 process_report_task.delay(str(report.id))
                 logger.info(
-                    f"[PDPA] Queued generic scan for {report_id} (risk_score missing)"
+                    f"[PDPA] Re-queued scan for {report_id} (still missing after chain)"
                 )
             except Exception as e:
-                logger.error(f"[PDPA] Could not queue scan for {report_id}: {e}")
-            
+                logger.error(f"[PDPA] Could not chain scan for {report_id}: {e}")
+
             if raise_if_incomplete:
-                # Raise exception so the fulfill_pdpa_task retries and eventually writes
-                # the Compliance score and CertificateLog when scan completes
+                # Fallback: raise so fulfill_pdpa_task retries and eventually writes
+                # the Compliance score and CertificateLog when the scan completes.
                 raise Exception("PDPA scan not yet complete, retrying later")
             return
 

@@ -97,6 +97,11 @@ class Settings(BaseSettings):
     SKIP_PDF_GENERATION: bool = False
     SKIP_EMAIL: bool = False
     VERIFY_BASE_URL: str = "https://www.booppa.io"
+    # Public base URL of THIS backend, used to build stable re-presign links
+    # (e.g. the RFP DOCX download endpoint) that outlive S3 presigned expiry.
+    # Set to the backend's public/tunnel origin; falls back to VERIFY_BASE_URL,
+    # which proxies `/api` to the backend in the standard deployment.
+    API_PUBLIC_BASE_URL: str = ""
 
     MONITOR_SCAN1_COMMAND: Optional[str] = "python Scan1.py {url}"
     MONITOR_ANCHOR_ENABLED: bool = True

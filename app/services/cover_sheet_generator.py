@@ -97,7 +97,7 @@ for _c in _LOGO_CANDIDATES:
 #      "Full Report" is the untruncated presentation of the SAME automated scan as
 #      the standalone PDPA Quick Scan (same public-web surface), not a deeper scan.
 #      Flags v12 copies as outdated so customers get the disambiguated cover sheet.
-COVER_SHEET_SCHEMA_VERSION = 13  # PDPA "Full Report" vs Quick Scan depth clarifier
+COVER_SHEET_SCHEMA_VERSION = 14  # Legislation cell falls back to `legislation` key (free-scan findings)
 
 PAGE_W, PAGE_H = A4
 MARGIN = 0.75 * inch
@@ -230,6 +230,7 @@ def _pdpa_finding_block(idx: int, f: dict):
     legislation = _xml_escape(
         f.get("legislation_text")
         or "; ".join(f.get("legislation_references") or [])
+        or f.get("legislation")
         or "—"
     )
     evidence = _xml_escape(f.get("evidence") or "Automated scan detection")
@@ -929,6 +930,7 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
             lawref = _xml_escape(
                 f.get("legislation_text")
                 or "; ".join(f.get("legislation_references") or [])
+                or f.get("legislation")
                 or ""
             )
             tail_bits: list[str] = [f"<b>{sev}</b>", f"remediate within {sla}"]

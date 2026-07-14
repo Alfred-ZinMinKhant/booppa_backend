@@ -2246,7 +2246,7 @@ class PDFService:
         rows = []
         rows_src = [
             ("Violation",    f.get("description") or f.get("details") or ""),
-            ("Legislation",  f.get("legislation_text") or "; ".join(f.get("legislation_references") or [])),
+            ("Legislation",  f.get("legislation_text") or "; ".join(f.get("legislation_references") or []) or f.get("legislation") or ""),
             ("Max Penalty",  f.get("max_penalty") or (f.get("penalty") or {}).get("amount") or "Up to S$1,000,000"),
             ("Evidence",     f.get("evidence") or "Automated scan detection"),
         ]

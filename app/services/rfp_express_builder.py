@@ -261,7 +261,15 @@ class RFPExpressBuilder:
         if product_type == "rfp_complete":
             docx_bytes = self._build_docx(company_name, vendor_url, qa_answers, vendor_ctx, tx_hash, product_type, intake=intake)
             if docx_bytes:
-                docx_url = await self._upload_docx(docx_bytes)
+                uploaded = await self._upload_docx(docx_bytes)
+                if uploaded:
+                    # Emit the STABLE re-presign endpoint, not the raw 7-day
+                    # presigned URL — the latter dies after a week even though the
+                    # S3 object persists, which is why the DOCX "went missing" from
+                    # delivered kits. `uploaded` being truthy (upload succeeded) is
+                    # what keeps the rfp_complete completeness gate honest.
+                    _api_base = (settings.API_PUBLIC_BASE_URL or settings.VERIFY_BASE_URL).rstrip("/")
+                    docx_url = f"{_api_base}/api/reports/{self.report_id}/rfp-docx"
 
             # 4b-ii. Supplier Compliance Declaration (Sprint 5c) — the third
             # output. A neutral, defensible alternative to the non-standard

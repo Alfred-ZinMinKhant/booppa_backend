@@ -628,6 +628,44 @@ async def download_report_pdf(
         raise HTTPException(status_code=500, detail="Could not generate download link")
 
 
+@router.get("/{report_id}/rfp-docx")
+async def download_rfp_docx(report_id: UUID):
+    """Generate a fresh presigned S3 URL for the RFP Complete editable DOCX and redirect.
+
+    The DOCX is uploaded to `rfp-complete/{report_id}.docx`, where `report_id` is the
+    idempotent uuid5 token derived from the checkout session (see RFPExpressBuilder) —
+    NOT the persisted Report row id, which is a different random UUID. So we presign
+    the S3 key straight from this unguessable token rather than looking up a Report row.
+
+    Emails and the result page link to THIS endpoint instead of storing the raw 7-day
+    presigned URL, so the DOCX stays reachable after S3 presigned expiry (the object
+    persists; only the old link died). The token is a bearer credential, matching the
+    prior exposure of the raw presigned link.
+    """
+    from fastapi.responses import RedirectResponse
+    from botocore.exceptions import ClientError
+    from app.services.storage import S3Service
+
+    key = f"rfp-complete/{report_id}.docx"
+    s3 = S3Service()
+    try:
+        s3.s3_client.head_object(Bucket=s3.bucket, Key=key)
+    except ClientError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="DOCX not found"
+        )
+    try:
+        url = s3.s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": s3.bucket, "Key": key},
+            ExpiresIn=3600,  # 1 hour
+        )
+        return RedirectResponse(url=url, status_code=302)
+    except Exception as e:
+        logger.error(f"Failed to generate DOCX download URL for {report_id}: {e}")
+        raise HTTPException(status_code=500, detail="Could not generate DOCX download link")
+
+
 @router.get("/{report_id}/qr")
 async def get_report_qr(
     report_id: UUID,
