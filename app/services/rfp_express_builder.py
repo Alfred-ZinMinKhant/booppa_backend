@@ -268,6 +268,7 @@ class RFPExpressBuilder:
                     # S3 object persists, which is why the DOCX "went missing" from
                     # delivered kits. `uploaded` being truthy (upload succeeded) is
                     # what keeps the rfp_complete completeness gate honest.
+                    from app.core.config import settings
                     _api_base = (settings.API_PUBLIC_BASE_URL or settings.VERIFY_BASE_URL).rstrip("/")
                     docx_url = f"{_api_base}/api/reports/{self.report_id}/rfp-docx"
 
