@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import re
+from datetime import date
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -474,7 +475,27 @@ def _vendor_from_title(title: str) -> Optional[str]:
 
 
 _FINE_RE = re.compile(r"financial penalty of\s*S?\$?\s*([\d,]+)", re.IGNORECASE)
-_YEAR_RE = re.compile(r"\b(20\d{2})\b")
+# PDPC decisions carry a neutral citation like "[2023] SGPDPC 4" (or SGPDPCR) —
+# that bracketed year IS the decision year and is the only reliable signal.
+# A bare "\b20\d{2}\b" is NOT usable: the first four-digit 20xx on a decision
+# page is almost always boilerplate (an address, a section reference, a fine
+# figure) — that produced the impossible "(2000)" year on every case.
+_YEAR_RE = re.compile(r"\[(20\d{2})\]\s*SGPDPC", re.IGNORECASE)
+
+
+def _parse_decision_year(url: str, text: str) -> "int | None":
+    """Return the PDPC decision year, or None when it can't be confidently read.
+
+    Only the neutral-citation year (``[YYYY] SGPDPC…``) is trusted, and it must
+    fall in the enforcement era (PDPA came into force in 2013). Anything else
+    yields None — the precedent summary then names the case without a year,
+    which is honest, rather than stamping a fabricated one.
+    """
+    m = _YEAR_RE.search(url) or _YEAR_RE.search(text)
+    if not m:
+        return None
+    year = int(m.group(1))
+    return year if 2013 <= year <= date.today().year + 1 else None
 
 
 async def _enrich_decision_page(client: "httpx.AsyncClient", url: str) -> dict:
@@ -495,9 +516,7 @@ async def _enrich_decision_page(client: "httpx.AsyncClient", url: str) -> dict:
                 out["fine_sgd"] = int(fm.group(1).replace(",", ""))
             except ValueError:
                 pass
-        ym = _YEAR_RE.search(url) or _YEAR_RE.search(text)
-        if ym:
-            out["year"] = int(ym.group(1))
+        out["year"] = _parse_decision_year(url, text)
     except Exception:
         pass
     return out

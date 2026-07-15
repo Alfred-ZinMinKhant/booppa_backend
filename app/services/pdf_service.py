@@ -115,7 +115,7 @@ def _finding_key_from(f: dict) -> str | None:
     web report agree on which precedent attaches to which finding.
     """
     import re as _re
-    check = (f.get("check_id") or f.get("type") or "").lower()
+    check = (f.get("check_id") or f.get("type") or f.get("title") or "").lower()
     if not check:
         return None
     slug = _re.sub(r"[^\w]+", "_", check).strip("_")[:64]

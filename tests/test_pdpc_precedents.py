@@ -133,3 +133,30 @@ def test_precedent_summary_never_prints_fake_zero_total(monkeypatch):
     assert "S$0" not in s and "$0" not in s
     assert "2 enforcement decisions" in s
     assert "Foo Ltd" in s  # named without a year
+
+
+# ── Decision-year parsing (only the neutral-citation year is trusted) ─────────
+
+def test_decision_year_from_neutral_citation():
+    """The decision year comes from the '[YYYY] SGPDPC N' citation, not the
+    first stray 20xx on the page."""
+    from app.services.evidence_enricher import _parse_decision_year
+    text = (
+        "Registered address: 2000 Bendemeer Road. In the matter of Acme Pte Ltd "
+        "[2023] SGPDPC 4. A financial penalty of S$5,000 was imposed."
+    )
+    # 2000 (an address) must NOT win — the citation year 2023 must.
+    assert _parse_decision_year("https://pdpc.gov.sg/…/breach-by-acme", text) == 2023
+
+
+def test_decision_year_none_when_no_citation():
+    """No citation → None (case is named without a year), never a fabricated one."""
+    from app.services.evidence_enricher import _parse_decision_year
+    # A page full of 20xx numbers but no SGPDPC citation must not yield a year.
+    assert _parse_decision_year("https://pdpc.gov.sg/x", "founded 2001, suite 2000") is None
+
+
+def test_decision_year_rejects_pre_enforcement_year():
+    """PDPA enforcement is 2013+; a citation year before that is not credible."""
+    from app.services.evidence_enricher import _parse_decision_year
+    assert _parse_decision_year("", "In the matter of Foo [2000] SGPDPC 1") is None

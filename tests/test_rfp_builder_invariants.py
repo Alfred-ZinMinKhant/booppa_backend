@@ -78,3 +78,59 @@ def test_real_substituted_answer_with_evidence_verifies():
 
 def test_ai_drafted_never_verifies():
     assert _verified("ai_drafted", "TLS 1.3 in transit; AES-256 at rest.") is False
+
+
+# ── Privacy-policy URL must be the vendor's OWN, never a linked-out policy ─────
+# Recurring bug: a vendor page embeds Google reCAPTCHA, which links to
+# policies.google.com/privacy — that URL was being presented as the vendor's
+# published privacy policy in the kit.
+
+def test_same_site_rejects_foreign_privacy_host():
+    from app.services.rfp_express_builder import _same_site
+    assert _same_site("policies.google.com", "www.ensigninfosecurity.com") is False
+    assert _same_site("cdn.cloudflare.com", "acme.sg") is False
+
+
+def test_same_site_accepts_own_domain_and_subdomains():
+    from app.services.rfp_express_builder import _same_site
+    assert _same_site("www.ensigninfosecurity.com", "ensigninfosecurity.com") is True
+    assert _same_site("legal.acme.sg", "acme.sg") is True
+    assert _same_site("acme.sg", "www.acme.sg") is True
+
+
+def test_privacy_url_backstop_blocks_google_and_allows_own():
+    from app.services.rfp_express_builder import _privacy_url_belongs_to_site
+    vendor = "https://www.ensigninfosecurity.com/"
+    # The exact leak seen in the kit must be rejected.
+    assert _privacy_url_belongs_to_site(
+        "https://policies.google.com/privacy?hl=en-US", vendor) is False
+    # The vendor's own policy is accepted.
+    assert _privacy_url_belongs_to_site(
+        "https://www.ensigninfosecurity.com/privacy-policy", vendor) is True
+    # Missing inputs are safe (never presented).
+    assert _privacy_url_belongs_to_site(None, vendor) is False
+    assert _privacy_url_belongs_to_site("https://x.com/privacy", None) is False
+
+
+# ── UEN back-fill: a name-only ACRA match must populate the UEN field ─────────
+# Bug: kit printed "UEN: Not provided" though ACRA had resolved the entity and
+# returned its UEN.
+
+def test_acra_merge_backfills_uen_from_name_only_match():
+    ctx = {"uen": None}  # buyer gave no UEN; ACRA matched by company name
+    acra_live = {
+        "found": True, "live": True, "uen": "201012345A",
+        "registered_name": "ENSIGN INFOSECURITY (ASIA PACIFIC) PTE. LTD.",
+        "entity_type": "Local Company", "entity_status": "Live Company",
+    }
+    RFPExpressBuilder._merge_acra_into_ctx(ctx, acra_live)
+    assert ctx["uen"] == "201012345A"
+    assert ctx["acra_status"] == "Live Company"
+    assert ctx["acra_name"].startswith("ENSIGN INFOSECURITY")
+
+
+def test_acra_merge_never_overwrites_intake_supplied_uen():
+    ctx = {"uen": "999999999Z"}  # buyer supplied their own UEN
+    acra_live = {"found": True, "live": True, "uen": "201012345A"}
+    RFPExpressBuilder._merge_acra_into_ctx(ctx, acra_live)
+    assert ctx["uen"] == "999999999Z", "intake-supplied UEN must win over ACRA"

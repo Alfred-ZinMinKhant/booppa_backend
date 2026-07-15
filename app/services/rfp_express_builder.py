@@ -25,6 +25,37 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _same_site(href_netloc: str, base_netloc: str) -> bool:
+    """True when two hostnames belong to the same registrable site.
+
+    Used to keep a scraped "privacy policy" link honest: a vendor page routinely
+    links out to *other* privacy policies (Google reCAPTCHA's, a CDN's, an
+    analytics vendor's). Only a link on the vendor's own domain (or a subdomain)
+    may be presented as *their* published policy.
+    """
+    h = (href_netloc or "").lower().strip().removeprefix("www.")
+    b = (base_netloc or "").lower().strip().removeprefix("www.")
+    if not h or not b:
+        return False
+    return h == b or h.endswith("." + b) or b.endswith("." + h)
+
+
+def _privacy_url_belongs_to_site(privacy_url: Optional[str], vendor_url: Optional[str]) -> bool:
+    """Backstop before a privacy-policy URL is shown as the vendor's own.
+
+    Applied at the point the URL enters the report context, so a foreign URL
+    never reaches the PDF regardless of where it came from (a stale pre-guard
+    cache entry, an AI-suggested link, any future code path) — not only when the
+    live scraper first extracts it. Fixes the recurring "Privacy Policy:
+    policies.google.com" leak on vendors that embed Google reCAPTCHA.
+    """
+    if not privacy_url or not vendor_url:
+        return False
+    from urllib.parse import urlparse
+    return _same_site(urlparse(privacy_url).netloc, urlparse(vendor_url).netloc)
+
+
 # ── Question sets ─────────────────────────────────────────────────────────────
 # Express (5 questions) — core GeBIZ requirements
 ESSENTIAL_QUESTIONS = [
@@ -125,12 +156,7 @@ class RFPExpressBuilder:
 
         # Merge live ACRA data into vendor context
         if acra_live.get("found"):
-            if not vendor_ctx.get("acra_name"):
-                vendor_ctx["acra_name"] = acra_live.get("registered_name")
-            if not vendor_ctx.get("acra_entity_type"):
-                vendor_ctx["acra_entity_type"] = acra_live.get("entity_type")
-            vendor_ctx["acra_live"] = acra_live.get("live", True)
-            vendor_ctx["acra_status"] = acra_live.get("entity_status")
+            self._merge_acra_into_ctx(vendor_ctx, acra_live)
             if acra_live.get("warning"):
                 self.warnings.append(f"[ACRA] {acra_live['warning']}")
         if pdpc_result.get("warning"):
@@ -149,8 +175,13 @@ class RFPExpressBuilder:
         # 4.4: Consistency check + website scrape (single fetch, reused below)
         ws_data = await self._fetch_website_context(vendor_url)
         website_text = ws_data.get("text", "") if isinstance(ws_data, dict) else (ws_data or "")
-        # Surface privacy policy URL in vendor_ctx for PDF/email
-        if isinstance(ws_data, dict) and ws_data.get("privacy_policy_url"):
+        # Surface privacy policy URL in vendor_ctx for PDF/email — but only if it
+        # is on the vendor's own domain (never Google reCAPTCHA's / a CDN's).
+        if (
+            isinstance(ws_data, dict)
+            and ws_data.get("privacy_policy_url")
+            and _privacy_url_belongs_to_site(ws_data["privacy_policy_url"], vendor_url)
+        ):
             vendor_ctx.setdefault("privacy_policy_url", ws_data["privacy_policy_url"])
         # SPA warning
         if isinstance(ws_data, dict) and ws_data.get("spa_warning") and ws_data["spa_warning"] not in self.warnings:
@@ -529,6 +560,24 @@ class RFPExpressBuilder:
             logger.warning(f"Could not fetch vendor context for {self.vendor_id}: {e}")
         return ctx
 
+    @staticmethod
+    def _merge_acra_into_ctx(vendor_ctx: Dict, acra_live: Dict) -> None:
+        """Fold a successful live ACRA lookup into the report context.
+
+        Crucially back-fills the UEN: a name-only ACRA match resolves the entity
+        and returns its UEN, and without carrying that through the kit printed
+        "UEN: Not provided" and claimed "ACRA/GeBIZ: not run — UEN not found"
+        even though ACRA had just confirmed the company. Existing context values
+        win (an intake-supplied UEN is never overwritten)."""
+        if not vendor_ctx.get("acra_name"):
+            vendor_ctx["acra_name"] = acra_live.get("registered_name")
+        if not vendor_ctx.get("acra_entity_type"):
+            vendor_ctx["acra_entity_type"] = acra_live.get("entity_type")
+        if not vendor_ctx.get("uen") and acra_live.get("uen"):
+            vendor_ctx["uen"] = acra_live["uen"]
+        vendor_ctx["acra_live"] = acra_live.get("live", True)
+        vendor_ctx["acra_status"] = acra_live.get("entity_status")
+
     # ── Step 2: AI-generated Q&A ──────────────────────────────────────────────
 
     async def _fetch_website_context(self, vendor_url: str) -> dict:
@@ -539,7 +588,9 @@ class RFPExpressBuilder:
         from urllib.parse import urlparse
         from app.core.cache import cache as cache_mod
 
-        cache_key = cache_mod.cache_key(f"rfp_scrape_v2:{hashlib.md5(vendor_url.encode()).hexdigest()}")
+        # v3: invalidates pre-same-site-guard scrapes that cached a foreign
+        # (e.g. policies.google.com) privacy-policy URL.
+        cache_key = cache_mod.cache_key(f"rfp_scrape_v3:{hashlib.md5(vendor_url.encode()).hexdigest()}")
         cached = cache_mod.get(cache_key)
         if cached and isinstance(cached, dict) and "text" in cached:
             return cached
@@ -556,11 +607,6 @@ class RFPExpressBuilder:
 
         base = vendor_url.rstrip("/")
         parsed_base = urlparse(vendor_url)
-
-        def _same_site(href_netloc: str, base_netloc: str) -> bool:
-            h = href_netloc.lower().replace("www.", "")
-            b = base_netloc.lower().replace("www.", "")
-            return h == b or h.endswith("." + b) or b.endswith("." + h)
 
         pages = [base, base + "/about", base + "/privacy-policy", base + "/privacy"]
         headers = {"User-Agent": "Mozilla/5.0 (compatible; BooppaBot/1.0)"}
@@ -706,8 +752,14 @@ class RFPExpressBuilder:
             if isinstance(_ws_data, dict) and _ws_data.get("spa_warning"):
                 if _ws_data["spa_warning"] not in self.warnings:
                     self.warnings.append(f"[SPA] {_ws_data['spa_warning']}")
-            # Inject privacy policy URL into facts if not already provided
-            if isinstance(_ws_data, dict) and _ws_data.get("privacy_policy_url") and not ctx.get("privacy_policy_url"):
+            # Inject privacy policy URL into facts if not already provided —
+            # same-site backstop so a foreign URL never reaches the prompt/PDF.
+            if (
+                isinstance(_ws_data, dict)
+                and _ws_data.get("privacy_policy_url")
+                and not ctx.get("privacy_policy_url")
+                and _privacy_url_belongs_to_site(_ws_data["privacy_policy_url"], ctx.get("vendor_url"))
+            ):
                 ctx["privacy_policy_url"] = _ws_data["privacy_policy_url"]
                 intake_lines.append(f"- Published privacy policy URL: {ctx['privacy_policy_url']}")
                 facts_section = (

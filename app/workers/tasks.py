@@ -69,6 +69,67 @@ def _set_assessment_values(report: Report, updates: dict) -> None:
         logger.warning(f"Failed to update assessment_data for {report.id}: {e}")
 
 
+# A single report can be handed to process_report_task more than once — the
+# scan→fulfill chain, the webhook's standard-report branch, and Celery's own
+# retry can each queue it. Without a guard every run re-sends the "report ready"
+# email, so the buyer gets duplicates (observed: two mails ~60s apart). Dedupe
+# the send on a Redis NX lock keyed by report id; the lock is released only when
+# a send genuinely fails so a legitimate retry can still deliver.
+_REPORT_READY_EMAIL_TTL = 7 * 24 * 3600  # a week comfortably covers any retry/redelivery
+
+
+async def _send_report_ready_email_once(
+    email_service, report_id: str, to_email: str, report_url: str | None, user_name: str
+) -> bool:
+    """Send the report-ready email at most once per report across workers/retries."""
+    lock_key = f"lock:report_ready_email:{report_id}"
+    redis_client = None
+    got_lock = True
+    try:
+        redis_client = celery_app.backend.client
+        got_lock = bool(
+            redis_client.set(lock_key, "1", nx=True, ex=_REPORT_READY_EMAIL_TTL)
+        )
+    except Exception as lock_err:
+        # Redis unavailable — fall back to sending rather than dropping the mail.
+        logger.warning(
+            f"[ReportReady] dedupe lock unavailable for {report_id}, sending anyway: {lock_err}"
+        )
+        redis_client = None
+        got_lock = True
+
+    if not got_lock:
+        logger.info(
+            f"[ReportReady] email already sent for {report_id}; skipping duplicate"
+        )
+        return False
+
+    try:
+        sent = await email_service.send_report_ready_email(
+            to_email=to_email,
+            report_url=report_url,
+            user_name=user_name,
+            report_id=report_id,
+        )
+    except Exception:
+        # Release so a later retry can re-attempt delivery.
+        if redis_client is not None:
+            try:
+                redis_client.delete(lock_key)
+            except Exception:
+                pass
+        raise
+
+    if not sent and redis_client is not None:
+        # Provider rejected (send_html_email returns False, does not raise).
+        # Drop the lock so the buyer isn't silently left without the mail.
+        try:
+            redis_client.delete(lock_key)
+        except Exception:
+            pass
+    return sent
+
+
 def _record_dimension_snapshots(db, report: Report) -> None:
     """Tier 4: persist one row per PDPA dimension to pdpa_dimension_history.
 
@@ -1410,11 +1471,12 @@ async def process_report_workflow(report_id: str) -> dict:
                             "contact_email"
                         ) or report.assessment_data.get("customer_email")
                     if to_email:
-                        await email_service.send_report_ready_email(
+                        await _send_report_ready_email_once(
+                            email_service,
+                            report_id=str(report.id),
                             to_email=to_email,
                             report_url=None,
                             user_name=(report.company_name or "User"),
-                            report_id=str(report.id),
                         )
                 except Exception as e:
                     logger.error(
@@ -1498,11 +1560,12 @@ async def process_report_workflow(report_id: str) -> dict:
                         "customer_email"
                     )
                 if to_email:
-                    await email_service.send_report_ready_email(
+                    await _send_report_ready_email_once(
+                        email_service,
+                        report_id=str(report.id),
                         to_email=to_email,
                         report_url=None,
                         user_name=(report.company_name or "User"),
-                        report_id=str(report.id),
                     )
             except Exception as e:
                 logger.error(
@@ -1763,11 +1826,12 @@ async def process_report_workflow(report_id: str) -> dict:
             if not to_email:
                 raise ValueError("Missing contact email for report notification")
 
-            await email_service.send_report_ready_email(
+            await _send_report_ready_email_once(
+                email_service,
+                report_id=str(report.id),
                 to_email=to_email,
                 report_url=pdf_url,
                 user_name=(report.company_name or "User"),
-                report_id=str(report.id),
             )
         except Exception as e:
             logger.error(f"Failed to send notification email for {report_id}: {e}")
