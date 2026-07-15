@@ -153,6 +153,7 @@ def generate_ropa_lite_pdf(
     rows,
     dpo_name: str | None = None,
     dpo_email: str | None = None,
+    acra_data: dict | None = None,
 ) -> bytes:
     """
     Generate the ROPA Lite PDF. Returns PDF bytes.
@@ -211,6 +212,17 @@ def generate_ropa_lite_pdf(
         f"UEN: {_xml_escape(uen)}",
         f"Generated {generated}",
     ]
+    if acra_data:
+        matched = bool(acra_data.get("found"))
+        if matched:
+            entity_type = acra_data.get("entity_type")
+            live = bool(acra_data.get("live"))
+            status_str = "Live" if live else "Non-Live"
+            type_str = f" ({entity_type})" if entity_type else ""
+            header_bits.append(f"ACRA match: Matched{type_str} / {status_str}")
+        else:
+            header_bits.append("ACRA match: No registry match")
+            
     if dpo_name or dpo_email:
         dpo_line = "DPO: " + " · ".join(
             p for p in [_xml_escape(dpo_name), _xml_escape(dpo_email)] if p

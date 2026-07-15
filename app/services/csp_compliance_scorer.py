@@ -177,7 +177,11 @@ def score_cdd(clients: List[Dict]) -> Dict:
         compliance_rate = compliant / total
         score = int(compliance_rate * 70)
     else:
-        score = 70
+        # No active clients → no outstanding CDD obligations. Treat as compliant,
+        # consistent with the no-clients early return above (score=100). The prior
+        # arbitrary 70 was a placeholder that silently entered the weighted CSP
+        # overall score.
+        score = 100
 
     if failed > 0:
         gaps.append(f"{failed} client(s) with FAILED CDD — service must be declined and STR assessed")

@@ -40,11 +40,23 @@ except ImportError:
 API_BASE = "https://data.gov.sg/api/action/datastore_search"
 
 KNOWN_DATASET_IDS = [
+    # Configured live dataset (matches settings.ACRA_DATASET_ID). Fields:
+    # uen, entity_name, entity_type_desc, uen_status_desc, uen_issue_date.
+    "d_3f960c10fed6145404ca7b821f263b87",
     "d_82ce0e3a0ce059e0a7b36c43e4cd5c96",
     "5ab68aac-91f6-4f39-9b21-698610bdf3f7",
 ]
 
+# Accepted entity types across dataset schemas. The configured dataset uses
+# coarse `entity_type_desc` values (first block); legacy datasets used the
+# detailed `entity_type` descriptions (second block). We accept either.
 ACCEPTED_TYPES = {
+    # d_3f960c10… (entity_type_desc)
+    "LOCAL COMPANY",
+    "SOLE PROPRIETORSHIP/ PARTNERSHIP",
+    "SOLE PROPRIETORSHIP/PARTNERSHIP",
+    "FOREIGN COMPANY BRANCH",
+    # legacy (entity_type)
     "PRIVATE COMPANY LIMITED BY SHARES",
     "PUBLIC COMPANY LIMITED BY SHARES",
     "SOLE-PROPRIETORSHIP",
@@ -106,14 +118,26 @@ def discover_working_dataset(dataset_ids: list[str]) -> str | None:
     return None
 
 
+def _first(rec: dict[str, Any], *names: str) -> str:
+    """First non-empty stripped value among the given field-name variants."""
+    for n in names:
+        v = rec.get(n)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return ""
+
+
 def normalize_row(rec: dict[str, Any]) -> dict[str, str] | None:
-    entity_type = str(rec.get("entity_type", "") or "").strip().upper()
+    # Read across dataset-schema variants: the configured dataset uses
+    # entity_type_desc / uen_status_desc / uen_issue_date; legacy datasets
+    # used entity_type / entity_status / (no reg date).
+    entity_type = _first(rec, "entity_type_desc", "entity_type").upper()
     if entity_type not in ACCEPTED_TYPES:
         return None
 
-    uen = str(rec.get("uen", "") or "").strip()
-    name = str(rec.get("entity_name", "") or "").strip()
-    status = str(rec.get("entity_status", "") or "").strip().upper()
+    uen = _first(rec, "uen")
+    name = _first(rec, "entity_name")
+    status = _first(rec, "uen_status_desc", "entity_status").upper()
 
     if not uen or not name:
         return None
@@ -121,7 +145,8 @@ def normalize_row(rec: dict[str, Any]) -> dict[str, str] | None:
     if status and status not in ("LIVE", "REGISTERED", "ACTIVE"):
         return None
 
-    primary_activity = str(rec.get("primary_ssic_description", "") or "").strip()
+    primary_activity = _first(rec, "primary_ssic_description")
+    reg_date = _first(rec, "uen_issue_date", "incorporation_date")
 
     return {
         "companyName":      name,
@@ -133,13 +158,14 @@ def normalize_row(rec: dict[str, Any]) -> dict[str, str] | None:
         "shortDescription": primary_activity[:255],
         "uen":              uen,
         "entityType":       entity_type.title(),
-        "registrationDate": "",
+        "registrationDate": reg_date,
+        "source":           "acra",
     }
 
 
 FIELDNAMES = [
     "companyName", "domain", "website", "industry", "country", "city",
-    "shortDescription", "uen", "entityType", "registrationDate",
+    "shortDescription", "uen", "entityType", "registrationDate", "source",
 ]
 
 

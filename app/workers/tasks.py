@@ -24,6 +24,7 @@ from app.services.evidence_enricher import (
     fetch_hosting_signals,
     fetch_pdpc_enforcement,
     fetch_ssl_grade,
+    fetch_acra_status,
 )
 from app.services.nric_classifier import (
     classify_candidates,
@@ -508,7 +509,7 @@ def _is_loading_page(html: str) -> bool:
     return False
 
 
-async def _scan_site_metadata(url: str | None, company_name: str | None = None) -> dict:
+async def _scan_site_metadata(url: str | None, company_name: str | None = None, uen: str | None = None) -> dict:
     if not url:
         return {}
 
@@ -744,22 +745,28 @@ async def _scan_site_metadata(url: str | None, company_name: str | None = None) 
     # returns a safe default on failure, so we don't need extra try/except.
     enrichment_url = url or ""
     pdpc_task = (
-        fetch_pdpc_enforcement(company_name) if company_name
+        fetch_pdpc_enforcement(company_name, uen) if company_name or uen
         else asyncio.sleep(0, result={"checked": False, "found": False, "cases": []})
+    )
+    acra_task = (
+        fetch_acra_status(uen, company_name) if company_name or uen
+        else asyncio.sleep(0, result={"checked": False, "live": False, "warning": None})
     )
     hosting_task = fetch_hosting_signals(enrichment_url)
     ssl_task = fetch_ssl_grade(enrichment_url)
     try:
-        pdpc_result, hosting_result, ssl_result = await asyncio.gather(
-            pdpc_task, hosting_task, ssl_task, return_exceptions=False,
+        pdpc_result, acra_result, hosting_result, ssl_result = await asyncio.gather(
+            pdpc_task, acra_task, hosting_task, ssl_task, return_exceptions=False,
         )
     except Exception as e:
         logger.warning("Evidence enrichment failed for %s: %s", url, e)
         pdpc_result = {"checked": False, "found": False, "cases": []}
+        acra_result = {"checked": False, "live": False, "warning": None}
         hosting_result = {"checked": False}
         ssl_result = {"checked": False}
 
     page_result["pdpc_enforcement"] = pdpc_result
+    page_result["acra_live"] = acra_result
     page_result["hosting"] = hosting_result
     page_result["ssl_grade"] = ssl_result
 
@@ -989,9 +996,11 @@ async def process_report_workflow(report_id: str) -> dict:
         # Run broad website metadata scan (privacy policy, DPO, DNC, security headers, NRIC hints)
         try:
             resolved_url = None
+            uen = None
             if isinstance(report.assessment_data, dict):
                 resolved_url = report.assessment_data.get("resolved_url") or report.assessment_data.get("url")
-            metadata_result = await _scan_site_metadata(resolved_url, company_name=report.company_name)
+                uen = report.assessment_data.get("uen")
+            metadata_result = await _scan_site_metadata(resolved_url, company_name=report.company_name, uen=uen)
             if metadata_result:
                 _set_assessment_values(report, metadata_result)
                 db.commit()
@@ -2322,9 +2331,17 @@ def fulfill_cover_sheet_task(
                             )
                             rfp_intake_for_dpo = rfp_ad_for_dpo.get("intake_data") or {}
 
+                            ropa_acra_data = asyncio.run(
+                                fetch_acra_status(
+                                    uen=ropa_uen if ropa_uen != "Not provided" else None,
+                                    company_name=company_name
+                                )
+                            )
+
                             ropa_pdf_bytes = generate_ropa_lite_pdf(
                                 company_name=company_name or "Your Organisation",
                                 uen=ropa_uen,
+                                acra_data=ropa_acra_data,
                                 rows=ropa_dicts,
                                 dpo_name=rfp_intake_for_dpo.get("dpo_name"),
                                 dpo_email=rfp_intake_for_dpo.get("dpo_email"),
@@ -2893,6 +2910,21 @@ def fulfill_cover_sheet_task(
         # the cover sheet's visible structure changes and COVER_SHEET_SCHEMA_VERSION
         # is bumped per CLAUDE.md). 24h TTL bounds the suppression window.
         if customer_email:
+            delivery_email = customer_email
+            if user:
+                try:
+                    from app.core.models import EvidencePack
+                    _pack = (
+                        db.query(EvidencePack)
+                        .filter(EvidencePack.user_id == user.id)
+                        .order_by(EvidencePack.created_at.desc())
+                        .first()
+                    )
+                    if _pack and _pack.contact_email:
+                        delivery_email = _pack.contact_email
+                except Exception as e:
+                    logger.warning(f"Could not resolve contact_email for {customer_email}: {e}")
+
             email_state = "signed" if signed_cs_tx else "unsigned"
             try:
                 from app.services.cover_sheet_generator import COVER_SHEET_SCHEMA_VERSION as _cs_ver
@@ -2911,11 +2943,11 @@ def fulfill_cover_sheet_task(
             # isn't blocked by the 24h guard.
             _is_test = bool((metadata or {}).get("test_simulation"))
             email_dedupe_key = _cache.cache_key(
-                f"cover_sheet_email:{customer_email}:{email_state}:v{_cs_ver}:{_docs_fp}"
+                f"cover_sheet_email:{delivery_email}:{email_state}:v{_cs_ver}:{_docs_fp}"
             )
             if not _is_test and _cache.get(email_dedupe_key):
                 logger.info(
-                    f"[CoverSheet] Skipping duplicate email to {customer_email} "
+                    f"[CoverSheet] Skipping duplicate email to {delivery_email} "
                     f"(state={email_state}, schema=v{_cs_ver}, docs={_docs_fp}, already sent within 24h)"
                 )
                 return
@@ -2968,7 +3000,7 @@ def fulfill_cover_sheet_task(
 
                 from app.services.email_layout import branded_email_html, email_button, email_info_box
                 asyncio.run(email_svc.send_html_email(
-                    to_email=customer_email,
+                    to_email=delivery_email,
                     subject="Your Compliance Evidence Pack — final blockchain receipt",
                     attachments=_zip_attachment,
                     body_html=branded_email_html(
@@ -3010,7 +3042,7 @@ def fulfill_cover_sheet_task(
 
                 from app.services.email_layout import branded_email_html, email_button, email_info_box
                 asyncio.run(email_svc.send_html_email(
-                    to_email=customer_email,
+                    to_email=delivery_email,
                     subject="Your Compliance Evidence Pack — sign & notarize the Cover Sheet",
                     attachments=_draft_attachment,
                     body_html=branded_email_html(
@@ -6009,6 +6041,174 @@ def sync_gebiz_tenders():
             redis_client.delete(lock_key)
         except Exception:  # pragma: no cover - lock will expire on its own
             pass
+
+
+@celery_app.task(name="refresh_acra")
+def refresh_acra():
+    """
+    Refresh the offline ACRA seed in `discovered_vendors` from the data.gov.sg
+    business-entities dataset. Runs monthly via Celery Beat (the register is
+    republished monthly). The live lookup in evidence_enricher handles any
+    single entity on demand; this task just keeps the local seed warm so the
+    Vendor Proof registry-match path can hit a row without a network call.
+
+    Guarded by a Redis SETNX lock so a backlog of stranded beat ticks can't
+    launch overlapping full-register pulls (mirrors sync_gebiz_tenders).
+    """
+    from app.services.acra_service import refresh_acra as _refresh_acra
+
+    lock_key = "lock:refresh_acra"
+    redis_client = celery_app.backend.client
+    try:
+        # Full pull can run for several minutes; 1h TTL self-heals a crash well
+        # before the next monthly tick.
+        got_lock = redis_client.set(lock_key, "1", nx=True, ex=3600)
+    except Exception as lock_err:  # pragma: no cover - lock is best-effort
+        logger.warning(f"[ACRA] lock acquire failed, running without lock: {lock_err}")
+        got_lock = True
+
+    if not got_lock:
+        logger.info("[ACRA] refresh already in progress; skipping this run")
+        return
+
+    db = SessionLocal()
+    try:
+        count = _refresh_acra(db)
+        logger.info(f"[ACRA] refresh_acra complete: {count} DiscoveredVendor rows upserted")
+    except Exception as exc:
+        logger.error(f"[ACRA] refresh_acra failed: {exc}")
+        db.rollback()
+    finally:
+        db.close()
+        try:
+            redis_client.delete(lock_key)
+        except Exception:  # pragma: no cover - lock will expire on its own
+            pass
+
+
+@celery_app.task(name="build_pdpc_precedent_index")
+def build_pdpc_precedent_index():
+    """
+    Build the per-obligation PDPC enforcement precedent index from the live
+    decisions register, so each finding type can cite REAL published decisions
+    (the "PDPC enforcement precedents per finding" feature) instead of a static
+    seed. Cached ~14 days; runs weekly via Celery Beat.
+
+    Redis SETNX lock prevents overlapping runs (each run may fetch dozens of
+    decision pages for fine/year enrichment).
+    """
+    from app.services.evidence_enricher import build_pdpc_precedent_index as _build
+
+    lock_key = "lock:build_pdpc_precedent_index"
+    redis_client = celery_app.backend.client
+    try:
+        got_lock = redis_client.set(lock_key, "1", nx=True, ex=3600)
+    except Exception as lock_err:  # pragma: no cover - lock is best-effort
+        logger.warning(f"[PDPC] index lock acquire failed, running without lock: {lock_err}")
+        got_lock = True
+
+    if not got_lock:
+        logger.info("[PDPC] precedent index build already in progress; skipping")
+        return
+
+    try:
+        index = asyncio.run(_build())
+        logger.info(
+            "[PDPC] precedent index build complete: %d decisions across %d categories",
+            index.get("total", 0), len(index.get("categories") or {}),
+        )
+    except Exception as exc:
+        logger.error(f"[PDPC] precedent index build failed: {exc}")
+    finally:
+        try:
+            redis_client.delete(lock_key)
+        except Exception:  # pragma: no cover - lock will expire on its own
+            pass
+
+
+# Consider the offline ACRA seed stale once it is older than this many days.
+# The register republishes monthly, so ~25d self-heals a missed monthly tick
+# while a routine same-week redeploy skips the multi-minute re-pull.
+ACRA_SEED_STALE_DAYS = 25
+
+
+@celery_app.task(name="bootstrap_reference_data")
+def bootstrap_reference_data():
+    """Fire a live pull of the reference datasets on worker boot (i.e. on deploy).
+
+    The ACRA seed (`discovered_vendors`) and the PDPC precedent index otherwise
+    only populate on their monthly / weekly Beat ticks, so a fresh deploy could
+    serve an empty registry-match table and a missing precedent index for weeks.
+    This runs once when the worker container starts (wired to the `worker_ready`
+    signal in `celery_app.py`) and enqueues a refresh **only when the data is
+    missing or stale**, so ordinary same-week redeploys don't re-pull the full
+    register every time.
+
+    A short Redis debounce lock keeps simultaneous replica boots from each
+    enqueuing; the underlying refresh tasks also hold their own locks, so this
+    is belt-and-braces. All checks are best-effort — a boot must never fail
+    because a dataset probe raised.
+    """
+    redis_client = celery_app.backend.client
+    try:
+        # 10-minute debounce: one boot pull per deploy, not one per replica.
+        got_lock = redis_client.set("lock:bootstrap_reference_data", "1", nx=True, ex=600)
+    except Exception as lock_err:  # pragma: no cover - lock is best-effort
+        logger.warning(f"[Bootstrap] lock acquire failed, proceeding: {lock_err}")
+        got_lock = True
+    if not got_lock:
+        logger.info("[Bootstrap] reference-data pull already triggered this deploy; skipping")
+        return
+
+    # ── ACRA offline seed ────────────────────────────────────────────────────
+    try:
+        from app.core.models import DiscoveredVendor
+        from sqlalchemy import func
+
+        db = SessionLocal()
+        try:
+            row_count = (
+                db.query(func.count(DiscoveredVendor.id))
+                .filter(DiscoveredVendor.source == "acra")
+                .scalar()
+            ) or 0
+            newest = (
+                db.query(func.max(DiscoveredVendor.updated_at))
+                .filter(DiscoveredVendor.source == "acra")
+                .scalar()
+            )
+        finally:
+            db.close()
+
+        stale = (
+            newest is None
+            or (datetime.utcnow() - newest) > timedelta(days=ACRA_SEED_STALE_DAYS)
+        )
+        if row_count == 0 or stale:
+            logger.info(
+                "[Bootstrap] ACRA seed missing/stale (rows=%s, newest=%s) — enqueuing refresh_acra",
+                row_count, newest,
+            )
+            refresh_acra.delay()
+        else:
+            logger.info(
+                "[Bootstrap] ACRA seed fresh (rows=%s, newest=%s) — no pull needed",
+                row_count, newest,
+            )
+    except Exception as exc:
+        logger.warning(f"[Bootstrap] ACRA seed check failed (non-fatal): {exc}")
+
+    # ── PDPC precedent index ─────────────────────────────────────────────────
+    try:
+        from app.services.evidence_enricher import load_pdpc_precedent_index
+
+        if load_pdpc_precedent_index() is None:
+            logger.info("[Bootstrap] PDPC precedent index absent — enqueuing build_pdpc_precedent_index")
+            build_pdpc_precedent_index.delay()
+        else:
+            logger.info("[Bootstrap] PDPC precedent index present — no build needed")
+    except Exception as exc:
+        logger.warning(f"[Bootstrap] PDPC index check failed (non-fatal): {exc}")
 
 
 def _bridge_gebiz_to_shortlist(db) -> None:

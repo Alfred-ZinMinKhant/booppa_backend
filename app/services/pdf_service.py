@@ -983,6 +983,7 @@ class PDFService:
         """
         s = self._s
         sd = scan_data or {}  # raw assessment / scan data dict
+        _not_assessed_dims = set()
 
         def _has(keywords: list[str]) -> dict | None:
             for f in findings:
@@ -1091,8 +1092,9 @@ class PDFService:
                 ret_note = "Retention obligation not assessed (no clause snippet harvested)."
         else:
             ret_score = 70
-            ret_status = "Partial"
-            ret_note = "Retention obligation not assessed (policy classifier did not run)."
+            ret_status = "Not Assessed"
+            ret_note = "Policy clause classifier unavailable — manual verification recommended."
+            _not_assessed_dims.add("Retention Limitation (§25)")
 
         # ── Security Headers ──────────────────────────────────────────────
         sec_finding = _has(["hsts", "csp", "x_frame", "x_content_type", "referrer", "security_headers", "https"])
@@ -1207,8 +1209,9 @@ class PDFService:
             breach_note = "No PDPC enforcement actions or breach decisions found for this organisation."
         else:
             breach_score = 70
-            breach_status = "Partial"
+            breach_status = "Not Assessed"
             breach_note = "PDPC enforcement check unavailable — manual verification recommended."
+            _not_assessed_dims.add("Data Breach Notification (§26B-D)")
 
         # ── Cross-Border Transfer (§26) ───────────────────────────────────
         hosting = sd.get("hosting") if isinstance(sd.get("hosting"), dict) else {}
@@ -1232,8 +1235,9 @@ class PDFService:
                 xbt_note = "Hosting provider could not be inferred from response headers."
         else:
             xbt_score = 75
-            xbt_status = "Partial"
+            xbt_status = "Not Assessed"
             xbt_note = "Hosting signal check unavailable — manual verification recommended."
+            _not_assessed_dims.add("Cross-Border Transfer (§26)")
 
         # ── Third-Party Tracker Inventory ─────────────────────────────────
         if trackers_data:
@@ -1252,8 +1256,9 @@ class PDFService:
                 tr_note = "No third-party trackers observed during page load."
         else:
             tr_score = 70
-            tr_status = "Partial"
+            tr_status = "Not Assessed"
             tr_note = "Tracker inventory check unavailable (rendered scan did not run)."
+            _not_assessed_dims.add("Third-Party Tracker Inventory")
 
         dimensions = [
             ("Cookie Consent Mechanism", cookie_score, cookie_status, cookie_note),
@@ -1275,7 +1280,10 @@ class PDFService:
         # (NRIC, Breach Notification, Privacy Policy §13, Tracker Inventory,
         # Cookie Consent) carry 2x weight; everything else 1x. Default for
         # any unmapped dimension = 1.
-        weights = [_DIMENSION_WEIGHTS.get(d[0], 1) for d in dimensions]
+        weights = [
+            0 if d[0] in _not_assessed_dims else _DIMENSION_WEIGHTS.get(d[0], 1)
+            for d in dimensions
+        ]
         weighted_sum = sum(s * w for s, w in zip(scores, weights))
         total_weight = sum(weights) or 1
         overall = round(weighted_sum / total_weight)
@@ -1308,25 +1316,40 @@ class PDFService:
         ]
         rows: list = [header]
         for dim_name, dim_score, dim_status, dim_note in dimensions:
-            if dim_status == "Compliant":
-                status_html = f'<font color="#065f46"><b>{dim_status}</b></font>'
-            elif dim_status == "Non-Compliant":
-                status_html = f'<font color="#dc2626"><b>{dim_status}</b></font>'
+            not_assessed = dim_name in _not_assessed_dims
+            if not_assessed:
+                # Un-assessed dimension: neutral grey, and NEVER print a numeric
+                # score — showing a fabricated number (even at weight 0) is exactly
+                # the defect being fixed. Score cell reads N/A.
+                status_html = '<font color="#64748b"><b>N/A</b></font>'
+                score_html = '<font color="#64748b"><b>N/A</b></font>'
             else:
-                status_html = f'<font color="#92400e"><b>{dim_status}</b></font>'
+                if dim_status == "Compliant":
+                    status_html = f'<font color="#065f46"><b>{dim_status}</b></font>'
+                elif dim_status == "Non-Compliant":
+                    status_html = f'<font color="#dc2626"><b>{dim_status}</b></font>'
+                else:
+                    status_html = f'<font color="#92400e"><b>{dim_status}</b></font>'
+                score_html = f"<b>{dim_score}/100</b>"
             rows.append([
                 Paragraph(dim_name, s["Body"]),
-                Paragraph(f"<b>{dim_score}/100</b>", s["Body"]),
+                Paragraph(score_html, s["Body"]),
                 Paragraph(status_html, s["Body"]),
                 Paragraph(dim_note, s["Body"]),
             ])
 
         # Overall score row
+        overall_caption = (
+            f"Weighted aggregate across the {len(dimensions) - len(_not_assessed_dims)} assessed PDPA dimensions. "
+            "Dimensions marked Not Assessed were not measured and are excluded."
+            if _not_assessed_dims
+            else "Aggregate across all assessed PDPA compliance dimensions."
+        )
         rows.append([
             Paragraph("<b>Overall Score</b>", s["Body"]),
             Paragraph(f'<font color="{overall_color}"><b>{overall}/100</b></font>', s["Body"]),
             Paragraph(f'<font color="{overall_color}"><b>{overall_status}</b></font>', s["Body"]),
-            Paragraph("Aggregate across all assessed PDPA compliance dimensions.", s["Body"]),
+            Paragraph(overall_caption, s["Body"]),
         ])
 
         col_w = [CONTENT_W * 0.26, CONTENT_W * 0.12, CONTENT_W * 0.18, CONTENT_W * 0.44]
@@ -2238,10 +2261,14 @@ class PDFService:
             s["FindHead"]
         )
 
-        # PDPC enforcement precedent (Tier 7) — only shown when on file
+        # PDPC enforcement precedent (Tier 7) — a real published decision when
+        # one is on file for this finding type, else an honest statutory basis.
+        # Never label statute-only grounding as a "Precedent".
         from app.services.pdpc_precedents import precedent_summary as _ps
+        from app.services.pdpc_precedents import regulatory_basis as _rb
         _key = _finding_key_from(f)
         _precedent_text = _ps(_key) if _key else None
+        _basis_text = _rb(_key) if (_key and not _precedent_text) else None
 
         rows = []
         rows_src = [
@@ -2252,6 +2279,8 @@ class PDFService:
         ]
         if _precedent_text:
             rows_src.append(("Precedent", _precedent_text))
+        elif _basis_text:
+            rows_src.append(("Regulatory basis", _basis_text))
         for label, value in rows_src:
             # strip AI template noise from violation text
             clean_val = value
@@ -2315,13 +2344,21 @@ class PDFService:
             for tool in tools:
                 items.append(Paragraph(f"• {tool}", s["Bullet"]))
 
-        # PDPC enforcement precedent line — only shown when on file
+        # PDPC enforcement precedent line — a real published decision when one is
+        # on file, else an honest statutory basis. Statute-only grounding is never
+        # labelled a "Precedent".
         from app.services.pdpc_precedents import precedent_summary as _ps
+        from app.services.pdpc_precedents import regulatory_basis as _rb
         _key = _finding_key_from(f)
         _precedent = _ps(_key) if _key else None
         if _precedent:
             items.append(Spacer(1, 4))
             items.append(Paragraph(f"<b>Regulatory Precedent:</b> {_precedent}", s["Body"]))
+        else:
+            _basis = _rb(_key) if _key else None
+            if _basis:
+                items.append(Spacer(1, 4))
+                items.append(Paragraph(f"<b>Regulatory Basis:</b> {_basis}", s["Body"]))
 
         return items
 

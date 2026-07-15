@@ -155,7 +155,7 @@ def _kv_table(rows: List[tuple]) -> Table:
     return t
 
 
-def _appendix_item(code: str, title: str, body: str, badge_text: str, badge_color):
+def _appendix_item(code: str, title: str, body: str, badge_text: str, badge_color, evidence: Optional[List[str]] = None):
     """One D-item card: code + question, supplier answer underneath, status badge."""
     header = Table(
         [[
@@ -172,7 +172,12 @@ def _appendix_item(code: str, title: str, body: str, badge_text: str, badge_colo
         ("TOPPADDING", (0, 0), (-1, -1), 3),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]))
-    body_t = Table([[Paragraph(body, _STYLES["item_b"])]], colWidths=[6.8 * inch])
+    elements = [Paragraph(body, _STYLES["item_b"])]
+    if evidence and badge_text == "VERIFIED — BOOPPA":
+        elements.append(Spacer(1, 0.05 * inch))
+        for ev in evidence:
+            elements.append(Paragraph(f"<i>Evidence: {_xml_escape(ev)}</i>", _STYLES["item_b"]))
+    body_t = Table([[elements]], colWidths=[6.8 * inch])
     body_t.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("BACKGROUND", (0, 0), (-1, -1), LIGHT),
@@ -198,6 +203,7 @@ def build_appendix_d_pdf(
     compliance_score: Optional[int] = None,
     tx_hash: Optional[str] = None,
     report_id: Optional[str] = None,
+    coverage_summary: Optional[str] = None,
 ) -> bytes:
     """Render the generic "Appendix D" data-protection template PDF.
 
@@ -264,6 +270,8 @@ def build_appendix_d_pdf(
             rows.append(("Reference ID", report_id))
         if tx_hash:
             rows.append(("Blockchain Anchor", tx_hash))
+        if coverage_summary:
+            rows.append(("Coverage", coverage_summary))
         story.append(_kv_table(rows))
         story.append(Spacer(1, 0.16 * inch))
 
@@ -281,7 +289,9 @@ def build_appendix_d_pdf(
                     f"D.{i}",
                     question,
                     _xml_escape(answer),
-                    *badge,
+                    badge[0],
+                    badge[1],
+                    evidence=item.get("evidence"),
                 ))
         else:
             story.append(Paragraph(

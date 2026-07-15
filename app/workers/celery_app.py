@@ -55,7 +55,12 @@ celery_app.conf.update(
         "run_trm_board_report_for_user": {"queue": "heavy_queue"},
         "fulfill_evidence_pack_task": {"queue": "heavy_queue"},
         "anchor_signed_cover_sheet_task": {"queue": "heavy_queue"},
-        
+        # Monthly ACRA register refresh — a multi-minute paginated pull.
+        "refresh_acra": {"queue": "heavy_queue"},
+        # Weekly PDPC precedent index build — scrapes the decisions register and
+        # fetches decision pages for fine/year enrichment (network-heavy).
+        "build_pdpc_precedent_index": {"queue": "heavy_queue"},
+
         "app.workers.tasks.*": {"queue": "fast_queue"},
         # CSP Compliance Pack tasks (csp.generate_documents, csp.notarize_record,
         # csp.refresh_sanctions_lists, csp.daily_monitoring, csp.run_sanctions_screening)
@@ -96,6 +101,20 @@ celery_app.conf.update(
         "refresh-gebiz-base-rates-weekly": {
             "task": "refresh_gebiz_base_rates",
             "schedule": crontab(day_of_week="monday", hour=2, minute=0),
+        },
+        # Refresh the offline ACRA seed (discovered_vendors) monthly on the 2nd
+        # at 04:00 UTC. The register is republished monthly on data.gov.sg;
+        # scheduling on the 2nd gives the upstream refresh time to land.
+        "refresh-acra-monthly": {
+            "task": "refresh_acra",
+            "schedule": crontab(day_of_month=2, hour=4, minute=0),
+        },
+        # Rebuild the classified PDPC enforcement precedent index weekly (Sunday
+        # 04:30 UTC). Feeds the "precedents per finding" feature from live data;
+        # cached 14 days so a missed run still serves the previous index.
+        "build-pdpc-precedent-index-weekly": {
+            "task": "build_pdpc_precedent_index",
+            "schedule": crontab(day_of_week="sunday", hour=4, minute=30),
         },
         # Send every active vendor curated GeBIZ tender alerts every Monday at 07:00 UTC.
         # Runs one hour before the score digest so vendors open the score email in context.
@@ -252,3 +271,25 @@ from celery.worker.consumer.heart import Heart
 celery_app.steps['consumer'].discard(Mingle)
 celery_app.steps['consumer'].discard(Gossip)
 celery_app.steps['consumer'].discard(Heart)
+
+
+# ── Live pull of reference datasets on deploy ────────────────────────────────
+# On worker boot (which happens on every deploy, since the worker container
+# restarts) enqueue a one-shot bootstrap that pulls the ACRA seed and PDPC
+# precedent index if they're missing/stale. Without this a fresh deploy would
+# wait for the monthly/weekly Beat tick before those datasets populate.
+# `bootstrap_reference_data` self-gates on freshness and holds a Redis debounce,
+# so this is cheap and safe to fire on every worker start / across replicas.
+from celery.signals import worker_ready
+
+
+@worker_ready.connect
+def _pull_reference_data_on_boot(**_kwargs):  # pragma: no cover - boot-time hook
+    try:
+        celery_app.send_task("bootstrap_reference_data")
+    except Exception as exc:
+        # A broker hiccup at boot must never stop the worker from coming up.
+        import logging
+        logging.getLogger(__name__).warning(
+            "[Bootstrap] failed to enqueue reference-data pull on boot: %s", exc
+        )

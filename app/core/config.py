@@ -82,6 +82,12 @@ class Settings(BaseSettings):
     # Limits: 4 req/min, 500 req/day — sufficient for RFP generation use case
     VIRUSTOTAL_API_KEY: Optional[str] = None
 
+    # ACRA registry (data.gov.sg open data — free, no key)
+    # Business entities dataset resource_id. data.gov.sg publishes the full
+    # ACRA register (UEN, entity name/type, status, registration date) here;
+    # fetch_acra_status() queries this first, falling back to legacy dataset IDs.
+    ACRA_DATASET_ID: str = "d_3f960c10fed6145404ca7b821f263b87"
+
     # Stripe
     STRIPE_SECRET_KEY: Optional[str] = None
     STRIPE_WEBHOOK_SECRET: Optional[str] = None

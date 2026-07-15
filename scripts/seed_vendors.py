@@ -27,7 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.db import SessionLocal
-from app.core.models_v10 import MarketplaceVendor, DiscoveredVendor
+from app.core.models import MarketplaceVendor, DiscoveredVendor
 
 
 def generate_slug(name: str, uen: str | None = None) -> str:
@@ -118,8 +118,47 @@ def run(csv_path: str, dry_run: bool, limit: int | None) -> None:
                     continue
 
                 try:
-                    if uen:
-                        # ACRA data: upsert MarketplaceVendor keyed on UEN
+                    if uen and (source or "").lower() == "acra":
+                        # ACRA registry data: upsert DiscoveredVendor keyed on
+                        # UEN — this is the table the Vendor Proof registry-match
+                        # lookup reads (uen / entity_type / registration_date).
+                        existing = db.query(DiscoveredVendor).filter(
+                            DiscoveredVendor.uen == uen
+                        ).first()
+
+                        if existing:
+                            existing.company_name = company_name
+                            if entity_type:
+                                existing.entity_type = entity_type
+                            if reg_date:
+                                existing.registration_date = reg_date
+                            if sector:
+                                existing.industry = sector
+                            if website:
+                                existing.website = website
+                            existing.source = "acra"
+                            db.commit()
+                            updated += 1
+                        else:
+                            discovered = DiscoveredVendor(
+                                company_name=company_name,
+                                uen=uen,
+                                domain=domain or None,
+                                entity_type=entity_type,
+                                registration_date=reg_date,
+                                industry=sector,
+                                country=country,
+                                city=city,
+                                website=website,
+                                source="acra",
+                            )
+                            db.add(discovered)
+                            db.commit()
+                            inserted += 1
+
+                    elif uen:
+                        # Non-ACRA UEN-bearing rows: keep the MarketplaceVendor
+                        # listing path (marketplace CSV imports).
                         existing = db.query(MarketplaceVendor).filter(
                             MarketplaceVendor.uen == uen
                         ).first()
@@ -173,14 +212,14 @@ def run(csv_path: str, dry_run: bool, limit: int | None) -> None:
                             db.commit()
                             updated += 1
                         else:
-                            claim_token = make_claim_token(company_name, domain, line_no)
                             discovered = DiscoveredVendor(
                                 company_name=company_name,
                                 domain=domain,
+                                website=website,
                                 industry=sector,
-                                scan_status="SCANNING",
-                                claim_token=claim_token,
-                                source=source.lower() if source else "acra",
+                                country=country,
+                                city=city,
+                                source=source.lower() if source else "csv",
                             )
                             db.add(discovered)
                             db.commit()
@@ -197,12 +236,12 @@ def run(csv_path: str, dry_run: bool, limit: int | None) -> None:
                             skipped += 1
                             continue
 
-                        claim_token = make_claim_token(company_name, None, line_no)
                         discovered = DiscoveredVendor(
                             company_name=company_name,
-                            sector=sector,
-                            scan_status="SCANNING",
-                            claim_token=claim_token,
+                            industry=sector,
+                            country=country,
+                            city=city,
+                            source=source.lower() if source else "csv",
                         )
                         db.add(discovered)
                         db.commit()

@@ -730,6 +730,7 @@ async def _fulfill_rfp_package(
                             "qa_count": len(result.get("qa_answers", []) or []),
                             "answer_source": result.get("answer_source"),
                             "discrepancies": result.get("discrepancies") or [],
+                            "file_hash": result.get("file_hash"),
                             "data_sources": result.get("data_sources") or {},
                             "generated_at": result.get("generated_at"),
                             "polygonscan_url": result.get("polygonscan_url"),
@@ -986,41 +987,52 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         # certificate can state real registration details instead of nothing.
         acra_info: dict = {"matched": False}
         _uen = (report.assessment_data or {}).get("uen")
-        if _uen:
-            try:
-                from app.core.models import DiscoveredVendor
+        # Fire the registry lookup when we have a UEN (exact) OR a company name
+        # (fuzzy-verified against the live dataset) — buyers without a UEN still
+        # get a real ACRA match instead of "No registry match on file".
+        if _uen or company_name:
+            if _uen:
+                try:
+                    from app.core.models import DiscoveredVendor
 
-                _dv = (
-                    db.query(DiscoveredVendor)
-                    .filter(DiscoveredVendor.uen == _uen)
-                    .first()
-                )
-                if _dv:
-                    acra_info = {
-                        "matched": True,
-                        "entity_type": _dv.entity_type,
-                        "registration_date": _dv.registration_date,
-                        "industry": _dv.industry,
-                        "source": _dv.source,
-                        "registry_company_name": _dv.company_name,
-                    }
-            except Exception as _acra_err:
-                logger.warning("[VendorProof] ACRA lookup failed for UEN %s: %s", _uen, _acra_err)
+                    _dv = (
+                        db.query(DiscoveredVendor)
+                        .filter(DiscoveredVendor.uen == _uen)
+                        .first()
+                    )
+                    if _dv:
+                        acra_info = {
+                            "matched": True,
+                            "entity_type": _dv.entity_type,
+                            "registration_date": _dv.registration_date,
+                            "industry": _dv.industry,
+                            "source": _dv.source,
+                            "registry_company_name": _dv.company_name,
+                        }
+                except Exception as _acra_err:
+                    logger.warning("[VendorProof] ACRA lookup failed for UEN %s: %s", _uen, _acra_err)
 
             # Live data.gov.sg fallback — gives us the entity's current status
             # (LIVE / struck-off / ceased) and fills registration details when the
-            # imported registry has no row. A non-live status is surfaced on the
-            # certificate + verify page rather than blocking (the sale is already
-            # paid by the time this webhook runs).
+            # imported registry has no row. Without a UEN it fuzzy-matches on the
+            # company name. A non-live status is surfaced on the certificate +
+            # verify page rather than blocking (the sale is already paid by the
+            # time this webhook runs).
             try:
                 from app.services.evidence_enricher import fetch_acra_status
 
-                _live = await fetch_acra_status(_uen)
+                _live = await fetch_acra_status(_uen, company_name=company_name)
                 if _live.get("found"):
                     acra_info.setdefault("entity_type", _live.get("entity_type"))
                     acra_info.setdefault("registration_date", _live.get("registration_date"))
                     acra_info["entity_status"] = _live.get("entity_status")
                     acra_info["entity_live"] = _live.get("live")
+                    # Name-only purchases arrive without a UEN. When the live
+                    # fuzzy match resolves the entity, recover its official UEN
+                    # so the certificate / verify record can display it.
+                    if not _uen and _live.get("uen"):
+                        _uen = _live.get("uen")
+                        acra_info["uen"] = _uen
                     if not acra_info.get("matched"):
                         acra_info["matched"] = True
                         acra_info["source"] = "data.gov.sg (live)"
@@ -1207,6 +1219,10 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         if acra_info.get("matched"):
             ad["acra_entity_type"] = acra_info.get("entity_type")
             ad["acra_registration_date"] = acra_info.get("registration_date")
+            # Backfill the UEN recovered from a name-only live match so the
+            # verify page / future refreshes have the official number on file.
+            if _uen and not (report.assessment_data or {}).get("uen"):
+                ad["uen"] = _uen
         if acra_info.get("entity_status"):
             ad["acra_entity_status"] = acra_info.get("entity_status")
             ad["acra_entity_live"] = acra_info.get("entity_live")

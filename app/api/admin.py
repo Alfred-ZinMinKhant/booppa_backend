@@ -711,6 +711,11 @@ class SimulatePurchaseRequest(BaseModel):
     customer_email: str = Field(..., description="Test email — receives real fulfillment mail")
     vendor_url: Optional[str] = Field(default="https://booppa.io")
     company_name: Optional[str] = Field(default="Booppa QA")
+    uen: Optional[str] = Field(
+        default=None,
+        description="Optional Singapore UEN — exercises the offline "
+        "DiscoveredVendor registry match + live ACRA lookup on the certificate.",
+    )
     rfp_description: Optional[str] = Field(default=None)
 
 
@@ -762,6 +767,7 @@ async def simulate_purchase(
     customer_email = body.customer_email.strip().lower()
     vendor_url = (body.vendor_url or "").strip()
     company_name = (body.company_name or "").strip()
+    uen = (body.uen or "").strip()
     rfp_description = (body.rfp_description or "").strip() or DEFAULT_QA_RFP_BRIEF
     sim_id = f"admin-sim-{_uuid.uuid4()}"
 
@@ -803,6 +809,11 @@ async def simulate_purchase(
         "customer_email": customer_email,
         "test_simulation": "1",
     }
+    if uen:
+        # Threaded into the stub Report's assessment_data["uen"] so the
+        # Vendor Proof fulfillment exercises the offline DiscoveredVendor
+        # registry match + live ACRA status, exactly like a real purchase.
+        metadata["uen"] = uen
     if rfp_description:
         metadata["rfp_description"] = rfp_description
 

@@ -470,18 +470,28 @@ async def get_report_by_session(
                     if k in report.assessment_data:
                         scan_data[k] = report.assessment_data[k]
 
-            # PDPC precedents keyed by finding_key so the report viewer can
-            # render the same "Regulatory Precedent" line the PDF shows.
+            # PDPC precedents keyed by finding_key so the report viewer renders
+            # the same "Precedent" / "Regulatory basis" line the PDF shows. Keys
+            # are the finding keys actually present in this report; each resolves
+            # through the live classified index first, then the static seed, with
+            # an honest statutory basis when no real decision is on file.
             try:
-                from app.services.pdpc_precedents import PRECEDENTS as _PRECS
-                from app.services.pdpc_precedents import precedent_summary as _ps
-                scan_data["precedents"] = {
-                    key: {
-                        "summary": _ps(key),
-                        "cases": cases,
+                from app.services.pdpc_precedents import (
+                    get_precedents as _gp,
+                    precedent_summary as _ps,
+                    regulatory_basis as _rb,
+                )
+                from app.services.finding_keys import extract_finding_keys as _efk
+                _keys = _efk(report.assessment_data if isinstance(report.assessment_data, dict) else {})
+                precedents: dict = {}
+                for key in _keys:
+                    summary = _ps(key)
+                    precedents[key] = {
+                        "summary": summary,
+                        "basis": None if summary else _rb(key),
+                        "cases": _gp(key),
                     }
-                    for key, cases in _PRECS.items()
-                }
+                scan_data["precedents"] = precedents
             except Exception:
                 scan_data["precedents"] = {}
 

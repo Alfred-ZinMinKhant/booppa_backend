@@ -115,9 +115,132 @@ PRECEDENTS: dict[str, list[dict]] = {
 }
 
 
+# ── Finding-key → obligation category ─────────────────────────────────────────
+# Maps the stable finding keys that _finding_key_from (pdf_service) and
+# finding_keys.extract_finding_keys produce onto the obligation categories used
+# by the live PDPC precedent index (evidence_enricher.build_pdpc_precedent_index).
+# This is what lets a per-finding row cite a REAL published decision.
+_FINDING_KEY_TO_CATEGORY: dict[str, str] = {
+    # Consent (§13) — cookie banner + pre-consent trackers
+    "free:no_consent_banner": "consent",
+    "free:tracking_cookies": "consent",
+    # Openness (§11/12) — DPO + privacy policy
+    "free:no_dpo_contact": "openness_dpo",
+    "free:no_privacy_policy": "openness_dpo",
+    # Protection (§24) — security headers, cookie flags, transport security
+    "free:hsts": "protection",
+    "free:csp": "protection",
+    "free:x_frame": "protection",
+    "free:x_content_type": "protection",
+    "free:referrer": "protection",
+    "free:permissions_policy": "protection",
+    "free:cookie_secure": "protection",
+    "free:https": "protection",
+    "breach:pdpc_enforcement": "protection",
+    # NRIC / national identifiers
+    "free:nric_exposure": "nric",
+    "nric:collection": "nric",
+    "nric:leakage": "nric",
+    # Retention (§25)
+    "clause:retention": "retention",
+}
+
+# Contextual categories inferred from a substring when there is no exact key
+# match (AI-generated finding types vary; the substring keeps DNC etc. mapped).
+_CATEGORY_SUBSTRINGS: list[tuple[str, str]] = [
+    ("dnc", "dnc"),
+    ("do_not_call", "dnc"),
+    ("marketing", "dnc"),
+    ("consent", "consent"),
+    ("cookie", "consent"),
+    ("tracker", "consent"),
+    ("dpo", "openness_dpo"),
+    ("privacy_policy", "openness_dpo"),
+    ("nric", "nric"),
+    ("retention", "retention"),
+    ("header", "protection"),
+    ("security", "protection"),
+]
+
+# Honest statutory / guidance grounding per category — the fallback shown when
+# the live index has no classified case for a finding type yet. This is a
+# regulatory *basis*, never labelled a precedent.
+_CATEGORY_BASIS: dict[str, str] = {
+    "consent": "PDPA §13 Consent Obligation; PDPC Advisory Guidelines on Cookies (2021) and the Guide to Enhanced Notice and Choice.",
+    "openness_dpo": "PDPA §11-12 Openness Obligation; PDPC Advisory Guidelines on Key Concepts (DPO designation and business-contact disclosure).",
+    "protection": "PDPA §24 Protection Obligation; PDPC Advisory Guidelines on Key Concepts (reasonable security arrangements).",
+    "dnc": "PDPA Part 9 Do Not Call Provisions; PDPC Advisory Guidelines on the Do Not Call Provisions.",
+    "nric": "PDPA §24; PDPC Advisory Guidelines on the PDPA for NRIC and Other National Identification Numbers (2019).",
+    "retention": "PDPA §25 Retention Limitation Obligation; PDPC Advisory Guidelines on Key Concepts (cessation of retention).",
+    "accuracy": "PDPA §23 Accuracy Obligation; PDPC Advisory Guidelines on Key Concepts.",
+    "transfer": "PDPA §26 Transfer Limitation Obligation; PDPC Advisory Guidelines on the PDPA for Cross-Border Data Transfers.",
+    "notification": "PDPA §26A-26D Data Breach Notification Obligation; PDPC Guide on Managing and Notifying Data Breaches.",
+}
+
+
+def finding_category(finding_key: str) -> Optional[str]:
+    """Resolve a finding key to a PDPC obligation category, or None."""
+    if not finding_key:
+        return None
+    if finding_key in _FINDING_KEY_TO_CATEGORY:
+        return _FINDING_KEY_TO_CATEGORY[finding_key]
+    fk = finding_key.lower()
+    for needle, cat in _CATEGORY_SUBSTRINGS:
+        if needle in fk:
+            return cat
+    return None
+
+
+def _live_precedents_for_category(category: str) -> list[dict]:
+    """Return classified real decisions for a category from the live index."""
+    if not category:
+        return []
+    try:
+        from app.services.evidence_enricher import load_pdpc_precedent_index
+        index = load_pdpc_precedent_index()
+    except Exception:
+        index = None
+    if not index:
+        return []
+    cases = (index.get("categories") or {}).get(category) or []
+    # Only rows with a real decision URL + summary are citable.
+    return [c for c in cases if c.get("url") and c.get("summary")]
+
+
 def get_precedents(finding_key: str) -> list[dict]:
-    """Return the list of precedent dicts for this finding key, or [] if none."""
-    return list(PRECEDENTS.get(finding_key, []))
+    """Return precedent dicts for this finding key, or [] if none.
+
+    Resolution order: the live classified index (real published decisions,
+    keyed by obligation category) first, then the human-verified static seed as
+    a floor. Static entries carry verified=True; live entries verified=False.
+    """
+    category = finding_category(finding_key)
+    live = _live_precedents_for_category(category) if category else []
+    static = list(PRECEDENTS.get(finding_key, []))
+    if live:
+        # De-dupe by URL, static (verified) first so it wins on ties.
+        seen: set[str] = set()
+        merged: list[dict] = []
+        for c in [*static, *live]:
+            u = c.get("url") or ""
+            if u and u in seen:
+                continue
+            if u:
+                seen.add(u)
+            merged.append(c)
+        return merged
+    return static
+
+
+def regulatory_basis(finding_key: str) -> Optional[str]:
+    """Honest statutory/guidance grounding for a finding when no real precedent
+    is on file. Never a precedent — a regulatory *basis*. Returns None if the
+    finding type maps to no known obligation category.
+    """
+    category = finding_category(finding_key)
+    if not category:
+        return None
+    return _CATEGORY_BASIS.get(category)
 
 
 def precedent_summary(finding_key: str, max_items: int = 2) -> Optional[str]:
@@ -132,13 +255,18 @@ def precedent_summary(finding_key: str, max_items: int = 2) -> Optional[str]:
     if not items:
         return None
 
-    total = sum(int(i.get("fine_sgd") or 0) for i in items)
     count = len(items)
-    examples = [
-        f"{i['vendor']} ({i['year']})"
-        for i in items[:max_items]
-        if i.get("vendor") and i.get("year")
-    ]
+    # Only sum fines we actually have (live index rows may carry fine_sgd=None
+    # when the figure could not be parsed — never treat that as S$0).
+    fines = [int(i["fine_sgd"]) for i in items if i.get("fine_sgd")]
+    total = sum(fines)
+    # Examples: name + year when both known, else just the organisation name.
+    examples = []
+    for i in items[:max_items]:
+        vendor = i.get("vendor")
+        if not vendor:
+            continue
+        examples.append(f"{vendor} ({i['year']})" if i.get("year") else vendor)
 
     def _sgd(x: int) -> str:
         if x >= 1_000_000:
@@ -148,12 +276,28 @@ def precedent_summary(finding_key: str, max_items: int = 2) -> Optional[str]:
         return f"S${x}"
 
     cases = " and ".join(examples) if examples else None
-    org_word = "organisation" if count == 1 else "organisations"
 
-    base = (
-        f"PDPC has fined {count} {org_word} a total of {_sgd(total)} "
-        f"under similar facts."
-    )
+    if fines and len(fines) == count:
+        # Every case has a disclosed penalty (the human-verified static seed) —
+        # keep the precise, established phrasing.
+        org_word = "organisation" if count == 1 else "organisations"
+        base = (
+            f"PDPC has fined {count} {org_word} a total of {_sgd(total)} "
+            f"under similar facts."
+        )
+    elif fines:
+        # Live-index rows: some penalties parsed, some not — quote only what we
+        # have and say so, never implying the total is complete.
+        dec_word = "decision" if count == 1 else "decisions"
+        base = (
+            f"PDPC has published {count} enforcement {dec_word} on this obligation, "
+            f"with penalties totalling at least {_sgd(total)} across the cases where "
+            f"a figure was disclosed."
+        )
+    else:
+        # Real decisions on file but no parsed penalty figure — do not invent one.
+        dec_word = "decision" if count == 1 else "decisions"
+        base = f"PDPC has published {count} enforcement {dec_word} on this obligation."
     if cases:
         base += f" Notable cases: {cases}."
     return base

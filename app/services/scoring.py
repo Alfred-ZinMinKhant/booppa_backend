@@ -32,7 +32,7 @@ def _record_score_snapshot_lazy(db: Session, vendor_id: str, score_record):
 
     # Sync VerifyRecord.verification_level to match actual depth (fixes stale BASIC level)
     try:
-        from app.services.notarization_elevation import compute_verification_depth
+        from app.services.vendor_status import compute_verification_depth
         from app.core.models import VerifyRecord as _VR, VerificationLevel as _VL
         _depth = compute_verification_depth(db, str(vendor_id))
         _depth_to_level = {

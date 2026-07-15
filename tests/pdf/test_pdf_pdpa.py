@@ -110,3 +110,58 @@ def test_pdpa_pdf_is_deterministic_when_time_frozen():
     a = PDFService().generate_pdf(data)
     b = PDFService().generate_pdf(data)
     assert abs(len(a) - len(b)) < 50, "PDF output drift > 50 bytes — investigate non-determinism"
+
+
+@freeze_time("2026-05-24T12:00:00Z")
+def test_unassessed_dimensions_excluded_from_overall_not_fabricated():
+    """Dimensions whose underlying check did not run (retention with no clause
+    classifier, breach with no PDPC check, cross-border with no hosting check,
+    tracker with no rendered scan) must render N/A and be EXCLUDED from the
+    weighted overall — never a fabricated 70/75 folded into the headline number.
+
+    With no findings, every dimension that *was* assessed is clean (>=90). If the
+    four un-assessed dimensions were still scored 70/75 the overall would be
+    dragged into the ~80s; excluding them keeps it >=90. That gap is the test."""
+    from app.services.pdf_service import PDFService
+
+    # scan_data deliberately omits policy_clauses / hosting / pdpc_enforcement /
+    # trackers so those four dimensions hit the "did not run" branch → N/A.
+    scan_data = {"company_name": "NA Test Co"}
+    PDFService()._compliance_score_table([], scan_data=scan_data)
+    overall = scan_data.get("computed_overall_compliance_score")
+    assert isinstance(overall, int)
+    assert overall >= 90, (
+        f"overall={overall}: un-assessed dimensions appear to be dragging the "
+        f"headline number — they must be excluded, not scored 70/75"
+    )
+
+
+def _cell_texts(table):
+    """Flatten a reportlab Table's cell Paragraphs to their source text."""
+    out = []
+    for row in getattr(table, "_cellvalues", []):
+        cells = []
+        for cell in row:
+            txt = getattr(cell, "text", None)
+            cells.append(txt if txt is not None else str(cell))
+        out.append(cells)
+    return out
+
+
+def test_unassessed_retention_renders_na_not_fabricated_score():
+    """The retention row must show N/A (not a fabricated '70/100 Partial') when
+    the policy clause classifier did not run. Asserts on the rendered table cells
+    directly — robust to PDF pagination / text-extraction quirks."""
+    from app.services.pdf_service import PDFService
+
+    # No policy_clauses / hosting / pdpc_enforcement / trackers → those four
+    # dimensions are un-assessed.
+    table = PDFService()._compliance_score_table([], scan_data={"company_name": "NA Co"})
+    rows = _cell_texts(table)
+
+    retention_rows = [r for r in rows if r and "Retention Limitation" in r[0]]
+    assert retention_rows, "retention dimension row not found"
+    score_cell, status_cell = retention_rows[0][1], retention_rows[0][2]
+    assert "N/A" in score_cell, f"retention score should be N/A, got {score_cell!r}"
+    assert "70/100" not in score_cell, "fabricated 70/100 still rendered"
+    assert "N/A" in status_cell, f"retention status should be N/A, got {status_cell!r}"

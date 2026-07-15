@@ -244,11 +244,28 @@ class RFPExpressBuilder:
         self.evidence_hash = self._compute_evidence_hash(company_name, qa_answers)
         tx_hash = await self._anchor_to_blockchain()
 
+        # Compute coverage summary for Gap 3
+        ran_sources = []
+        if acra_live.get("found"): ran_sources.append("ACRA")
+        if pdpc_result.get("checked") or pdpc_result.get("found"): ran_sources.append("PDPC")
+        if ssl_result.get("checked") or ssl_result.get("grade"): ran_sources.append("SSL")
+        if vendor_ctx.get("gebiz_supplier") or vendor_ctx.get("gebiz_contracts_count"): ran_sources.append("GeBIZ")
+        
+        has_uen = bool((intake and intake.get("uen")) or vendor_ctx.get("uen"))
+        
+        coverage_parts = []
+        if ran_sources:
+            coverage_parts.append(f"Verified against {', '.join(ran_sources)}.")
+        if not has_uen:
+            coverage_parts.append("ACRA/GeBIZ: not run — UEN not provided/found.")
+            
+        coverage_summary = " ".join(coverage_parts)
+
         # 3. Build PDF
         pdf_bytes = self._build_pdf(
             company_name, vendor_url, qa_answers, vendor_ctx, tx_hash, product_type,
             acra_live=acra_live, pdpc_result=pdpc_result, discrepancies=discrepancies,
-            intake=intake, verification_map=verification_map,
+            intake=intake, verification_map=verification_map, coverage_summary=coverage_summary,
         )
 
         # 4. Upload to S3
@@ -259,7 +276,10 @@ class RFPExpressBuilder:
         declaration_url = None
         appendix_d_url = None
         if product_type == "rfp_complete":
-            docx_bytes = self._build_docx(company_name, vendor_url, qa_answers, vendor_ctx, tx_hash, product_type, intake=intake)
+            docx_bytes = self._build_docx(
+                company_name, vendor_url, qa_answers, vendor_ctx, tx_hash, product_type,
+                intake=intake, coverage_summary=coverage_summary
+            )
             if docx_bytes:
                 uploaded = await self._upload_docx(docx_bytes)
                 if uploaded:
@@ -315,7 +335,11 @@ class RFPExpressBuilder:
                     {
                         "question": self._q_label(k),
                         "answer": v,
-                        "verified": (verification_map.get(k) or {}).get("source", "ai_drafted") != "ai_drafted",
+                        "verified": (
+                            (verification_map.get(k) or {}).get("source", "ai_drafted") != "ai_drafted"
+                            and not self._PLACEHOLDER_RE.search(v or "")
+                        ),
+                        "evidence": (verification_map.get(k) or {}).get("evidence", []),
                     }
                     for k, v in qa_answers.items()
                 ]
@@ -328,6 +352,7 @@ class RFPExpressBuilder:
                     compliance_score=apx_score,
                     tx_hash=tx_hash,
                     report_id=self.report_id,
+                    coverage_summary=coverage_summary,
                 )
                 if appendix_d_bytes:
                     appendix_d_url = await self._upload_appendix_d(appendix_d_bytes)
@@ -391,6 +416,7 @@ class RFPExpressBuilder:
             "warnings":       self.warnings,
             "answer_source":  "template" if self.used_template else "ai_grounded",
             "discrepancies":  discrepancies,
+            "file_hash":      getattr(self, "evidence_hash", None),
             "data_sources": {
                 "acra_verified":         acra_live.get("found", False),
                 "acra_live":             acra_live.get("live"),
@@ -530,6 +556,12 @@ class RFPExpressBuilder:
 
         base = vendor_url.rstrip("/")
         parsed_base = urlparse(vendor_url)
+
+        def _same_site(href_netloc: str, base_netloc: str) -> bool:
+            h = href_netloc.lower().replace("www.", "")
+            b = base_netloc.lower().replace("www.", "")
+            return h == b or h.endswith("." + b) or b.endswith("." + h)
+
         pages = [base, base + "/about", base + "/privacy-policy", base + "/privacy"]
         headers = {"User-Agent": "Mozilla/5.0 (compatible; BooppaBot/1.0)"}
 
@@ -560,7 +592,9 @@ class RFPExpressBuilder:
                                 href = a["href"]
                                 if any(kw in href.lower() for kw in ["privacy", "pdpa", "data-protection"]):
                                     if href.startswith("http"):
-                                        privacy_policy_url = href
+                                        parsed_href = urlparse(href)
+                                        if _same_site(parsed_href.netloc, parsed_base.netloc):
+                                            privacy_policy_url = href
                                     elif href.startswith("/"):
                                         privacy_policy_url = (
                                             f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
@@ -1339,6 +1373,7 @@ class RFPExpressBuilder:
         discrepancies: list | None = None,
         intake: dict | None = None,
         verification_map: Dict[str, Dict[str, Any]] | None = None,
+        coverage_summary: str | None = None,
     ) -> bytes:
         try:
             from app.services.pdf_service import PDFService
@@ -1423,6 +1458,9 @@ class RFPExpressBuilder:
                 details.append(("ACRA Status", f"{acra_val}{f' ({entity_type})' if entity_type else ''}"))
             else:
                 details.append(("ACRA Status", "Not verified"))
+
+            if coverage_summary:
+                details.append(("Coverage", coverage_summary))
 
             # GeBIZ supplier
             if ctx.get("gebiz_supplier"):
@@ -1835,6 +1873,7 @@ class RFPExpressBuilder:
         tx_hash: Optional[str] = None,
         product_type: str = "rfp_complete",
         intake: dict | None = None,
+        coverage_summary: str | None = None,
     ) -> bytes:
         """Generate an editable DOCX evidence pack (Complete tier only)."""
         try:
@@ -1855,6 +1894,8 @@ class RFPExpressBuilder:
             if _tender_line:
                 doc.add_paragraph(f"Prepared in response to: {_tender_line}")
             doc.add_paragraph(f"Website: {vendor_url}")
+            if coverage_summary:
+                doc.add_paragraph(f"Coverage: {coverage_summary}")
             uen_val = ctx.get("uen") or "_______________________________"
             doc.add_paragraph(f"UEN (Singapore Business Registration No.): {uen_val}")
             if ctx.get("acra_name"):

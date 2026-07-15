@@ -402,11 +402,18 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
             # can only warn). UEN stays optional — buyers without one are unaffected.
             req_uen = (data.get("uen") or "").strip()
             uen = req_uen or ((getattr(user, "uen", "") or "").strip() if user else "")
+            
+            if not uen and company_name:
+                from app.services.evidence_enricher import fetch_acra_status
+                acra_res = await fetch_acra_status(company_name=company_name)
+                if acra_res and acra_res.get("found") and acra_res.get("uen"):
+                    uen = acra_res.get("uen")
+
             if uen:
                 await _gate_acra_live(uen)
                 data["uen"] = uen
-                if user and req_uen and not getattr(user, "uen", None):
-                    user.uen = req_uen
+                if user and not getattr(user, "uen", None):
+                    user.uen = uen
                     _db.commit()
         finally:
             _db.close()
@@ -416,6 +423,7 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
     BUNDLE_TYPES = {
         "vendor_trust_pack", "rfp_accelerator",
         "enterprise_bid_kit", "compliance_evidence_pack",
+        "rfp_express", "rfp_complete",
     }
     if product_type in BUNDLE_TYPES:
         from app.core.db import SessionLocal
@@ -455,11 +463,18 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
             # optional pre-payment ACRA gate when a UEN is supplied.
             req_uen = (data.get("uen") or "").strip()
             uen = req_uen or ((getattr(user, "uen", "") or "").strip() if user else "")
+            
+            if not uen and company_name:
+                from app.services.evidence_enricher import fetch_acra_status
+                acra_res = await fetch_acra_status(company_name=company_name)
+                if acra_res and acra_res.get("found") and acra_res.get("uen"):
+                    uen = acra_res.get("uen")
+
             if uen:
                 await _gate_acra_live(uen)
                 data["uen"] = uen
-                if user and req_uen and not getattr(user, "uen", None):
-                    user.uen = req_uen
+                if user and not getattr(user, "uen", None):
+                    user.uen = uen
                     _db.commit()
         finally:
             _db.close()
