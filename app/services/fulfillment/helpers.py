@@ -387,7 +387,7 @@ def _create_stub_report(
     return str(stub.id)
 
 
-def _maybe_fire_cover_sheet(customer_email: str | None) -> None:
+def _maybe_fire_cover_sheet(customer_email: str | None, user_id: str | None = None) -> None:
     """
     Auto-fire the Compliance Evidence Pack cover sheet once ALL of its inputs
     have finished. The cover sheet is the centerpiece of the pack: it indexes
@@ -409,10 +409,27 @@ def _maybe_fire_cover_sheet(customer_email: str | None) -> None:
     Idempotent — clears `pending_cover_sheet` once queued so duplicate calls
     (any component finishing after another) don't re-fire.
     """
-    if not customer_email:
+    if not customer_email and not user_id:
         return
     db = SessionLocal()
     try:
+        from app.core.config import settings
+        from app.core.company import COMPANY_DPO_EMAIL
+        
+        # If the incoming email is the support/DPO fallback, clear it so we force a lookup by ID
+        if customer_email in (settings.SUPPORT_EMAIL, COMPANY_DPO_EMAIL):
+            logger.warning(f"[_maybe_fire_cover_sheet] Received fallback email {customer_email}, forcing lookup by user_id {user_id}")
+            customer_email = None
+            
+        if not customer_email and user_id:
+            u_temp = db.query(User).filter(User.id == user_id).first()
+            if u_temp and u_temp.email and u_temp.email not in (settings.SUPPORT_EMAIL, COMPANY_DPO_EMAIL):
+                customer_email = u_temp.email
+
+        if not customer_email:
+            db.close()
+            return
+
         # Lock the user row so two concurrent callers (components completing
         # near-simultaneously) can't both pass the pending_cover_sheet check
         # and queue the task twice. The loser blocks until the winner commits

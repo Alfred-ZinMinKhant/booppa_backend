@@ -517,53 +517,24 @@ async def _activate_subscription(
             }
             label = plan_labels.get(new_plan, new_plan)
 
-            # If PDPA Monitor, include either existing report link or "scan running" notice
+            # If PDPA Monitor, do not eagerly link any previous reports (e.g., from Compliance Bundle) 
+            # as that would serve an unbranded Quick Scan PDF and confuse the customer. 
+            # We strictly announce the fresh scan that has just been queued, which will correctly 
+            # deliver the Monitor-branded Delta PDF.
             pdf_section = ""
             if new_plan == "pdpa_monitor":
-                try:
-                    from app.core.models import Report
-
-                    pdpa_report = (
-                        db.query(Report)
-                        .filter(
-                            Report.owner_id == user.id,
-                            Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
-                            Report.status == "completed",
-                        )
-                        .order_by(Report.completed_at.desc())
-                        .first()
-                    )
-                    if pdpa_report:
-                        # Use stable download endpoint — not the presigned S3 URL which expires
-                        download_url = f"https://api.booppa.io/api/v1/reports/{pdpa_report.id}/download"
-                        pdf_section = f"""
-                        <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:16px;margin:16px 0;">
-                          <p style="margin:0 0 8px;font-weight:bold;color:#0369a1;">Your latest PDPA report is ready</p>
-                          <a href="{download_url}"
-                             style="background:#0ea5e9;color:#fff;padding:10px 20px;text-decoration:none;
-                                    border-radius:6px;font-weight:bold;display:inline-block;">
-                            Download PDF Report &darr;
-                          </a>
-                        </div>
-                        """
-                    else:
-                        # No existing report — first scan has been queued
-                        pdf_section = """
-                        <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:16px;margin:16px 0;">
-                          <p style="margin:0 0 8px;font-weight:bold;color:#0369a1;">Your first PDPA scan is running</p>
-                          <p style="margin:0;color:#475569;font-size:14px;">
-                            We're scanning your website now. You'll receive your PDF report by email
-                            once it's ready (usually within a few minutes). You can also check your
-                            <a href="https://www.booppa.io/vendor/dashboard" style="color:#0ea5e9;font-weight:bold;">dashboard</a>
-                            for updates.
-                          </p>
-                        </div>
-                        """
-                except Exception as pdf_err:
-                    logger.warning(
-                        f"[Subscription] Could not fetch PDPA report for email: {pdf_err}"
-                    )
-
+                pdf_section = """
+                <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:16px;margin:16px 0;">
+                  <p style="margin:0 0 8px;font-weight:bold;color:#0369a1;">Your first PDPA Monitor scan is running</p>
+                  <p style="margin:0;color:#475569;font-size:14px;">
+                    We're scanning your website now. You'll receive your Monitor Report by email
+                    once it's ready (usually within a few minutes). You can also check your
+                    <a href="https://www.booppa.io/vendor/dashboard" style="color:#0ea5e9;font-weight:bold;">dashboard</a>
+                    for updates.
+                  </p>
+                </div>
+                """
+                
             try:
                 email_svc = EmailService()
                 body_html = branded_email_html(

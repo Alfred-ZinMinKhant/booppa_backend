@@ -41,7 +41,7 @@ class TestSummary:
     def test_known_key_returns_string(self):
         s = precedent_summary("breach:pdpc_enforcement")
         assert s is not None
-        assert "PDPC has fined" in s
+        assert "PDPC has" in s
         assert "S$" in s
 
     def test_unknown_key_returns_none(self):

@@ -160,7 +160,10 @@ Rules:
 - When OBSERVED EVIDENCE from a website/PDPA scan is provided, reflect it in the
   document: acknowledge gaps the scan surfaced (e.g. missing cookie-consent banner,
   no HTTPS, absent privacy policy) and record them as open items / remediation
-  actions rather than asserting compliance the evidence contradicts
+  actions rather than asserting compliance the evidence contradicts.
+- do NOT invent a gap/finding for anything listed as compliant above — if scan
+  evidence doesn't mention a topic, mark it 'not assessed in this scan' rather
+  than assuming a violation.
 """
 
 
@@ -206,13 +209,31 @@ def _evidence_context(scan_evidence: dict | None) -> str:
                     lines.append(f"  - [{f.get('severity','')}] {f.get('title','')}")
                 elif isinstance(f, str):
                     lines.append(f"  - {f}")
+                    
+        # Extract compliant dimensions so the LLM doesn't hallucinate gaps
+        compliant_dimensions = []
+        for key, val in pdpa.items():
+            if isinstance(val, dict) and "score" in val:
+                score = val["score"]
+                # Assuming score >= 80 means generally compliant/passed for context purposes
+                if isinstance(score, (int, float)) and score >= 80:
+                    friendly_name = key.replace("_", " ").title()
+                    if key == "nric_evidence": friendly_name = "NRIC Exposure"
+                    compliant_dimensions.append(f"{friendly_name} ({int(score)}/100)")
+        
+        if compliant_dimensions:
+            lines.append("Dimensions checked and found COMPLIANT (do NOT list these as gaps):")
+            lines.append("  - " + ", ".join(compliant_dimensions))
 
     if not lines:
         return ""
 
     return (
         "\n\nOBSERVED EVIDENCE (incorporate into this document; flag gaps as open "
-        "remediation items — do NOT claim compliance the evidence contradicts):\n"
+        "remediation items — do NOT claim compliance the evidence contradicts — and "
+        "do NOT invent a gap/finding for anything listed as compliant above. If scan "
+        "evidence doesn't mention a topic, mark it 'not assessed in this scan' rather "
+        "than assuming a violation):\n"
         + "\n".join(lines)
     )
 

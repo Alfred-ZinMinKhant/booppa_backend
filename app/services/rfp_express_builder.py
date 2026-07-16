@@ -137,22 +137,50 @@ class RFPExpressBuilder:
         vendor_ctx = self._build_vendor_context(company_name, vendor_url, db, intake=intake)
 
         # 1b. External evidence enrichment (parallel async calls)
+        from app.services.dns_security import fetch_dns_security
+        from app.services.gebiz_service import get_vendor_gebiz_history
+        from app.services.onemap_service import fetch_onemap_location
         from app.services.evidence_enricher import (
-            fetch_acra_status, fetch_pdpc_enforcement,
-            fetch_ssl_grade, fetch_domain_reputation, fetch_hosting_signals, check_consistency,
+            fetch_acra_status,
+            fetch_pdpc_enforcement,
+            fetch_ssl_grade,
+            fetch_domain_reputation,
+            fetch_hosting_signals,
+            check_consistency,
         )
+        from app.core.db import SessionLocal
+        
         import asyncio as _asyncio
-        uen = vendor_ctx.get("uen") or intake.get("uen")
         uen = vendor_ctx.get("uen") or intake.get("uen")
 
         stated_hosting = intake.get("data_hosting") or intake.get("primary_cloud")
-        (acra_live, pdpc_result, ssl_result, domain_rep, hosting_signals) = await _asyncio.gather(
+        (
+            acra_live, pdpc_result, ssl_result, domain_rep, hosting_signals,
+            dns_security
+        ) = await _asyncio.gather(
             fetch_acra_status(uen, company_name),
             fetch_pdpc_enforcement(company_name, uen),
             fetch_ssl_grade(vendor_url),
             fetch_domain_reputation(vendor_url),
             fetch_hosting_signals(vendor_url, stated_hosting=stated_hosting),
+            fetch_dns_security(vendor_url),
         )
+
+        gebiz_history = {"checked": False, "total_awards": 0, "awards": []}
+        try:
+            if company_name:
+                with SessionLocal() as db_session:
+                    gebiz_history = await _asyncio.to_thread(get_vendor_gebiz_history, db_session, company_name)
+        except Exception as e:
+            logger.warning("GeBIZ enrichment failed: %s", e)
+            
+        onemap_location = {"checked": False, "found": False}
+        try:
+            postal = acra_live.get("postal_code")
+            if postal:
+                onemap_location = await fetch_onemap_location(str(postal))
+        except Exception as e:
+            logger.warning("OneMap enrichment failed: %s", e)
 
         # Merge live ACRA data into vendor context
         if acra_live.get("found"):
@@ -192,6 +220,8 @@ class RFPExpressBuilder:
             vendor_ctx, rfp_details, questions,
             ssl_result=ssl_result, domain_rep=domain_rep,
             ws_data=ws_data,
+            dns_security=dns_security,
+            gebiz_history=gebiz_history, onemap_location=onemap_location
         )
 
         # 2a. Fill the placeholders the buyer ALREADY answered in their intake.
@@ -297,6 +327,7 @@ class RFPExpressBuilder:
             company_name, vendor_url, qa_answers, vendor_ctx, tx_hash, product_type,
             acra_live=acra_live, pdpc_result=pdpc_result, discrepancies=discrepancies,
             intake=intake, verification_map=verification_map, coverage_summary=coverage_summary,
+            gebiz_history=gebiz_history, dns_security=dns_security, onemap_location=onemap_location,
         )
 
         # 4. Upload to S3
@@ -333,7 +364,21 @@ class RFPExpressBuilder:
 
                 decl_score = pdpc_result.get("compliance_score") if isinstance(pdpc_result, dict) else None
                 if decl_score is None:
-                    decl_score = vendor_ctx.get("compliance_score")
+                    # Re-fetch the score locally — if the PDPA scan finished while the RFP
+                    # kit was building (they run concurrently), we want the final score here,
+                    # not the 'Pending' state from 3 minutes ago when this task began.
+                    from app.services.pdpa_findings import latest_pdpa_score
+                    fresh_score = latest_pdpa_score(db, self.vendor_id)
+                    # If `self.vendor_id` is an email, it gracefully handles it, but maybe we should use user_id if we have it:
+                    if fresh_score is None and vendor_ctx.get("uen"):
+                        # We don't have the user object here directly, so if fresh_score returns None
+                        # fallback to vendor_ctx which might have it already
+                        pass
+                    
+                    if fresh_score is not None:
+                        decl_score = fresh_score
+                    else:
+                        decl_score = vendor_ctx.get("compliance_score")
                 declaration_bytes = build_supplier_declaration_pdf(
                     company_name=company_name,
                     vendor_ctx=vendor_ctx,
@@ -677,7 +722,10 @@ class RFPExpressBuilder:
         questions: list,
         ssl_result: Dict | None = None,
         domain_rep: Dict | None = None,
-        ws_data: dict | None = None,   # pre-fetched website context — avoids double scrape
+        ws_data: dict | None = None,
+        dns_security: Dict | None = None,
+        gebiz_history: Dict | None = None,
+        onemap_location: Dict | None = None,
     ) -> Dict[str, str]:
         try:
             from app.services.booppa_ai_service import BooppaAIService
@@ -795,6 +843,24 @@ class RFPExpressBuilder:
             if external_facts:
                 external_section = "Verified external data:\n" + "\n".join(external_facts)
                 facts_section = "\n\n".join(filter(None, [facts_section, external_section]))
+                
+            # Additional new external enrichment signals
+            enrich_facts = []
+            if dns_security and dns_security.get("checked"):
+                if dns_security.get("dmarc_record"):
+                    enrich_facts.append(f"- DNS Security: DMARC is enforced with policy p={dns_security.get('dmarc_policy')}")
+                elif dns_security.get("spf_record"):
+                    enrich_facts.append("- DNS Security: SPF is configured, but DMARC is missing")
+            
+            if gebiz_history and gebiz_history.get("total_awards", 0) > 0:
+                enrich_facts.append(f"- GeBIZ Government Tenders: Vendor has successfully been awarded {gebiz_history['total_awards']} past government tenders.")
+                
+            if onemap_location and onemap_location.get("found"):
+                enrich_facts.append(f"- Physical Location: Registered office is located in {onemap_location.get('planning_area')} (verified via OneMap).")
+                
+            if enrich_facts:
+                enrich_section = "Additional Regulatory & Security Signals:\n" + "\n".join(enrich_facts)
+                facts_section = "\n\n".join(filter(None, [facts_section, enrich_section]))
 
             # Verified from the buyer's own website / privacy policy. These are
             # safe for the LLM to name in answers because they're already
@@ -1426,6 +1492,9 @@ class RFPExpressBuilder:
         intake: dict | None = None,
         verification_map: Dict[str, Dict[str, Any]] | None = None,
         coverage_summary: str | None = None,
+        gebiz_history: Dict | None = None,
+        dns_security: Dict | None = None,
+        onemap_location: Dict | None = None,
     ) -> bytes:
         try:
             from app.services.pdf_service import PDFService
@@ -1551,6 +1620,19 @@ class RFPExpressBuilder:
             # PDPC enforcement
             if pdpc_result and pdpc_result.get("found"):
                 details.append(("PDPC Enforcement", "Previous enforcement action found — see warnings"))
+                
+            # Additional Enrichments
+            if gebiz_history and gebiz_history.get("total_awards", 0) > 0:
+                details.append(("GeBIZ Records", f"{gebiz_history['total_awards']} historical contract awards"))
+                
+            if dns_security and dns_security.get("checked"):
+                if dns_security.get("dmarc_record"):
+                    details.append(("Email Security", f"DMARC Enforced (p={dns_security.get('dmarc_policy')})"))
+                elif dns_security.get("spf_record"):
+                    details.append(("Email Security", "SPF configured, DMARC missing"))
+                    
+            if onemap_location and onemap_location.get("found"):
+                details.append(("Verified Address", onemap_location.get("planning_area")))
 
             # Scope notice — kit covers PDPA + security only; buyer must add the
             # rest of the bid (proposal, pricing, team) themselves.

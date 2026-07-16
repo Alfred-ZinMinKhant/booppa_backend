@@ -180,15 +180,10 @@ class VendorScoreEngine:
             )
             if pdpa_report:
                 ad = pdpa_report.assessment_data or {}
-                risk_score = (
-                    ad.get("risk_score")
-                    or (ad.get("risk_assessment") or {}).get("score")
-                    or 0
-                )
-                # risk_score is 0–100 where 0 = clean, 100 = critical.
-                # Invert: low risk → high bonus (up to +25). High risk → small bonus (+8).
-                inverted = 100 - int(risk_score)
-                pdpa_bonus = round(8 + (inverted / 100) * 17)  # 8–25 pts
+                from app.services.pdpa_findings import resolve_pdpa_score
+                compliance = resolve_pdpa_score(ad)
+                if compliance is not None:
+                    pdpa_bonus = round(8 + (compliance / 100) * 17)  # 8–25 pts
         except Exception as e:
             logger.warning(f"PDPA bonus calculation failed for vendor {vendor_id}: {e}")
 

@@ -603,7 +603,7 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
             logger.warning(f"[Notarize] Elevation update failed for {report_id}: {e}")
 
         logger.info(f"[Notarize] Fulfilled {report_id}: tx={tx_hash} pdf={pdf_url}")
-        _maybe_fire_cover_sheet(contact_email)
+        _maybe_fire_cover_sheet(contact_email, user_id=vendor_id)
     except Exception as e:
         logger.error(f"[Notarize] Fulfillment error for {report_id}: {e}")
     finally:
@@ -750,7 +750,7 @@ async def _fulfill_rfp_package(
                         ce_user.compliance_evidence_rfp_ready = True
                     db.commit()
                     if getattr(ce_user, "pending_cover_sheet", False):
-                        _maybe_fire_cover_sheet(vendor_email)
+                        _maybe_fire_cover_sheet(vendor_email, user_id=vendor_id)
             except Exception as flag_err:
                 logger.warning(
                     f"[RFP→CoverSheet] Could not record RFP completion for {vendor_email}: {flag_err}"
@@ -941,23 +941,9 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         # exists; otherwise it stays the identity-verified-only floor (30). This
         # value (vp_confidence) is the single source for VerifyRecord, the
         # snapshot, and VendorScore below — no more hardcoded 30s.
-        from app.core.models import Report as _Report
-
-        _latest_pdpa = (
-            db.query(_Report)
-            .filter(
-                _Report.owner_id == vendor_id,
-                _Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
-                _Report.status == "completed",
-            )
-            .order_by(_Report.created_at.desc())
-            .first()
-        )
-        _pdpa_compliance = None
-        if _latest_pdpa and isinstance(_latest_pdpa.assessment_data, dict):
-            _cs = _latest_pdpa.assessment_data.get("compliance_score")
-            if isinstance(_cs, (int, float)):
-                _pdpa_compliance = int(round(_cs))
+        from app.services.pdpa_findings import latest_pdpa_score
+        
+        _pdpa_compliance = latest_pdpa_score(db, vendor_id)
 
         if _pdpa_compliance is None:
             vp_readiness = "CONDITIONAL"
@@ -987,6 +973,11 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         # certificate can state real registration details instead of nothing.
         acra_info: dict = {"matched": False}
         _uen = (report.assessment_data or {}).get("uen")
+        if not _uen:
+            from app.core.models import User
+            u = db.query(User).filter(User.id == str(vendor_id)).first()
+            _uen = u.uen if u else None
+        
         # Fire the registry lookup when we have a UEN (exact) OR a company name
         # (fuzzy-verified against the live dataset) — buyers without a UEN still
         # get a real ACRA match instead of "No registry match on file".
@@ -1040,6 +1031,21 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                             acra_info["registry_company_name"] = _live.get("registered_name")
             except Exception as _live_err:
                 logger.warning("[VendorProof] live ACRA lookup failed for UEN %s: %s", _uen, _live_err)
+
+        if acra_info.get("matched"):
+            u = db.query(User).filter(User.id == str(vendor_id)).first()
+            if u:
+                _update_made = False
+                _matched_uen = _uen or acra_info.get("uen")
+                if _matched_uen and (not u.uen or u.uen != _matched_uen):
+                    u.uen = _matched_uen
+                    _update_made = True
+                _reg_name = acra_info.get("registry_company_name")
+                if _reg_name and (not u.company or u.company != _reg_name):
+                    u.company = _reg_name
+                    _update_made = True
+                if _update_made:
+                    db.commit()
 
         # Step 1: Create or upsert VerifyRecord
         # Vendor Proof certificates are valid for 12 months; expiry drives the
@@ -1293,7 +1299,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                 logger.error(f"[VendorProof] Email failed for {contact_email}: {e}")
 
         logger.info(f"[VendorProof] Fulfilled {report_id} for vendor {vendor_id}")
-        _maybe_fire_cover_sheet(contact_email)
+        _maybe_fire_cover_sheet(contact_email, user_id=vendor_id)
     except Exception as e:
         # A failure in the core persistence steps (VerifyRecord/snapshot/score/
         # commit) lands here. Previously this only logged and returned, so the
@@ -1549,7 +1555,8 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
                 # that drifted (e.g. 54 in the email vs 53 in the PDF).
                 _email_compliance = assessment.get("compliance_score")
                 if not isinstance(_email_compliance, (int, float)):
-                    _email_compliance = 100 - int(risk_score or 50)
+                    from app.services.pdpa_findings import resolve_pdpa_score
+                    _email_compliance = resolve_pdpa_score(assessment) or 0
                 _email_compliance = int(_email_compliance)
                 from app.services.email_templates import get_pdpa_snapshot_ready_html
                 body_html = get_pdpa_snapshot_ready_html(
@@ -1579,7 +1586,7 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
         logger.info(
             f"[PDPA] Fulfilled {report_id} for vendor {vendor_id} pdf={pdf_url}"
         )
-        _maybe_fire_cover_sheet(contact_email)
+        _maybe_fire_cover_sheet(contact_email, user_id=vendor_id)
     except Exception as e:
         logger.error(f"[PDPA] Fulfillment error for {report_id}: {e}")
         db.rollback()

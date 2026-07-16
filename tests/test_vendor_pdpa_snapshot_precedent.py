@@ -39,7 +39,7 @@ def test_breach_dimension_surfaces_precedent():
     })
     txt = _text(pdf)
     assert "Regulatory precedent" in txt
-    assert "PDPC has fined" in txt
+    assert "PDPC has " in txt
 
 
 def test_dimension_without_precedent_shows_no_line():

@@ -57,8 +57,13 @@ def build_badge_certificate(db: Session, user: User, company_override: str | Non
     # compliance score — otherwise the badge prints "0/100" while Trust/
     # Compliance scores elsewhere show the true value. Treat non-positive as
     # missing.
+    from app.services.pdpa_findings import latest_pdpa_score
+    real_compliance = latest_pdpa_score(db, user.id)
+    
     confidence = getattr(snap, "confidence_score", None)
-    if (confidence is None or confidence <= 0) and score_record:
+    if real_compliance is not None:
+        confidence = real_compliance
+    elif (confidence is None or confidence <= 0) and score_record:
         confidence = getattr(score_record, "compliance_score", None)
 
     # Re-evaluate procurement readiness if derived from fallback score

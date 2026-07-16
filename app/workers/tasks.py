@@ -26,6 +26,9 @@ from app.services.evidence_enricher import (
     fetch_ssl_grade,
     fetch_acra_status,
 )
+from app.services.dns_security import fetch_dns_security
+from app.services.onemap_service import fetch_onemap_location
+from app.services.gebiz_service import get_vendor_gebiz_history
 from app.services.nric_classifier import (
     classify_candidates,
     find_valid_nric_values,
@@ -815,21 +818,53 @@ async def _scan_site_metadata(url: str | None, company_name: str | None = None, 
     )
     hosting_task = fetch_hosting_signals(enrichment_url)
     ssl_task = fetch_ssl_grade(enrichment_url)
+    # New Enrichments
+    dns_task = fetch_dns_security(enrichment_url)
+    
+    # Run async tasks
     try:
-        pdpc_result, acra_result, hosting_result, ssl_result = await asyncio.gather(
-            pdpc_task, acra_task, hosting_task, ssl_task, return_exceptions=False,
+        (
+            pdpc_result, acra_result, hosting_result, ssl_result,
+            dns_result
+        ) = await asyncio.gather(
+            pdpc_task, acra_task, hosting_task, ssl_task,
+            dns_task,
+            return_exceptions=False,
         )
     except Exception as e:
         logger.warning("Evidence enrichment failed for %s: %s", url, e)
         pdpc_result = {"checked": False, "found": False, "cases": []}
-        acra_result = {"checked": False, "live": False, "warning": None}
+        acra_result = {"checked": False, "live": False, "warning": None, "postal_code": None}
         hosting_result = {"checked": False}
         ssl_result = {"checked": False}
+        dns_result = {"checked": False}
+
+    # GeBIZ and OneMap are executed inline/sync using DB session / httpx
+    gebiz_result = {"checked": False, "total_awards": 0, "total_value": 0, "awards": []}
+    onemap_result = {"checked": False, "found": False}
+    
+    try:
+        if company_name:
+            with SessionLocal() as db_session:
+                # Wrap sync DB call to prevent blocking the event loop
+                gebiz_result = await asyncio.to_thread(get_vendor_gebiz_history, db_session, company_name)
+    except Exception as e:
+        logger.warning("GeBIZ enrichment failed: %s", e)
+        
+    try:
+        postal_code = acra_result.get("postal_code")
+        if postal_code:
+            onemap_result = await fetch_onemap_location(str(postal_code))
+    except Exception as e:
+        logger.warning("OneMap enrichment failed: %s", e)
 
     page_result["pdpc_enforcement"] = pdpc_result
     page_result["acra_live"] = acra_result
     page_result["hosting"] = hosting_result
-    page_result["ssl_grade"] = ssl_result
+    page_result["ssl_grade"] = ssl_result.get("grade") if isinstance(ssl_result, dict) else ssl_result
+    page_result["dns_security"] = dns_result
+    page_result["gebiz_history"] = gebiz_result
+    page_result["onemap_location"] = onemap_result
 
     # ── Privacy policy §13 clause classifier (Tier 2 + multilingual) ─────
     if policy_html_raw:
@@ -3244,11 +3279,16 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
                     vendor_id, _notal_err,
                 )
 
+            from app.services.pdpa_findings import latest_pdpa_score
+            real_compliance = latest_pdpa_score(db, vendor_id)
+            if real_compliance is None:
+                real_compliance = getattr(score_record, "compliance_score", None)
+
             snapshot_pdf = generate_vendor_snapshot_pdf({
                 "company_name": company,
                 "plan_label": plan_label,
                 "trust_score": getattr(score_record, "total_score", None),
-                "compliance_score": getattr(score_record, "compliance_score", None),
+                "compliance_score": real_compliance,
                 "profile_views_30d": profile_views,
                 "verification_level": getattr(verify, "verification_level", None),
                 "trend": trend,
@@ -4732,7 +4772,7 @@ def pdpa_monitor_monthly_alert_task(self, vendor_id: str, vendor_email: str):
 
 
 @celery_app.task(bind=True, max_retries=2, name="pdpa_monitor_monthly_rescan_task")
-def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, website_url: str, override_company: str | None = None):
+def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, website_url: str, override_company: str | None = None, source: str = "pdpa_monitor_monthly"):
     """
     Monthly PDPA re-scan for PDPA Monitor subscribers.
     Creates a new PDPA report and queues fulfill_pdpa_task.
@@ -4761,9 +4801,9 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
         # below when Redis is unavailable.
         from app.core.cache import cache as _cache
         _day = datetime.now(timezone.utc).strftime("%Y%m%d")
-        _lock_key = f"pdpa_rescan_lock:{vendor_id}:{_day}"
+        _lock_key = f"pdpa_rescan_lock:{vendor_id}:{_day}:{source}"
         if not _cache.add(_lock_key, {"queued": True}, ttl=86400):
-            logger.info(f"[PdpaMonitor] Atomic drop: rescan already reserved today for {vendor_id}")
+            logger.info(f"[PdpaMonitor] Atomic drop: rescan already reserved today for {vendor_id} source={source}")
             return
 
         # Idempotency lock: drop if a scan is already pending or recently run (24h)
@@ -4780,8 +4820,8 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
             .first()
         )
         if recent_scan and isinstance(recent_scan.assessment_data, dict):
-            if recent_scan.assessment_data.get("triggered_by") == "pdpa_monitor_monthly":
-                logger.info(f"[PdpaMonitor] Idempotency drop: scan already exists for {vendor_id} within 24h")
+            if recent_scan.assessment_data.get("triggered_by") == source:
+                logger.info(f"[PdpaMonitor] Idempotency drop: scan already exists for {vendor_id} within 24h source={source}")
                 return
 
         stub = Report(
@@ -4795,7 +4835,7 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
                 "on_page_only": False,
                 "tier": "PRO",
                 "contact_email": vendor_email,
-                "triggered_by": "pdpa_monitor_monthly",
+                "triggered_by": source,
             },
         )
         db.add(stub)
@@ -8582,9 +8622,7 @@ def fulfill_evidence_pack_task(self, evidence_pack_id: str):
                 .first()
             )
             if prior_pdpa and isinstance(prior_pdpa.assessment_data, dict):
-                pf = prior_pdpa.assessment_data.get("findings")
-                if isinstance(pf, list) and pf:
-                    scan_evidence["pdpa_report"] = {"findings": pf}
+                scan_evidence["pdpa_report"] = prior_pdpa.assessment_data
         except Exception as ee:
             logger.warning("[EvidencePack] evidence gathering error for %s: %s", evidence_pack_id, ee)
         if scan_evidence:

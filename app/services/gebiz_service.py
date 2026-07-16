@@ -291,3 +291,41 @@ def ensure_tenders_loaded(db: Session) -> int:
         logger.error(f"[GeBIZ] On-demand sync failed: {exc}")
         db.rollback()
         return 0
+
+def get_vendor_gebiz_history(db: Session, company_name: str) -> dict:
+    """
+    Looks up awarded GeBIZ contracts in the GebizAwardHistory table for a vendor.
+    """
+    if not company_name:
+        return {"checked": False, "awards": [], "total_value": 0}
+        
+    from app.core.models import GebizAwardHistory
+    
+    # Simple ILIKE search for the company name (case-insensitive substring)
+    name_clean = company_name.split(" PTE")[0].strip()
+    awards = (
+        db.query(GebizAwardHistory)
+        .filter(GebizAwardHistory.supplier_name.ilike(f"%{name_clean}%"))
+        .order_by(GebizAwardHistory.awarded_date.desc())
+        .limit(10)
+        .all()
+    )
+    
+    result = {
+        "checked": True,
+        "total_awards": len(awards),
+        "total_value": sum(float(a.award_amt or 0) for a in awards),
+        "awards": [
+            {
+                "tender_no": a.tender_no,
+                "awarded_date": a.awarded_date.isoformat() if a.awarded_date else None,
+                "agency": a.procuring_entity,
+                "award_amt": float(a.award_amt or 0),
+                "description": a.tender_description,
+                "sector": a.sector
+            }
+            for a in awards
+        ]
+    }
+    
+    return result

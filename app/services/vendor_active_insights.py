@@ -266,7 +266,10 @@ def get_tender_matches(db, vendor_id: str, limit: int = 5,
         if matching_categories:
             tenders = (
                 base_query.filter(GebizTender.raw_data['category'].astext.in_(matching_categories))
-                .order_by(GebizTender.closing_date.asc())
+                .order_by(
+                    GebizTender.estimated_value.is_(None),
+                    GebizTender.closing_date.asc()
+                )
                 .limit(20)
                 .all()
             )
@@ -274,7 +277,10 @@ def get_tender_matches(db, vendor_id: str, limit: int = 5,
         # Fall back to generic tenders if we didn't find enough sector-specific ones
         if len(tenders) < 5:
             fallback_tenders = (
-                base_query.order_by(GebizTender.closing_date.asc())
+                base_query.order_by(
+                    GebizTender.estimated_value.is_(None),
+                    GebizTender.closing_date.asc()
+                )
                 .limit(20)
                 .all()
             )
@@ -341,11 +347,17 @@ def get_competitor_pulse(db, vendor_id: str) -> dict | None:
     """
     try:
         from app.services.competitor_signals_generator import _sector_for_vendor, _get_signals
+        from app.core.models import User
 
         sector = _sector_for_vendor(db, str(vendor_id))
         if not sector:
             return None
-        signals = _get_signals(db, sector)
+        
+        profile = db.query(User).filter(User.id == str(vendor_id)).first()
+        c_name = profile.company if profile else None
+        c_uen = profile.uen if profile else None
+
+        signals = _get_signals(db, sector, company_name=c_name, uen=c_uen)
         if not signals or not signals.get("total_awards"):
             return None
         return signals

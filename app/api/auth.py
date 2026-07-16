@@ -4,7 +4,8 @@ import logging
 import redis as _redis_lib
 from fastapi import APIRouter, Depends, HTTPException, status, Body, Security
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
+from app.core.validators import validate_name_field
 from typing import Optional
 from sqlalchemy.orm import Session
 from app.core.auth import (
@@ -94,6 +95,11 @@ class RegisterRequest(BaseModel):
     uen: Optional[str] = None
     industry: Optional[str] = None
 
+    @field_validator("company", mode="before")
+    @classmethod
+    def validate_names(cls, v):
+        return validate_name_field(v)
+
 
 class ProcurementRegisterRequest(BaseModel):
     email: str
@@ -101,6 +107,11 @@ class ProcurementRegisterRequest(BaseModel):
     company: str
     uen: Optional[str] = None
     industry: Optional[str] = None
+
+    @field_validator("company", mode="before")
+    @classmethod
+    def validate_names(cls, v):
+        return validate_name_field(v)
 
 
 class MeOut(BaseModel):
@@ -123,6 +134,11 @@ class ProfileUpdate(BaseModel):
     company: Optional[str] = None
     website: Optional[str] = None
     industry: Optional[str] = None
+
+    @field_validator("full_name", "company", mode="before")
+    @classmethod
+    def validate_names(cls, v):
+        return validate_name_field(v)
     company_description: Optional[str] = None
 
 

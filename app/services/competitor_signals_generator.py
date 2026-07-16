@@ -51,7 +51,7 @@ def _sector_for_vendor(db, vendor_id: str) -> str:
         return "IT"
 
 
-def _get_signals(db, sector: str, days: int = 90) -> dict:
+def _get_signals(db, sector: str, days: int = 90, company_name: str | None = None, uen: str | None = None) -> dict:
     """
     Aggregate 3 competitor signals from gebiz_award_history.
     Returns a dict with keys: top_suppliers, win_rate_by_size, sector_trend.
@@ -106,6 +106,17 @@ def _get_signals(db, sector: str, days: int = 90) -> dict:
         e["count"] += 1
         e["total_value"] += float(r.award_amt or 0)
 
+    # Helper to normalize company names for comparison
+    def _normalize_name(name: str) -> str:
+        if not name: return ""
+        n = name.upper().strip()
+        for suffix in [" PTE. LTD.", " PTE LTD", " LTD.", " LTD", " INC.", " INC", " LLC", " (SMARTTECH)"]:
+            n = n.replace(suffix, "")
+        return n.strip()
+
+    vendor_norm = _normalize_name(company_name) if company_name else ""
+    vendor_uen_norm = (uen or "").strip().upper()
+
     top_suppliers = sorted(
         [
             {
@@ -115,6 +126,8 @@ def _get_signals(db, sector: str, days: int = 90) -> dict:
             }
             for k, v in supplier_wins.items()
             if k != "Undisclosed"
+            and (_normalize_name(k) != vendor_norm if vendor_norm else True)
+            # UEN is not in supplier_wins dict easily, but if we had it we'd check it.
         ],
         key=lambda x: x["wins"],
         reverse=True,
@@ -311,8 +324,13 @@ async def generate_and_deliver_competitor_signals(
     from app.services.email_service import EmailService
     from datetime import datetime
 
+    from app.core.models import User
+    
     sector = _sector_for_vendor(db, vendor_id)
-    signals = _get_signals(db, sector, days=90)
+    profile = db.query(User).filter(User.id == str(vendor_id)).first()
+    c_uen = profile.uen if profile else None
+    
+    signals = _get_signals(db, sector, days=90, company_name=company_name, uen=c_uen)
     month_label = datetime.now(timezone.utc).strftime("%B %Y")
 
     # Generate PDF

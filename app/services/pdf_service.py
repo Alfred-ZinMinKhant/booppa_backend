@@ -115,10 +115,10 @@ def _finding_key_from(f: dict) -> str | None:
     web report agree on which precedent attaches to which finding.
     """
     import re as _re
-    check = (f.get("check_id") or f.get("type") or f.get("title") or "").lower()
+    check = f"{f.get('check_id') or ''}_{f.get('type') or ''}_{f.get('title') or ''}".lower().strip("_")
     if not check:
         return None
-    slug = _re.sub(r"[^\w]+", "_", check).strip("_")[:64]
+    slug = _re.sub(r"[^\w]+", "_", check).strip("_")[:128]
     if not slug:
         return None
 
@@ -1600,6 +1600,13 @@ class PDFService:
             # ── Cover ──────────────────────────────────────────────────────
             company = report_data.get("company_name") or "Vendor Report"
             framework = (report_data.get("framework") or "").replace("_", " ").title()
+            # If this is the monthly PDPA Monitor scan, brand it distinctly
+            assessment_data = report_data.get("assessment_data") or {}
+            if framework.lower() == "pdpa quick scan" and assessment_data.get("triggered_by") == "pdpa_monitor_monthly":
+                framework = "PDPA Monitor"
+            elif framework.lower() == "pdpa quick scan":
+                # Align with other components that now call the one-time scan 'Snapshot'
+                framework = "PDPA Snapshot"
 
             story.append(Spacer(1, 0.25 * inch))
 

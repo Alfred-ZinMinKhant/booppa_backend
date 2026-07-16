@@ -178,12 +178,25 @@ def _compute_raw_probability(
     risk_signal: str,
     value_fit_mult: float = 1.0,
     deadline_mult: float = 1.0,
+    has_agency_affinity: bool = False,
+    pdpa_score: Optional[int] = None,
     tender_no: str = "",
 ) -> float:
     p_mult  = PROFILE_MULT.get(verification_depth, 0.50)
     s_mult  = _sector_mult(sector_percentile)
     e_mult  = _evidence_mult(evidence_count)
     r_pen   = RISK_PENALTY.get(risk_signal, 1.0)
+    
+    agency_mult = 1.15 if has_agency_affinity else 1.00
+    
+    pdpa_mult = 1.00
+    if pdpa_score is not None:
+        if pdpa_score >= 70:
+            pdpa_mult = 1.10
+        elif pdpa_score >= 40:
+            pdpa_mult = 1.00
+        else:
+            pdpa_mult = 0.85
 
     # NOTE: no synthetic per-tender "noise" multiplier. GeBIZ does not publish a
     # value for live open tenders, so the only honest per-tender signals are the
@@ -192,7 +205,7 @@ def _compute_raw_probability(
     # fabricating a ±5% hash jitter presented distinct-looking precise numbers
     # that read as a bug. Differentiation is surfaced qualitatively via the
     # win-likelihood tier and the BID/WATCH/PASS classifier instead.
-    raw     = base_rate * p_mult * s_mult * e_mult * r_pen * value_fit_mult * deadline_mult
+    raw     = base_rate * p_mult * s_mult * e_mult * r_pen * value_fit_mult * deadline_mult * agency_mult * pdpa_mult
     return min(raw, MAX_PROBABILITY)
 
 
@@ -214,6 +227,8 @@ def _build_gap_reasons(
     sector_percentile: float,
     evidence_count: int,
     risk_signal: str,
+    has_agency_affinity: bool = False,
+    pdpa_score: Optional[int] = None,
 ) -> list[str]:
     reasons: list[str] = []
 
@@ -235,9 +250,24 @@ def _build_gap_reasons(
         reasons.append(
             f"Open risk signal ({risk_signal}) detected — resolve anomalies to restore full credibility"
         )
+        
+    if pdpa_score is not None and pdpa_score < 70:
+        reasons.append(
+            f"PDPA compliance score is {pdpa_score}/100 — public sector mandates strictly prefer verified compliance readiness"
+        )
+    elif pdpa_score is None:
+        reasons.append(
+            "No PDPA compliance scan on file — government tenders heavily prioritize data protection readiness"
+        )
+        
+    if not has_agency_affinity:
+        reasons.append(
+            "No demonstrated track record with this specific procuring agency"
+        )
+
     if not reasons:
         reasons.append(
-            "Profile is competitive — continue maintaining evidence and monitoring cadence"
+            "Profile is highly competitive — you have strong agency affinity, robust compliance, and verified evidence"
         )
 
     return reasons
@@ -372,9 +402,15 @@ def compute_tender_win_probability(
     except Exception as e:
         logger.warning(f"[TenderService] Could not load GebizTender {tender_no} for scoring: {e}")
 
-    vendor_typical_value = _vendor_typical_award_value(db, vendor_id) if vendor_id else None
+    vendor_typical_value, has_agency_affinity = _vendor_history_metrics(db, vendor_id, tender.agency) if vendor_id else (None, False)
     value_fit_mult = _value_fit_mult(tender_value, vendor_typical_value)
     deadline_mult  = _deadline_comfort_mult(closing_date)
+    
+    # ── PDPA / Compliance signal ──────────────────────────────────────────────
+    pdpa_score = None
+    if vendor_id:
+        from app.services.pdpa_findings import latest_pdpa_score
+        pdpa_score = latest_pdpa_score(db, vendor_id)
 
     # ── Current probability ───────────────────────────────────────────────────
     current_prob = _compute_raw_probability(
@@ -385,6 +421,8 @@ def compute_tender_win_probability(
         risk_signal,
         value_fit_mult,
         deadline_mult,
+        has_agency_affinity=has_agency_affinity,
+        pdpa_score=pdpa_score,
         tender_no=tender.tender_no,
     )
 
@@ -399,6 +437,8 @@ def compute_tender_win_probability(
         risk_signal,
         value_fit_mult,
         deadline_mult,
+        has_agency_affinity=has_agency_affinity,
+        pdpa_score=pdpa_score,
         tender_no=tender.tender_no,
     )
     complete_prob = _compute_raw_probability(
@@ -409,6 +449,8 @@ def compute_tender_win_probability(
         risk_signal,
         value_fit_mult,
         deadline_mult,
+        has_agency_affinity=has_agency_affinity,
+        pdpa_score=pdpa_score,
         tender_no=tender.tender_no,
     )
 
@@ -417,7 +459,7 @@ def compute_tender_win_probability(
 
     # ── Gap reasons ───────────────────────────────────────────────────────────
     gap_reasons = _build_gap_reasons(
-        verification_depth, sector_percentile, evidence_count, risk_signal
+        verification_depth, sector_percentile, evidence_count, risk_signal, has_agency_affinity, pdpa_score
     )
     if deadline_mult < 1.0 and closing_date:
         days = (
@@ -503,36 +545,45 @@ def max_depth(a: str, b: str) -> str:
     return _RANK_DEPTH[max(_DEPTH_RANK.get(a, 0), _DEPTH_RANK.get(b, 0))]
 
 
-def _vendor_typical_award_value(db: Session, vendor_id: Optional[str]) -> Optional[float]:
-    """Best-effort estimate of the vendor's demonstrated contract-value range.
+def _vendor_history_metrics(db: Session, vendor_id: Optional[str], agency_name: str) -> tuple[Optional[float], bool]:
+    """Best-effort estimate of the vendor's demonstrated contract-value range and agency affinity.
 
-    Averages the vendor's own GeBIZ award amounts, matched by company name
-    against ``GebizAwardHistory.supplier_name``. Returns ``None`` when the vendor
-    has no company name or no matched awards — callers then fall back to the
-    absolute-size value-fit curve. Purely best-effort: any failure yields None.
+    Averages the vendor's own GeBIZ award amounts, matched by company name, and checks if they
+    have previously won tenders from the specified agency.
     """
     if not vendor_id:
-        return None
+        return None, False
     try:
         from app.core.models import User
         from app.core.models import GebizAwardHistory
-        from sqlalchemy import func
 
         user = db.query(User).filter(User.id == vendor_id).first()
         company = (user.company if user else None) or ""
-        company = company.strip()
-        if len(company) < 3:
-            return None
+        name_clean = company.split(" PTE")[0].split(" LTD")[0].strip()
+        if len(name_clean) < 3:
+            return None, False
 
-        avg_amt = (
-            db.query(func.avg(GebizAwardHistory.award_amt))
-            .filter(
-                GebizAwardHistory.supplier_name.ilike(f"%{company}%"),
-                GebizAwardHistory.award_amt.isnot(None),
-            )
-            .scalar()
+        awards = (
+            db.query(GebizAwardHistory)
+            .filter(GebizAwardHistory.supplier_name.ilike(f"%{name_clean}%"))
+            .all()
         )
-        return float(avg_amt) if avg_amt else None
+        if not awards:
+            return None, False
+            
+        total_amt = 0.0
+        count = 0
+        has_affinity = False
+        
+        for a in awards:
+            if a.award_amt is not None:
+                total_amt += float(a.award_amt)
+                count += 1
+            if agency_name and a.procuring_entity and agency_name.lower() in a.procuring_entity.lower():
+                has_affinity = True
+                
+        avg_amt = (total_amt / count) if count > 0 else None
+        return avg_amt, has_affinity
     except Exception as e:
-        logger.warning(f"[TenderService] Could not derive typical award value for {vendor_id}: {e}")
-        return None
+        logger.warning(f"[TenderService] Could not derive history metrics for {vendor_id}: {e}")
+        return None, False

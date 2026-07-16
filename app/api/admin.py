@@ -4,7 +4,8 @@ from fastapi import (
     File as FastAPIFile,
 )
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from app.core.validators import validate_name_field
 from typing import List, Optional
 from app.core.db import SessionLocal
 from app.core.repositories.user_repository import UserRepository
@@ -717,6 +718,15 @@ class SimulatePurchaseRequest(BaseModel):
         "DiscoveredVendor registry match + live ACRA lookup on the certificate.",
     )
     rfp_description: Optional[str] = Field(default=None)
+
+    @field_validator("company_name", mode="before")
+    @classmethod
+    def validate_names(cls, v):
+        # Allow default "Booppa QA" to pass through unflagged since it's an explicit default
+        # for admin test simulation, but reject purely obvious placeholders.
+        if v == "Booppa QA":
+            return v
+        return validate_name_field(v)
 
 
 @router.post("/simulate-purchase")

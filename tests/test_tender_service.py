@@ -165,7 +165,7 @@ class TestGapReasons:
         assert any("FLAGGED" in r for r in reasons)
 
     def test_strong_profile_returns_positive_reason(self):
-        reasons = _build_gap_reasons("CERTIFIED", 80, 6, "CLEAN")
+        reasons = _build_gap_reasons("CERTIFIED", 80, 6, "CLEAN", has_agency_affinity=True, pdpa_score=85)
         assert len(reasons) == 1
         assert "competitive" in reasons[0].lower()
 

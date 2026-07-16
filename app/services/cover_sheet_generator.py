@@ -634,7 +634,10 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
             c_at = scan_scope.get("completed_at", "")[:19].replace("T", " ") if scan_scope.get("completed_at") else "—"
             scope_rows.append(("Scan window (UTC)", f"{s_at} → {c_at}"))
         if scan_scope.get("ssl_grade"):
-            ssl_str = f"Grade {scan_scope['ssl_grade']}"
+            grade_val = scan_scope['ssl_grade']
+            if isinstance(grade_val, dict):
+                grade_val = grade_val.get("grade", "")
+            ssl_str = f"Grade {grade_val}"
             if scan_scope.get("ssl_grade_checked_at"):
                 ssl_str += f" (checked {scan_scope['ssl_grade_checked_at'][:10]})"
             scope_rows.append(("SSL Labs", ssl_str))

@@ -449,11 +449,17 @@ async def upload_evidence(
 
 # ── Profile Management ────────────────────────────────────────────────────────
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+from app.core.validators import validate_name_field
 
 class ProfileUpdate(BaseModel):
     company: Optional[str] = None
     industry: Optional[str] = None
+
+    @field_validator("company", mode="before")
+    @classmethod
+    def validate_names(cls, v):
+        return validate_name_field(v)
 
 @router.get("/profile")
 async def get_profile(current_user=Depends(get_current_user)):
