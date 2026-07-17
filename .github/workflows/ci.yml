@@ -252,10 +252,20 @@ jobs:
       # via Dockerfile.worker (FROM the freshly-built booppa-app:<sha>). The
       # worker/beat services are internal-only, so their Chromium CVE surface is
       # deliberately kept off the Trivy gate above (which scans booppa-app only).
-      - name: Ensure worker ECR repo exists
+      # The CI OIDC role has ECR *push* perms for existing repos but NOT
+      # ecr:CreateRepository (and not reliably ecr:DescribeRepositories). The
+      # booppa-worker repo is provisioned once out-of-band (Console/Terraform),
+      # exactly like booppa-app — CI must not try to create it. We do a
+      # best-effort existence check purely for a helpful log line and NEVER fail
+      # the job on it; the "Build & push worker image" step below is the real
+      # gate (it succeeds if the repo exists, errors clearly if it does not).
+      - name: Check worker ECR repo (non-fatal)
         run: |
-          aws ecr describe-repositories --repository-names "$WORKER_ECR_REPO" --region "$AWS_REGION" >/dev/null 2>&1 \
-            || aws ecr create-repository --repository-name "$WORKER_ECR_REPO" --region "$AWS_REGION"
+          if aws ecr describe-repositories --repository-names "$WORKER_ECR_REPO" --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "ECR repo $WORKER_ECR_REPO present."
+          else
+            echo "::warning::Could not confirm ECR repo $WORKER_ECR_REPO (it may be missing, or ecr:DescribeRepositories is not granted). If the next push fails with 'repository does not exist', create it once in the Console/CLI: aws ecr create-repository --repository-name $WORKER_ECR_REPO --region $AWS_REGION"
+          fi
 
       - name: Build & push worker image
         uses: docker/build-push-action@v6
