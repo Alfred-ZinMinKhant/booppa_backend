@@ -200,22 +200,36 @@ jobs:
 
       # Container vulnerability scan on the freshly-pushed app image. Fails the
       # deploy on fixable HIGH/CRITICAL CVEs; ignore-unfixed keeps it actionable.
-      - name: Scan app image (Trivy)
-        uses: aquasecurity/trivy-action@v0.33.1
-        # setup-trivy downloads the Trivy binary from GitHub releases; without a
-        # token those API/asset calls are unauthenticated (60 req/hr, shared
-        # across the runner IP pool) and intermittently 403-rate-limit, killing
-        # the install with a bare "exit code 1". Authenticating lifts it to
-        # 5000 req/hr. Also skip the online DB pull rate-limit the same way.
+      #
+      # We install Trivy via its official install.sh rather than the
+      # aquasecurity/trivy-action wrapper: that action's setup-trivy Node
+      # installer reproducibly dies with a bare "exit code 1" installing the
+      # v0.65.0 binary (fails after "found version", even with GITHUB_TOKEN set,
+      # so it is not rate limiting — it is a bug in the action's install path).
+      # install.sh is the vendor-supported path and pins the binary version.
+      # The image is pulled from ECR using the docker login credentials already
+      # written to ~/.docker/config.json by the "Login to ECR" step above.
+      - name: Install Trivy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          image-ref: ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}
-          format: table
-          exit-code: '1'
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          vuln-type: os,library
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin v0.65.0
+          trivy --version
+
+      - name: Scan app image (Trivy)
+        env:
+          # Authenticates the vulnerability-DB pull from ghcr.io (avoids the
+          # anonymous ghcr rate limit) and any GitHub API calls Trivy makes.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          trivy image \
+            --format table \
+            --exit-code 1 \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --vuln-type os,library \
+            "${ECR_REGISTRY}/${APP_ECR_REPO}:${GITHUB_SHA}"
 
       # Worker image = the scanned app image + Chromium/Playwright, layered on
       # via Dockerfile.worker (FROM the freshly-built booppa-app:<sha>). The
