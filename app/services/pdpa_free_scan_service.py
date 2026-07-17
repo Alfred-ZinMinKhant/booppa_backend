@@ -399,7 +399,11 @@ def run_free_scan(website_url: str) -> dict[str, Any]:
     # If a loading/splash screen is detected, wait and retry (some sites show
     # animated intros with logos for 10-30s before rendering real content).
     try:
-        with httpx.Client(timeout=TIMEOUT, follow_redirects=True, verify=False) as client:
+        # verify=False is intentional: this scanner fetches arbitrary customer
+        # sites (many SMEs run expired/self-signed certs) and only reads public
+        # HTML — no credentials or PII are sent, so a broken cert must not abort
+        # the compliance scan. MITM risk is limited to tampered public markup.
+        with httpx.Client(timeout=TIMEOUT, follow_redirects=True, verify=False) as client:  # nosec B501
             # First attempt with browser-like headers (avoids 403 from WAFs)
             resp = client.get(website_url, headers=_BROWSER_HEADERS)
 

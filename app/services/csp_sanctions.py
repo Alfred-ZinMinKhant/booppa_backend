@@ -31,7 +31,7 @@ import json
 import logging
 import os
 import re
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET  # hardened parser; blocks XXE/billion-laughs on untrusted sanctions feeds
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional

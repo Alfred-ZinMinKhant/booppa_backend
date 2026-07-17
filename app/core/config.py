@@ -6,7 +6,7 @@ import os
 class Settings(BaseSettings):
     # Application
     SECRET_KEY: str = "change-me-in-production"
-    APP_HOST: str = "0.0.0.0"
+    APP_HOST: str = "0.0.0.0"  # nosec B104 — intentional bind-all inside the ECS container (traffic fronted by the Cloudflare Tunnel)
     APP_PORT: int = 8000
     LOG_LEVEL: str = "INFO"
     ENVIRONMENT: str = "production"

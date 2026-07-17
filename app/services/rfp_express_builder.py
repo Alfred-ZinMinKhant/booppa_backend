@@ -635,7 +635,7 @@ class RFPExpressBuilder:
 
         # v3: invalidates pre-same-site-guard scrapes that cached a foreign
         # (e.g. policies.google.com) privacy-policy URL.
-        cache_key = cache_mod.cache_key(f"rfp_scrape_v3:{hashlib.md5(vendor_url.encode()).hexdigest()}")
+        cache_key = cache_mod.cache_key(f"rfp_scrape_v3:{hashlib.md5(vendor_url.encode(), usedforsecurity=False).hexdigest()}")
         cached = cache_mod.get(cache_key)
         if cached and isinstance(cached, dict) and "text" in cached:
             return cached

@@ -804,8 +804,10 @@ class PDFService:
 
     def _pdpa_warning_block(self, report_data: dict) -> list:
         prefill = report_data.get("contact_email") or ""
-        host = getattr(settings, "APP_HOST", "0.0.0.0")
-        if host in ("0.0.0.0", ""):
+        # Not a socket bind — these literals guard against emitting a bind-all
+        # address into a user-facing URL, rewriting it to localhost.
+        host = getattr(settings, "APP_HOST", "0.0.0.0")  # nosec B104
+        if host in ("0.0.0.0", ""):  # nosec B104
             host = "localhost"
         default_base = f"http://{host}:{getattr(settings, 'APP_PORT', '8000')}"
         base = (

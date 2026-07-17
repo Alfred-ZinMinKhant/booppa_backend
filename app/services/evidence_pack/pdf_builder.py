@@ -678,12 +678,15 @@ def build_single_pdf(pack: dict, doc_type: str, output_path: str) -> str:
     return buf.getvalue()
 
 
-def build_evidence_pack_pdfs(pack: dict, output_dir: str = "/tmp") -> dict:
+def build_evidence_pack_pdfs(pack: dict, output_dir: str | None = None) -> dict:
     """
     Build all 7 PDFs for an Evidence Pack.
     Returns dict of {doc_type: file_path}.
     """
     import os
+    import tempfile
+    if output_dir is None:
+        output_dir = tempfile.gettempdir()
     os.makedirs(output_dir, exist_ok=True)
 
     paths = {}
