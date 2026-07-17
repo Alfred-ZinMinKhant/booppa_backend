@@ -181,6 +181,18 @@ jobs:
         run: |
           aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
 
+      # Public ECR is a SEPARATE registry from the private one above and is
+      # rate-limited per client IP for anonymous pulls. GitHub-hosted runners
+      # share egress IPs, so the anonymous pull of the Trivy scanner image
+      # (public.ecr.aws/aquasecurity/trivy) intermittently fails with
+      # "toomanyrequests: Rate exceeded" (docker exit 125). Authenticating lifts
+      # the limit. Public ECR only serves auth tokens from us-east-1, regardless
+      # of $AWS_REGION. This writes a public.ecr.aws entry into the same
+      # ~/.docker/config.json used by the Trivy step below.
+      - name: Login to public ECR (for Trivy scanner image)
+        run: |
+          aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
