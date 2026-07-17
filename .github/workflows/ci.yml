@@ -202,6 +202,13 @@ jobs:
       # deploy on fixable HIGH/CRITICAL CVEs; ignore-unfixed keeps it actionable.
       - name: Scan app image (Trivy)
         uses: aquasecurity/trivy-action@v0.33.1
+        # setup-trivy downloads the Trivy binary from GitHub releases; without a
+        # token those API/asset calls are unauthenticated (60 req/hr, shared
+        # across the runner IP pool) and intermittently 403-rate-limit, killing
+        # the install with a bare "exit code 1". Authenticating lifts it to
+        # 5000 req/hr. Also skip the online DB pull rate-limit the same way.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           image-ref: ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}
           format: table
