@@ -1335,7 +1335,7 @@ class PDFService:
                 Paragraph(dim_name, s["Body"]),
                 Paragraph(score_html, s["Body"]),
                 Paragraph(status_html, s["Body"]),
-                Paragraph(dim_note, s["Body"]),
+                Paragraph(_pdf_escape(dim_note), s["Body"]),
             ])
 
         # Overall score row
@@ -1581,7 +1581,26 @@ class PDFService:
                 report_data.get("product_type") or ""
             ).startswith("rfp_")
 
-            report_type_label = (report_data.get("framework") or "AUDIT REPORT").upper().replace("_", " ")
+            # Resolve the display label once so the running header band and the
+            # cover subtitle can't diverge. A PDPA scan is branded by its trigger
+            # source (assessment_data["triggered_by"]): a PDPA Monitor rescan reads
+            # "PDPA Monitor", every other pdpa_quick_scan (one-time buy, Vendor Pro
+            # quarterly snapshot) reads "PDPA Snapshot".
+            _assessment_data = report_data.get("assessment_data") or {}
+            _triggered_by = str(_assessment_data.get("triggered_by") or "")
+            if framework_raw in {"PDPA", "PDPA_QUICK_SCAN"}:
+                if _triggered_by.startswith("pdpa_monitor"):
+                    pdpa_display_label = "PDPA Monitor"
+                else:
+                    pdpa_display_label = "PDPA Snapshot"
+            else:
+                pdpa_display_label = None
+
+            report_type_label = (
+                pdpa_display_label.upper()
+                if pdpa_display_label
+                else (report_data.get("framework") or "AUDIT REPORT").upper().replace("_", " ")
+            )
 
             doc = get_booppa_doc_template(
                 buffer=buffer,
@@ -1599,14 +1618,12 @@ class PDFService:
 
             # ── Cover ──────────────────────────────────────────────────────
             company = report_data.get("company_name") or "Vendor Report"
-            framework = (report_data.get("framework") or "").replace("_", " ").title()
-            # If this is the monthly PDPA Monitor scan, brand it distinctly
-            assessment_data = report_data.get("assessment_data") or {}
-            if framework.lower() == "pdpa quick scan" and assessment_data.get("triggered_by") == "pdpa_monitor_monthly":
-                framework = "PDPA Monitor"
-            elif framework.lower() == "pdpa quick scan":
-                # Align with other components that now call the one-time scan 'Snapshot'
-                framework = "PDPA Snapshot"
+            # Cover subtitle uses the same resolved label as the header band above
+            # (pdpa_display_label), so a PDPA Monitor deliverable is never rendered
+            # as a plain "Pdpa Quick Scan".
+            framework = pdpa_display_label or (
+                report_data.get("framework") or ""
+            ).replace("_", " ").title()
 
             story.append(Spacer(1, 0.25 * inch))
 
@@ -1619,9 +1636,9 @@ class PDFService:
                 except Exception:
                     pass
 
-            story.append(Paragraph(company, s["CoverTitle"]))
+            story.append(Paragraph(_pdf_escape(company), s["CoverTitle"]))
             story.append(
-                Paragraph(framework or "Compliance Audit Report", s["CoverSub"])
+                Paragraph(_pdf_escape(framework or "Compliance Audit Report"), s["CoverSub"])
             )
             story.append(Spacer(1, 0.1 * inch))
             story.append(
@@ -1791,7 +1808,7 @@ class PDFService:
                 story.append(self._section_header("2. Context & Purpose of This Document"))
                 story.append(Spacer(1, 6))
                 story.append(Paragraph(
-                    f"This document summarises a PDPA Snapshot compliance audit performed by Booppa on the "
+                    f"This document summarises a {pdpa_display_label or 'PDPA Snapshot'} compliance audit performed by Booppa on the "
                     f"{company_name} website, translated into English and enriched with developer implementation tasks. "
                     f"It is intended to be forwarded directly to the development team.",
                     s["Body"],

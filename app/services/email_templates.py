@@ -126,7 +126,7 @@ def get_vendor_proof_activated_html(company_name: str, vp_score_display: str, vp
     cert_text = ("<p style='margin:20px 0 0;color:#475569;font-size:13px;'>Your Vendor Proof certificate (valid until " + _vp_expires_display + ") is <strong>attached to this email as a PDF</strong>." + ("<br>You can also <a href='" + cert_url + "'>download it here</a>." if cert_url else "") + "</p>") if cert_pdf else ""
     inner = f"""
       <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Vendor Proof Activated</h2>
-      <p {_P}>Hello <strong>{company_name}</strong>,</p>
+      <p {_P}>Hello <strong>{_html.escape(company_name or "there")}</strong>,</p>
       <p {_P}>Your Vendor Proof is now <strong style="color:#10b981;">active</strong>. You are now visible to procurement officers who filter by verified vendors on the BOOPPA platform.</p>
       <h3 style="color:#0f172a;font-size:16px;margin:0 0 8px;">What changed on your profile</h3>
       <ul style="font-size:14px;color:#334155;line-height:1.6;padding-left:20px;margin:0 0 16px;">
@@ -164,8 +164,8 @@ def get_vendor_proof_activated_html(company_name: str, vp_score_display: str, vp
 def get_pdpa_snapshot_ready_html(company_name: str, website_url: str, _email_compliance: int, report_id: str, download_section: str) -> str:
     inner = f"""
       <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Your PDPA Snapshot is Ready</h2>
-      <p {_P}>Hello <strong>{company_name}</strong>,</p>
-      <p {_P}>Your PDPA Snapshot report for <strong>{website_url}</strong> has been generated.</p>
+      <p {_P}>Hello <strong>{_html.escape(company_name or "there")}</strong>,</p>
+      <p {_P}>Your PDPA Snapshot report for <strong>{_html.escape(website_url or "")}</strong> has been generated.</p>
       <p {_P}>The report evaluates your compliance across 8 PDPA dimensions — consent, data flow,
          DSAR procedures, breach notification, retention, third-party processors, DPO, and
          privacy notice — and provides specific recommendations with legislative references.</p>

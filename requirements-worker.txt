@@ -1,0 +1,12 @@
+# Worker-only dependencies — layered on top of the shared base requirements.
+#
+# Playwright (and the Node.js driver bundled inside its wheel) lives ONLY in the
+# worker image. The worker runs the PDPA Quick Scan cookie-banner detection
+# (app/workers/tasks.py) and fulfillment screenshot capture
+# (app/services/fulfillment/single_products.py), which want local Chromium for
+# quality. The public-facing app image omits Playwright so the CI Trivy gate
+# (which scans booppa-app only) stays clear of the Chromium/Node CVE surface.
+#
+# Keep the pin in sync with the version that used to sit in requirements.txt.
+-r requirements.txt
+playwright==1.40.0

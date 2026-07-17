@@ -210,7 +210,14 @@ async def _defer_rfp_to_intake(
     except Exception as e:
         logger.error(f"[RFP-defer:{rfp_product_type}] DB error: {e}")
         db.rollback()
-        return None
+        await _alert_payment_fulfillment_issue(
+            reason=f"RFP defer-to-intake DB error: {type(e).__name__}: {e}",
+            product_type=rfp_product_type,
+            customer_email=customer_email,
+            session_id=session_id,
+            extra={"bundle_source": bundle_source}
+        )
+        raise
     finally:
         db.close()
 
@@ -605,7 +612,23 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
         logger.info(f"[Notarize] Fulfilled {report_id}: tx={tx_hash} pdf={pdf_url}")
         _maybe_fire_cover_sheet(contact_email, user_id=vendor_id)
     except Exception as e:
+        # A failure in the core steps (commit/anchor/upload) previously only logged
+        # and returned, so the buyer paid, no certificate email went out, the Celery
+        # task saw "success" and never retried, and nobody was alerted — a silent
+        # paid-but-unfulfilled notarization. Mirror the Vendor Proof handler: roll
+        # back, page support, and re-raise so `fulfill_notarization_task` retries.
         logger.error(f"[Notarize] Fulfillment error for {report_id}: {e}")
+        db.rollback()
+        try:
+            await _alert_payment_fulfillment_issue(
+                reason=f"Notarization fulfillment raised before delivery: {e}",
+                product_type="compliance_notarization_1",
+                customer_email=customer_email,
+                extra={"report_id": report_id},
+            )
+        except Exception as _alert_err:
+            logger.error(f"[Notarize] Alert dispatch failed for {report_id}: {_alert_err}")
+        raise
     finally:
         db.close()
 
@@ -786,7 +809,22 @@ async def _fulfill_rfp_package(
         # into a success like the generic handler below.
         raise
     except Exception as e:
+        # Any other failure (scrape/AI/S3/DB) previously logged and returned, so
+        # fulfill_rfp_task saw "success" and never retried. If the failure preceded
+        # the rfp_result cache write, the result page polls "Generating…" forever
+        # and — for Evidence Pack bundles — the cover sheet never fires. Page
+        # support and re-raise so the task retries instead of silently dropping the kit.
         logger.error(f"RFP fulfillment failed for vendor {vendor_id}: {e}")
+        try:
+            await _alert_payment_fulfillment_issue(
+                reason=f"RFP kit fulfillment raised before delivery: {e}",
+                product_type="rfp_complete",
+                customer_email=vendor_email,
+                extra={"vendor_id": str(vendor_id)},
+            )
+        except Exception as _alert_err:
+            logger.error(f"[RFP] Alert dispatch failed for vendor {vendor_id}: {_alert_err}")
+        raise
     finally:
         db.close()
 
@@ -1386,7 +1424,7 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
                     db.commit()
                     process_report_task.apply_async(
                         args=[str(report.id)],
-                        link=fulfill_pdpa_task.si(str(report.id), customer_email),
+                        link=fulfill_pdpa_task.si(str(report.id), customer_email, send_email),
                     )
                     logger.info(
                         f"[PDPA] Chained scan→fulfillment for {report_id} (risk_score missing)"
@@ -1414,6 +1452,12 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
             pdf_data = {
                 "report_id": report_id,
                 "framework": report.framework or "pdpa_quick_scan",
+                # Carry the scan's assessment_data so the PDF can brand itself by
+                # trigger source (assessment_data["triggered_by"]) — e.g. a PDPA
+                # Monitor rescan renders "PDPA Monitor" instead of a plain Quick
+                # Scan. Without this key the branding block in generate_pdf can
+                # never fire.
+                "assessment_data": assessment,
                 "company_name": company_name,
                 "company_url": website_url,
                 "created_at": (
@@ -1590,6 +1634,13 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
     except Exception as e:
         logger.error(f"[PDPA] Fulfillment error for {report_id}: {e}")
         db.rollback()
+        await _alert_payment_fulfillment_issue(
+            reason=f"PDPA fulfillment raised exception: {type(e).__name__}: {e}",
+            product_type="pdpa_quick_scan",
+            customer_email=customer_email,
+            extra={"report_id": report_id}
+        )
+        raise
     finally:
         db.close()
 

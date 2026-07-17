@@ -32,8 +32,54 @@ def test_pdpa_quick_scan_pdf_has_company_and_framework():
     text = "\n".join(p.extract_text() or "" for p in reader.pages)
 
     assert "Acme Test Co" in text
-    # Framework label is rendered title-cased ("Pdpa Quick Scan") on the cover.
-    assert "Pdpa Quick Scan" in text or "PDPA QUICK SCAN" in text.upper()
+    # A one-time PDPA scan (no Monitor trigger source) is branded "PDPA Snapshot"
+    # on both the cover subtitle and the running header band — never a plain
+    # "Quick Scan". A Monitor rescan (triggered_by=pdpa_monitor_*) reads "PDPA Monitor".
+    assert "PDPA SNAPSHOT" in text.upper()
+    assert "QUICK SCAN" not in text.upper()
+
+
+@pytest.mark.parametrize(
+    "triggered_by, expect_label",
+    [
+        ("pdpa_monitor_monthly", "PDPA MONITOR"),
+        ("pdpa_monitor_annual", "PDPA MONITOR"),
+        ("vendor_pro", "PDPA SNAPSHOT"),
+        (None, "PDPA SNAPSHOT"),
+    ],
+)
+def test_pdpa_pdf_branding_by_trigger_source(triggered_by, expect_label):
+    """The underlying pdpa_quick_scan PDF is branded by its trigger source so a
+    PDPA Monitor subscriber's deliverable never reads as a plain Quick Scan, and
+    a Vendor Pro / one-time scan is not mislabeled as Monitor. Regression guard
+    for the billing-integrity report: assessment_data['triggered_by'] must reach
+    the PDF (single_products._fulfill_pdpa) and drive both the cover subtitle and
+    the running header band (pdf_service.generate_pdf)."""
+    from app.services.pdf_service import PDFService
+    from pypdf import PdfReader
+
+    data = {
+        "framework": "pdpa_quick_scan",
+        "company_name": "Acme Test Co",
+        "created_at": "2026-05-24T12:00:00Z",
+        "risk_score": 42,
+        "findings": [],
+    }
+    if triggered_by is not None:
+        data["assessment_data"] = {"triggered_by": triggered_by}
+
+    pdf_bytes = PDFService().generate_pdf(data)
+    text = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf_bytes)).pages).upper()
+
+    # The deliverable's label surfaces (cover subtitle + running header band)
+    # carry expect_label; a plain "Quick Scan" must never appear.
+    assert expect_label in text
+    assert "QUICK SCAN" not in text
+    # A non-Monitor scan must never be branded "PDPA Monitor". (The reverse isn't
+    # asserted: a Monitor PDF legitimately uses the word "snapshot" in generic
+    # descriptive prose, e.g. "this snapshot has the following limitations".)
+    if expect_label != "PDPA MONITOR":
+        assert "PDPA MONITOR" not in text
 
 
 def test_compliance_score_table_stashes_overall_for_persistence():

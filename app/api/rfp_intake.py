@@ -89,6 +89,13 @@ def list_kits(
         .limit(50)
         .all()
     )
+    # Re-presign stored S3 links: the presigned URLs saved at generation time
+    # expire when the signing STS credentials rotate (~hours on ECS roles), well
+    # before their 7-day TTL. Backend redirect routes (e.g. docx_url) parse as
+    # non-S3 and pass through unchanged.
+    from app.services.storage import S3Service
+    s3 = S3Service()
+
     items = []
     for r in rows:
         ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
@@ -100,10 +107,10 @@ def list_kits(
             "vendorUrl": r.company_website or ad.get("vendor_url"),
             "productType": r.framework,
             "createdAt": when.isoformat() if when else None,
-            "downloadUrl": r.s3_url or ad.get("download_url"),
-            "docxUrl": ad.get("docx_url"),
-            "declarationUrl": ad.get("declaration_url"),
-            "appendixDUrl": ad.get("appendix_d_url"),
+            "downloadUrl": s3.refresh_url(r.s3_url or ad.get("download_url") or ""),
+            "docxUrl": s3.refresh_url(ad.get("docx_url") or ""),
+            "declarationUrl": s3.refresh_url(ad.get("declaration_url") or ""),
+            "appendixDUrl": s3.refresh_url(ad.get("appendix_d_url") or ""),
         })
     return {"items": items}
 

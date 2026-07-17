@@ -21,5 +21,9 @@ echo "Starting Uvicorn"
 if [ "${ENVIRONMENT:-production}" = "development" ] || [ "${UVICORN_RELOAD:-0}" = "1" ]; then
   exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 else
-  exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+  # --proxy-headers + --forwarded-allow-ips "*" so the Cloudflare Tunnel's
+  # X-Forwarded-For is trusted; without this every request presents the tunnel
+  # origin IP and slowapi rate limiting becomes global instead of per-client.
+  exec uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+    --proxy-headers --forwarded-allow-ips "*"
 fi

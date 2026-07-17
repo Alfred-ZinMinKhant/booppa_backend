@@ -2022,7 +2022,7 @@ def fulfill_vendor_proof_task(self, report_id: str, customer_email: str | None =
 
 
 @celery_app.task(bind=True, max_retries=10, name="fulfill_pdpa_task")
-def fulfill_pdpa_task(self, report_id: str, customer_email: str | None = None):
+def fulfill_pdpa_task(self, report_id: str, customer_email: str | None = None, send_email: bool = True):
     """Celery task: generate PDPA PDF, update compliance score, write CertificateLog, send email.
 
     Fulfillment is chained to the scan (see `_fulfill_pdpa`), so this retry path is
@@ -2031,7 +2031,7 @@ def fulfill_pdpa_task(self, report_id: str, customer_email: str | None = None):
     """
     try:
         from app.services.fulfillment import fulfill_pdpa
-        asyncio.run(fulfill_pdpa(report_id=report_id, customer_email=customer_email, raise_if_incomplete=True))
+        asyncio.run(fulfill_pdpa(report_id=report_id, customer_email=customer_email, send_email=send_email, raise_if_incomplete=True))
         logger.info(f"PDPA snapshot fulfilled for report {report_id}")
     except Exception as exc:
         logger.error(f"PDPA fulfillment failed for {report_id}: {exc}")
@@ -3203,10 +3203,23 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
     """
     db = SessionLocal()
     try:
+        from datetime import datetime, timezone, timedelta
+        
+        # M3: Idempotency guard for monthly digests. Both the invoice webhook
+        # and the beat cron can trigger this in the same month.
+        if not is_first_cycle:
+            redis_client = celery_app.backend.client
+            if redis_client is not None:
+                now_month = datetime.now(timezone.utc).strftime("%Y-%m")
+                lock_key = f"vendor_active_digest:{vendor_id}:{now_month}"
+                # 28 days TTL so it doesn't leak forever but comfortably covers the month
+                if not redis_client.set(lock_key, "1", nx=True, ex=86400 * 28):
+                    logger.info(f"[VendorActive] Monthly digest already sent for {vendor_id} in {now_month}, skipping.")
+                    return
+
         from app.services.scoring import VendorScoreEngine
         from app.services.email_service import EmailService
         from app.core.models import VendorScore, User
-        from datetime import timedelta
 
         # 1. Recalculate score
         score_record = VendorScoreEngine.update_vendor_score(db, vendor_id)
@@ -3581,6 +3594,13 @@ def _buyer_tier_from_product(product_type: str | None) -> tuple[str, str]:
         return "enterprise", "Buyer Enterprise"
     if p.startswith("buyer_pro"):
         return "pro", "Buyer Professional"
+    # Grandfathered legacy premium buyer SKUs — retired but still active for
+    # existing subscribers. They carry enterprise-class access (see
+    # ENTERPRISE_PLAN_KEYS in app/billing/enforcement.py), so they must get the
+    # full premium digest (Procurement Report PDF) rather than falling through
+    # to Starter.
+    if p.startswith("verify_supplier_evidence") or p.startswith("evaluate_suppliers"):
+        return "enterprise", "Buyer Enterprise"
     return "starter", "Buyer Essentials"
 
 
@@ -4853,7 +4873,7 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
         # deliverable (distinct from the one-off Quick Scan). Short countdown so
         # the just-completed report is fully committed first.
         run_pdpa_monitor_report_for_user.apply_async(
-            args=[vendor_id, vendor_email], kwargs={"override_company": override_company},
+            args=[vendor_id, vendor_email], kwargs={"override_company": override_company, "report_id": str(stub.id)},
             countdown=60,
         )
 
@@ -5009,7 +5029,7 @@ def _pdpa_monitor_briefing_bullets(company, sector, findings, current_score, pre
 
 
 @celery_app.task(bind=True, max_retries=2, name="run_pdpa_monitor_report_for_user")
-def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | None = None, override_company: str | None = None):
+def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | None = None, override_company: str | None = None, report_id: str | None = None):
     """Generate + deliver the month-over-month PDPA Monitor Report PDF.
 
     This is the actual Monitor deliverable: a comparison of the two most recent
@@ -5037,22 +5057,42 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
         company = (override_company or "").strip() or (getattr(user, "company", "") or "").strip() or "Your Organisation"
         framework = "pdpa_quick_scan"
 
-        reports = (
-            db.query(Report)
-            .filter(
-                Report.owner_id == user.id,
-                Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
-                Report.status == "completed",
+        if report_id:
+            current = db.query(Report).get(report_id)
+            if not current or current.status != "completed":
+                logger.info("[MonitorReport] scan %s not completed yet, retrying...", report_id)
+                raise self.retry(countdown=30)
+            
+            reports = (
+                db.query(Report)
+                .filter(
+                    Report.owner_id == user.id,
+                    Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
+                    Report.status == "completed",
+                    Report.id != current.id
+                )
+                .order_by(Report.completed_at.desc().nullslast())
+                .limit(1)
+                .all()
             )
-            .order_by(Report.completed_at.desc().nullslast())
-            .limit(2)
-            .all()
-        )
-        if not reports:
-            logger.info("[MonitorReport] no completed PDPA report yet for %s — skipping", email)
-            return
-        current = reports[0]
-        previous = reports[1] if len(reports) > 1 else None
+            previous = reports[0] if reports else None
+        else:
+            reports = (
+                db.query(Report)
+                .filter(
+                    Report.owner_id == user.id,
+                    Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
+                    Report.status == "completed",
+                )
+                .order_by(Report.completed_at.desc().nullslast())
+                .limit(2)
+                .all()
+            )
+            if not reports:
+                logger.info("[MonitorReport] no completed PDPA report yet for %s — skipping", email)
+                return
+            current = reports[0]
+            previous = reports[1] if len(reports) > 1 else None
 
         def _compliance(r) -> int | None:
             ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
@@ -5702,7 +5742,7 @@ def run_vendor_pro_quarterly_pdpa_rescans():
         for user in subscribers:
             website = getattr(user, "website", "") or ""
             if user.email and website:
-                pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website)
+                pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website, source="vendor_pro")
                 queued += 1
         logger.info(f"[VendorProPDPA] Queued quarterly PDPA rescans for {queued}/{len(subscribers)} Vendor Pro subscribers")
     finally:
@@ -7298,9 +7338,21 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                 "Awards by month", ["Month", "Awards", "Value"], timing_rows_html)
             return sector_rows, agency_rows, extra
 
+        # Recipients come from the Subscription table (source of truth), not
+        # User.plan — _activate_subscription overwrites user.plan on any later
+        # purchase, so a plan-based filter silently drops an active Tender
+        # Intelligence subscriber who bought anything else. Mirror send_tender_alerts.
+        from app.core.models import Subscription as SubModel
+
+        active_subs = db.query(SubModel).filter(
+            SubModel.product_type.in_(list(TENDER_INTELLIGENCE_PLAN_KEYS)),
+            SubModel.status.in_(("active", "trialing")),
+        ).all()
+        tender_user_ids = {s.user_id for s in active_subs if s.user_id}
+
         sub_query = db.query(User).filter(
             User.is_active == True,  # noqa: E712
-            func.lower(User.plan).in_([p.lower() for p in TENDER_INTELLIGENCE_PLAN_KEYS]),
+            User.id.in_(tender_user_ids) if tender_user_ids else False,
         )
         if target_user_id:
             sub_query = sub_query.filter(User.id == target_user_id)
@@ -7309,7 +7361,7 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
             sub_query = sub_query.filter(
                 _anniversary_match_filter(User.subscription_anniversary_day)
             )
-        subscribers = sub_query.all()
+        subscribers = sub_query.all() if tender_user_ids else []
 
         # ── BID/WATCH/PASS — Block A (once per run) ──────────────────────────
         # Fetching of live tenders has been moved to Block B (inside the
@@ -8228,7 +8280,7 @@ def run_vendor_pro_activation_for_user(self, user_id: str, override_website: str
         # First PDPA rescan if a website is configured
         website = (override_website or "").strip() or (getattr(user, "website", "") or "").strip()
         if website:
-            pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website, override_company)
+            pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website, override_company, source="vendor_pro")
         else:
             logger.warning(
                 "[VendorProFirstCycle] %s has no website — PDPA scan skipped; will fire after profile update",

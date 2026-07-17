@@ -1,11 +1,11 @@
 # Core Dependencies
-setuptools==65.5.1
+setuptools==78.1.1
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
 pydantic-settings==2.1.0
 
-email-validator
+email-validator==2.3.0
 # Database
 sqlalchemy==2.0.45
 alembic==1.12.1
@@ -18,8 +18,9 @@ celery==5.3.4
 kombu==5.3.4
 
 # AWS Services
-boto3==1.34.0
-botocore==1.34.0
+boto3==1.40.0
+botocore==1.40.0
+urllib3==2.7.0        # pinned to clear decompression-bomb / redirect CVEs; botocore>=1.35 lifted the <2.1 cap
 
 # Blockchain
 web3==6.11.0
@@ -28,24 +29,24 @@ eth-account==0.8.0
 # PDF & QR Generation
 reportlab==4.0.4
 qrcode[pil]==7.4.2
-Pillow==10.4.0
+Pillow==12.2.0
 python-docx==1.2.0
 beautifulsoup4==4.12.3
-lxml==5.2.2
+lxml==6.1.0
 
 # AI Integration
 openai==1.3.0
 httpx==0.25.2
-stripe
+stripe==15.1.0
 
 # WebSockets
-python-socketio==5.11.0
+python-socketio==5.16.2
 
 # Security
-python-jose[cryptography]==3.3.0
+python-jose[cryptography]==3.4.0
 passlib[bcrypt]==1.7.4
 bcrypt>=3.2.0,<4.0.0
-cryptography==41.0.7
+cryptography==46.0.5
 jellyfish>=1.0.0          # fuzzy name matching for CSP sanctions screening
 slowapi==0.1.9
 # Enterprise SSO — SAML 2.0 (used by /api/v1/enterprise/sso/saml/*)
@@ -55,6 +56,8 @@ pysaml2==7.5.0
 opentelemetry-api==1.21.0
 opentelemetry-sdk==1.21.0
 prometheus-client==0.19.0
+# Error tracking — inert unless SENTRY_DSN is set (see app/main.py)
+sentry-sdk[fastapi]==1.45.0
 
 # Testing
 pytest==7.4.3
@@ -62,19 +65,23 @@ pytest-asyncio==0.21.1
 pytest-cov==4.1.0
 pytest-mock==3.12.0
 pypdf==4.3.1
-moto[s3,ses]==5.0.0
+moto[s3,ses]==5.1.4        # bumped from 5.0.0 for boto3/botocore 1.40 compat — 5.0.0's S3 mock truncated uploads from the newer client
 freezegun==1.5.1
 
 # Utilities
 feedparser==6.0.11
 python-dotenv==1.0.0
-python-multipart==0.0.6
+python-multipart==0.0.30
 python-dateutil==2.8.2
 greenlet==3.0.1
 
-# Browser automation for screenshots
-playwright
-django-ckeditor
+# Browser automation for screenshots.
+# NOTE: playwright is intentionally NOT here — it (and its bundled Node driver)
+# lives only in the worker image via requirements-worker.txt, so the public app
+# image stays free of the Chromium/Node CVE surface the CI Trivy gate scans.
+# The API screenshot path degrades to public providers when it is absent
+# (see app/services/screenshot_service.py).
+django-ckeditor==6.7.3
 mangum==0.17.0
-openpyxl
+openpyxl==3.1.5
 prometheus-fastapi-instrumentator==6.1.0

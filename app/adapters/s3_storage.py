@@ -55,6 +55,45 @@ class S3StorageAdapter(StoragePort):
             logger.error(f"S3 upload failed: {e}")
             raise
 
+    def key_from_url(self, url: str) -> str | None:
+        """Extract the S3 object key from a stored (possibly-expired) presigned
+        URL. Returns None for non-S3 URLs (e.g. backend redirect routes) so
+        callers can leave those untouched."""
+        if not url or not isinstance(url, str):
+            return None
+        try:
+            from urllib.parse import urlparse, unquote
+
+            parsed = urlparse(url)
+            host = parsed.netloc.lower()
+            if "amazonaws.com" not in host and self.bucket not in host:
+                return None
+            path = unquote(parsed.path).lstrip("/")
+            # Path-style URLs (s3.<region>.amazonaws.com/<bucket>/<key>) carry the
+            # bucket as the first path segment; virtual-hosted style does not.
+            if path.startswith(f"{self.bucket}/"):
+                path = path[len(self.bucket) + 1:]
+            return path or None
+        except Exception:
+            return None
+
+    def refresh_url(self, url: str, expires_in: int = 604800) -> str:
+        """Re-presign a stored S3 URL so links stay valid after the original
+        presign (and its rotating STS credentials) expire. Non-S3 URLs and any
+        that fail to parse/sign are returned unchanged."""
+        key = self.key_from_url(url)
+        if not key:
+            return url
+        try:
+            return self.s3_client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.bucket, "Key": key},
+                ExpiresIn=expires_in,
+            )
+        except ClientError as e:
+            logger.warning(f"Re-presign failed for {key}: {e}")
+            return url
+
     async def delete_file(self, key: str) -> bool:
         """Delete file from S3"""
         try:

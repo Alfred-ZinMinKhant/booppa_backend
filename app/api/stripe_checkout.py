@@ -19,12 +19,29 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token", auto_error=F
 
 
 # Price map: resolved at request time so env vars set after import are picked up.
+# Products that share a Stripe Price with another SKU when they have no
+# dedicated price-ID env var of their own. `notarization_addon_1` is a one-time
+# single-credit top-up — the same deliverable and price as
+# `compliance_notarization_1` — but has no `STRIPE_NOTARIZATION_ADDON_1` var in
+# most environments, so it falls back to the notarization single-credit price
+# instead of 400ing at checkout for exactly its target buyers.
+_PRICE_FALLBACKS = {
+    "notarization_addon_1": "compliance_notarization_1",
+}
+
+
 def _get_price(product_type: str) -> str | None:
     """Look up the Stripe Price ID for a product at call time (not import time)."""
     env_key = product_type.upper()
-    return os.environ.get(f"STRIPE_{env_key}") or os.environ.get(
+    price = os.environ.get(f"STRIPE_{env_key}") or os.environ.get(
         f"NEXT_PUBLIC_STRIPE_{env_key}"
     )
+    if not price and product_type in _PRICE_FALLBACKS:
+        alias = _PRICE_FALLBACKS[product_type].upper()
+        price = os.environ.get(f"STRIPE_{alias}") or os.environ.get(
+            f"NEXT_PUBLIC_STRIPE_{alias}"
+        )
+    return price
 
 
 MODE_MAP = {

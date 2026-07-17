@@ -23,6 +23,7 @@ env:
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
   APP_ECR_REPO: booppa-app
+  WORKER_ECR_REPO: booppa-worker
   CMS_ECR_REPO: booppa-cms
   ECS_CLUSTER: booppa-cluster
   ECS_SERVICE: booppa-app
@@ -52,6 +53,26 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Security gates — run before we spend time building/pushing. A dependency
+      # CVE or a high-severity code finding fails the deploy job.
+      - name: Set up Python (security scans)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Dependency vulnerability scan (pip-audit)
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          # Audit the pinned requirements. --ignore-unfixed equivalent: pip-audit
+          # has no such flag, so we scan and fail on any known-vulnerable pin.
+          pip-audit -r requirements.txt --strict
+
+      - name: Static analysis (bandit)
+        run: |
+          python -m pip install bandit
+          # Fail only on HIGH-severity, HIGH-confidence findings to avoid noise.
+          bandit -r app -ll -ii
 
       - name: Set up Node.js
         if: github.event.inputs.deploy_contract == 'true'
@@ -123,6 +144,40 @@ jobs:
           tags: |
             ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}
             ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:latest
+
+      # Container vulnerability scan on the freshly-pushed app image. Fails the
+      # deploy on fixable HIGH/CRITICAL CVEs; ignore-unfixed keeps it actionable.
+      - name: Scan app image (Trivy)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          vuln-type: os,library
+
+      # Worker image = the scanned app image + Chromium/Playwright, layered on
+      # via Dockerfile.worker (FROM the freshly-built booppa-app:<sha>). The
+      # worker/beat services are internal-only, so their Chromium CVE surface is
+      # deliberately kept off the Trivy gate above (which scans booppa-app only).
+      - name: Ensure worker ECR repo exists
+        run: |
+          aws ecr describe-repositories --repository-names "$WORKER_ECR_REPO" --region "$AWS_REGION" >/dev/null 2>&1 \
+            || aws ecr create-repository --repository-name "$WORKER_ECR_REPO" --region "$AWS_REGION"
+
+      - name: Build & push worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.worker
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            BASE_IMAGE=${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.WORKER_ECR_REPO }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/${{ env.WORKER_ECR_REPO }}:latest
 
       - name: Build & push cms image
         uses: docker/build-push-action@v6
@@ -363,6 +418,13 @@ jobs:
                   { "name": "CSP_PII_SEARCH_PEPPER", "valueFrom": "${APP_SECRETS_ARN}:CSP_PII_SEARCH_PEPPER::" }
                 ],
                 "portMappings": [{ "containerPort": 8000, "protocol": "tcp" }],
+                "healthCheck": {
+                  "command": ["CMD-SHELL", "curl -fsS http://localhost:8000/ready || exit 1"],
+                  "interval": 30,
+                  "timeout": 5,
+                  "retries": 3,
+                  "startPeriod": 60
+                },
                 "logConfiguration": { "logDriver": "awslogs", "options": { "awslogs-group": "/ecs/${{ env.APP_ECR_REPO }}", "awslogs-region": "${AWS_REGION}", "awslogs-stream-prefix": "ecs" } }
               }
             ]
@@ -375,7 +437,8 @@ jobs:
 
       - name: Register ECS task definition - worker
         env:
-          APP_IMAGE: ${{ env.ECR_REGISTRY }}/${{ env.APP_ECR_REPO }}:${{ github.sha }}
+          # Worker/beat run the Chromium-bearing worker image, not the slim app image.
+          APP_IMAGE: ${{ env.ECR_REGISTRY }}/${{ env.WORKER_ECR_REPO }}:${{ github.sha }}
           APP_SECRETS_ARN: ${{ secrets.AWS_SECRETSMANAGER_APP_SECRETS_ARN }}
           EXECUTION_ROLE_ARN: ${{ secrets.AWS_ECS_EXECUTION_ROLE_ARN }}
           TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
@@ -827,7 +890,11 @@ jobs:
           # If we have the new task definition ARN, update the service to use it (immutable deploy).
           if [ -n "$APP_TASK_DEF_ARN" ]; then
             echo "Updating service to task definition ARN: $APP_TASK_DEF_ARN"
-            aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --task-definition "$APP_TASK_DEF_ARN" --force-new-deployment --region $AWS_REGION
+            # Circuit breaker + rollback: paired with the container /ready health
+            # check, a rollout whose tasks never become healthy auto-rolls back to
+            # the last good task def, and `wait services-stable` below fails the job.
+            aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --task-definition "$APP_TASK_DEF_ARN" --force-new-deployment --region $AWS_REGION \
+              --deployment-configuration "deploymentCircuitBreaker={enable=true,rollback=true},maximumPercent=200,minimumHealthyPercent=100"
           else
             echo "No APP_TASK_DEF_ARN found; forcing a new deployment of the existing service (not recommended)."
             aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --force-new-deployment --region $AWS_REGION

@@ -180,7 +180,10 @@ def _section(title: str, styles, *, page_break: bool = False) -> list:
 
 def _kv_table(rows: list[tuple[str, str]]) -> Table:
     def _val(v):
-        return v if isinstance(v, Paragraph) else Paragraph(str(v), _STYLES["Normal"])
+        # User/AI-supplied KV values (company names, URLs, statuses) routinely
+        # contain `&`/`<` (e.g. "Ernst & Young", query-string URLs). Escape or
+        # ReportLab's Paragraph paraparser raises and the whole PDF fails to build.
+        return v if isinstance(v, Paragraph) else Paragraph(_xml_escape(str(v)), _STYLES["Normal"])
     data = [[Paragraph(f"<b>{k}</b>", _STYLES["Normal"]), _val(v)] for k, v in rows]
     t = Table(data, colWidths=[2.2 * inch, 4.5 * inch])
     t.setStyle(TableStyle([
@@ -460,7 +463,7 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
         except Exception as e:
             logger.warning(f"[CoverSheet] Body logo render failed: {e}")
     story.append(Paragraph(f"Compliance Evidence Pack", _STYLES["h1"]))
-    story.append(Paragraph(f"Summary Cover Sheet — {company}", _STYLES["caption"]))
+    story.append(Paragraph(f"Summary Cover Sheet — {_xml_escape(company)}", _STYLES["caption"]))
     story.append(Spacer(1, 0.12 * inch))
 
     # Hero score badge — quick at-a-glance compliance posture
@@ -664,7 +667,7 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     if exec_sum:
         story.append(Spacer(1, 0.05 * inch))
         story.append(Paragraph("<b>Executive Summary</b>", _STYLES["caption"]))
-        story.append(Paragraph(exec_sum, _STYLES["caption"]))
+        story.append(Paragraph(_xml_escape(exec_sum), _STYLES["caption"]))
 
     # Full findings list — one card per finding with severity, description,
     # legislation and remediation. No truncation: this PDF is the customer's
@@ -723,14 +726,14 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
         story.append(Paragraph("<b>Discrepancies flagged for review</b>", _STYLES["caption"]))
         for d in discrepancies[:5]:
             label = d if isinstance(d, str) else d.get("description") or d.get("title") or str(d)
-            story.append(Paragraph(f"• {label}", _STYLES["caption"]))
+            story.append(Paragraph(f"• {_xml_escape(str(label))}", _STYLES["caption"]))
             story.append(Spacer(1, 2))
 
     rfp_exec = rfp_d.get("executive_summary")
     if rfp_exec:
         story.append(Spacer(1, 0.05 * inch))
         story.append(Paragraph("<b>Executive Summary</b>", _STYLES["caption"]))
-        story.append(Paragraph(rfp_exec, _STYLES["caption"]))
+        story.append(Paragraph(_xml_escape(rfp_exec), _STYLES["caption"]))
 
     # Full Q&A — every answer the kit generated, with confidence labels.
     # Procurement officers can verify the buyer's bid claims against this list
@@ -973,7 +976,7 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     ]
     story += _section("Recommendations", _STYLES)
     for i, rec in enumerate(recommendations, 1):
-        story.append(Paragraph(f"{i}. {rec}", _STYLES["caption"]))
+        story.append(Paragraph(f"{i}. {_xml_escape(str(rec))}", _STYLES["caption"]))
         story.append(Spacer(1, 3))
 
     # ── Section 9: Legal Disclaimer ────────────────────────────────────────────
