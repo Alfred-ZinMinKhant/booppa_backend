@@ -39,13 +39,23 @@ def _seed_awards(db):
 
 
 def _seed_subscriber(db, email):
-    from app.core.models import User
+    from app.core.models import User, Subscription
     u = User(
         email=email, hashed_password="x", role="VENDOR",
         plan="tender_intelligence", is_active=True,
         company="Crayon Singapore", full_name="Crayon",
     )
     db.add(u); db.commit(); db.refresh(u)
+    # Recipient selection is driven by the Subscription table (source of truth),
+    # not User.plan — a later purchase overwrites user.plan, so the digest task
+    # resolves active Tender Intelligence subscribers via Subscription rows.
+    sub = Subscription(
+        user_id=u.id,
+        stripe_subscription_id=f"sub_test_{u.id}",
+        product_type="tender_intelligence",
+        status="active",
+    )
+    db.add(sub); db.commit()
     return u
 
 
