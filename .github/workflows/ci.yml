@@ -181,17 +181,18 @@ jobs:
         run: |
           aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
 
-      # Public ECR is a SEPARATE registry from the private one above and is
-      # rate-limited per client IP for anonymous pulls. GitHub-hosted runners
-      # share egress IPs, so the anonymous pull of the Trivy scanner image
-      # (public.ecr.aws/aquasecurity/trivy) intermittently fails with
-      # "toomanyrequests: Rate exceeded" (docker exit 125). Authenticating lifts
-      # the limit. Public ECR only serves auth tokens from us-east-1, regardless
-      # of $AWS_REGION. This writes a public.ecr.aws entry into the same
-      # ~/.docker/config.json used by the Trivy step below.
-      - name: Login to public ECR (for Trivy scanner image)
+      # The Trivy scanner image is pulled from GitHub Container Registry
+      # (ghcr.io/aquasecurity/trivy). We deliberately avoid public.ecr.aws:
+      # anonymous public-ECR pulls are IP-rate-limited and GitHub-hosted runners
+      # share egress IPs, so they intermittently fail with "toomanyrequests"
+      # (docker exit 125) — and authenticating to public ECR would require
+      # granting ecr-public:GetAuthorizationToken to the CI OIDC role (which it
+      # does not have). ghcr.io needs no extra IAM: GITHUB_TOKEN (already present)
+      # authenticates the pull at a high rate limit. This writes a ghcr.io entry
+      # into the same ~/.docker/config.json used by the Trivy step below.
+      - name: Login to ghcr.io (for Trivy scanner image)
         run: |
-          aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io --username ${{ github.actor }} --password-stdin
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -213,14 +214,13 @@ jobs:
       # Container vulnerability scan on the freshly-pushed app image. Fails the
       # deploy on fixable HIGH/CRITICAL CVEs; ignore-unfixed keeps it actionable.
       #
-      # We run Trivy as its official container image pulled from AWS *public*
-      # ECR rather than installing the binary. Both the aquasecurity/trivy-action
-      # wrapper and the vendor install.sh reproducibly die with a bare "exit
-      # code 1" at the GitHub *release-asset* download step (fails right after
-      # "found version: 0.65.0", even with GITHUB_TOKEN set — so it is not API
-      # rate limiting; the flaky path is the release tarball fetch itself).
-      # public.ecr.aws avoids GitHub releases entirely (and Docker Hub's pull
-      # limits), and the runner already has AWS creds from the OIDC role above.
+      # We run Trivy as its official container image (pulled from ghcr.io after
+      # the login step above) rather than installing the binary. Both the
+      # aquasecurity/trivy-action wrapper and the vendor install.sh reproducibly
+      # die with a bare "exit code 1" at the GitHub *release-asset* download step
+      # (fails right after "found version: 0.65.0", even with GITHUB_TOKEN set —
+      # so it is not API rate limiting; the flaky path is the release tarball
+      # fetch itself). The container image avoids GitHub releases entirely.
       #
       # Trivy (inside the container) pulls the target image straight from ECR
       # using the docker credentials written to ~/.docker/config.json by the
@@ -239,7 +239,7 @@ jobs:
             -e GITHUB_TOKEN \
             -v "${HOME}/.docker/config.json:/root/.docker/config.json:ro" \
             -v "${GITHUB_WORKSPACE}/.trivyignore:/.trivyignore:ro" \
-            public.ecr.aws/aquasecurity/trivy:0.65.0 image \
+            ghcr.io/aquasecurity/trivy:0.65.0 image \
               --ignorefile /.trivyignore \
               --format table \
               --exit-code 1 \
