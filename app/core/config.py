@@ -11,6 +11,15 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     ENVIRONMENT: str = "production"
 
+    # Observability / hardening (all optional; inert until set)
+    #   SENTRY_DSN     → when set, Sentry error tracking is initialised at boot.
+    #   METRICS_TOKEN  → when set, /metrics requires ?token= or Authorization
+    #                    bearer match; when unset, /metrics returns 404 (closed
+    #                    by default so the Prometheus surface is never open).
+    SENTRY_DSN: Optional[str] = None
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.0
+    METRICS_TOKEN: Optional[str] = None
+
     # CORS
     ALLOWED_ORIGINS: str = "http://localhost:3000"
 

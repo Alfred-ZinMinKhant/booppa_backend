@@ -851,6 +851,12 @@ async def _activate_subscription(
     except Exception as e:
         logger.error(f"[Subscription] Activation error for {product_type}: {e}")
         db.rollback()
+        await _alert_payment_fulfillment_issue(
+            reason=f"Subscription activation raised exception: {type(e).__name__}: {e}",
+            product_type=product_type,
+            customer_email=customer_email,
+        )
+        raise
     finally:
         db.close()
 

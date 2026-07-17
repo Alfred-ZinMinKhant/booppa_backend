@@ -1,0 +1,58 @@
+# Worker image = the app image + Playwright Chromium.
+#
+# The app image (./Dockerfile) is deliberately Chromium-free so the public,
+# internet-facing surface scanned by the CI Trivy gate carries no Chromium OS
+# libs (libgbm/mesa) or bundled Node driver CVEs. The Celery worker/beat run
+# internal-only work (PDPA cookie-banner scan, fulfillment screenshots) that
+# wants local Chromium, so it layers those back on here.
+#
+# BASE_IMAGE is the freshly-built booppa-app:<sha> tag, passed by CI so both
+# images share one base (single source of truth for the Python env + source).
+# Default targets a locally-built app image; CI overrides with booppa-app:<sha>.
+ARG BASE_IMAGE=booppa_backend-app:latest
+FROM ${BASE_IMAGE}
+
+# Root needed to apt-install and to write the shared browser dir.
+USER root
+
+# Chromium runtime dependencies (required by Playwright).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libdbus-1-3 \
+    libexpat1 \
+    libxcb1 \
+    libxkbcommon0 \
+    libx11-6 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    libatspi2.0-0 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Playwright (pip) + the Chromium browser binary. PLAYWRIGHT_BROWSERS_PATH puts
+# the binary in /opt/playwright so the non-root runtime user can read it.
+# Base already satisfies requirements.txt, so this only adds playwright — but we
+# install from the file to keep the pin single-sourced.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+COPY requirements-worker.txt /app/requirements-worker.txt
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements-worker.txt && \
+    playwright install chromium && \
+    chmod -R 755 /opt/playwright
+
+# Drop back to the non-root user the base image runs as.
+USER booppa
+
+CMD ["/entrypoint.sh"]

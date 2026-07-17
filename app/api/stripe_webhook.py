@@ -499,6 +499,27 @@ async def _stripe_webhook_impl(
 
                         fire_strategy_6_task.delay(sector, rfp_title)
 
+            # Bundles — self-contained, fan out to component fulfillment (mirrors
+            # the no-report_id path at line ~317). Without this guard a bundle that
+            # carries a report_id matched none of the elif arms above, fell through
+            # to process_report_task (never fulfilled as a bundle) AND then to the
+            # plan-upgrade block below, granting enterprise/pro from a one-time buy.
+            elif product_type in BUNDLE_COMPONENTS:
+                from app.workers.tasks import fulfill_bundle_task
+
+                fulfill_bundle_task.delay(
+                    product_type=product_type,
+                    report_id=str(report.id),
+                    customer_email=customer_email,
+                    metadata=metadata,
+                    session_id=session.get("id"),
+                )
+                logger.info(
+                    f"Queued bundle fulfillment for {product_type} (report {report_id})"
+                )
+                # Return early: bundles must not reach the plan-upgrade block.
+                return {"received": True}
+
             else:
                 # Standard report: trigger async processing via Celery
                 try:
@@ -562,9 +583,7 @@ async def _stripe_webhook_impl(
                         user.plan = new_plan
                         user.subscription_tier = new_plan
                         try:
-                            from datetime import datetime, timezone as _tz
-
-                            user.subscription_started_at = datetime.now(_tz.utc)
+                            user.subscription_started_at = datetime.now(timezone.utc)
                         except Exception:
                             pass
                         # Close the referral reward loop.
@@ -678,14 +697,13 @@ async def _stripe_webhook_impl(
                     item.get("plan") or {}
                 ).get("id")
                 if price_id:
-                    for key in (
-                        "vendor_active_monthly",
-                        "vendor_active_annual",
-                        "pdpa_monitor_monthly",
-                        "pdpa_monitor_annual",
-                        "enterprise_monthly",
-                        "enterprise_pro_monthly",
-                    ):
+                    # Resolve against EVERY subscription SKU, not a hardcoded 6-key
+                    # subset. A portal-driven plan change (or a delayed/retried
+                    # subscription event) arrives only through this event; the old
+                    # short list left newer tiers (buyer_*, *_suite, tender_*,
+                    # vendor_pro_*, compliance_notarization_10/50, csp_*) unresolved,
+                    # so the upgrade never activated and user.plan went stale.
+                    for key in sorted(SUBSCRIPTION_PRODUCT_TYPES):
                         env_price = _os.environ.get(
                             f"STRIPE_{key.upper()}"
                         ) or _os.environ.get(f"NEXT_PUBLIC_STRIPE_{key.upper()}")
@@ -709,7 +727,6 @@ async def _stripe_webhook_impl(
                 try:
                     from app.core.db import SessionLocal as _SL
                     from app.core.models import Subscription as _Sub, User as _User
-                    from datetime import datetime, timezone as _tz
 
                     _sdb = _SL()
                     try:
@@ -725,7 +742,7 @@ async def _stripe_webhook_impl(
                         if period_end_ts:
                             try:
                                 period_end = datetime.fromtimestamp(
-                                    int(period_end_ts), _tz.utc
+                                    int(period_end_ts), timezone.utc
                                 )
                             except Exception:
                                 period_end = None

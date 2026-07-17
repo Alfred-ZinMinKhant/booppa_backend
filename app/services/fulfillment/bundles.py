@@ -356,7 +356,7 @@ async def _fulfill_standalone_no_report(
             product_type=product_type,
             customer_email=customer_email,
         )
-        return True  # still consumed — don't let the caller double-process
+        raise
     finally:
         db.close()
 
@@ -874,6 +874,7 @@ async def _fulfill_bundle(
             customer_email=customer_email,
             session_id=session_id,
         )
+        raise
     finally:
         db.close()
 
