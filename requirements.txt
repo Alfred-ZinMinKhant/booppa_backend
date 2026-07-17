@@ -1,5 +1,5 @@
 # Core Dependencies
-setuptools==78.1.1
+setuptools==83.0.0        # bumped from 78.1.1 to clear PYSEC-2026-3447
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
@@ -29,7 +29,7 @@ eth-account==0.8.0
 # PDF & QR Generation
 reportlab==4.0.4
 qrcode[pil]==7.4.2
-Pillow==12.2.0
+Pillow==12.3.0            # bumped from 12.2.0 to clear PYSEC-2026-2253..2257 / 3451..3453
 python-docx==1.2.0
 beautifulsoup4==4.12.3
 lxml==6.1.0
@@ -46,7 +46,7 @@ python-socketio==5.16.2
 python-jose[cryptography]==3.4.0
 passlib[bcrypt]==1.7.4
 bcrypt>=3.2.0,<4.0.0
-cryptography==46.0.5
+cryptography==46.0.7      # bumped from 46.0.5 to clear PYSEC-2026-35/36 (GHSA-537c-gmf6-5ccf needs 48.x major jump — ignored in CI)
 jellyfish>=1.0.0          # fuzzy name matching for CSP sanctions screening
 slowapi==0.1.9
 # Enterprise SSO — SAML 2.0 (used by /api/v1/enterprise/sso/saml/*)
@@ -57,7 +57,7 @@ opentelemetry-api==1.21.0
 opentelemetry-sdk==1.21.0
 prometheus-client==0.19.0
 # Error tracking — inert unless SENTRY_DSN is set (see app/main.py)
-sentry-sdk[fastapi]==1.45.0
+sentry-sdk[fastapi]==1.45.1   # patch from 1.45.0 clears PYSEC-2026-1917 (stay on 1.x; 2.x is an API break)
 
 # Testing
 pytest==7.4.3
@@ -70,8 +70,8 @@ freezegun==1.5.1
 
 # Utilities
 feedparser==6.0.11
-python-dotenv==1.0.0
-python-multipart==0.0.30
+python-dotenv==1.2.2      # bumped from 1.0.0 to clear PYSEC-2026-2270
+python-multipart==0.0.31  # bumped from 0.0.30 to clear PYSEC-2026-3040
 python-dateutil==2.8.2
 greenlet==3.0.1
 
