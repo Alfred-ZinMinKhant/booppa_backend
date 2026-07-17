@@ -201,35 +201,33 @@ jobs:
       # Container vulnerability scan on the freshly-pushed app image. Fails the
       # deploy on fixable HIGH/CRITICAL CVEs; ignore-unfixed keeps it actionable.
       #
-      # We install Trivy via its official install.sh rather than the
-      # aquasecurity/trivy-action wrapper: that action's setup-trivy Node
-      # installer reproducibly dies with a bare "exit code 1" installing the
-      # v0.65.0 binary (fails after "found version", even with GITHUB_TOKEN set,
-      # so it is not rate limiting — it is a bug in the action's install path).
-      # install.sh is the vendor-supported path and pins the binary version.
-      # The image is pulled from ECR using the docker login credentials already
-      # written to ~/.docker/config.json by the "Login to ECR" step above.
-      - name: Install Trivy
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            | sh -s -- -b /usr/local/bin v0.65.0
-          trivy --version
-
+      # We run Trivy as its official container image pulled from AWS *public*
+      # ECR rather than installing the binary. Both the aquasecurity/trivy-action
+      # wrapper and the vendor install.sh reproducibly die with a bare "exit
+      # code 1" at the GitHub *release-asset* download step (fails right after
+      # "found version: 0.65.0", even with GITHUB_TOKEN set — so it is not API
+      # rate limiting; the flaky path is the release tarball fetch itself).
+      # public.ecr.aws avoids GitHub releases entirely (and Docker Hub's pull
+      # limits), and the runner already has AWS creds from the OIDC role above.
+      #
+      # Trivy (inside the container) pulls the target image straight from ECR
+      # using the docker credentials written to ~/.docker/config.json by the
+      # "Login to ECR" step, mounted read-only at /root/.docker. GITHUB_TOKEN is
+      # passed through to authenticate the vulnerability-DB pull from ghcr.io.
       - name: Scan app image (Trivy)
         env:
-          # Authenticates the vulnerability-DB pull from ghcr.io (avoids the
-          # anonymous ghcr rate limit) and any GitHub API calls Trivy makes.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          trivy image \
-            --format table \
-            --exit-code 1 \
-            --severity HIGH,CRITICAL \
-            --ignore-unfixed \
-            --vuln-type os,library \
-            "${ECR_REGISTRY}/${APP_ECR_REPO}:${GITHUB_SHA}"
+          docker run --rm \
+            -e GITHUB_TOKEN \
+            -v "${HOME}/.docker/config.json:/root/.docker/config.json:ro" \
+            public.ecr.aws/aquasecurity/trivy:0.65.0 image \
+              --format table \
+              --exit-code 1 \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed \
+              --vuln-type os,library \
+              "${ECR_REGISTRY}/${APP_ECR_REPO}:${GITHUB_SHA}"
 
       # Worker image = the scanned app image + Chromium/Playwright, layered on
       # via Dockerfile.worker (FROM the freshly-built booppa-app:<sha>). The
