@@ -214,6 +214,11 @@ jobs:
       # using the docker credentials written to ~/.docker/config.json by the
       # "Login to ECR" step, mounted read-only at /root/.docker. GITHUB_TOKEN is
       # passed through to authenticate the vulnerability-DB pull from ghcr.io.
+      #
+      # The repo's .trivyignore (accepted-risk CVEs, kept in lock-step with the
+      # pip-audit --ignore-vuln list above) lives on the host, so it must be
+      # mounted into the container and pointed at explicitly with --ignorefile —
+      # Trivy running in the container cannot see the host working directory.
       - name: Scan app image (Trivy)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -221,7 +226,9 @@ jobs:
           docker run --rm \
             -e GITHUB_TOKEN \
             -v "${HOME}/.docker/config.json:/root/.docker/config.json:ro" \
+            -v "${GITHUB_WORKSPACE}/.trivyignore:/.trivyignore:ro" \
             public.ecr.aws/aquasecurity/trivy:0.65.0 image \
+              --ignorefile /.trivyignore \
               --format table \
               --exit-code 1 \
               --severity HIGH,CRITICAL \
