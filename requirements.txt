@@ -1,5 +1,5 @@
 # Core Dependencies
-setuptools==83.0.0        # bumped from 78.1.1 to clear PYSEC-2026-3447
+setuptools==80.10.2       # highest release still shipping pkg_resources (removed in 81.0.0), which eth_keyfile/web3 import at runtime; 83.0.0 (the only PYSEC-2026-3447 fix) breaks that import — CVE ignored in CI instead
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
