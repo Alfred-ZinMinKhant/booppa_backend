@@ -3915,6 +3915,7 @@ def buyer_supplier_snapshot_task(
         data = build_certificate_data(
             db, buyer_user_id, vendor_ref,
             vendor_name=vendor_name, notes=notes, is_certificate=wants_cert,
+            sample_data=demo,
         )
         supplier_name = data.get("supplier_name") or vendor_ref
 
@@ -4090,7 +4091,7 @@ def buyer_supplier_drift_alert_task(
         if wants_cert:
             data = build_certificate_data(
                 db, buyer_user_id, vendor_ref,
-                vendor_name=vendor_name, is_certificate=True,
+                vendor_name=vendor_name, is_certificate=True, sample_data=demo,
             )
             pdf = generate_certificate_pdf(data)
             ev_hash = evidence_hash_for(pdf)
@@ -4116,7 +4117,7 @@ def buyer_supplier_drift_alert_task(
             # Starter — un-anchored snapshot (is_certificate=False, no tx_hash).
             data = build_certificate_data(
                 db, buyer_user_id, vendor_ref,
-                vendor_name=vendor_name, is_certificate=False,
+                vendor_name=vendor_name, is_certificate=False, sample_data=demo,
             )
             pdf = generate_certificate_pdf(data)
 

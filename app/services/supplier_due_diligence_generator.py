@@ -87,6 +87,9 @@ def generate_certificate_pdf(data: Dict[str, Any]) -> bytes:
     tx_hash = data.get("tx_hash")
     anchored = bool(data.get("anchored"))
     is_cert = bool(data.get("is_certificate"))
+    # Demo/test-checkout artifact for a fictional supplier — mark it unmistakably so
+    # a screenshotted "certificate" can never be mistaken for a real one.
+    sample_data = bool(data.get("sample_data"))
 
     def _num(v):
         return "—" if v is None else str(v)
@@ -98,7 +101,7 @@ def generate_certificate_pdf(data: Dict[str, Any]) -> bytes:
         buf, pagesize=A4,
         leftMargin=0.8 * inch, rightMargin=0.8 * inch,
         topMargin=0.8 * inch, bottomMargin=0.8 * inch,
-        title=f"{doc_title} — {supplier}",
+        title=f"{'[SAMPLE] ' if sample_data else ''}{doc_title} — {supplier}",
     )
     story: list = []
 
@@ -108,6 +111,30 @@ def generate_certificate_pdf(data: Dict[str, Any]) -> bytes:
         f"Prepared for {_xml_escape(buyer)} &middot; As of {gen_at} &middot; {COMPANY_NAME}",
         s["small"]))
     story.append(Spacer(1, 16))
+
+    # First-page sample-data callout (a persistent per-page strip is drawn by the
+    # page callback below). Rendered as a prominent amber notice box.
+    if sample_data:
+        _sample_style = ParagraphStyle(
+            "sample_callout", parent=s["body"],
+            textColor=colors.HexColor("#7c2d12"), fontName="Helvetica-Bold", fontSize=10,
+        )
+        _sc = Table(
+            [[Paragraph(
+                "SAMPLE DATA — illustrative only. This is a demo of the artifact you receive "
+                "when you add a supplier to your watchlist. The supplier above is a fictional "
+                "example, not a real company, and nothing here is a statement about anyone's "
+                "compliance.", _sample_style)]],
+            colWidths=[6.4 * inch],
+        )
+        _sc.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fef3c7")),
+            ("BOX", (0, 0), (-1, -1), 1.2, colors.HexColor("#d97706")),
+            ("TOPPADDING", (0, 0), (-1, -1), 10), ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+            ("LEFTPADDING", (0, 0), (-1, -1), 12), ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+        ]))
+        story.append(_sc)
+        story.append(Spacer(1, 14))
 
     # ── Verified state cards ────────────────────────────────────────────────────
     if resolved:
@@ -168,7 +195,32 @@ def generate_certificate_pdf(data: Dict[str, Any]) -> bytes:
         "scores and risk signals are data-driven estimates, not guarantees, and not a statement "
         "of any supplier's regulatory compliance.", s["small"]))
 
-    doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
+    if sample_data:
+        def _on_page(canvas, doc_):
+            draw_logo_header(canvas, doc_)
+            # Persistent SAMPLE-DATA strip near the foot of every page so the
+            # warning survives even if a single page is printed or forwarded.
+            try:
+                page_w, _ = getattr(doc_, "pagesize", None) or A4
+                strip_h = 0.24 * inch
+                y = 0.42 * inch
+                canvas.saveState()
+                canvas.setFillColor(colors.HexColor("#d97706"))
+                canvas.rect(0, y, page_w, strip_h, fill=1, stroke=0)
+                canvas.setFillColor(colors.white)
+                canvas.setFont("Helvetica-Bold", 8)
+                canvas.drawCentredString(
+                    page_w / 2.0, y + strip_h / 2 - 3,
+                    "SAMPLE DATA — illustrative demo, not a real supplier certificate",
+                )
+                canvas.restoreState()
+            except Exception:
+                pass
+        on_first = on_later = _on_page
+    else:
+        on_first = on_later = draw_logo_header
+
+    doc.build(story, onFirstPage=on_first, onLaterPages=on_later)
     return buf.getvalue()
 
 
@@ -180,12 +232,16 @@ def build_certificate_data(
     vendor_name: str | None = None,
     notes: str | None = None,
     is_certificate: bool = False,
+    sample_data: bool = False,
 ) -> Dict[str, Any]:
     """Gather a supplier's current verified state for the certificate/snapshot.
 
     Read-only. Resolves the watchlist `vendor_ref` to a claimed vendor User and
     pulls its VendorScore / VendorStatusSnapshot / trend via the shared buyer
     insights helpers, degrading to an UNRATED record when unresolvable.
+
+    `sample_data=True` marks a demo/test-checkout artifact built for a fictional
+    supplier; it drives the unmissable SAMPLE-DATA banner on the rendered PDF.
     """
     from app.core.models import User
     from app.services.buyer_procurement_insights import (
@@ -201,6 +257,7 @@ def build_certificate_data(
         "resolved": False,
         "notes": notes,
         "is_certificate": is_certificate,
+        "sample_data": sample_data,
     }
     try:
         vuid = _resolve_watchlist_vendor_user(db, vendor_ref)
@@ -209,6 +266,10 @@ def build_certificate_data(
             data.update(_supplier_status(db, vuid))
     except Exception as e:  # pragma: no cover
         logger.warning("[DueDiligence] status lookup failed for ref=%s: %s", vendor_ref, e)
+    # Only banner as SAMPLE when a demo fire drew a fictional supplier that did not
+    # resolve to real DB state. A demo fire against the buyer's own real watched
+    # supplier carries genuine data and must not be mislabelled.
+    data["sample_data"] = bool(sample_data) and not data["resolved"]
     return data
 
 
