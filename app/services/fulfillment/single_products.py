@@ -1015,7 +1015,13 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             from app.core.models import User
             u = db.query(User).filter(User.id == str(vendor_id)).first()
             _uen = u.uen if u else None
-        
+
+        # Whether the match started from a caller-supplied UEN (exact) vs. a
+        # company-name-only lookup (fuzzy). Drives the "Matched" vs. "Matched by
+        # name" label on the certificate — a name search can hit a similarly
+        # named entity, so it must not claim the certainty of an exact UEN match.
+        _orig_uen_present = bool(_uen)
+
         # Fire the registry lookup when we have a UEN (exact) OR a company name
         # (fuzzy-verified against the live dataset) — buyers without a UEN still
         # get a real ACRA match instead of "No registry match on file".
@@ -1032,6 +1038,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                     if _dv:
                         acra_info = {
                             "matched": True,
+                            "match_type": "uen",
                             "entity_type": _dv.entity_type,
                             "registration_date": _dv.registration_date,
                             "industry": _dv.industry,
@@ -1064,6 +1071,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                         acra_info["uen"] = _uen
                     if not acra_info.get("matched"):
                         acra_info["matched"] = True
+                        acra_info["match_type"] = "uen" if _orig_uen_present else "name"
                         acra_info["source"] = "data.gov.sg (live)"
                         if _live.get("registered_name"):
                             acra_info["registry_company_name"] = _live.get("registered_name")

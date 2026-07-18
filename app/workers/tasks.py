@@ -3800,6 +3800,18 @@ def buyer_procurement_digest_task(
             f'{" and ".join(_attached_labels)} — file it, forward it, or take it into a review.</p>'
             if _attached_labels else ""
         )
+        # When the real watchlist is empty on a demo checkout, the attached report
+        # renders a FICTIONAL sample estate (clearly banner-labelled in the PDF).
+        # Say so in the email too, so the "0 suppliers watched" body and a
+        # populated-looking attachment never read as a contradiction.
+        if demo and report_attached and not suppliers:
+            attachments_note += (
+                '<p style="font-size:12px;color:#92400e;background:#fef3c7;border:1px solid #d97706;'
+                'border-radius:8px;padding:10px 12px;margin:8px 0 0;">⚠️ Your watchlist is currently '
+                'empty, so the attached report shows <strong>sample data</strong> — a fictional example '
+                'of what you\'ll receive once you add suppliers. It is labelled SAMPLE DATA on every '
+                'page and does not describe any real company.</p>'
+            )
 
         # ── Email framing ──────────────────────────────────────────────────────
         if is_first_cycle:

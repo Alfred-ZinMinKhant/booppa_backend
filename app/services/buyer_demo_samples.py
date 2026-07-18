@@ -7,9 +7,10 @@ snapshot / drift / certificate emails render empty or against a lone placeholder
 ("Sample Supplier Pte Ltd") — the demo shows the frame, not the picture.
 
 This module supplies a believable multi-supplier estate for demo mode only. The
-vendor names/websites are baked from `singapore_vendors_bulk_pdpa_test.xlsx`
-(repo root, not packaged for ECS) so there's no runtime file/`openpyxl`
-dependency and the output is identical in every environment.
+vendor names are wholly FICTIONAL ("… Pte Ltd" with non-resolving `.example`
+domains) — real, named companies must never appear next to a synthesized risk
+verdict. The list is a static constant so the output is identical in every
+environment with no runtime file/`openpyxl` dependency.
 
 Scores and risk signals are **synthesized deterministically** from a hash of the
 name, with variety forced so the demo always tells a story: guaranteed at least
@@ -25,39 +26,44 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Dict, List, Optional
 
-# (name, website) baked from singapore_vendors_bulk_pdpa_test.xlsx. Source of
-# truth is this constant; regenerate from the xlsx if the sample set changes.
+# Wholly FICTIONAL supplier estate. These names must never collide with a real,
+# named company: the demo deliberately forces one supplier to CRITICAL and one to
+# FLAGGED, and printing a fabricated risk verdict next to a real firm's name is a
+# reputational/legal exposure even in test output (a screenshot in a deck is
+# enough). Invented "Pte Ltd" names + non-resolving `.example` domains keep the
+# artifact shapes believable while grounding nothing in a real entity. Demo rows
+# are synthesized, never scanned, so the websites are display-only placeholders.
 _DEMO_SUPPLIERS: List[tuple[str, str]] = [
-    ("DBS Bank", "https://www.dbs.com.sg"),
-    ("OCBC Bank", "https://www.ocbc.com"),
-    ("United Overseas Bank", "https://www.uob.com.sg"),
-    ("Singtel", "https://www.singtel.com"),
-    ("StarHub", "https://www.starhub.com"),
-    ("M1", "https://www.m1.com.sg"),
-    ("Singapore Airlines", "https://www.singaporeair.com"),
-    ("CapitaLand", "https://www.capitaland.com"),
-    ("City Developments Limited", "https://www.cdl.com.sg"),
-    ("Keppel Corporation", "https://www.kepcorp.com"),
-    ("Sembcorp Industries", "https://www.sembcorp.com"),
-    ("SIA Engineering", "https://www.siaec.com.sg"),
-    ("ComfortDelGro", "https://www.comfortdelgro.com"),
-    ("SMRT Corporation", "https://www.smrt.com.sg"),
-    ("Grab", "https://www.grab.com/sg"),
-    ("Sea Limited", "https://www.sea.com"),
-    ("Shopee Singapore", "https://shopee.sg"),
-    ("Lazada Singapore", "https://www.lazada.sg"),
-    ("PropertyGuru", "https://www.propertyguru.com.sg"),
-    ("Razer", "https://www.razer.com"),
-    ("Creative Technology", "https://sg.creative.com"),
-    ("ST Engineering", "https://www.stengg.com"),
-    ("Wilmar International", "https://www.wilmar-international.com"),
-    ("Olam Group", "https://www.olamgroup.com"),
-    ("Great Eastern", "https://www.greateasternlife.com"),
-    ("NTUC FairPrice", "https://www.fairprice.com.sg"),
-    ("Sheng Siong", "https://www.shengsiong.com.sg"),
-    ("Jardine Cycle & Carriage", "https://www.jcclgroup.com"),
-    ("Mapletree Investments", "https://www.mapletree.com.sg"),
-    ("Frasers Property", "https://www.frasersproperty.com"),
+    ("Meridian Logistics Pte Ltd", "https://www.meridian-logistics.example"),
+    ("Harborline Freight Solutions Pte Ltd", "https://www.harborline-freight.example"),
+    ("Crestwave Technologies Pte Ltd", "https://www.crestwave-tech.example"),
+    ("Liongate Facilities Management Pte Ltd", "https://www.liongate-fm.example"),
+    ("Marina Data Systems Pte Ltd", "https://www.marina-datasystems.example"),
+    ("Orchard Point Consulting Pte Ltd", "https://www.orchardpoint-consulting.example"),
+    ("Sentosa Digital Pte Ltd", "https://www.sentosa-digital.example"),
+    ("Seaview Engineering Works Pte Ltd", "https://www.seaview-eng.example"),
+    ("Tanglin Facilities Pte Ltd", "https://www.tanglin-facilities.example"),
+    ("Raffles Quay Advisory Pte Ltd", "https://www.rafflesquay-advisory.example"),
+    ("Bukit Timah Software Pte Ltd", "https://www.bukittimah-software.example"),
+    ("Jurong Precision Manufacturing Pte Ltd", "https://www.jurong-precision.example"),
+    ("Novena Health Services Pte Ltd", "https://www.novena-health.example"),
+    ("Clementi Cloud Pte Ltd", "https://www.clementi-cloud.example"),
+    ("Paya Lebar Trading Pte Ltd", "https://www.payalebar-trading.example"),
+    ("Woodlands Industrial Supply Pte Ltd", "https://www.woodlands-supply.example"),
+    ("Changi Aero Services Pte Ltd", "https://www.changi-aero.example"),
+    ("Tampines Retail Group Pte Ltd", "https://www.tampines-retail.example"),
+    ("Bugis Media Pte Ltd", "https://www.bugis-media.example"),
+    ("Serangoon Analytics Pte Ltd", "https://www.serangoon-analytics.example"),
+    ("Pasir Ris Marine Pte Ltd", "https://www.pasirris-marine.example"),
+    ("Yishun Foodworks Pte Ltd", "https://www.yishun-foodworks.example"),
+    ("Kallang Security Pte Ltd", "https://www.kallang-security.example"),
+    ("Redhill Networks Pte Ltd", "https://www.redhill-networks.example"),
+    ("Queenstown Robotics Pte Ltd", "https://www.queenstown-robotics.example"),
+    ("Bedok Energy Pte Ltd", "https://www.bedok-energy.example"),
+    ("Dover Insurance Advisory Pte Ltd", "https://www.dover-advisory.example"),
+    ("Holland Village Design Pte Ltd", "https://www.hollandvillage-design.example"),
+    ("Somerset Payments Pte Ltd", "https://www.somerset-payments.example"),
+    ("Buona Vista Biotech Pte Ltd", "https://www.buonavista-biotech.example"),
 ]
 
 # Healthy suppliers carry a non-alerting signal; MONITORED is outside

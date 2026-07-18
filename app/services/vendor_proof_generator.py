@@ -136,10 +136,16 @@ def generate_vendor_proof_certificate(
 
     # Entity / registration
     matched = bool(acra_data.get("matched"))
+    # A name-only fuzzy match can resolve a similarly named entity, so it must
+    # not claim the same certainty as an exact UEN match — label it accordingly.
+    if matched:
+        _match_label = "Matched by name" if acra_data.get("match_type") == "name" else "Matched"
+    else:
+        _match_label = "No registry match on file"
     reg_rows = [
         ("Legal entity", _xml_escape(company_name)),
         ("UEN", _xml_escape(uen) or "Not provided"),
-        ("ACRA registry match", "Matched" if matched else "No registry match on file"),
+        ("ACRA registry match", _match_label),
     ]
     if matched:
         if acra_data.get("entity_type"):

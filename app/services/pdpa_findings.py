@@ -107,18 +107,28 @@ def latest_pdpa_score(db: Any, user_id: Any) -> Optional[int]:
     try:
         from app.core.models import Report
 
-        report = (
+        # Prefer COMPLETED reports: a scan queued concurrently with the RFP kit
+        # may still be 'pending' (no score persisted yet). Grabbing the newest
+        # row regardless of status returned None even when an older completed
+        # scan (e.g. 61/100) existed — that was the D4 "not available" bug.
+        # Scan the recent history and return the first report that yields a
+        # score, so a fresh-but-unfinished scan can't shadow a finished one.
+        reports = (
             db.query(Report)
             .filter(
                 Report.owner_id == user_id,
                 Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
+                Report.status == "completed",
             )
             .order_by(Report.created_at.desc())
-            .first()
+            .limit(5)
+            .all()
         )
-        if not report:
-            return None
-        return resolve_pdpa_score(report.assessment_data)
+        for report in reports:
+            score = resolve_pdpa_score(report.assessment_data)
+            if score is not None:
+                return score
+        return None
     except Exception as exc:  # noqa: BLE001 — never block declaration on this
         logger.warning("latest_pdpa_score lookup failed for %s: %s", user_id, exc)
         return None

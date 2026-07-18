@@ -116,6 +116,10 @@ def generate_buyer_procurement_report_pdf(data: Dict[str, Any]) -> bytes:
     tier = (data.get("tier") or "pro").lower()
     plan_label = data.get("plan_label") or "Buyer"
     gen_at = data.get("generated_at") or datetime.now(timezone.utc).strftime("%d %B %Y")
+    # When the watchlist is empty we substitute a fictional sample estate; that
+    # MUST be unmissable in the delivered PDF so no reader mistakes it for their
+    # real suppliers (a banner on every page + a first-page callout).
+    sample_data = bool(data.get("sample_data"))
 
     def _num(v):
         return "—" if v is None else str(v)
@@ -133,6 +137,30 @@ def generate_buyer_procurement_report_pdf(data: Dict[str, Any]) -> bytes:
     story.append(Paragraph(_xml_escape(company), s["sub"]))
     story.append(Paragraph(f"{_xml_escape(plan_label)} &middot; As of {gen_at} &middot; {COMPANY_NAME}", s["small"]))
     story.append(Spacer(1, 16))
+
+    # First-page sample-data callout (the per-page banner is drawn by the page
+    # callback below). Rendered as a prominent amber notice box.
+    if sample_data:
+        _sample_style = ParagraphStyle(
+            "sample_callout", parent=s["body"],
+            textColor=colors.HexColor("#7c2d12"), fontName="Helvetica-Bold", fontSize=10,
+        )
+        _sc = Table(
+            [[Paragraph(
+                "SAMPLE DATA — illustrative only. Your real watchlist is empty, so the "
+                "suppliers, scores and risk signals below are a fictional example of what "
+                "this report shows once you add suppliers. They are not real companies and "
+                "not a statement about anyone's compliance.", _sample_style)]],
+            colWidths=[6.4 * inch],
+        )
+        _sc.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fef3c7")),
+            ("BOX", (0, 0), (-1, -1), 1.2, colors.HexColor("#d97706")),
+            ("TOPPADDING", (0, 0), (-1, -1), 10), ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+            ("LEFTPADDING", (0, 0), (-1, -1), 12), ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+        ]))
+        story.append(_sc)
+        story.append(Spacer(1, 14))
 
     # ── 1. Watchlist health headline ───────────────────────────────────────────
     summary = data.get("watchlist_summary") or {}
@@ -217,7 +245,32 @@ def generate_buyer_procurement_report_pdf(data: Dict[str, Any]) -> bytes:
         "are data-driven estimates, not guarantees, and not a statement of any supplier's regulatory "
         "compliance.", s["small"]))
 
-    doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
+    if sample_data:
+        def _on_page(canvas, doc_):
+            draw_logo_header(canvas, doc_)
+            # Persistent SAMPLE-DATA strip near the foot of every page so the
+            # warning survives even if a single page is printed or forwarded.
+            try:
+                page_w, _ = getattr(doc_, "pagesize", None) or A4
+                strip_h = 0.24 * inch
+                y = 0.42 * inch
+                canvas.saveState()
+                canvas.setFillColor(colors.HexColor("#d97706"))
+                canvas.rect(0, y, page_w, strip_h, fill=1, stroke=0)
+                canvas.setFillColor(colors.white)
+                canvas.setFont("Helvetica-Bold", 8)
+                canvas.drawCentredString(
+                    page_w / 2.0, y + strip_h / 2 - 3,
+                    "SAMPLE DATA — illustrative only, not your real watchlist",
+                )
+                canvas.restoreState()
+            except Exception:
+                pass
+        on_first = on_later = _on_page
+    else:
+        on_first = on_later = draw_logo_header
+
+    doc.build(story, onFirstPage=on_first, onLaterPages=on_later)
     return buf.getvalue()
 
 
@@ -252,9 +305,15 @@ def build_buyer_procurement_report_pdf(
         company = (getattr(user, "company", None) or "Your Organisation")
 
     suppliers = get_watched_suppliers_with_status(db, user_id)
+    # `sample_data` drives the unmissable SAMPLE-DATA banner on every PDF page.
+    # It is set ONLY when we actually substitute the fictional demo estate for an
+    # empty real watchlist — a real (even if demo-checkout) populated watchlist
+    # renders as itself with no banner.
+    sample_data = False
     if demo and not suppliers:
         from app.services.buyer_demo_samples import demo_watched_suppliers
         suppliers = demo_watched_suppliers()
+        sample_data = True
 
     return generate_buyer_procurement_report_pdf({
         "company_name": company,
@@ -268,4 +327,5 @@ def build_buyer_procurement_report_pdf(
         # Buyers have no VendorSector, so matches come back unclassified — still a
         # useful "new tenders to evaluate" list. Win-probability is vendor-only.
         "tender_matches": get_tender_matches(db, user_id, limit=10),
+        "sample_data": sample_data,
     })

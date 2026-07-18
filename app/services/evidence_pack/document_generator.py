@@ -210,17 +210,19 @@ def _evidence_context(scan_evidence: dict | None) -> str:
                 elif isinstance(f, str):
                     lines.append(f"  - {f}")
                     
-        # Extract compliant dimensions so the LLM doesn't hallucinate gaps
-        compliant_dimensions = []
-        for key, val in pdpa.items():
-            if isinstance(val, dict) and "score" in val:
-                score = val["score"]
-                # Assuming score >= 80 means generally compliant/passed for context purposes
-                if isinstance(score, (int, float)) and score >= 80:
-                    friendly_name = key.replace("_", " ").title()
-                    if key == "nric_evidence": friendly_name = "NRIC Exposure"
-                    compliant_dimensions.append(f"{friendly_name} ({int(score)}/100)")
-        
+        # Surface the dimensions the scan checked and found COMPLIANT so the LLM
+        # doesn't invent gaps (e.g. a fake NRIC exposure) for topics that passed.
+        # Reuse the canonical snapshot helper — it derives clean dimension names
+        # ("NRIC Exposure", "Privacy Policy (PDPA §11/13)", …) and a consistent
+        # status classifier from the same assessment_data, rather than guessing
+        # from raw dict keys.
+        from app.services.pdpa_dimension_snapshot import compute_dimension_snapshots
+        compliant_dimensions = [
+            f"{snap['dimension_name']} ({int(snap['score'])}/100)"
+            for snap in compute_dimension_snapshots(pdpa)
+            if snap.get("status") == "Compliant"
+        ]
+
         if compliant_dimensions:
             lines.append("Dimensions checked and found COMPLIANT (do NOT list these as gaps):")
             lines.append("  - " + ", ".join(compliant_dimensions))
