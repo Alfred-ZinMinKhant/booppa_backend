@@ -3364,6 +3364,36 @@ class PdpaDimensionHistory(Base):
     )
 
 
+# ── DeepScanDimensionHistory ──────────────────────────────────────────────────
+# Written by the Deep Scan (`deep_scan_service` + `run_deep_scan_task`). Unlike
+# `PdpaDimensionHistory` (7 quick-scan PDPA dimensions), a Deep Scan row set
+# covers the full institutional profile: 11 PDPA dimensions + a Certifications
+# dimension + a Financial Risk dimension, all derived from freshly-fetched
+# registry / website / security signals. Feeds `/procurement/snapshot/{slug}`
+# and Phase-4 Deep-Scan drift detection (reuses `diff_snapshots`).
+class DeepScanDimensionHistory(Base):
+    __tablename__ = "deep_scan_dimension_history"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vendor_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    scan_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    category = Column(String(32), nullable=False, default="pdpa")  # pdpa | certifications | financial_risk
+    dimension_name = Column(String(128), nullable=False)
+    status = Column(String(32), nullable=False)   # Compliant | Partial | Non-Compliant
+    score = Column(Integer, nullable=False)
+    detail = Column(JSONB, nullable=True)
+    captured_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_deep_scan_dim_vendor_dim_time", "vendor_id", "dimension_name", "captured_at"),
+    )
+
+
 # ── FindingRemediation ────────────────────────────────────────────────────────
 # A user can mark a specific finding as "fixed" (or won't-fix) from their
 # report view. On the next completed scan for the same vendor + framework,

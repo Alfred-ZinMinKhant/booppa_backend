@@ -21,6 +21,30 @@ logger = logging.getLogger(__name__)
 router = APIRouter(route_class=RetryAPIRoute)
 
 
+def _emit_subscription_webhook(event_type: str, customer_email: str, product_type: str, extra: dict) -> None:
+    """Resolve the buyer by email and queue a subscription lifecycle webhook.
+
+    Best-effort — a missing user, org, or endpoint is a silent no-op so
+    fulfillment never breaks on webhook emission.
+    """
+    try:
+        from app.workers.tasks import _emit_user_webhook
+        _db = SessionLocal()
+        try:
+            user = _db.query(User).filter(User.email == customer_email).first()
+            if not user:
+                return
+            _emit_user_webhook(_db, user.id, event_type, {
+                "product_type": product_type,
+                "plan": getattr(user, "plan", None),
+                **(extra or {}),
+            })
+        finally:
+            _db.close()
+    except Exception as e:
+        logger.warning("subscription webhook emit skipped (%s): %s", event_type, e)
+
+
 RFP_PRODUCT_TYPES = {"rfp_express", "rfp_complete"}
 # Single-document notarization is one-time (pay-per-doc, grants a credit balance).
 # The 10/50 batch tiers are now subscriptions (monthly quota) — see
@@ -310,6 +334,10 @@ async def _stripe_webhook_impl(
                 )
                 logger.info(
                     f"Activated subscription for {product_type} email={customer_email}"
+                )
+                _emit_subscription_webhook(
+                    "subscription.activated", customer_email, product_type,
+                    {"stripe_subscription_id": stripe_sub_id},
                 )
                 return {"received": True}
 
@@ -844,6 +872,14 @@ async def _stripe_webhook_impl(
                         logger.info(
                             f"[Webhook] Subscription canceled for {cust_email}, plan now={user.plan}"
                         )
+                        try:
+                            from app.workers.tasks import _emit_user_webhook
+                            _emit_user_webhook(_db3, user.id, "subscription.canceled", {
+                                "stripe_subscription_id": stripe_sub_id,
+                                "plan": user.plan,
+                            })
+                        except Exception as _wh_err:
+                            logger.warning(f"[Webhook] canceled emit skipped: {_wh_err}")
                         try:
                             _revert_subscription_score_lever(
                                 _db3,

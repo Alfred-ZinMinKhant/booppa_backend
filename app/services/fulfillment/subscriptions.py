@@ -752,7 +752,8 @@ async def _activate_subscription(
                 scan_line = f"Quick Scan on {quick} vendors/month (ACRA + MAS watchlist + PDPA flag)"
                 if deep:
                     scan_line = (f"{quick} Quick Scans + {deep} Deep Scans/month "
-                                 "(11-dimension PDPA + certifications + financial risk)")
+                                 "(11-dimension PDPA assessment + certifications "
+                                 "+ financial-risk scoring)")
                 feats.append(_bf("Vendor scans", scan_line, "Start scanning", dash))
                 if evidence:
                     feats.append(_bf(
@@ -773,12 +774,12 @@ async def _activate_subscription(
                 if deep:
                     feats.append(_bf(
                         "Comparison engine + drift tracking",
-                        "Compare vendors side-by-side across Deep Scan parameters, with automatic change alerts as their compliance drifts.",
+                        "Compare vendors side-by-side, and get automatic alerts as their compliance drifts across Deep Scan parameters — the 11 PDPA dimensions, certifications and financial-risk score.",
                         "Compare vendors", "https://www.booppa.io/compare",
                     ))
                 export_desc = ("CSV export of scan results for tender spreadsheets."
                                if not deep else
-                               "CSV export plus exportable Deep Scan PDF reports for shortlists and tender minutes.")
+                               "CSV export plus exportable scan PDF reports for shortlists and tender minutes.")
                 feats.append(_bf("Exports", export_desc, "Export results", dash))
                 if new_plan == "buyer_enterprise":
                     feats.append(_bf(

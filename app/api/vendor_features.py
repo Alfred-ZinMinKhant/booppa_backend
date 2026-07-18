@@ -310,50 +310,17 @@ def delete_webhook(
     db.delete(row); db.commit()
 
 
-def _hmac_sign(secret: str, body: bytes) -> str:
-    return hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-
-
-def _deliver(db: Session, endpoint: WebhookEndpoint, event_type: str, payload: dict) -> WebhookDelivery:
-    body_bytes = json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
-    signature = _hmac_sign(endpoint.secret, body_bytes)
-    status_code: Optional[int] = None
-    resp_body: Optional[str] = None
-    try:
-        with httpx.Client(timeout=10) as client:
-            resp = client.post(
-                endpoint.url,
-                content=body_bytes,
-                headers={
-                    "Content-Type": "application/json",
-                    "X-Booppa-Event": event_type,
-                    "X-Booppa-Signature": f"sha256={signature}",
-                    "User-Agent": "Booppa-Webhooks/1.0",
-                },
-            )
-        status_code = resp.status_code
-        resp_body = (resp.text or "")[:2048]
-    except Exception as e:
-        resp_body = f"network_error: {e}"
-
-    delivery = WebhookDelivery(
-        endpoint_id=endpoint.id, event_type=event_type, payload=payload,
-        status_code=status_code, response_body=resp_body,
-        success=(status_code is not None and 200 <= status_code < 300),
-    )
-    db.add(delivery); db.commit(); db.refresh(delivery)
-    return delivery
-
-
 @router.post("/webhooks/{wh_id}/test")
 def test_webhook(
     wh_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    from app.webhook_service import deliver as _deliver_webhook
+
     _require_feature(current_user, "webhooks", "Webhooks")
     row = _owned_webhook(db, current_user, wh_id)
-    delivery = _deliver(db, row, "test.ping", {
+    delivery = _deliver_webhook(db, row, "test.ping", {
         "event": "test.ping",
         "sent_at": datetime.now(timezone.utc).isoformat(),
         "user_id": str(current_user.id),

@@ -500,6 +500,26 @@ async def procurement_snapshot(
     verify     = db.query(VerifyRecord).filter(VerifyRecord.vendor_id == user.id).first()
     elevation  = fetch_elevation_metadata(db, vendor_id)
 
+    # ── Deep Scan (11-dim PDPA + certifications + financial risk) ────────────
+    # Reuse a recent scan if one exists within the requested window (re-views are
+    # free); otherwise run it inline — signal fetches are cached (ACRA 24h /
+    # PDPC 6h / SSL 12h) so subsequent scans are fast.
+    from app.services.deep_scan_service import latest_deep_scan, run_deep_scan
+
+    deep = latest_deep_scan(db, user.id)
+    stale_cut = datetime.now(timezone.utc) - timedelta(days=window)
+    is_fresh = False
+    if deep:
+        try:
+            is_fresh = datetime.fromisoformat(deep["generatedAt"] if "generatedAt" in deep else deep["generated_at"]) >= stale_cut
+        except (KeyError, ValueError, TypeError):
+            is_fresh = False
+    if not is_fresh:
+        try:
+            deep = await run_deep_scan(db, user)
+        except Exception as _e:  # noqa: BLE001 — never fail the whole snapshot
+            deep = deep or None
+
     cutoff  = datetime.now(timezone.utc) - timedelta(days=window)
     proof_view_count = 0
     if verify:
@@ -539,9 +559,106 @@ async def procurement_snapshot(
             "days":             window,
             "proofViewsInWindow": proof_view_count,
         },
+        "deepScan": {
+            "scanId":            deep.get("scan_id") if deep else None,
+            "overallPdpaScore":  deep.get("overall_pdpa_score") if deep else None,
+            "dimensions":        deep.get("dimensions") if deep else [],
+            "certifications":    deep.get("certifications") if deep else None,
+            "financialRisk":     deep.get("financial_risk") if deep else None,
+            "generatedAt":       deep.get("generated_at") if deep else None,
+        } if deep else None,
         "snapshotHash":       snapshot_hash,
         "generatedAt":        datetime.now(timezone.utc).isoformat(),
     }
+
+
+@router.get("/snapshot/{vendor_slug}/deep-scan.pdf")
+async def deep_scan_pdf(
+    vendor_slug: str,
+    db: Session  = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    """Download the Deep Scan (11-dim PDPA + certifications + financial risk) as PDF.
+
+    Renders the most recent persisted Deep Scan; runs one inline if none exists.
+    Re-rendering an existing scan is free (no DEEP credit charged here — the
+    credit is metered by `/snapshot/{slug}`).
+    """
+    _require_procurement(current_user)
+
+    user = db.query(User).filter(
+        (User.company == vendor_slug) | (User.email.like(f"{vendor_slug}@%"))
+    ).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Vendor not found.")
+
+    from app.services.deep_scan_service import latest_deep_scan, run_deep_scan
+    deep = latest_deep_scan(db, user.id)
+    if not deep:
+        deep = await run_deep_scan(db, user)
+
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from app.services.pdf_logo import draw_logo_header
+    except ImportError:
+        raise HTTPException(status_code=501, detail="PDF export requires reportlab.")
+
+    def _esc(s) -> str:
+        return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    ts_label = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    ts_file  = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    styles = get_unified_styles()
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=52, bottomMargin=30)
+    el = []
+    el.append(Paragraph("BOOPPA — Deep Scan Report", styles["Title"]))
+    el.append(Paragraph(f"Vendor: {_esc(user.company or vendor_slug)}", styles["Normal"]))
+    el.append(Paragraph(f"Generated: {ts_label} | By: {_esc(current_user.email)}", styles["Normal"]))
+    el.append(Paragraph(
+        f"Overall PDPA posture: {deep.get('overall_pdpa_score')}/100", styles["Normal"]))
+    el.append(Spacer(1, 6))
+    el.append(Paragraph(
+        "AI/heuristic assessment from public registry, website and security signals. "
+        "Not legal advice or PDPC certification. BOOPPA is not a law firm.",
+        styles["Normal"]))
+    el.append(Spacer(1, 14))
+
+    def _table(title: str, dims: list[dict]):
+        if not dims:
+            return
+        el.append(Paragraph(title, styles.get("Heading2", styles["Normal"])))
+        el.append(Spacer(1, 4))
+        data = [["Dimension", "Status", "Score"]]
+        for d in dims:
+            data.append([_esc(d["dimension_name"]), _esc(d["status"]), f"{d['score']}/100"])
+        t = Table(data, repeatRows=1, colWidths=[320, 110, 60])
+        t.setStyle(TableStyle([
+            ("BACKGROUND",  (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+            ("TEXTCOLOR",   (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE",    (0, 0), (-1, -1), 8),
+            ("GRID",        (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+            ("TOPPADDING",  (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        el.append(t)
+        el.append(Spacer(1, 14))
+
+    dims = deep.get("dimensions") or []
+    _table("PDPA Obligations (11 dimensions)", [d for d in dims if d.get("category") == "pdpa"])
+    _table("Certifications", [d for d in dims if d.get("category") == "certifications"])
+    _table("Financial Risk", [d for d in dims if d.get("category") == "financial_risk"])
+
+    doc.build(el, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=booppa_deep_scan_{vendor_slug}_{ts_file}.pdf"},
+    )
 
 
 @router.get("/ordering-policy")

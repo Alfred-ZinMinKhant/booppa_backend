@@ -133,7 +133,7 @@ def get_vendor_proof_activated_html(company_name: str, vp_score_display: str, vp
         <li>Verification status: <strong>BASIC (Identity Verified, Active)</strong></li>
         <li>Compliance score: <strong>{vp_score_display}</strong></li>
         <li>Procurement readiness: <strong>{vp_readiness_label}</strong></li>
-        <li>CAL Level 1 activated — personalised upgrade recommendations will appear in your dashboard</li>
+        <li>Commercial Activation Layer live — personalised upgrade recommendations are in your dashboard</li>
       </ul>
       {email_info_box(
           "<strong>What Vendor Proof attests:</strong> your identity and registration on BOOPPA — not a "

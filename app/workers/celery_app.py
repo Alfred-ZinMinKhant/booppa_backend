@@ -37,6 +37,7 @@ celery_app.conf.update(
     # Queue routing
     task_routes={
         "process_report_task": {"queue": "heavy_queue"},
+        "run_deep_scan_task": {"queue": "heavy_queue"},
         "fulfill_notarization_task": {"queue": "heavy_queue"},
         "fulfill_pdpa_task": {"queue": "heavy_queue"},
         "fulfill_vendor_proof_task": {"queue": "heavy_queue"},
@@ -190,6 +191,14 @@ celery_app.conf.update(
         "buyer-supplier-drift-sweep": {
             "task": "buyer_supplier_drift_sweep_task",
             "schedule": crontab(minute=15, hour="*/6"),
+        },
+        # Deep-Scan parameter drift: diff each watched supplier's two most recent
+        # Deep Scans and alert the buyer when a dimension worsens. Every 6 hours,
+        # offset from the status sweep; cache dedup keyed on the current scan_id
+        # ensures a given new scan alerts each buyer at most once.
+        "buyer-deep-scan-drift-sweep": {
+            "task": "buyer_deep_scan_drift_sweep_task",
+            "schedule": crontab(minute=45, hour="*/6"),
         },
         # Standard/Pro Suite: monthly MAS TRM board report on the 1st at 05:00 UTC.
         "trm-monthly-board-reports": {

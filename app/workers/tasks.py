@@ -58,6 +58,109 @@ from datetime import datetime, timedelta, timezone
 logger = logging.getLogger(__name__)
 
 
+# ── Outbound webhook emission ─────────────────────────────────────────────────
+# Real events are dispatched off the request/fulfillment path via this fast_queue
+# task so a slow or dead customer endpoint never blocks fulfillment. Delivery +
+# HMAC signing + logging all live in app.webhook_service.dispatch_event.
+
+@celery_app.task(bind=True, max_retries=2, name="emit_webhook_task")
+def emit_webhook_task(self, organisation_id: str, event_type: str, payload: dict):
+    """Deliver `event_type` to every active endpoint of an org. Best-effort."""
+    from app.webhook_service import dispatch_event
+    db = SessionLocal()
+    try:
+        n = dispatch_event(db, organisation_id, event_type, payload or {})
+        logger.info("emit_webhook_task %s org=%s → %d endpoint(s)", event_type, organisation_id, n)
+        return {"event": event_type, "delivered": n}
+    except Exception as e:
+        logger.warning("emit_webhook_task failed (%s, org=%s): %s", event_type, organisation_id, e)
+        return {"event": event_type, "delivered": 0, "error": str(e)}
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, max_retries=1, name="run_deep_scan_task")
+def run_deep_scan_task(self, vendor_id: str):
+    """Run a full Deep Scan for a vendor and persist DeepScanDimensionHistory.
+
+    Heavy (network-bound: ACRA + PDPC + SSL + hosting + live site scan), so it
+    runs on heavy_queue. Emits `report.completed` on success so webhook
+    subscribers see the Deep Scan land.
+    """
+    import asyncio
+    from app.core.models import User
+    from app.services.deep_scan_service import run_deep_scan
+
+    db = SessionLocal()
+    try:
+        vendor = db.query(User).filter(User.id == vendor_id).first()
+        if not vendor:
+            logger.warning("run_deep_scan_task: vendor %s not found", vendor_id)
+            return {"status": "not_found", "vendor_id": vendor_id}
+        result = asyncio.run(run_deep_scan(db, vendor))
+        try:
+            _emit_user_webhook(db, vendor.id, "report.completed", {
+                "report_id": result["scan_id"],
+                "framework": "deep_scan",
+                "company_name": result.get("company"),
+                "status": "completed",
+                "compliance_score": result.get("overall_pdpa_score"),
+            })
+        except Exception:
+            pass
+        logger.info("run_deep_scan_task done vendor=%s scan=%s score=%s",
+                    vendor_id, result["scan_id"], result.get("overall_pdpa_score"))
+        return {"status": "completed", "scan_id": result["scan_id"],
+                "overall_pdpa_score": result.get("overall_pdpa_score")}
+    except Exception as e:
+        logger.exception("run_deep_scan_task failed for vendor=%s: %s", vendor_id, e)
+        return {"status": "error", "vendor_id": vendor_id, "error": str(e)}
+    finally:
+        db.close()
+
+
+def _emit_user_webhook(db, user_id, event_type: str, payload: dict) -> None:
+    """Resolve the org owned by user_id and queue a webhook emission.
+
+    No-op (never raises) when the user has no organisation or no endpoints —
+    resolving the org is cheap and avoids queuing work that can't be delivered.
+    """
+    try:
+        from app.core.models import Organisation, WebhookEndpoint
+        org = db.query(Organisation).filter(Organisation.owner_user_id == user_id).first()
+        if not org:
+            return
+        has_ep = (
+            db.query(WebhookEndpoint.id)
+            .filter(
+                WebhookEndpoint.organisation_id == org.id,
+                WebhookEndpoint.is_active == True,  # noqa: E712
+            )
+            .first()
+        )
+        if not has_ep:
+            return
+        emit_webhook_task.delay(str(org.id), event_type, payload or {})
+    except Exception as e:  # emission must never break the caller's flow
+        logger.warning("_emit_user_webhook skipped (%s): %s", event_type, e)
+
+
+def _emit_report_completed(db, report) -> None:
+    """Emit `report.completed` for a finished report to the owner's webhooks."""
+    try:
+        ad = report.assessment_data if isinstance(report.assessment_data, dict) else {}
+        _emit_user_webhook(db, report.owner_id, "report.completed", {
+            "report_id": str(report.id),
+            "framework": report.framework,
+            "company_name": report.company_name,
+            "status": report.status,
+            "compliance_score": ad.get("compliance_score") or ad.get("score"),
+            "completed_at": report.completed_at.isoformat() if report.completed_at else None,
+        })
+    except Exception as e:
+        logger.warning("_emit_report_completed skipped: %s", e)
+
+
 def _set_assessment_values(report: Report, updates: dict) -> None:
     if not isinstance(updates, dict):
         return
@@ -1532,6 +1635,7 @@ async def process_report_workflow(report_id: str) -> dict:
                 except Exception:
                     db.rollback()
 
+                _emit_report_completed(db, report)
                 return {
                     "status": "completed",
                     "report_id": report_id,
@@ -1558,6 +1662,7 @@ async def process_report_workflow(report_id: str) -> dict:
                 except Exception:
                     db.rollback()
 
+                _emit_report_completed(db, report)
                 return {
                     "status": "completed",
                     "report_id": report_id,
@@ -1621,6 +1726,7 @@ async def process_report_workflow(report_id: str) -> dict:
             except Exception:
                 db.rollback()
 
+            _emit_report_completed(db, report)
             return {
                 "status": "completed",
                 "report_id": report_id,
@@ -1894,6 +2000,7 @@ async def process_report_workflow(report_id: str) -> dict:
         except Exception:
             db.rollback()
 
+        _emit_report_completed(db, report)
         return {
             "status": "completed",
             "report_id": report_id,
@@ -2046,6 +2153,21 @@ def fulfill_notarization_task(self, report_id: str, customer_email: str | None =
         from app.services.fulfillment import fulfill_notarization
         asyncio.run(fulfill_notarization(report_id=report_id, customer_email=customer_email))
         logger.info(f"Notarization fulfilled for report {report_id}")
+        # Emit notarization.anchored once the on-chain anchor is persisted.
+        db = SessionLocal()
+        try:
+            rep = db.query(Report).filter(Report.id == report_id).first()
+            if rep and rep.tx_hash:
+                ad = rep.assessment_data if isinstance(rep.assessment_data, dict) else {}
+                _emit_user_webhook(db, rep.owner_id, "notarization.anchored", {
+                    "report_id": str(rep.id),
+                    "tx_hash": rep.tx_hash,
+                    "file_hash": ad.get("file_hash") or rep.audit_hash,
+                    "original_filename": ad.get("original_filename"),
+                    "anchored_at": ad.get("blockchain_anchored_at"),
+                })
+        finally:
+            db.close()
     except Exception as exc:
         logger.error(f"Notarization fulfillment failed for {report_id}: {exc}")
         countdown = 60 * (2 ** self.request.retries)
@@ -3580,6 +3702,13 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
             attachments=digest_attachments or None,
         ))
         logger.info(f"Vendor digest ({plan_label}, first_cycle={is_first_cycle}) sent for vendor {vendor_id}")
+        _emit_user_webhook(db, vendor_id, "vendor.health_check.completed", {
+            "vendor_id": str(vendor_id),
+            "plan_label": plan_label,
+            "trust_score": getattr(score_record, "total_score", None),
+            "is_first_cycle": bool(is_first_cycle),
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        })
     except Exception as exc:
         logger.error(f"Vendor Active health check failed for {vendor_id}: {exc}")
         raise self.retry(exc=exc, countdown=300)
@@ -4282,6 +4411,106 @@ def buyer_supplier_drift_sweep_task(demo: bool = False):
         return {"orgs": len(orgs), "alerts": enqueued}
     except Exception as exc:
         logger.error(f"Buyer supplier drift sweep failed: {exc}")
+        db.rollback()
+        return {"error": str(exc)}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="buyer_deep_scan_drift_sweep_task")
+def buyer_deep_scan_drift_sweep_task(demo: bool = False):
+    """Deep-Scan parameter drift sweep (Phase 4).
+
+    Delivers on the "alerts as compliance drifts across Deep Scan parameters"
+    promise. Walks every buyer org's watchlist, resolves each supplier to a
+    vendor `User`, diffs that vendor's two most recent Deep Scans
+    (`DeepScanDimensionHistory`), and — when one or more dimensions *worsened*
+    (Compliant → Partial/Non-Compliant, or Partial → Non-Compliant) — enqueues
+    the same tiered drift alert the supplier-status sweep uses.
+
+    Dedup is keyed on the *current* scan_id in the shared cache, so a given new
+    Deep Scan can only raise a drift alert to a given buyer once, no matter how
+    often the sweep runs.
+    """
+    db = SessionLocal()
+    enqueued = 0
+    try:
+        from app.core.models import User, Organisation, VendorWatchlistItem
+        from app.core.cache import cache as _cache
+        from app.services.buyer_procurement_insights import _resolve_watchlist_vendor_user
+        from app.services.deep_scan_service import deep_scan_drift_for_vendor
+        from html import escape as _html_escape
+
+        orgs = db.query(Organisation).all()
+        for org in orgs:
+            owner = db.query(User).filter(User.id == org.owner_user_id).first()
+            if not owner or not owner.email:
+                continue
+            plan = (getattr(owner, "plan", "") or "").lower().strip()
+            items = (
+                db.query(VendorWatchlistItem)
+                .filter(VendorWatchlistItem.organisation_id == org.id)
+                .all()
+            )
+            seen_refs: set = set()
+            for it in items:
+                if it.vendor_ref in seen_refs:
+                    continue
+                seen_refs.add(it.vendor_ref)
+
+                vuid = _resolve_watchlist_vendor_user(db, it.vendor_ref)
+                if not vuid:
+                    continue
+
+                drift = deep_scan_drift_for_vendor(db, vuid)
+                if not drift:
+                    continue
+
+                # Dedup: one alert per (buyer, current scan) — survives re-sweeps.
+                dedup_key = _cache.cache_key(
+                    f"deep_scan_drift:{owner.id}:{drift['current_scan_id']}"
+                )
+                try:
+                    if _cache.get(dedup_key):
+                        continue
+                except Exception:
+                    pass
+
+                worsened = drift["worsened"]
+                rows_html = "".join(
+                    f'<li style="margin:4px 0;"><strong>{_html_escape(w["dimension_name"])}</strong>: '
+                    f'{_html_escape(w["previous_status"])} → '
+                    f'<span style="color:#b91c1c;">{_html_escape(w["current_status"])}</span> '
+                    f'({int(w["previous_score"])} → {int(w["current_score"])})</li>'
+                    for w in worsened
+                )
+                detail_html = (
+                    "This supplier's latest Deep Scan shows compliance drift on "
+                    f"{len(worsened)} parameter{'s' if len(worsened) != 1 else ''}:"
+                    f'<ul style="margin:8px 0 0;padding-left:18px;">{rows_html}</ul>'
+                )
+                headline = (
+                    f"Deep Scan drift on {len(worsened)} "
+                    f"parameter{'s' if len(worsened) != 1 else ''}"
+                )
+
+                buyer_supplier_drift_alert_task.delay(
+                    str(owner.id), owner.email, it.vendor_ref,
+                    it.vendor_name or it.vendor_ref,
+                    "deep_scan_drift", headline, detail_html,
+                    product_type=plan, demo=demo,
+                )
+                try:
+                    _cache.set(dedup_key, {"alerted": True}, ttl=60 * 60 * 24 * 90)
+                except Exception:
+                    pass
+                enqueued += 1
+
+        logger.info("[DeepScanDriftSweep] evaluated %d orgs, enqueued %d alerts (demo=%s)",
+                    len(orgs), enqueued, demo)
+        return {"orgs": len(orgs), "alerts": enqueued}
+    except Exception as exc:
+        logger.error(f"Deep Scan drift sweep failed: {exc}")
         db.rollback()
         return {"error": str(exc)}
     finally:
@@ -5426,6 +5655,16 @@ def check_compliance_drift_task(self, vendor_id: str, vendor_email: str, framewo
         severity = result["severity"]
         dim_flips = result.get("dimension_flips") or []
         color = "#dc2626" if severity == "CRITICAL" else "#d97706"
+
+        _emit_user_webhook(db, vendor_id, "compliance_drift.detected", {
+            "event_id": str(result.get("event_id")) if result.get("event_id") else None,
+            "framework": framework,
+            "severity": severity,
+            "previous_score": prev,
+            "current_score": cur,
+            "delta_pct": delta_pct,
+            "dimension_flips": dim_flips,
+        })
 
         # Tier 6: pull confirmed remediations since the previous report so we
         # can credit the user's work in the same email.
