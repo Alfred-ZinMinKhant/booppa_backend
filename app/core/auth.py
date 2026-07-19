@@ -9,6 +9,58 @@ logger = logging.getLogger(__name__)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
+# ── Global access-token revocation cutoff ─────────────────────────────────────
+# Access tokens are stateless and long-lived (24h), so revoking refresh tokens
+# alone leaves outstanding access tokens usable. We stamp every access token with
+# `iat` and record a per-user cutoff epoch in Redis; any access token issued
+# before the cutoff is rejected. This is best-effort: if Redis is unreachable we
+# fail OPEN (accept the token) rather than lock every user out on a Redis blip.
+_revoke_redis = None
+_revoke_redis_tried = False
+
+
+def _get_revoke_redis():
+    global _revoke_redis, _revoke_redis_tried
+    if _revoke_redis is None and not _revoke_redis_tried:
+        _revoke_redis_tried = True
+        try:
+            import redis as _redis_lib
+            r = _redis_lib.from_url(settings.REDIS_URL, decode_responses=True)
+            r.ping()
+            _revoke_redis = r
+        except Exception as exc:
+            logger.warning("[Auth] revoke-cutoff Redis unavailable: %s", exc)
+    return _revoke_redis
+
+
+def revoke_user_tokens(email: str) -> None:
+    """Invalidate every access token issued to `email` before now."""
+    r = _get_revoke_redis()
+    if not r:
+        logger.warning("[Auth] revoke_user_tokens: Redis unavailable, access-token cutoff not set for %s", email)
+        return
+    try:
+        # Cutoff = now (whole seconds, matching how `iat` is encoded). Tokens with
+        # iat < cutoff are rejected; a fresh login in the same second (iat == cutoff)
+        # still works, so re-login immediately after "revoke all" is not blocked.
+        cutoff = int(datetime.now(timezone.utc).timestamp())
+        r.set(f"revoked_before:{email}", cutoff)
+    except Exception as exc:
+        logger.warning("[Auth] revoke_user_tokens failed for %s: %s", email, exc)
+
+
+def _revoked_before(email: str) -> int:
+    r = _get_revoke_redis()
+    if not r:
+        return 0
+    try:
+        v = r.get(f"revoked_before:{email}")
+        return int(v) if v else 0
+    except Exception as exc:
+        logger.warning("[Auth] revoked_before lookup failed for %s: %s", email, exc)
+        return 0
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     password_bytes = plain_password.encode("utf-8")
     if len(password_bytes) > 72:
@@ -26,8 +78,10 @@ def get_password_hash(password: str) -> str:
 
 def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(hours=24))
-    to_encode.update({"exp": expire, "type": "access"})
+    now = datetime.now(timezone.utc)
+    expire = now + (expires_delta or timedelta(hours=24))
+    # `iat` lets us revoke outstanding access tokens via a per-user cutoff.
+    to_encode.update({"exp": expire, "iat": now, "type": "access"})
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm="HS256")
 
 
@@ -94,6 +148,14 @@ def verify_access_token(token: str):
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
         if payload.get("type") != "access":
             raise JWTError("Invalid token type")
+        # Reject tokens issued before the user's revocation cutoff (e.g. after a
+        # "revoke all sessions"). Fails open if Redis is down (cutoff == 0).
+        sub = payload.get("sub")
+        iat = payload.get("iat")
+        if sub and iat is not None:
+            cutoff = _revoked_before(sub)
+            if cutoff and int(iat) < cutoff:
+                raise JWTError("Token revoked")
         return payload
     except JWTError as e:
         logger.error(f"Access token verification failed: {e}")

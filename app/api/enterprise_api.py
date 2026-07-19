@@ -1009,9 +1009,9 @@ async def saml_acs(org_slug: str, request: Request, db: Session = Depends(get_db
     # Optionally persist refresh token if the auth router's store is available.
     try:
         from app.api.auth import _store_token  # type: ignore
-        _store_token(refresh)
-    except Exception:
-        pass
+        _store_token(refresh, email=user.email)
+    except Exception as exc:
+        logger.warning("[SSO] refresh-token persist failed for %s: %s", user.email, exc)
 
     import os as _os
     frontend_base = (

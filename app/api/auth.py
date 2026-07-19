@@ -40,11 +40,15 @@ def _get_redis():
     return _redis_client
 
 
-def _store_token(token: str) -> None:
+def _store_token(token: str, email: str | None = None) -> None:
     r = _get_redis()
     if r:
         try:
             r.setex(f"refresh:{token}", _REFRESH_TTL, "1")
+            # Per-user index so /revoke can enumerate a user's refresh tokens.
+            if email:
+                r.sadd(f"refresh_owner:{email}", token)
+                r.expire(f"refresh_owner:{email}", _REFRESH_TTL)
             return
         except Exception as exc:
             logger.warning("[Auth] Redis setex failed: %s", exc)
@@ -61,15 +65,34 @@ def _token_exists(token: str) -> bool:
     return token in _token_fallback
 
 
-def _revoke_token(token: str) -> None:
+def _revoke_token(token: str, email: str | None = None) -> None:
     r = _get_redis()
     if r:
         try:
             r.delete(f"refresh:{token}")
+            if email:
+                r.srem(f"refresh_owner:{email}", token)
             return
         except Exception as exc:
             logger.warning("[Auth] Redis delete failed: %s", exc)
     _token_fallback.discard(token)
+
+
+def _revoke_all_for_email(email: str) -> int:
+    """Delete every stored refresh token for `email`. Returns count removed."""
+    r = _get_redis()
+    if not r:
+        # In-memory fallback can't enumerate by email — best effort only.
+        return 0
+    try:
+        tokens = r.smembers(f"refresh_owner:{email}") or set()
+        for tok in tokens:
+            r.delete(f"refresh:{tok}")
+        r.delete(f"refresh_owner:{email}")
+        return len(tokens)
+    except Exception as exc:
+        logger.warning("[Auth] Redis revoke-all failed for %s: %s", email, exc)
+        return 0
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -158,7 +181,7 @@ async def login_form(
         )
     access_token  = create_access_token(data={"sub": user.email})
     refresh_token = create_refresh_token(data={"sub": user.email})
-    _store_token(refresh_token)
+    _store_token(refresh_token, email=user.email)
     return TokenWithRefresh(
         access_token=access_token, token_type="bearer", refresh_token=refresh_token,
         plan=getattr(user, "plan", "free") or "free",
@@ -175,7 +198,7 @@ async def login_json(body: LoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     access_token  = create_access_token(data={"sub": user.email})
     refresh_token = create_refresh_token(data={"sub": user.email})
-    _store_token(refresh_token)
+    _store_token(refresh_token, email=user.email)
     return TokenWithRefresh(
         access_token=access_token, token_type="bearer", refresh_token=refresh_token,
         plan=getattr(user, "plan", "free") or "free",
@@ -193,7 +216,7 @@ async def register(body: RegisterRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=409, detail=str(e))
     access_token  = create_access_token(data={"sub": user.email})
     refresh_token = create_refresh_token(data={"sub": user.email})
-    _store_token(refresh_token)
+    _store_token(refresh_token, email=user.email)
     return TokenWithRefresh(
         access_token=access_token, token_type="bearer", refresh_token=refresh_token,
         plan="free",
@@ -235,7 +258,7 @@ async def register_procurement(body: ProcurementRegisterRequest, db: Session = D
 
     access_token = create_access_token(data={"sub": user.email})
     refresh_token = create_refresh_token(data={"sub": user.email})
-    _store_token(refresh_token)
+    _store_token(refresh_token, email=user.email)
     return TokenWithRefresh(
         access_token=access_token, token_type="bearer", refresh_token=refresh_token,
         plan="free",
@@ -252,9 +275,9 @@ async def refresh_access_token(refresh_token: str = Body(..., embed=True)):
     if not payload:
         _revoke_token(refresh_token)
         raise HTTPException(status_code=401, detail="Invalid refresh token")
-    _revoke_token(refresh_token)
+    _revoke_token(refresh_token, email=payload.get("sub"))
     new_refresh = create_refresh_token(data={"sub": payload["sub"]})
-    _store_token(new_refresh)
+    _store_token(new_refresh, email=payload.get("sub"))
     return TokenWithRefresh(
         access_token=create_access_token(data={"sub": payload["sub"]}),
         token_type="bearer",
@@ -265,10 +288,34 @@ async def refresh_access_token(refresh_token: str = Body(..., embed=True)):
 # ── Revoke ────────────────────────────────────────────────────────────────────
 
 @router.post("/revoke", status_code=204)
-async def revoke_all_refresh_tokens(email: str = Body(..., embed=True)):
-    # With Redis, we can't enumerate by email without a separate index.
-    # For now, log the intent — full revocation requires a token-to-email index.
-    logger.info("[Auth] Revoke all tokens requested for %s (Redis: per-token revocation only)", email)
+async def revoke_all_refresh_tokens(
+    token: str = Security(oauth2_scheme),
+    email: Optional[str] = Body(None, embed=True),
+    db: Session = Depends(get_db),
+):
+    """Revoke every session for the caller (or, for admins, for `email`).
+
+    Deletes all stored refresh tokens for the user AND stamps an access-token
+    cutoff so outstanding 24h access tokens are rejected immediately.
+    """
+    from app.core.auth import revoke_user_tokens
+    payload = verify_access_token(token) if token else None
+    if not payload or not payload.get("sub"):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    caller_email = payload["sub"]
+
+    target = caller_email
+    if email and email != caller_email:
+        # Only an admin may revoke another user's sessions.
+        from app.core.repositories.user_repository import UserRepository
+        caller = UserRepository.get_by_email(db, caller_email)
+        if not caller or not getattr(caller, "is_admin", False):
+            raise HTTPException(status_code=403, detail="Not permitted to revoke another user's sessions")
+        target = email
+
+    removed = _revoke_all_for_email(target)
+    revoke_user_tokens(target)
+    logger.info("[Auth] Revoked %d refresh token(s) + set access cutoff for %s", removed, target)
 
 
 # ── Me ────────────────────────────────────────────────────────────────────────

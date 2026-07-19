@@ -287,9 +287,15 @@ def list_tenders(
         .all()
     )
 
-    # Fallback mock data only when DB is truly empty after sync attempt
+    # No fabricated fallback: an empty tender table returns an honest empty
+    # state, never invented tenders (this is a procurement product — fake
+    # agency/ref/value rows would mislead buyers).
     if not tenders:
-        return {"tenders": _mock_tenders(), "source": "mock"}
+        return {
+            "tenders": [],
+            "source": "live",
+            "message": "No open tenders at the moment — check back soon.",
+        }
 
     def _fmt_value(v: Optional[float]) -> str:
         if not v:
@@ -319,16 +325,6 @@ def list_tenders(
         ],
         "source": "live",
     }
-
-
-def _mock_tenders() -> list:
-    return [
-        {"agency": "Ministry of Health",           "ref": "MOH/IT/2026/041", "title": "Electronic Health Records System Upgrade",     "value": "S$4.2M",  "closing": "30 May 2026", "url": None},
-        {"agency": "Land Transport Authority",     "ref": "LTA/DIG/2026/018","title": "Predictive Analytics Platform for Traffic",    "value": "S$2.8M",  "closing": "15 Jun 2026", "url": None},
-        {"agency": "Ministry of Education",        "ref": "MOE/ICT/2026/055","title": "Cybersecurity Monitoring Solution",            "value": "S$1.5M",  "closing": "22 Jun 2026", "url": None},
-        {"agency": "CPF Board",                    "ref": "CPFB/IT/2026/009","title": "Cloud Infrastructure Migration — Phase 3",     "value": "S$6.1M",  "closing": "8 Jul 2026",  "url": None},
-        {"agency": "National Environment Agency",  "ref": "NEA/DT/2026/033", "title": "IoT Sensor Data Management Platform",         "value": "S$890K",  "closing": "14 Jul 2026", "url": None},
-    ]
 
 
 # ── GET /stats ───────────────────────────────────────────────────────────────

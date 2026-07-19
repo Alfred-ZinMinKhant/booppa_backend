@@ -106,8 +106,8 @@ def run_deep_scan_task(self, vendor_id: str):
                 "status": "completed",
                 "compliance_score": result.get("overall_pdpa_score"),
             })
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("[DeepScan] Failed to persist scan result metadata: %s", exc)
         logger.info("run_deep_scan_task done vendor=%s scan=%s score=%s",
                     vendor_id, result["scan_id"], result.get("overall_pdpa_score"))
         return {"status": "completed", "scan_id": result["scan_id"],
@@ -2961,8 +2961,8 @@ def fulfill_cover_sheet_task(
                     u.pending_cover_sheet = True
                     db_r.commit()
                 db_r.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[CoverSheet] Failed to set pending_cover_sheet flag for %s: %s", customer_email, exc)
             countdown = min(600, 60 * (self.request.retries + 1))
             logger.info(
                 f"[CoverSheet] Deferring — pdpa_done={pdpa_done} rfp_done={rfp_done} "
@@ -3459,8 +3459,8 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
             from app.services.vendor_active_insights import get_competitor_pulse, get_pdpa_drift
             try:
                 tender_matches = get_tender_matches(db, vendor_id, limit=8, with_win_probability=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[VendorPro] tender matches unavailable for vendor %s: %s", vendor_id, exc)
             competitor_pulse = get_competitor_pulse(db, vendor_id)
             pdpa_drift = get_pdpa_drift(db, vendor_id)
 
@@ -9119,8 +9119,8 @@ def fulfill_evidence_pack_task(self, evidence_pack_id: str):
             row = db.query(EvidencePack).filter(EvidencePack.id == evidence_pack_id).first()
             if row:
                 row.status = "error"; row.error = str(exc)[:1000]; db.commit()
-        except Exception:
-            pass
+        except Exception as mark_exc:
+            logger.warning("[EvidencePack] Could not record error state for %s: %s", evidence_pack_id, mark_exc)
         raise self.retry(exc=exc, countdown=300)
     finally:
         db.close()
@@ -9236,8 +9236,8 @@ def anchor_scan_ledger_task(self, ledger_id: str):
                 if row:
                     row.anchor_error = str(exc)[:500]
                     db.commit()
-            except Exception:
-                pass
+            except Exception as mark_exc:
+                logger.warning("[Anchor] Could not record anchor_error on ledger %s: %s", ledger_id, mark_exc)
             logger.error("[scan-anchor] failed for %s: %s", ledger_id, exc)
     finally:
         db.close()

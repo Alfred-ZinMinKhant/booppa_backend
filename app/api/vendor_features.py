@@ -576,8 +576,12 @@ def get_sso(
     _require_feature(current_user, "sso", "SSO")
     org = _get_or_create_org(db, current_user)
     row = db.query(SsoConfig).filter(SsoConfig.organisation_id == org.id).first()
+    # The Service-Provider URLs the vendor must hand to their IdP. These point at
+    # the real, org-keyed SSO endpoints in enterprise_api.py that actually process
+    # the assertions for this org's SsoConfig row.
+    sp_urls = _sso_sp_urls(org.slug)
     if not row:
-        return {"configured": False}
+        return {"configured": False, **sp_urls}
     return {
         "configured": True,
         "protocol": row.protocol,
@@ -590,6 +594,21 @@ def get_sso(
         "allowed_email_domain": None,  # existing schema has no domain col
         "enabled": bool(row.is_active),
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        **sp_urls,
+    }
+
+
+def _sso_sp_urls(org_slug: str) -> dict:
+    """Build the SP-side URLs a vendor configures in their IdP."""
+    from app.services import saml_service
+    base = saml_service._base_url().rstrip("/")
+    # Key names match what the frontend vendor SSO page reads (acs_url /
+    # metadata_url / login_url); oidc_redirect_uri is extra for OIDC setups.
+    return {
+        "acs_url": saml_service.sp_acs_url(org_slug),
+        "metadata_url": saml_service.sp_entity_id(org_slug),
+        "login_url": f"{base}/api/v1/enterprise/sso/saml/login/{org_slug}",
+        "oidc_redirect_uri": f"{base}/api/v1/enterprise/sso/oidc/callback",
     }
 
 
@@ -617,27 +636,11 @@ def put_sso(
     return {"saved": True, "enabled": row.is_active}
 
 
-@router.post("/sso/acs")
-def saml_acs():
-    """SAML Assertion Consumer Service — stub.
-
-    Add `python3-saml`, validate the SAMLResponse against the stored IdP
-    metadata, then issue a JWT for the matched user. Refusing requests until
-    the verification path is implemented so we never accept unsigned assertions.
-    """
-    raise HTTPException(
-        status_code=501,
-        detail="SAML ACS endpoint not yet implemented. Install python3-saml and wire up assertion verification before enabling SSO in production.",
-    )
-
-
-@router.get("/sso/oidc/callback")
-def oidc_callback():
-    """OIDC redirect target — stub. Wire authlib code-exchange flow."""
-    raise HTTPException(
-        status_code=501,
-        detail="OIDC callback not yet implemented. Install authlib and wire up the code-exchange flow before enabling SSO in production.",
-    )
+# NOTE: SAML assertion consumption (ACS) and the OIDC callback are handled by the
+# real, org-keyed endpoints in app/api/enterprise_api.py
+# (/enterprise/sso/saml/acs/{org_slug}, /enterprise/sso/oidc/callback), which
+# process the same SsoConfig rows written above. The SP URLs the vendor needs are
+# surfaced by GET /vendor/sso via _sso_sp_urls(). No per-vendor ACS stub here.
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

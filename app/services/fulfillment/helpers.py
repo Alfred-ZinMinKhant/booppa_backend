@@ -285,6 +285,32 @@ async def _alert_payment_fulfillment_issue(
         f"email={customer_email} session={session_id} event={event_id} extra={extra_str}"
     )
 
+    # Idempotency: a failing fulfillment (e.g. out-of-gas anchoring) is retried by
+    # Celery, and each retry re-enters this alert. Without a guard the customer
+    # gets the SAME "one small delay" email dozens of times. Key on the failure
+    # identity (session OR email+product+reason, since session_id can be missing),
+    # backed by an atomic SET-NX so concurrent retries can't both send.
+    try:
+        from app.core.cache import cache as _alert_cache
+        _alert_base = (
+            f"{session_id or ''}|{(customer_email or '').strip().lower()}"
+            f"|{product_type or ''}|{reason or ''}"
+        )
+    except Exception:
+        _alert_cache = None
+        _alert_base = None
+
+    def _alert_should_send(kind: str, ttl: int) -> bool:
+        # Fail OPEN (send) if the cache is unavailable — better a duplicate than
+        # a silently dropped payment alert.
+        if _alert_cache is None or not _alert_base:
+            return True
+        try:
+            key = _alert_cache.cache_key(f"fulfill_alert:{kind}:{_alert_base}")
+            return _alert_cache.add(key, {"sent": True}, ttl=ttl)
+        except Exception:
+            return True
+
     try:
         body_html = f"""
         <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;padding:24px;">
@@ -300,15 +326,21 @@ async def _alert_payment_fulfillment_issue(
           </table>
         </div>
         """
-        await EmailService().send_html_email(
-            to_email=settings.SUPPORT_EMAIL,
-            subject=f"[FULFILLMENT] {reason} ({product_type or '?'})",
-            body_html=body_html,
-        )
+        # Ops: at most once per hour per failure identity, so a retry storm
+        # doesn't bury the team in 30 identical alerts (they still get re-pinged
+        # hourly while the problem persists).
+        if _alert_should_send("ops", ttl=3600):
+            await EmailService().send_html_email(
+                to_email=settings.SUPPORT_EMAIL,
+                subject=f"[FULFILLMENT] {reason} ({product_type or '?'})",
+                body_html=body_html,
+            )
     except Exception as alert_err:
         logger.error(f"[Fulfillment-ALERT] ops email failed: {alert_err}")
 
-    if notify_customer and customer_email:
+    # Customer: exactly once per failure identity for a week — never spam the
+    # buyer with repeated "one small delay" notices on every retry.
+    if notify_customer and customer_email and _alert_should_send("cust", ttl=604800):
         try:
             await EmailService().send_html_email(
                 to_email=customer_email,

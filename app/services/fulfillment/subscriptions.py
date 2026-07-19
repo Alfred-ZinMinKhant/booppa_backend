@@ -303,8 +303,8 @@ async def _activate_subscription(
             #   • anniversary >= today.day on the last day of a short month
             # so a Jan-31 subscriber gets their cycle on Feb 28, Apr 30, etc.
             user.subscription_anniversary_day = _now.day
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("[Subscriptions] Failed to set billing anniversary for %s: %s", getattr(user, "email", "?"), exc)
         if stripe_subscription_id:
             user.stripe_subscription_id = stripe_subscription_id
         if stripe_customer_id:
