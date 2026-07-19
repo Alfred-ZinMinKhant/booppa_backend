@@ -403,15 +403,18 @@ def run_free_scan(website_url: str) -> dict[str, Any]:
         # sites (many SMEs run expired/self-signed certs) and only reads public
         # HTML — no credentials or PII are sent, so a broken cert must not abort
         # the compliance scan. MITM risk is limited to tampered public markup.
-        with httpx.Client(timeout=TIMEOUT, follow_redirects=True, verify=False) as client:  # nosec B501
+        from app.services.http_guard import guarded_get
+        # SSRF guard: follow redirects manually so every hop is re-validated as a
+        # public address (blocks a redirect to the cloud metadata endpoint).
+        with httpx.Client(timeout=TIMEOUT, follow_redirects=False, verify=False) as client:  # nosec B501
             # First attempt with browser-like headers (avoids 403 from WAFs)
-            resp = client.get(website_url, headers=_BROWSER_HEADERS)
+            resp = guarded_get(client, website_url, headers=_BROWSER_HEADERS)
 
             # If 403, retry with different accept header / no bot UA
             if resp.status_code == 403:
                 logger.info(f"Got 403 for {website_url}, retrying with alternate headers")
                 alt_headers = {**_BROWSER_HEADERS, "Accept": "*/*"}
-                resp = client.get(website_url, headers=alt_headers)
+                resp = guarded_get(client, website_url, headers=alt_headers)
 
             if resp.status_code == 403:
                 findings.append({
@@ -441,7 +444,7 @@ def run_free_scan(website_url: str) -> dict[str, Any]:
                         f"Got {resp.status_code} for {website_url}, retrying homepage at {alt_url}"
                     )
                     try:
-                        alt_resp = client.get(alt_url, headers=_BROWSER_HEADERS)
+                        alt_resp = guarded_get(client, alt_url, headers=_BROWSER_HEADERS)
                         if alt_resp.status_code < 400:
                             resp = alt_resp
                             website_url = alt_url
@@ -483,7 +486,7 @@ def run_free_scan(website_url: str) -> dict[str, Any]:
                         f"waiting {LOADING_RETRY_DELAY}s before retry {attempt}/{MAX_LOADING_RETRIES}"
                     )
                     time.sleep(LOADING_RETRY_DELAY)
-                    resp = client.get(website_url, headers=_BROWSER_HEADERS)
+                    resp = guarded_get(client, website_url, headers=_BROWSER_HEADERS)
                     final_url = str(resp.url)
                     response_headers = {k.lower(): v for k, v in resp.headers.items()}
                     html = resp.text

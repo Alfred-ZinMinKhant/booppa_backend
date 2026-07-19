@@ -63,10 +63,13 @@ async def _fetch_site_text(website: str) -> tuple[str, Optional[str]]:
         return "", None
     url = website if website.startswith("http") else f"https://{website}"
     try:
+        from app.services.http_guard import guarded_get_async
         async with httpx.AsyncClient(
-            timeout=_FETCH_TIMEOUT, follow_redirects=True, verify=False  # nosec B501
+            timeout=_FETCH_TIMEOUT, follow_redirects=False, verify=False  # nosec B501
         ) as client:
-            resp = await client.get(url, headers=_BROWSER_HEADERS)
+            # SSRF guard: validate the target and every redirect hop resolves to a
+            # public address before connecting (blocks the cloud metadata endpoint).
+            resp = await guarded_get_async(client, url, headers=_BROWSER_HEADERS)
             return (resp.text or "")[:200_000], str(resp.url)
     except Exception as e:  # noqa: BLE001 — network best-effort
         logger.info("Deep Scan site fetch failed for %s: %s", url, e)
