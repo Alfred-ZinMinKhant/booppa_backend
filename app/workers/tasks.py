@@ -3895,6 +3895,8 @@ def buyer_procurement_digest_task(
                     "company": company,
                     "buyer_email": user_email,
                     "plan_label": plan_label,
+                    "product_type": product_type,
+                    "tier": tier,
                 })
                 if welcome_pdf:
                     digest_attachments.append((f"BOOPPA-Welcome-Pack-{_safe_co}.pdf", welcome_pdf))
@@ -4044,7 +4046,7 @@ def buyer_supplier_snapshot_task(
         data = build_certificate_data(
             db, buyer_user_id, vendor_ref,
             vendor_name=vendor_name, notes=notes, is_certificate=wants_cert,
-            sample_data=demo,
+            sample_data=demo, buyer_tier=tier,
         )
         supplier_name = data.get("supplier_name") or vendor_ref
 
@@ -4221,6 +4223,7 @@ def buyer_supplier_drift_alert_task(
             data = build_certificate_data(
                 db, buyer_user_id, vendor_ref,
                 vendor_name=vendor_name, is_certificate=True, sample_data=demo,
+                buyer_tier=tier,
             )
             pdf = generate_certificate_pdf(data)
             ev_hash = evidence_hash_for(pdf)
@@ -4247,6 +4250,7 @@ def buyer_supplier_drift_alert_task(
             data = build_certificate_data(
                 db, buyer_user_id, vendor_ref,
                 vendor_name=vendor_name, is_certificate=False, sample_data=demo,
+                buyer_tier=tier,
             )
             pdf = generate_certificate_pdf(data)
 

@@ -87,6 +87,7 @@ def generate_certificate_pdf(data: Dict[str, Any]) -> bytes:
     tx_hash = data.get("tx_hash")
     anchored = bool(data.get("anchored"))
     is_cert = bool(data.get("is_certificate"))
+    buyer_tier = (data.get("buyer_tier") or "").lower().strip()
     # Demo/test-checkout artifact for a fictional supplier — mark it unmistakably so
     # a screenshotted "certificate" can never be mistaken for a real one.
     sample_data = bool(data.get("sample_data"))
@@ -184,10 +185,20 @@ def generate_certificate_pdf(data: Dict[str, Any]) -> bytes:
         story.append(Spacer(1, 4))
         story.append(Paragraph(_xml_escape(tx_hash), s["mono"]))
     else:
-        story.append(Paragraph(
-            "This snapshot reflects the supplier's verified state at the timestamp above. "
-            "An anchored, independently-verifiable certificate is available on Pro and "
-            "Enterprise plans.", s["body"]))
+        # Only Starter buyers see the upgrade upsell. Pro/Enterprise already
+        # include on-chain anchoring, so telling them it's "available on Pro and
+        # Enterprise plans" is a wrong-plan message — the anchor simply hasn't
+        # landed yet (e.g. supplier not a claimed/verified profile).
+        if buyer_tier in ("pro", "enterprise"):
+            story.append(Paragraph(
+                "This snapshot reflects the supplier's verified state at the timestamp above. "
+                "An anchored, independently-verifiable certificate is generated once this "
+                "supplier completes verification on the platform.", s["body"]))
+        else:
+            story.append(Paragraph(
+                "This snapshot reflects the supplier's verified state at the timestamp above. "
+                "An anchored, independently-verifiable certificate is available on Pro and "
+                "Enterprise plans.", s["body"]))
 
     story.append(Spacer(1, 18))
     story.append(Paragraph(
@@ -233,6 +244,7 @@ def build_certificate_data(
     notes: str | None = None,
     is_certificate: bool = False,
     sample_data: bool = False,
+    buyer_tier: str | None = None,
 ) -> Dict[str, Any]:
     """Gather a supplier's current verified state for the certificate/snapshot.
 
@@ -258,6 +270,7 @@ def build_certificate_data(
         "notes": notes,
         "is_certificate": is_certificate,
         "sample_data": sample_data,
+        "buyer_tier": (buyer_tier or "").lower().strip() or None,
     }
     try:
         vuid = _resolve_watchlist_vendor_user(db, vendor_ref)
