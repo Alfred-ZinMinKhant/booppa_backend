@@ -593,7 +593,8 @@ async def trigger_bundle_cover_sheet(payload: dict):
                        "If you bought one and your cover sheet has already been generated, check your email.",
             )
         if not company_name:
-            company_name = (user.company or "").strip() or "Your Organisation"
+            from app.services.evidence_enricher import display_legal_name
+            company_name = display_legal_name(user)
         # Clear flag now so duplicate clicks don't re-fire
         user.pending_cover_sheet = False
         db.commit()

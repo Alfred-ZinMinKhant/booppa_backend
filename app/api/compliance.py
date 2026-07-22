@@ -342,7 +342,8 @@ async def regenerate_cover_sheet(email: str = Form(...)):
                 status_code=400,
                 detail="No existing Compliance Cover Sheet found for this account.",
             )
-        company_name = (user.company or "").strip() or "Your Organisation"
+        from app.services.evidence_enricher import display_legal_name
+        company_name = display_legal_name(user)
     finally:
         db.close()
 
@@ -455,7 +456,8 @@ async def upload_signed_cover_sheet(
         user.compliance_evidence_credits = max(0, credits - 1)
         user.signed_cover_sheet_uploaded = True
         user.pending_cover_sheet = False
-        company_name = (user.company or "").strip() or "Your Organisation"
+        from app.services.evidence_enricher import display_legal_name
+        company_name = display_legal_name(user)
         db.commit()
         logger.info(
             f"[SignedCS] {email} uploaded signed cover sheet (report={report_id}), "
@@ -655,7 +657,8 @@ async def sign_cover_sheet_electronically(payload: ESignRequest, request: Reques
         user.compliance_evidence_credits = max(0, credits - 1)
         user.signed_cover_sheet_uploaded = True
         user.pending_cover_sheet = False
-        company_name = (user.company or "").strip() or "Your Organisation"
+        from app.services.evidence_enricher import display_legal_name
+        company_name = display_legal_name(user)
         db.commit()
         logger.info(
             f"[ESignCS] {payload.email} signed cover sheet electronically (report={report_id}), "

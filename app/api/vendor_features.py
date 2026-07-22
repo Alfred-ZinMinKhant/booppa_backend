@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel, Field, EmailStr
 from sqlalchemy.orm import Session
 
@@ -644,6 +644,136 @@ def put_sso(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# White-label (org-scoped via existing WhiteLabelConfig — user-centric wrapper,
+# same pattern as /sso above, so the frontend never needs an org_id)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_WHITE_LABEL_LOGO_EXTS = {".png", ".jpg", ".jpeg", ".svg"}
+_WHITE_LABEL_LOGO_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
+
+
+class WhiteLabelBody(BaseModel):
+    primary_color: Optional[str] = Field(None, pattern="^#[0-9a-fA-F]{6}$")
+    secondary_color: Optional[str] = Field(None, pattern="^#[0-9a-fA-F]{6}$")
+    footer_text: Optional[str] = None
+    report_header_text: Optional[str] = None
+
+
+def _wl_logo_url(wl) -> Optional[str]:
+    if not wl or not wl.logo_s3_key:
+        return None
+    try:
+        from app.services.storage import S3Service
+        s3 = S3Service()
+        return s3.s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": s3.bucket, "Key": wl.logo_s3_key},
+            ExpiresIn=604800,  # 7 days
+        )
+    except Exception as exc:
+        logger.warning("[WhiteLabel] logo re-presign failed: %s", exc)
+        return None
+
+
+@router.get("/white-label")
+def get_white_label(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.core.models import WhiteLabelConfig
+
+    _require_feature(current_user, "white_label", "White-label reports")
+    org = _get_or_create_org(db, current_user)
+    wl = db.query(WhiteLabelConfig).filter(WhiteLabelConfig.organisation_id == org.id).first()
+    if not wl:
+        return {"configured": False}
+    return {
+        "configured": True,
+        "primary_color": wl.primary_color,
+        "secondary_color": wl.secondary_color,
+        "footer_text": wl.footer_text,
+        "report_header_text": wl.report_header_text,
+        "logo_url": _wl_logo_url(wl),
+        "updated_at": wl.updated_at.isoformat() if wl.updated_at else None,
+    }
+
+
+@router.put("/white-label")
+def put_white_label(
+    body: WhiteLabelBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.core.models import WhiteLabelConfig
+
+    _require_feature(current_user, "white_label", "White-label reports")
+    org = _get_or_create_org(db, current_user)
+    wl = db.query(WhiteLabelConfig).filter(WhiteLabelConfig.organisation_id == org.id).first()
+    if not wl:
+        wl = WhiteLabelConfig(organisation_id=org.id)
+        db.add(wl)
+    if body.primary_color is not None:
+        wl.primary_color = body.primary_color
+    if body.secondary_color is not None:
+        wl.secondary_color = body.secondary_color
+    if body.footer_text is not None:
+        wl.footer_text = body.footer_text
+    if body.report_header_text is not None:
+        wl.report_header_text = body.report_header_text
+    db.commit(); db.refresh(wl)
+    return {"saved": True, "logo_url": _wl_logo_url(wl)}
+
+
+@router.post("/white-label/logo")
+async def upload_white_label_logo(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Upload the customer's logo for white-label reports. Same
+    validate -> S3 -> hash pattern as upload_trm_evidence, restricted to image
+    types."""
+    from app.core.models import WhiteLabelConfig
+    from app.services.storage import S3Service
+
+    _require_feature(current_user, "white_label", "White-label reports")
+    org = _get_or_create_org(db, current_user)
+
+    filename = (file.filename or "logo").replace("/", "-")
+    ext = ("." + filename.rsplit(".", 1)[1].lower()) if "." in filename else ""
+    if ext not in _WHITE_LABEL_LOGO_EXTS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported file type '{ext or 'none'}'. Allowed: {', '.join(sorted(_WHITE_LABEL_LOGO_EXTS))}",
+        )
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=422, detail="Empty file.")
+    if len(data) > _WHITE_LABEL_LOGO_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Logo exceeds the 5 MB limit.")
+
+    file_hash = hashlib.sha256(data).hexdigest()
+    s3 = S3Service()
+    s3_key = f"white-label-logos/{org.id}/{file_hash[:12]}-{filename}"
+    try:
+        s3.s3_client.put_object(
+            Bucket=s3.bucket, Key=s3_key, Body=data,
+            ContentType=file.content_type or "application/octet-stream",
+        )
+    except Exception as e:
+        logger.error("[WhiteLabel] logo S3 upload failed for org %s: %s", org.id, e)
+        raise HTTPException(status_code=502, detail="Logo upload failed. Please retry.")
+
+    wl = db.query(WhiteLabelConfig).filter(WhiteLabelConfig.organisation_id == org.id).first()
+    if not wl:
+        wl = WhiteLabelConfig(organisation_id=org.id)
+        db.add(wl)
+    wl.logo_s3_key = s3_key
+    db.commit(); db.refresh(wl)
+    return {"saved": True, "logo_url": _wl_logo_url(wl)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # MAS TRM — 13-domain controls + AI gap analysis (user-centric wrapper around
 # the org-keyed TrmControl model)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -719,6 +849,61 @@ def get_latest_trm_board_report(
     }
 
 
+@router.get("/trm/baseline/latest")
+def get_latest_trm_baseline(
+    subsidiary_id: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Latest MAS TRM Baseline Assessment PDF generated on Suite activation, with
+    a freshly re-presigned download URL — surfaces the same document emailed by
+    run_suite_trm_baseline_for_user, without requiring the buyer to find that email.
+
+    Pro Suite: pass `subsidiary_id` to fetch a subsidiary's own baseline (only
+    the subsidiary's parent tenant may do this; see `_resolve_trm_target_user`).
+    """
+    from app.core.models import Report
+
+    _require_feature(current_user, "dashboard", "MAS TRM baseline")
+    target_user = _resolve_trm_target_user(db, current_user, subsidiary_id)
+    if subsidiary_id:
+        _require_feature(current_user, "multi_vendor", "Multi-subsidiary TRM drill-down")
+    row = (
+        db.query(Report)
+        .filter(
+            Report.owner_id == target_user.id,
+            Report.framework == "trm_baseline",
+            Report.status == "completed",
+        )
+        .order_by(Report.completed_at.desc().nullslast())
+        .first()
+    )
+    if not row:
+        return {"available": False}
+
+    ad = row.assessment_data if isinstance(row.assessment_data, dict) else {}
+    key = row.file_key or ad.get("s3_key")
+    download_url = row.s3_url or ad.get("s3_url")
+    if key:
+        try:
+            from app.services.storage import S3Service
+            s3 = S3Service()
+            download_url = s3.s3_client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": s3.bucket, "Key": key},
+                ExpiresIn=604800,  # 7 days
+            )
+        except Exception as exc:  # fall back to the stored (maybe-expired) URL
+            logger.warning("[TRMBaseline] re-presign failed for %s: %s", target_user.id, exc)
+
+    return {
+        "available": True,
+        "download_url": download_url,
+        "generated_at": row.completed_at.isoformat() if row.completed_at else None,
+        "plan_label": ad.get("plan_label"),
+    }
+
+
 @router.get("/trm/progress-history")
 def trm_progress_history(
     db: Session = Depends(get_db),
@@ -782,15 +967,24 @@ def generate_trm_board_report(
 
 @router.get("/trm")
 def get_trm(
+    subsidiary_id: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Return the user's 13 MAS TRM controls + a roll-up summary."""
+    """Return the user's 13 MAS TRM controls + a roll-up summary.
+
+    Pro Suite: pass `subsidiary_id` to drill into a subsidiary's own full
+    workspace (gap analysis + evidence, not just the comparison matrix's
+    status rollup) — only the subsidiary's parent tenant may do this.
+    """
     from app.core.models import TrmControl
     # MAS TRM is part of the Standard/Pro Suite enterprise tier — gate on dashboard,
     # which is true for both suites.
     _require_feature(current_user, "dashboard", "MAS TRM dashboard")
-    org = _get_or_create_org(db, current_user)
+    target_user = _resolve_trm_target_user(db, current_user, subsidiary_id)
+    if subsidiary_id:
+        _require_feature(current_user, "multi_vendor", "Multi-subsidiary TRM drill-down")
+    org = _get_or_create_org(db, target_user)
     _ensure_trm_controls(db, org.id)
 
     rows = (
@@ -895,7 +1089,7 @@ async def run_trm_gap_analysis(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Run Claude haiku-4-5 gap analysis for a single control."""
+    """Run DeepSeek gap analysis for a single control."""
     import uuid as _uuid
     from app.core.models import TrmControl
     from app.trm_workflow_service import run_gap_analysis
@@ -929,6 +1123,25 @@ _TRM_EVIDENCE_EXTS = {".pdf", ".docx", ".doc", ".png", ".jpg", ".jpeg", ".txt", 
 _TRM_EVIDENCE_MAX_BYTES = 50 * 1024 * 1024  # 50 MB, matches notarize.py
 
 
+def _resolve_trm_target_user(db: Session, current_user: User, subsidiary_id: str | None) -> User:
+    """Resolve which user's TRM workspace to read: the caller's own, or (Pro
+    Suite drill-down) a subsidiary's — provided the caller is that
+    subsidiary's parent tenant. Read-only: never used by evidence
+    upload/delete, only the GET/list paths a group CISO drills into.
+    """
+    if not subsidiary_id:
+        return current_user
+    import uuid as _uuid
+    try:
+        sid = _uuid.UUID(subsidiary_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid subsidiary id")
+    target = db.query(User).filter(User.id == sid).first()
+    if not target or target.parent_user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not a subsidiary of this account")
+    return target
+
+
 def _owned_trm_control(db: Session, user: User, control_id: str):
     """Resolve a TrmControl scoped to the caller's org, or raise 404/422."""
     import uuid as _uuid
@@ -952,10 +1165,20 @@ def _owned_trm_control(db: Session, user: User, control_id: str):
 async def upload_trm_evidence(
     control_id: str,
     file: UploadFile = File(...),
+    evidence_type: str = Form("documented"),
+    tested_at: str | None = Form(None),
+    attestation: str | None = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Attach an evidence file to a TRM control: validate → S3 → hash → row."""
+    """Attach an evidence file to a TRM control: validate → S3 → hash → row.
+
+    `evidence_type` ('documented' | 'tested') records whether this evidence is a
+    documented policy or proof the control was actually tested — MAS treats an
+    untested plan as an aspiration, not a control. `tested_at` (ISO date) and
+    `attestation` capture the test detail when evidence_type='tested'.
+    """
+    from datetime import datetime as _dt
     from app.core.models import TrmEvidence
     from app.services.storage import S3Service
 
@@ -988,7 +1211,21 @@ async def upload_trm_evidence(
         logger.error("[TRMEvidence] S3 upload failed for control %s: %s", ctrl.id, e)
         raise HTTPException(status_code=502, detail="Evidence upload failed. Please retry.")
 
-    ev = TrmEvidence(control_id=ctrl.id, file_name=filename, s3_key=s3_key, hash_value=file_hash)
+    _etype = (evidence_type or "documented").strip().lower()
+    if _etype not in ("documented", "tested"):
+        _etype = "documented"
+    _tested_at = None
+    if tested_at:
+        try:
+            _tested_at = _dt.fromisoformat(tested_at.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="tested_at must be an ISO date.")
+
+    ev = TrmEvidence(
+        control_id=ctrl.id, file_name=filename, s3_key=s3_key, hash_value=file_hash,
+        evidence_type=_etype, tested_at=_tested_at,
+        attestation=(attestation or None),
+    )
     db.add(ev)
     db.commit()
     db.refresh(ev)
@@ -996,6 +1233,9 @@ async def upload_trm_evidence(
         "id": str(ev.id),
         "file_name": ev.file_name,
         "hash_value": ev.hash_value,
+        "evidence_type": ev.evidence_type,
+        "tested_at": ev.tested_at.isoformat() if ev.tested_at else None,
+        "attestation": ev.attestation,
         "uploaded_at": ev.uploaded_at.isoformat() if ev.uploaded_at else None,
     }
 
@@ -1003,15 +1243,23 @@ async def upload_trm_evidence(
 @router.get("/trm/{control_id}/evidence")
 def list_trm_evidence(
     control_id: str,
+    subsidiary_id: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List evidence files for a control, with short-lived download URLs."""
+    """List evidence files for a control, with short-lived download URLs.
+
+    Pro Suite: pass `subsidiary_id` to view a subsidiary's evidence as its
+    parent tenant (read-only drill-down; see `_resolve_trm_target_user`).
+    """
     from app.core.models import TrmEvidence
     from app.services.storage import S3Service
 
     _require_feature(current_user, "dashboard", "MAS TRM dashboard")
-    _org, ctrl = _owned_trm_control(db, current_user, control_id)
+    target_user = _resolve_trm_target_user(db, current_user, subsidiary_id)
+    if subsidiary_id:
+        _require_feature(current_user, "multi_vendor", "Multi-subsidiary TRM drill-down")
+    _org, ctrl = _owned_trm_control(db, target_user, control_id)
 
     rows = (
         db.query(TrmEvidence)
@@ -1038,6 +1286,9 @@ def list_trm_evidence(
                 "file_name": r.file_name,
                 "hash_value": r.hash_value,
                 "tx_hash": r.tx_hash,
+                "evidence_type": r.evidence_type,
+                "tested_at": r.tested_at.isoformat() if r.tested_at else None,
+                "attestation": r.attestation,
                 "uploaded_at": r.uploaded_at.isoformat() if r.uploaded_at else None,
                 "download_url": _url(r.s3_key),
             }

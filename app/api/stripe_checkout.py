@@ -432,6 +432,13 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
                 if user and not getattr(user, "uen", None):
                     user.uen = uen
                     _db.commit()
+
+            # Resolve + persist the canonical legal name now, while the ACRA
+            # lookup is already warm/cached — the Vendor Proof certificate and
+            # any later generator reads read this instead of the raw company_name.
+            if user:
+                from app.services.evidence_enricher import resolve_legal_name
+                await resolve_legal_name(user, _db, company_hint=company_name, uen=uen or None)
         finally:
             _db.close()
 
@@ -493,6 +500,12 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
                 if user and not getattr(user, "uen", None):
                     user.uen = uen
                     _db.commit()
+
+            # Same canonical legal_name resolve as the standalone vendor_proof
+            # flow above — these bundles include a Vendor Proof component too.
+            if user:
+                from app.services.evidence_enricher import resolve_legal_name
+                await resolve_legal_name(user, _db, company_hint=company_name, uen=uen or None)
         finally:
             _db.close()
 
