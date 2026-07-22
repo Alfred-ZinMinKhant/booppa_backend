@@ -21,6 +21,7 @@ def make_user(
     plan: str = "free",
     role: str = "VENDOR",
     company: str | None = "Test Co",
+    legal_name: str | None = None,
 ) -> User:
     """Insert a User and return the row."""
     user = User(
@@ -30,6 +31,7 @@ def make_user(
         role=role,
         plan=plan,
         company=company,
+        legal_name=legal_name,
     )
     db.add(user)
     db.commit()

@@ -1,5 +1,5 @@
 import os
-os.environ["DATABASE_URL"] = "postgresql+psycopg2://booppa:password@localhost:5432/booppa_test"
+os.environ.setdefault("DATABASE_URL", "postgresql+psycopg2://booppa:password@localhost:5432/booppa_test")
 
 """Test fixtures for booppa_backend.
 

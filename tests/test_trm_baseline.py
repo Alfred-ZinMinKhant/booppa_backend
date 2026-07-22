@@ -68,6 +68,7 @@ def test_baseline_task_generates_uploads_and_emails(test_db, mocker):
         role="VENDOR",
         plan="pro_suite",
         company="Funding Societies",
+        legal_name="Funding Societies",
         website="https://example.test",
     )
     test_db.add(user)
@@ -94,3 +95,46 @@ def test_baseline_task_generates_uploads_and_emails(test_db, mocker):
     text = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(captured["pdf"])).pages)
     assert "Initial Gap Analysis" in text
     assert "Multi-subsidiary" in text  # Pro-only provisioning row
+
+
+def test_baseline_renders_evidence_states():
+    """v4: Control Domains 'Evidence' column + Evidence Register reflect tested
+    vs documented vs no evidence."""
+    from app.services.trm_baseline_generator import generate_trm_baseline_pdf
+
+    controls = [
+        {"domain": "Cyber Security", "control_ref": "TRM-5", "status": "in_progress",
+         "evidence_count": 2, "tested_count": 0, "latest_tested_at": None,
+         "evidence": [
+             {"file_name": "mfa_policy.pdf", "hash_value": "abc123def456",
+              "tx_hash": None, "evidence_type": "documented", "tested_at": None,
+              "attestation": None},
+             {"file_name": "patch_sop.pdf", "hash_value": "ffee00112233",
+              "tx_hash": None, "evidence_type": "documented", "tested_at": None,
+              "attestation": None},
+         ]},
+        {"domain": "Business Continuity and Disaster Recovery", "control_ref": "TRM-10",
+         "status": "compliant", "evidence_count": 1, "tested_count": 1,
+         "latest_tested_at": "15 Mar 2026",
+         "evidence": [
+             {"file_name": "dr_test_report.pdf", "hash_value": "aa11bb22cc33",
+              "tx_hash": "0xdeadbeef0011223344556677889900aabbccddeeff",
+              "evidence_type": "tested", "tested_at": "15 Mar 2026",
+              "attestation": "Annual DR failover — 3h58m recovery, verified by Head of IT."},
+         ]},
+        {"domain": "IT Audit", "control_ref": "TRM-9", "status": "not_started",
+         "evidence_count": 0, "tested_count": 0, "latest_tested_at": None, "evidence": []},
+    ]
+    pdf = generate_trm_baseline_pdf({
+        "company_name": "Funding Societies",
+        "plan_label": "Pro Suite",
+        "controls": controls,
+    })
+    assert pdf.startswith(b"%PDF")
+    text = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf)).pages)
+    assert "Evidence Register" in text
+    assert "dr_test_report.pdf" in text
+    assert "Tested" in text
+    assert "Documented" in text
+    assert "DR failover" in text  # attestation surfaced
+    assert "aa11bb22cc33" in text  # SHA-256 prefix

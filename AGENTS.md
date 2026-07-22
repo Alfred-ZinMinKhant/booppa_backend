@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Commands
 
@@ -146,20 +146,6 @@ Sibling Next.js repo at `../booppa-nextjs`. Two polling contracts the frontend d
 ## Deployment
 
 `entrypoint.sh` runs `alembic upgrade head` then uvicorn. ECS deployment uses the `task-def-*.json` files at the repo root. The backend sits behind a Cloudflare Tunnel running in ECS Fargate — see `README_BACKEND.md` and `scripts/deploy_cloudflared_tunnel.sh` if tunnel work is needed.
-
-## Definition of Commercially Ready
-
-Before calling any product "commercially ready," answer three layers with evidence, not assertion:
-
-1. **What we promise** — does the output actually say what the marketing/UI claims it does?
-2. **What the customer needs** — does it solve the buyer's actual workflow problem, end to end (not just produce a document)?
-3. **What the regulator/standard actually requires** — does it hold up against the real external requirement, not our internal interpretation of it?
-
-Layer 3 is the one that gets skipped, and it has a specific trap: **a written policy or narrative with no *test* evidence is not a control.** A gap-analysis paragraph that says "BCP/DR plan documented" is not the same claim as "BCP/DR plan tested on `<date>`, evidence anchored." Regulators (and inspection-minded compliance officers) treat untested plans as aspirations. If a product renders compliance narrative without a way to show evidence was attached, cited, or tested, it has not cleared layer 3, no matter how good layers 1–2 look.
-
-Worked example: the MAS TRM Baseline passed layers 1–2 early (correct 13-domain framing, honest "not a statement of compliance" language) but was blocked by Gianpaolo on layer 3 until the baseline could show tested-vs-documented evidence per control, cite the binding MAS notices (644/FSM-N05 1-hour incident notification, 655/FSM-N06 MFA/patching/access) by name in gap narratives, and stopped stamping raw domains ("Assessed Entity: thunes.com") instead of ACRA-verified legal names.
-
-**Known layer-3 gap, not yet revisited**: PDPA reports, RFP kits, and vendor scores were shipped having passed layers 1–2 but were not rigorously checked against layer 3 the way the TRM baseline was. Treat this as flagged, not fixed — don't assume layer 3 is clear for those products without checking.
 
 ## Pitfalls worth pre-warning
 
