@@ -27,6 +27,11 @@ class User(Base):
     # V6 Additions for Vendor features
     role = Column(String(50), default="VENDOR")
     company = Column(String(255), nullable=True)
+    # ACRA-registered legal entity name, resolved via evidence_enricher.resolve_legal_name.
+    # Distinct from `company` (raw user input, e.g. a domain or trading name) — this is
+    # what generators should render as "Assessed Entity" / "Legal entity". Nullable until
+    # resolved; see scripts/backfill_legal_names.py for existing rows.
+    legal_name = Column(String(255), nullable=True)
     uen = Column(String(50), unique=True, nullable=True)
     plan = Column(String(50), default="free", nullable=False, server_default="free")
     temp_password = Column(Boolean, default=False)
@@ -1208,6 +1213,12 @@ class TrmEvidence(Base):
     s3_key = Column(Text)
     hash_value = Column(String(64))
     tx_hash = Column(String(66))                           # blockchain anchor
+    # MAS treats an untested control/plan as "an aspiration, not a control".
+    # evidence_type distinguishes a documented policy from tested evidence
+    # (e.g. an annual DR test); tested_at + attestation record the test.
+    evidence_type = Column(String(20), default="documented")  # documented | tested
+    tested_at = Column(DateTime, nullable=True)               # date control/plan was tested
+    attestation = Column(String(500), nullable=True)         # what was tested / by whom
     uploaded_at = Column(DateTime, default=datetime.utcnow)
 
 

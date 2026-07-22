@@ -263,6 +263,101 @@ async def fetch_acra_status(uen: Optional[str] = None, company_name: Optional[st
     return result
 
 
+async def resolve_legal_name(
+    user,
+    db,
+    company_hint: Optional[str] = None,
+    uen: Optional[str] = None,
+) -> str:
+    """
+    Resolve a user's ACRA-registered legal entity name and persist it to
+    `User.legal_name`, recovering `User.uen` along the way if it was missing.
+
+    Same two-step match as the inline logic this replaces (formerly duplicated
+    in app/services/fulfillment/single_products.py): an exact `DiscoveredVendor`
+    UEN lookup first, then a live data.gov.sg fuzzy match on company name. Safe
+    to call repeatedly — `fetch_acra_status` is cached 24h and this function
+    only writes to the DB when the resolved name actually changes.
+
+    Returns the resolved legal name, or the best available fallback
+    (`user.legal_name` -> `company_hint`/`user.company` -> "Your Organisation")
+    if no registry match is found.
+    """
+    _uen = uen or getattr(user, "uen", None)
+    _company = company_hint or getattr(user, "company", None)
+    registered_name: Optional[str] = None
+    resolved_uen: Optional[str] = _uen
+
+    if _uen:
+        try:
+            from app.core.models import DiscoveredVendor
+
+            dv = db.query(DiscoveredVendor).filter(DiscoveredVendor.uen == _uen).first()
+            if dv and dv.company_name:
+                registered_name = dv.company_name
+        except Exception as exc:
+            logger.warning("resolve_legal_name: DiscoveredVendor lookup failed for %s: %s", _uen, exc)
+
+    if not registered_name and (_uen or _company):
+        try:
+            live = await fetch_acra_status(_uen, company_name=_company)
+            if live.get("found"):
+                if not resolved_uen and live.get("uen"):
+                    resolved_uen = live.get("uen")
+                if live.get("registered_name"):
+                    registered_name = live.get("registered_name")
+        except Exception as exc:
+            logger.warning("resolve_legal_name: live ACRA lookup failed for %s/%s: %s", _uen, _company, exc)
+
+    updated = False
+    if resolved_uen and resolved_uen != getattr(user, "uen", None):
+        user.uen = resolved_uen
+        updated = True
+    if registered_name and registered_name != getattr(user, "legal_name", None):
+        user.legal_name = registered_name
+        updated = True
+    if updated:
+        db.commit()
+
+    return registered_name or getattr(user, "legal_name", None) or _company or "Your Organisation"
+
+
+def display_legal_name(user, db=None) -> str:
+    """Shared fallback order for rendering a user's entity name: resolved
+    legal name -> raw company field -> a neutral placeholder. Never falls
+    back to the Booppa platform name.
+    
+    If legal_name is missing and db is provided, attempts to actively resolve
+    the ACRA name synchronously via asyncio.run()."""
+    if not getattr(user, "legal_name", None) and db is not None:
+        try:
+            import asyncio
+            # resolve_legal_name is async. Since display_legal_name is called from
+            # sync Celery tasks, we can safely run it here. If we are in an async
+            # endpoint context, this will raise a RuntimeError, which we catch.
+            # Hard-capped total wait: resolve_legal_name loops over several ACRA
+            # dataset IDs, each with its own httpx timeout — under a stalled/
+            # blackholed network those per-request timeouts don't always bound
+            # the total wall time (e.g. hung DNS resolution). A Celery task must
+            # never hang indefinitely here, so wrap the whole resolution in one
+            # outer deadline and fall back to the raw company field on expiry.
+            asyncio.run(asyncio.wait_for(
+                resolve_legal_name(user, db, company_hint=getattr(user, "company", None)),
+                timeout=45,
+            ))
+        except RuntimeError:
+            import logging
+            logging.getLogger(__name__).debug("display_legal_name: active event loop detected, cannot sync resolve")
+        except asyncio.TimeoutError:
+            import logging
+            logging.getLogger(__name__).warning("display_legal_name: ACRA resolution timed out for user %s", getattr(user, "id", None))
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("Failed to sync-resolve legal name: %s", e)
+
+    return (getattr(user, "legal_name", None) or getattr(user, "company", None) or "Your Organisation")
+
+
 # ── 2. PDPC enforcement check ─────────────────────────────────────────────────
 
 # The old `/all-enforcement-decisions` slug now 404s. The live listing is the

@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     fonts-liberation \
+    xmlsec1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install Python dependencies
