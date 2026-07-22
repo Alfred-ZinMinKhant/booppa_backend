@@ -123,8 +123,17 @@ def _pro_user(db, email, company="Test Suite Co"):
     return user
 
 
-def test_white_label_get_put_and_logo_upload_round_trip(client, test_db):
+def test_white_label_get_put_and_logo_upload_round_trip(client, test_db, mocker):
     from tests._test_helpers import auth_headers
+
+    # Never touch the real bucket: unstubbed this uploads to live S3 when local
+    # AWS creds happen to be present, and 502s in CI where they are not.
+    # S3StorageAdapter.__init__ builds self.s3_client via boto3.client, so stub
+    # the factory rather than the attribute.
+    fake_s3 = mocker.Mock()
+    fake_s3.put_object.return_value = {}
+    fake_s3.generate_presigned_url.return_value = "https://s3.example/logo.png"
+    mocker.patch("app.adapters.s3_storage.boto3.client", return_value=fake_s3)
 
     user = _pro_user(test_db, "wl-api@booppa.io")
     headers = auth_headers(user)

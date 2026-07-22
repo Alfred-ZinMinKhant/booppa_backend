@@ -464,9 +464,16 @@ async def _stripe_webhook_impl(
                     "company", ""
                 )
                 if not company_name and customer_email:
-                    from app.core.models import User
+                    # Alias the import — a bare `from ... import User` here would
+                    # make `User` function-local for the ENTIRE handler body and
+                    # leave the module-level import unbound in the cancel branch.
+                    from app.core.models import User as _UserModel
                     from app.services.evidence_enricher import display_legal_name
-                    _owner = db.query(User).filter(User.email == customer_email).first()
+                    _owner = (
+                        db.query(_UserModel)
+                        .filter(_UserModel.email == customer_email)
+                        .first()
+                    )
                     if _owner:
                         company_name = display_legal_name(_owner)
                 rfp_desc = (metadata.get("rfp_description") or "").strip()
