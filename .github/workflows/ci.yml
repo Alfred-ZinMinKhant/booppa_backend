@@ -305,7 +305,6 @@ jobs:
           APP_SECRETS_ARN: ${{ secrets.AWS_SECRETSMANAGER_APP_SECRETS_ARN }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
@@ -324,7 +323,6 @@ jobs:
           payload=$(jq -n \
             --arg STRIPE_SECRET_KEY "$STRIPE_SECRET_KEY" \
             --arg STRIPE_WEBHOOK_SECRET "$STRIPE_WEBHOOK_SECRET" \
-            --arg RESEND_API_KEY "$RESEND_API_KEY" \
             --arg VIRUSTOTAL_API_KEY "$VIRUSTOTAL_API_KEY" \
             --arg DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY" \
             --arg SECRET_KEY "$SECRET_KEY" \
@@ -336,7 +334,6 @@ jobs:
             '{
                STRIPE_SECRET_KEY: $STRIPE_SECRET_KEY,
                STRIPE_WEBHOOK_SECRET: $STRIPE_WEBHOOK_SECRET,
-               RESEND_API_KEY: $RESEND_API_KEY,
                VIRUSTOTAL_API_KEY: $VIRUSTOTAL_API_KEY,
                DEEPSEEK_API_KEY: $DEEPSEEK_API_KEY,
                SECRET_KEY: $SECRET_KEY,
@@ -401,7 +398,6 @@ jobs:
           STRIPE_BUYER_PRO_ANNUAL: ${{ secrets.STRIPE_BUYER_PRO_ANNUAL }}
           STRIPE_BUYER_ENTERPRISE_MONTHLY: ${{ secrets.STRIPE_BUYER_ENTERPRISE_MONTHLY }}
           STRIPE_BUYER_ENTERPRISE_ANNUAL: ${{ secrets.STRIPE_BUYER_ENTERPRISE_ANNUAL }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN: ${{ secrets.NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN }}
           # Security intelligence
           VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
@@ -496,6 +492,7 @@ jobs:
                   { "name": "DB_POOL_TIMEOUT", "value": "${DB_POOL_TIMEOUT}" },
                   { "name": "DB_POOL_RECYCLE", "value": "${DB_POOL_RECYCLE}" },
                   { "name": "FEATURE_SEO", "value": "${FEATURE_SEO}" },                  { "name": "ENVIRONMENT", "value": "production" },
+                  { "name": "EMAIL_PROVIDER", "value": "ses" },
                   { "name": "ALLOWED_HOSTS", "value": "api.booppa.io" },
                   { "name": "ALLOWED_ORIGINS", "value": "https://booppa.io,https://www.booppa.io,https://api.booppa.io,https://cms.booppa.io" },
                   { "name": "CSRF_TRUSTED_ORIGINS", "value": "https://api.booppa.io,https://booppa.io,https://www.booppa.io" },
@@ -508,7 +505,6 @@ jobs:
                   { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" },
                   { "name": "STRIPE_SECRET_KEY", "valueFrom": "${APP_SECRETS_ARN}:STRIPE_SECRET_KEY::" },
                   { "name": "STRIPE_WEBHOOK_SECRET", "valueFrom": "${APP_SECRETS_ARN}:STRIPE_WEBHOOK_SECRET::" },
-                  { "name": "RESEND_API_KEY", "valueFrom": "${APP_SECRETS_ARN}:RESEND_API_KEY::" },
                   { "name": "VIRUSTOTAL_API_KEY", "valueFrom": "${APP_SECRETS_ARN}:VIRUSTOTAL_API_KEY::" },
                   { "name": "DEEPSEEK_API_KEY", "valueFrom": "${APP_SECRETS_ARN}:DEEPSEEK_API_KEY::" },
                   { "name": "SECRET_KEY", "valueFrom": "${APP_SECRETS_ARN}:SECRET_KEY::" },
@@ -583,7 +579,6 @@ jobs:
           STRIPE_BUYER_PRO_ANNUAL: ${{ secrets.STRIPE_BUYER_PRO_ANNUAL }}
           STRIPE_BUYER_ENTERPRISE_MONTHLY: ${{ secrets.STRIPE_BUYER_ENTERPRISE_MONTHLY }}
           STRIPE_BUYER_ENTERPRISE_ANNUAL: ${{ secrets.STRIPE_BUYER_ENTERPRISE_ANNUAL }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN: ${{ secrets.NEXT_PUBLIC_STRIPE_PDPA_QUICK_SCAN }}
           # Security intelligence
           VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
@@ -675,6 +670,7 @@ jobs:
                   { "name": "DB_POOL_TIMEOUT", "value": "${DB_POOL_TIMEOUT}" },
                   { "name": "DB_POOL_RECYCLE", "value": "${DB_POOL_RECYCLE}" },
                   { "name": "FEATURE_SEO", "value": "${FEATURE_SEO}" },                  { "name": "ENVIRONMENT", "value": "production" },
+                  { "name": "EMAIL_PROVIDER", "value": "ses" },
                   { "name": "PLAYWRIGHT_BROWSERS_PATH", "value": "/opt/playwright" },
                   { "name": "STRIPE_CSP_PACK_ONETIME", "value": "${STRIPE_CSP_PACK_ONETIME}" },
                   { "name": "STRIPE_CSP_PACK_MONTHLY", "value": "${STRIPE_CSP_PACK_MONTHLY}" },
@@ -684,7 +680,6 @@ jobs:
                   { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" },
                   { "name": "STRIPE_SECRET_KEY", "valueFrom": "${APP_SECRETS_ARN}:STRIPE_SECRET_KEY::" },
                   { "name": "STRIPE_WEBHOOK_SECRET", "valueFrom": "${APP_SECRETS_ARN}:STRIPE_WEBHOOK_SECRET::" },
-                  { "name": "RESEND_API_KEY", "valueFrom": "${APP_SECRETS_ARN}:RESEND_API_KEY::" },
                   { "name": "VIRUSTOTAL_API_KEY", "valueFrom": "${APP_SECRETS_ARN}:VIRUSTOTAL_API_KEY::" },
                   { "name": "DEEPSEEK_API_KEY", "valueFrom": "${APP_SECRETS_ARN}:DEEPSEEK_API_KEY::" },
                   { "name": "SECRET_KEY", "valueFrom": "${APP_SECRETS_ARN}:SECRET_KEY::" },

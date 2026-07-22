@@ -382,6 +382,15 @@ async def update_me(
         user.full_name = body.full_name
     if body.company is not None:
         user.company = body.company
+        # Company changed — the previously resolved legal_name may no longer
+        # apply. Try a live resolve now; falls back to unresolved (cleared) so
+        # generators fall through to the new `company` value rather than
+        # showing a stale registry name.
+        try:
+            from app.services.evidence_enricher import resolve_legal_name
+            await resolve_legal_name(user, db, company_hint=body.company)
+        except Exception:
+            user.legal_name = None
     if body.website is not None:
         user.website = body.website
     if body.industry is not None:

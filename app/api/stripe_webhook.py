@@ -463,6 +463,12 @@ async def _stripe_webhook_impl(
                 company_name = metadata.get("company_name") or metadata.get(
                     "company", ""
                 )
+                if not company_name and customer_email:
+                    from app.core.models import User
+                    from app.services.evidence_enricher import display_legal_name
+                    _owner = db.query(User).filter(User.email == customer_email).first()
+                    if _owner:
+                        company_name = display_legal_name(_owner)
                 rfp_desc = (metadata.get("rfp_description") or "").strip()
                 # No brief on file → defer to /rfp-intake instead of generating a placeholder kit.
                 if not rfp_desc:

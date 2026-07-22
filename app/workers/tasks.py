@@ -1272,10 +1272,13 @@ async def process_report_workflow(report_id: str) -> dict:
                                 or report.assessment_data.get("url")
                                 or report.company_website or "")
                     pdf_service = PDFService()
+                    from app.core.models import User
+                    from app.services.evidence_enricher import display_legal_name
+                    _owner = db.query(User).filter(User.id == report.owner_id).first() if report.owner_id else None
                     pdf_data = {
                         "report_id": str(report.id),
                         "framework": report.framework,
-                        "company_name": report.company_name,
+                        "company_name": display_legal_name(_owner, db) if _owner else (report.company_name or "Your Organisation"),
                         "created_at": report.created_at.isoformat(),
                         "status": "site_inaccessible",
                         "website_url": _url,
@@ -1737,11 +1740,14 @@ async def process_report_workflow(report_id: str) -> dict:
         # Step 4: Generate PDF with QR code
         logger.info(f"Step 4: Generating PDF for {report_id}")
         pdf_service = PDFService()
+        from app.core.models import User
+        from app.services.evidence_enricher import display_legal_name
+        _owner = db.query(User).filter(User.id == report.owner_id).first() if report.owner_id else None
 
         pdf_data = {
             "report_id": str(report.id),
             "framework": report.framework,
-            "company_name": report.company_name,
+            "company_name": display_legal_name(_owner, db) if _owner else (report.company_name or "Your Organisation"),
             "created_at": report.created_at.isoformat(),
             "status": "completed",
             "tx_hash": tx_hash,
@@ -3781,7 +3787,8 @@ def buyer_procurement_digest_task(
         digest_date = datetime.now(timezone.utc).strftime("%d %B %Y")
 
         user = UserRepository.get_by_id(db, str(user_id))
-        company = (override_company or "").strip() or (getattr(user, "company", None) or "Your organisation")
+        from app.services.evidence_enricher import display_legal_name
+        company = (override_company or "").strip() or display_legal_name(user, db)
 
         def _esc(s) -> str:
             return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -8548,7 +8555,8 @@ def run_vendor_pro_activation_for_user(self, user_id: str, override_website: str
 
 
 @celery_app.task(bind=True, max_retries=2, name="run_suite_trm_baseline_for_user")
-def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | None = None):
+def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | None = None,
+                                    bypass_idempotency: bool = False):
     """Generate the MAS TRM Baseline Assessment PDF for a new suite subscriber.
 
     Standard/Pro Suite activation seeds 13 TRM control domains; this turns that
@@ -8561,6 +8569,27 @@ def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | 
     from app.services.trm_baseline_generator import generate_trm_baseline_pdf
     from app.services.storage import S3Service
     from app.services.email_service import EmailService
+
+    # Atomic idempotency guard — this task fires once per checkout activation
+    # (app/services/fulfillment/subscriptions.py, the only caller) but is
+    # bind=True/max_retries=2 with the whole body wrapped in a broad retry-on-
+    # exception; a transient failure *after* a successful email send would
+    # otherwise re-run the task and resend the identical email (same failure
+    # class already fixed for pdpa_monitor_monthly_rescan_task above). The S3
+    # upload below is already accidentally idempotent — report_id is
+    # deterministic per user, so a retry just overwrites the same PDF — only
+    # the email send needs guarding. 24h comfortably covers the retry window
+    # (countdown=120s x2) without blocking a legitimate future regenerate.
+    #
+    # `bypass_idempotency` is test-harness-only (admin simulate-purchase): a QA
+    # re-run for the same test email within 24h would otherwise be silently
+    # dropped, defeating "every document sendable from test checkout". It is
+    # never set on the production activation path.
+    from app.core.cache import cache as _cache
+    _lock_key = f"trm_baseline_email_lock:{user_id}"
+    if not bypass_idempotency and not _cache.add(_lock_key, {"queued": True}, ttl=86400):
+        logger.info(f"[TRMBaseline] Idempotency drop: baseline already queued/sent for {user_id}")
+        return
 
     user, db = _load_user(user_id)
     try:
@@ -8576,47 +8605,82 @@ def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | 
             .order_by(Organisation.created_at.asc())
             .first()
         )
-        controls = []
-        if org:
-            rows = (
+        def _fetch_controls(_org):
+            _controls = []
+            if not _org:
+                return []
+            _rows = (
                 db.query(TrmControl)
-                .filter(TrmControl.organisation_id == org.id)
+                .filter(TrmControl.organisation_id == _org.id)
                 .all()
             )
-            # Order by sector criticality (fintech/healthcare lead with their
-            # material domains) so the doc reads as sector-specific to a MAS
-            # supervisor, falling back to canonical order when sector is unset.
             from app.services.trm_sector_override import reorder_controls_by_sector
-            rows = reorder_controls_by_sector(rows, getattr(org, "sector", None))
-            controls = [
-                {
+            _rows = reorder_controls_by_sector(_rows, getattr(_org, "sector", None))
+            from app.core.models import TrmEvidence
+            _ev_by_control = {}
+            _ev_rows = (
+                db.query(TrmEvidence)
+                .filter(TrmEvidence.control_id.in_([r.id for r in _rows] or [None]))
+                .order_by(TrmEvidence.uploaded_at.asc())
+                .all()
+            )
+            for _ev in _ev_rows:
+                _ev_by_control.setdefault(_ev.control_id, []).append(_ev)
+            for r in _rows:
+                _evs = _ev_by_control.get(r.id, [])
+                _tested = [e for e in _evs if (e.evidence_type or "documented") == "tested"]
+                _latest_tested = max((e.tested_at for e in _tested if e.tested_at), default=None)
+                _controls.append({
                     "domain": r.domain,
                     "control_ref": r.control_ref,
                     "status": r.status,
                     "risk_rating": r.risk_rating,
                     "gap_analysis": r.gap_analysis,
-                }
-                for r in rows
-            ]
+                    "evidence_count": len(_evs),
+                    "tested_count": len(_tested),
+                    "latest_tested_at": _latest_tested.strftime("%d %b %Y") if _latest_tested else None,
+                    "evidence": [
+                        {
+                            "file_name": e.file_name,
+                            "hash_value": (e.hash_value or "")[:12],
+                            "tx_hash": e.tx_hash,
+                            "evidence_type": e.evidence_type or "documented",
+                            "tested_at": e.tested_at.strftime("%d %b %Y") if e.tested_at else None,
+                            "attestation": e.attestation,
+                        } for e in _evs[:5]
+                    ],
+                })
+            return _controls
+
+        controls = _fetch_controls(org)
         if not controls:
-            # Controls not yet seeded (race) — fall back to the canonical domains
-            # so the buyer still receives a complete baseline.
             from app.services.trm_sector_override import reorder_controls_by_sector
             _seed = [{"domain": d, "control_ref": f"TRM-{i}", "status": "not_started"}
                      for i, d in enumerate(MAS_TRM_DOMAINS, 1)]
-            controls = reorder_controls_by_sector(
-                _seed, getattr(org, "sector", None) if org else None
-            )
+            controls = reorder_controls_by_sector(_seed, getattr(org, "sector", None) if org else None)
+
+        subsidiaries_data = []
+        if plan == "pro_suite":
+            sub_users = db.query(User).filter(User.parent_user_id == user.id).all()
+            from app.services.evidence_enricher import display_legal_name
+            for sub_u in sub_users:
+                sub_org = db.query(Organisation).filter(Organisation.owner_user_id == sub_u.id).order_by(Organisation.created_at.asc()).first()
+                if sub_org:
+                    sub_controls = _fetch_controls(sub_org)
+                    if sub_controls:
+                        subsidiaries_data.append({
+                            "company_name": display_legal_name(sub_u, db) or getattr(sub_org, "name", "Subsidiary"),
+                            "controls": sub_controls
+                        })
 
         # Assessed entity is the CUSTOMER. Prefer the test-harness override (so the
         # admin test-checkout never stamps the real account's company, e.g. "Booppa",
-        # onto a customer's MAS document), then the user's company. Never fall back to
-        # the Booppa platform name — use a neutral placeholder if truly unknown.
-        company_name = (
-            (override_company or "").strip()
-            or (getattr(user, "company", "") or "").strip()
-            or "Your Organisation"
-        )
+        # onto a customer's MAS document), then the resolved ACRA legal name, then the
+        # raw company field. Never fall back to the Booppa platform name — use a
+        # neutral placeholder if truly unknown. (Kills the "Assessed Entity:
+        # thunes.com" bug class — see evidence_enricher.display_legal_name.)
+        from app.services.evidence_enricher import display_legal_name
+        company_name = (override_company or "").strip() or display_legal_name(user, db)
 
         # Configuration & provisioning evidence — tangible proof of what the
         # subscription unlocked (audit: suites showed "zero evidence of active
@@ -8634,24 +8698,68 @@ def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | 
             {"capability": "RESTful API + webhooks", "status": "Ready",
              "detail": "Generate an API key at booppa.io/vendor/api-keys"},
         ]
+        white_label = None
         if plan == "pro_suite":
+            from app.core.models import SsoConfig, WhiteLabelConfig
+
+            _sso = (
+                db.query(SsoConfig)
+                .filter(SsoConfig.organisation_id == org.id, SsoConfig.is_active.is_(True))
+                .first()
+                if org else None
+            )
+            _wl_cfg = (
+                db.query(WhiteLabelConfig)
+                .filter(WhiteLabelConfig.organisation_id == org.id)
+                .first()
+                if org else None
+            )
+            _sub_count = db.query(User).filter(User.parent_user_id == user.id).count()
+
             provisioning += [
-                {"capability": "SSO — SAML 2.0 / OIDC", "status": "Ready",
-                 "detail": "Configure your IdP at booppa.io/vendor/sso"},
-                {"capability": "White-label reports", "status": "Ready",
-                 "detail": "Enable + add your brand at booppa.io/vendor/profile"},
-                {"capability": "Multi-subsidiary management", "status": "Ready",
-                 "detail": "Add subsidiaries at booppa.io/vendor/subsidiaries"},
+                {"capability": "SSO — SAML 2.0 / OIDC",
+                 "status": "Active" if _sso else "Ready",
+                 "detail": (f"Configured against {_sso.protocol.upper()} IdP"
+                            if _sso else "Configure your IdP at booppa.io/vendor/sso")},
+                {"capability": "White-label reports",
+                 "status": "Active" if _wl_cfg else "Ready",
+                 "detail": ("Your brand is applied to generated reports"
+                            if _wl_cfg else "Enable + add your brand at booppa.io/vendor/profile")},
+                {"capability": "Multi-subsidiary management",
+                 "status": "Active" if _sub_count else "Ready",
+                 "detail": (f"{_sub_count} subsidiaries linked — view group rollup at booppa.io/vendor/subsidiaries"
+                            if _sub_count else "Add subsidiaries at booppa.io/vendor/subsidiaries")},
             ]
+
+            if _wl_cfg:
+                logo_bytes = None
+                if _wl_cfg.logo_s3_key:
+                    try:
+                        _s3 = S3Service()
+                        logo_bytes = _s3.s3_client.get_object(
+                            Bucket=_s3.bucket, Key=_wl_cfg.logo_s3_key
+                        )["Body"].read()
+                    except Exception as wl_err:
+                        logger.warning("[TRMBaseline] white-label logo fetch failed for %s: %s", user.email, wl_err)
+                white_label = {
+                    "primary_color": _wl_cfg.secondary_color or "#0f172a",
+                    "secondary_color": _wl_cfg.primary_color or "#10b981",
+                    "footer_text": _wl_cfg.footer_text,
+                    "report_header_text": _wl_cfg.report_header_text or company_name,
+                    "logo_bytes": logo_bytes,
+                }
 
         pdf_bytes = generate_trm_baseline_pdf({
             "company_name": company_name,
             "plan_label": plan_label,
             "controls": controls,
+            "subsidiaries": subsidiaries_data,
             "provisioning": provisioning,
+            "white_label": white_label,
         })
 
         report_id = f"trm-baseline-{user.id}"
+        baseline_file_key = f"reports/{report_id}.pdf"
         download_url = None
         try:
             download_url = asyncio.run(S3Service().upload_pdf(pdf_bytes, report_id))
@@ -8659,6 +8767,28 @@ def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | 
             logger.error("[TRMBaseline] S3 upload failed for %s: %s", user.email, up_err)
 
         if download_url:
+            # Persist so GET /vendor/trm/baseline/latest can serve this without
+            # relying on the buyer finding the emailed link (mirrors the
+            # trm_board_report snapshot pattern above).
+            try:
+                db.add(Report(
+                    owner_id=user.id,
+                    framework="trm_baseline",
+                    company_name=company_name,
+                    assessment_data={
+                        "plan_label": plan_label,
+                        "s3_url": download_url,
+                        "s3_key": baseline_file_key,
+                    },
+                    status="completed",
+                    s3_url=download_url,
+                    file_key=baseline_file_key,
+                    completed_at=datetime.now(timezone.utc),
+                ))
+                db.commit()
+            except Exception as persist_err:
+                logger.warning("[TRMBaseline] snapshot persist failed for %s: %s", user.email, persist_err)
+                db.rollback()
             from app.services.email_layout import branded_email_html, email_button
             body_html = branded_email_html(
                 f"""
@@ -8722,11 +8852,8 @@ def run_trm_board_report_for_user(self, user_id: str, override_company: str | No
         plan = (user.plan or "").lower()
         is_pro = plan.startswith("pro")
         plan_label = "Pro Suite" if is_pro else "Standard Suite"
-        company_name = (
-            (override_company or "").strip()
-            or (getattr(user, "company", "") or "").strip()
-            or "Your Organisation"
-        )
+        from app.services.evidence_enricher import display_legal_name
+        company_name = (override_company or "").strip() or display_legal_name(user, db)
         org = (
             db.query(Organisation)
             .filter(Organisation.owner_user_id == user.id)

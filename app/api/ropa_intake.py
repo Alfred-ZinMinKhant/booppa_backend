@@ -210,7 +210,8 @@ def submit_ropa_activities(
     rfp_done = bool(getattr(user, "compliance_evidence_rfp_ready", False))
     if pdpa_done and rfp_done:
         from app.workers.tasks import fulfill_cover_sheet_task
-        company_name = (user.company or "").strip() or "Your Organisation"
+        from app.services.evidence_enricher import display_legal_name
+        company_name = display_legal_name(user)
         # NOTE: fulfill_cover_sheet_task's own docstring says it normally
         # runs ~300s after bundle components are queued, to give PDPA/RFP
         # generation time to finish. That doesn't apply here — this branch

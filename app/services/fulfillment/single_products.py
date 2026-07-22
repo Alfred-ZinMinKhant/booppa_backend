@@ -363,10 +363,16 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
         pdf_bytes = None
         try:
             pdf_service = PDFService()
+            from app.core.models import User
+            from app.services.evidence_enricher import display_legal_name
+            _owner = (
+                db.query(User).filter(User.email == contact_email).first()
+                if contact_email else None
+            )
             pdf_data = {
                 "report_id": report_id,
                 "framework": "compliance_notarization",
-                "company_name": report.company_name,
+                "company_name": display_legal_name(_owner, db) if _owner else (report.company_name or "Your Organisation"),
                 "created_at": (
                     report.created_at.isoformat()
                     if report.created_at
@@ -952,6 +958,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
 
         # If the report was created via the public endpoint, owner_id is a random UUID.
         # Resolve the real user by email so VerifyRecord is linked to an actual account.
+        real_user = None
         if contact_email:
             from app.core.models import User
 
@@ -971,7 +978,11 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                 f"[VendorProof] No owner_id on report {report_id} and no user resolved from email"
             )
             return
-        company_name = report.company_name or "Vendor"
+        if real_user is not None:
+            from app.services.evidence_enricher import display_legal_name
+            company_name = display_legal_name(real_user, db)
+        else:
+            company_name = report.company_name or "Vendor"
         verify_url = f"https://www.booppa.io/verify/{report_id}"
 
         # ── Honest score, computed BEFORE we persist it ─────────────────────
@@ -1086,9 +1097,12 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                 if _matched_uen and (not u.uen or u.uen != _matched_uen):
                     u.uen = _matched_uen
                     _update_made = True
+                # Write the registry-verified name to `legal_name`, the shared
+                # canonical field every generator reads — not `company`, which
+                # stays whatever the buyer typed at signup (see evidence_enricher.py).
                 _reg_name = acra_info.get("registry_company_name")
-                if _reg_name and (not u.company or u.company != _reg_name):
-                    u.company = _reg_name
+                if _reg_name and u.legal_name != _reg_name:
+                    u.legal_name = _reg_name
                     _update_made = True
                 if _update_made:
                     db.commit()
@@ -1401,7 +1415,13 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
             or assessment.get("contact_email")
             or assessment.get("customer_email")
         )
-        company_name = report.company_name or "Customer"
+        from app.core.models import User
+        from app.services.evidence_enricher import display_legal_name
+        _owner = (
+            db.query(User).filter(User.email == contact_email).first()
+            if contact_email else None
+        )
+        company_name = display_legal_name(_owner, db) if _owner else (report.company_name or "Customer")
         website_url = report.company_website or assessment.get("website", "")
 
         # ── Step 1: Ensure scan is complete ────────────────────────────────

@@ -41,7 +41,14 @@ logger = logging.getLogger(__name__)
 #     the header can never be read as "Booppa" being the assessed organisation
 #     (audit: baselines were headed "Booppa", not the customer — "unacceptable"
 #     for MAS use).
-TRM_BASELINE_SCHEMA_VERSION = 3
+# v4: evidence surfaced per domain. Control Domains table gains an "Evidence"
+#     column (— none / Documented (n) / Tested ✓ (n) · date); a new Evidence
+#     Register section lists file names, SHA-256 prefixes, blockchain anchors and
+#     test attestations; and an explicit MAS-framing note that documented
+#     evidence establishes a control while *tested* evidence (with a test date)
+#     is what makes a domain inspection-defensible — an untested plan is treated
+#     by MAS as an aspiration, not a control.
+TRM_BASELINE_SCHEMA_VERSION = 4
 
 # Per-domain initial gap framework — what each MAS TRM domain requires + its
 # supervisory priority. Used to render a real starting gap analysis on day one
@@ -83,7 +90,29 @@ def _xml_escape(s: str) -> str:
     return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-    return s
+_EVIDENCE_TESTED_COLOR = "#065f46"      # mirrors _STATUS_COLOR["compliant"]
+_EVIDENCE_DOCUMENTED_COLOR = "#1d4ed8"
+
+
+def _evidence_cell(c: Dict[str, Any], style) -> Paragraph:
+    """Render the per-domain Evidence cell for the Control Domains table.
+
+    Tested evidence is what MAS treats as inspection-defensible, so it is
+    coloured (green) and dated; documented-only evidence is noted plainly;
+    no evidence reads as an explicit em-dash so a gap can't hide.
+    """
+    count = int(c.get("evidence_count") or 0)
+    tested = int(c.get("tested_count") or 0)
+    if count == 0:
+        return Paragraph('<font color="#94a3b8">&mdash; none</font>', style)
+    if tested > 0:
+        date = c.get("latest_tested_at")
+        suffix = f" &middot; {_xml_escape(date)}" if date else ""
+        return Paragraph(
+            f'<font color="{_EVIDENCE_TESTED_COLOR}"><b>Tested &#10003; ({tested})</b>'
+            f'{suffix}</font>', style)
+    return Paragraph(
+        f'<font color="{_EVIDENCE_DOCUMENTED_COLOR}">Documented ({count})</font>', style)
 
 
 def generate_trm_baseline_pdf(data: Dict[str, Any]) -> bytes:
@@ -93,7 +122,13 @@ def generate_trm_baseline_pdf(data: Dict[str, Any]) -> bytes:
       company_name: str
       plan_label:   str  (e.g. "Pro Suite")
       generated_at: ISO str (optional)
-      controls:     list of {domain, control_ref, status, risk_rating, gap_analysis}
+      controls:     list of {domain, control_ref, status, risk_rating, gap_analysis,
+                             evidence_count, tested_count, latest_tested_at,
+                             evidence: [{file_name, hash_value, tx_hash,
+                                         evidence_type, tested_at, attestation}]}
+      white_label:  dict | None    Pro only: {logo_bytes, primary_color,
+                                    secondary_color, footer_text} — see
+                                    pdf_logo.draw_logo_header for the render.
     """
     s = get_unified_styles()
     company = data.get("company_name") or "Your Organisation"
@@ -144,11 +179,65 @@ def generate_trm_baseline_pdf(data: Dict[str, Any]) -> bytes:
     story.append(Paragraph(f"<b>Summary:</b> {summary} (of {len(controls)} domains)", s["body"]))
     story.append(Spacer(1, 12))
 
-    story.append(Paragraph("Control Domains", s["h2"]))
+    subsidiaries: List[Dict[str, Any]] = data.get("subsidiaries") or []
+    if subsidiaries:
+        story.append(Paragraph("Group Subsidiary Rollup", s["h2"]))
+        story.append(Paragraph("Compliance status across the parent organisation and linked subsidiaries.", s["body"]))
+        story.append(Spacer(1, 6))
+
+        # Build column headers
+        entities = [company] + [sub.get("company_name") or "Unknown" for sub in subsidiaries]
+        rollup_header = [Paragraph("<b>MAS TRM Domain</b>", s["cell_b"])]
+        for entity in entities:
+            rollup_header.append(Paragraph(f"<b>{_xml_escape(entity)}</b>", s["cell_b"]))
+        rollup_rows = [rollup_header]
+
+        # Use the parent's domains to drive the row list
+        for r in controls:
+            domain_name = r.get("domain") or "—"
+            row = [Paragraph(_xml_escape(domain_name), s["cell"])]
+            
+            # Helper to generate status cell
+            def _status_cell(st):
+                color_hex = _STATUS_COLOR.get(st, "#334155")
+                return Paragraph(f'<font color="{color_hex}">{_STATUS_LABEL.get(st, st)}</font>', s["cell"])
+
+            # Parent status
+            row.append(_status_cell(r.get("status") or "not_started"))
+
+            # Subsidiary status
+            for sub in subsidiaries:
+                sub_controls = sub.get("controls") or []
+                sub_c = next((c for c in sub_controls if c.get("domain") == domain_name), None)
+                sub_st = sub_c.get("status") if sub_c else "not_started"
+                row.append(_status_cell(sub_st))
+
+            rollup_rows.append(row)
+
+        col_width = (6.0 * inch) / (len(entities) + 1)
+        # Domain name gets slightly more width
+        rollup_table = Table(rollup_rows, colWidths=[col_width * 1.5] + [col_width * 0.85] * len(entities), repeatRows=1)
+        rollup_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, 0), 8.5),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(rollup_table)
+        story.append(Spacer(1, 14))
+
+    story.append(Paragraph(f"Control Domains &middot; {_xml_escape(company)}", s["h2"]))
     header = [
         Paragraph("<b>Ref</b>", s["cell_b"]),
         Paragraph("<b>MAS TRM Domain</b>", s["cell_b"]),
         Paragraph("<b>Status</b>", s["cell_b"]),
+        Paragraph("<b>Evidence</b>", s["cell_b"]),
         Paragraph("<b>Next Action</b>", s["cell_b"]),
     ]
     rows = [header]
@@ -169,10 +258,11 @@ def generate_trm_baseline_pdf(data: Dict[str, Any]) -> bytes:
             Paragraph(_xml_escape(c.get("control_ref") or f"TRM-{i}"), s["cell"]),
             Paragraph(_xml_escape(c.get("domain") or "—"), s["cell"]),
             status_para,
+            _evidence_cell(c, s["cell"]),
             Paragraph(next_action, s["cell"]),
         ])
 
-    table = Table(rows, colWidths=[0.7 * inch, 2.9 * inch, 1.1 * inch, 2.2 * inch], repeatRows=1)
+    table = Table(rows, colWidths=[0.55 * inch, 2.35 * inch, 0.95 * inch, 1.15 * inch, 1.9 * inch], repeatRows=1)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -230,6 +320,67 @@ def generate_trm_baseline_pdf(data: Dict[str, Any]) -> bytes:
     story.append(gap_table)
     story.append(Spacer(1, 14))
 
+    # ── Evidence Register ───────────────────────────────────────────────────
+    evidenced = [c for c in controls if int(c.get("evidence_count") or 0) > 0]
+    if evidenced:
+        story.append(Paragraph("Evidence Register", s["h2"]))
+        story.append(Paragraph(
+            "Evidence attached to each control, with its SHA-256 fingerprint and "
+            "(where anchored) its blockchain transaction. <b>Documented</b> evidence "
+            "establishes that a control exists; <b>tested</b> evidence &mdash; a dated "
+            "test such as an annual DR failover &mdash; is what makes a domain "
+            "inspection-defensible. MAS treats an untested plan as an aspiration, not "
+            "a control, so a domain is only as strong as its most recent test.",
+            s["body"]))
+        story.append(Spacer(1, 6))
+        ev_header = [
+            Paragraph("<b>MAS TRM Domain</b>", s["cell_b"]),
+            Paragraph("<b>Evidence</b>", s["cell_b"]),
+            Paragraph("<b>Type</b>", s["cell_b"]),
+            Paragraph("<b>SHA-256 / Anchor</b>", s["cell_b"]),
+        ]
+        ev_rows = [ev_header]
+        for c in evidenced:
+            domain = c.get("domain") or "—"
+            for e in (c.get("evidence") or []):
+                etype = (e.get("evidence_type") or "documented")
+                if etype == "tested":
+                    tested_at = e.get("tested_at")
+                    tlabel = "Tested &#10003;" + (f" &middot; {_xml_escape(tested_at)}" if tested_at else "")
+                    type_cell = Paragraph(
+                        f'<font color="{_EVIDENCE_TESTED_COLOR}"><b>{tlabel}</b></font>', s["cell"])
+                else:
+                    type_cell = Paragraph(
+                        f'<font color="{_EVIDENCE_DOCUMENTED_COLOR}">Documented</font>', s["cell"])
+                fingerprint = _xml_escape(e.get("hash_value") or "—")
+                tx = e.get("tx_hash")
+                if tx:
+                    fingerprint += f'<br/><font color="#475569" size="7">anchor: {_xml_escape(tx[:18])}…</font>'
+                name_cell = _xml_escape(e.get("file_name") or "—")
+                attest = (e.get("attestation") or "").strip()
+                if attest:
+                    name_cell += f'<br/><font color="#475569" size="7">{_xml_escape(attest)}</font>'
+                ev_rows.append([
+                    Paragraph(_xml_escape(domain), s["cell"]),
+                    Paragraph(name_cell, s["cell"]),
+                    type_cell,
+                    Paragraph(fingerprint, s["cell"]),
+                ])
+        ev_table = Table(ev_rows, colWidths=[1.9 * inch, 2.4 * inch, 1.1 * inch, 1.5 * inch], repeatRows=1)
+        ev_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(ev_table)
+        story.append(Spacer(1, 14))
+
     # ── Configuration & Provisioning Status (Pro Suite evidence) ────────────
     provisioning = data.get("provisioning") or []
     if provisioning:
@@ -285,6 +436,10 @@ def generate_trm_baseline_pdf(data: Dict[str, Any]) -> bytes:
         f"This document is generated by {COMPANY_NAME} for informational "
         "purposes only and does not constitute legal or regulatory advice or a statement of MAS "
         "compliance.", s["small"]))
+
+    # Pro Suite white-label override (logo_bytes / primary_color / secondary_color) —
+    # draw_logo_header reads doc._branding the same way pdf_service.py's header does.
+    doc._branding = data.get("white_label")
 
     doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
     return buf.getvalue()

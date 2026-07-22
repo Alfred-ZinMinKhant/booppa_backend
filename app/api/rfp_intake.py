@@ -253,7 +253,7 @@ def submit_intake(
     company_name = (
         (body.get("company_name") or "").strip()
         or row.company_name
-        or (getattr(user, "company", "") or "")
+        or (getattr(user, "legal_name", None) or getattr(user, "company", "") or "")
     ).strip()
     if not vendor_url:
         raise HTTPException(
@@ -378,7 +378,10 @@ def resolve_intake(
     if row.uen and not merged_intake.get("uen"):
         merged_intake["uen"] = row.uen
     vendor_url = (row.vendor_url or (getattr(user, "website", "") or "")).strip()
-    company_name = (row.company_name or (getattr(user, "company", "") or "")).strip()
+    company_name = (
+        row.company_name
+        or (getattr(user, "legal_name", None) or getattr(user, "company", "") or "")
+    ).strip()
     if not rfp_description:
         raise HTTPException(status_code=422, detail="No prior RFP brief found to regenerate from — submit the intake first.")
     if not vendor_url:

@@ -412,7 +412,12 @@ async def _activate_subscription(
                 # committed first (the task also falls back to canonical domains).
                 _wtasks.run_suite_trm_baseline_for_user.apply_async(
                     args=[str(user.id)],
-                    kwargs={"override_company": override_company},
+                    kwargs={
+                        "override_company": override_company,
+                        # Test checkouts must resend on every run (same QA email);
+                        # production activations keep the 24h idempotency guard.
+                        "bypass_idempotency": test_simulation,
+                    },
                     countdown=30,
                 )
             logger.info(

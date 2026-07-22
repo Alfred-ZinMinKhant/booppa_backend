@@ -59,6 +59,61 @@ def test_evidence_upload_list_delete_roundtrip(client, test_db, s3_bucket):
     assert client.get(base, headers=headers).json()["items"] == []
 
 
+def test_evidence_defaults_to_documented(client, test_db, s3_bucket):
+    user = _suite_user(test_db, "trm-ev-doc@booppa.io")
+    org = make_org(test_db, owner=user, tier="pro")
+    ctrl = _control(test_db, org)
+    base = f"/api/vendor/trm/{ctrl.id}/evidence"
+
+    up = client.post(
+        base,
+        files={"file": ("policy.pdf", b"%PDF-1.4 doc", "application/pdf")},
+        headers=auth_headers(user),
+    )
+    assert up.status_code == 200, up.text
+    assert up.json()["evidence_type"] == "documented"
+    assert up.json()["tested_at"] is None
+
+
+def test_tested_evidence_roundtrip(client, test_db, s3_bucket):
+    user = _suite_user(test_db, "trm-ev-tested@booppa.io")
+    org = make_org(test_db, owner=user, tier="pro")
+    ctrl = _control(test_db, org)
+    base = f"/api/vendor/trm/{ctrl.id}/evidence"
+
+    up = client.post(
+        base,
+        files={"file": ("dr_test.pdf", b"%PDF-1.4 dr test report", "application/pdf")},
+        data={
+            "evidence_type": "tested",
+            "tested_at": "2026-03-15",
+            "attestation": "Annual DR failover test — 3h58m recovery, verified by Head of IT.",
+        },
+        headers=auth_headers(user),
+    )
+    assert up.status_code == 200, up.text
+    assert up.json()["evidence_type"] == "tested"
+    assert up.json()["tested_at"].startswith("2026-03-15")
+
+    item = client.get(base, headers=auth_headers(user)).json()["items"][0]
+    assert item["evidence_type"] == "tested"
+    assert item["tested_at"].startswith("2026-03-15")
+    assert "DR failover" in item["attestation"]
+
+
+def test_tested_at_must_be_iso(client, test_db, s3_bucket):
+    user = _suite_user(test_db, "trm-ev-bad@booppa.io")
+    org = make_org(test_db, owner=user, tier="pro")
+    ctrl = _control(test_db, org)
+    r = client.post(
+        f"/api/vendor/trm/{ctrl.id}/evidence",
+        files={"file": ("p.pdf", b"%PDF", "application/pdf")},
+        data={"evidence_type": "tested", "tested_at": "March 2026"},
+        headers=auth_headers(user),
+    )
+    assert r.status_code == 422
+
+
 def test_rejects_unsupported_extension(client, test_db, s3_bucket):
     user = _suite_user(test_db, "trm-ev-ext@booppa.io")
     org = make_org(test_db, owner=user, tier="pro")

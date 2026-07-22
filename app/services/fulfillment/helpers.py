@@ -548,7 +548,8 @@ def _maybe_fire_cover_sheet(customer_email: str | None, user_id: str | None = No
 
         user.pending_cover_sheet = False
         db.commit()
-        company_name = (user.company or "").strip() or "Your Organisation"
+        from app.services.evidence_enricher import display_legal_name
+        company_name = display_legal_name(user, db)
     finally:
         db.close()
 
