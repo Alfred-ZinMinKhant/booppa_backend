@@ -73,8 +73,6 @@ jobs:
             --ignore-vuln PYSEC-2026-1325 \
             `# setuptools — only fix (83.0.0) drops pkg_resources that eth_keyfile/web3 import at runtime; easy_install/PackageIndex path, not exercised in prod` \
             --ignore-vuln PYSEC-2026-3447 \
-            `# pyasn1 — python-jose 3.4.0 caps pyasn1<0.5.0; fix (0.6.3) needs a python-jose upgrade` \
-            --ignore-vuln PYSEC-2026-2263 \
             `# cryptography GHSA — only fixed in 48.x major jump; PYSEC-2026-35/36 patched via 46.0.7` \
             --ignore-vuln GHSA-537c-gmf6-5ccf \
             `# fastapi/starlette — fix requires fastapi 0.109 + starlette 0.40+ major upgrade` \

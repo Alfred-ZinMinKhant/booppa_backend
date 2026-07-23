@@ -43,7 +43,8 @@ stripe==15.1.0
 python-socketio==5.16.2
 
 # Security
-python-jose[cryptography]==3.4.0
+python-jose[cryptography]==3.5.0   # bumped from 3.4.0: 3.4.0 capped pyasn1<0.5.0, which pinned us to the vulnerable 0.4.8; 3.5.0 requires pyasn1>=0.5.0 with no upper bound
+pyasn1==0.6.4             # transitive (python-jose, rsa) — pinned explicitly to clear CVE-2026-59885/59886 and PYSEC-2026-2263; unblocked by the python-jose 3.5.0 bump above
 passlib[bcrypt]==1.7.4
 bcrypt>=3.2.0,<4.0.0
 cryptography==46.0.7      # bumped from 46.0.5 to clear PYSEC-2026-35/36 (GHSA-537c-gmf6-5ccf needs 48.x major jump — ignored in CI)
