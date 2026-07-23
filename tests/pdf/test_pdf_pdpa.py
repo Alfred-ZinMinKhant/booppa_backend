@@ -211,3 +211,25 @@ def test_unassessed_retention_renders_na_not_fabricated_score():
     assert "N/A" in score_cell, f"retention score should be N/A, got {score_cell!r}"
     assert "70/100" not in score_cell, "fabricated 70/100 still rendered"
     assert "N/A" in status_cell, f"retention status should be N/A, got {status_cell!r}"
+
+
+@freeze_time("2026-05-24T12:00:00Z")
+def test_positive_verdicts_carry_a_provenance_qualifier():
+    """Layer-3: a "Compliant" dimension is an inference from public disclosure,
+    not an audit finding. The report must say so, or a positive verdict reads
+    as an assurance we never performed."""
+    from app.services.pdf_service import PDFService
+    from pypdf import PdfReader
+
+    pdf_bytes = PDFService().generate_pdf({
+        "framework": "pdpa_quick_scan",
+        "company_name": "Acme Test Co",
+        "created_at": "2026-05-24T12:00:00Z",
+        "risk_score": 12,
+        "findings": [],
+    })
+    raw = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf_bytes)).pages)
+    text = " ".join(raw.split())
+
+    assert "Basis: automated public-site scan on 2026-05-24" in text
+    assert "not an audit of internal controls" in text

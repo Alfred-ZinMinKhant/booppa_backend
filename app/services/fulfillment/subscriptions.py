@@ -152,7 +152,15 @@ _LEVEL_RANK = {"BASIC": 0, "STANDARD": 1, "PREMIUM": 2, "GOVERNMENT": 3}
 
 
 def _csp_activation_email_html(plan: str) -> str:
-    """Plain activation email for a CSP Compliance Pack purchase."""
+    """Plain activation email for a CSP Compliance Pack purchase.
+
+    DEPRECATED — no longer sent on purchase. This was the two-line email with
+    nothing attached that a SGD 3,999 buyer received. Both purchase paths now go
+    through `csp_access.deliver_csp_activation`, which queues `csp.run_baseline`
+    to send ONE email carrying the Day-1 Registration Readiness Baseline PDF.
+    Kept only because it is re-exported from `app.services.fulfillment`; do not
+    wire it back into a fulfillment path.
+    """
     label = "CSP Monitoring Add-On" if plan == "csp_monitoring" else "CSP Compliance Pack — Full"
     inner = (
         f'<h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">{label} is active</h2>'
@@ -262,33 +270,30 @@ async def _activate_subscription(
         # plan if they also buy CSP). Activate the org and return early, before
         # the user.plan assignment + platform feature triggers below.
         if product_type in ("csp_pack_monthly", "csp_monitoring_monthly"):
-            from app.services.csp_access import activate_csp_access
+            from app.services.csp_access import deliver_csp_activation
 
             if stripe_subscription_id:
                 user.stripe_subscription_id = stripe_subscription_id
             if stripe_customer_id:
                 user.stripe_customer_id = stripe_customer_id
-            activate_csp_access(
-                db, user=user, plan=new_plan, billing_type="subscription"
+            # Same shared path as the one-time pack in bundles.py: activates the
+            # org and queues the Day-1 Registration Readiness Baseline, which
+            # sends the single activation+artifact email.
+            await deliver_csp_activation(
+                db,
+                user=user,
+                plan=new_plan,
+                billing_type="subscription",
+                metadata={
+                    "company_name": override_company or "",
+                    "vendor_url": override_website or "",
+                },
+                session_id=stripe_subscription_id,
+                test_simulation=bool(test_simulation),
             )
             logger.info(
                 f"[CSP] Activated {new_plan} access for {customer_email}"
             )
-            try:
-                sent = await EmailService().send_html_email(
-                    user.email,
-                    "Your CSP Compliance Pack is active",
-                    _csp_activation_email_html(new_plan),
-                )
-                if not sent:
-                    await _alert_payment_fulfillment_issue(
-                        reason="CSP activated but activation email rejected by provider",
-                        product_type=product_type,
-                        customer_email=customer_email,
-                        session_id=stripe_subscription_id,
-                    )
-            except Exception as e:
-                logger.warning(f"[CSP] activation email failed: {e}")
             return
 
         user.plan = new_plan

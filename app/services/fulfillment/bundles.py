@@ -7,7 +7,6 @@ from app.services.pdf_service import PDFService
 from app.services.booppa_ai_service import BooppaAIService
 from app.services.storage import S3Service
 
-from app.services.fulfillment.subscriptions import _csp_activation_email_html
 from app.services.fulfillment.helpers import (
     _create_stub_report,
     _alert_payment_fulfillment_issue,
@@ -183,25 +182,22 @@ async def _fulfill_standalone_no_report(
                     session_id=session_id,
                 )
                 return True
-            from app.services.csp_access import activate_csp_access
+            from app.services.csp_access import deliver_csp_activation
 
-            activate_csp_access(db, user=user, plan="csp", billing_type="one_time")
+            # Activates the org AND queues the Day-1 Registration Readiness
+            # Baseline, which sends the single activation+artifact email. Shared
+            # with the monthly path in subscriptions.py — do not re-add a bare
+            # activation email here or the buyer gets two messages.
+            await deliver_csp_activation(
+                db,
+                user=user,
+                plan="csp",
+                billing_type="one_time",
+                metadata=metadata,
+                session_id=session_id,
+                test_simulation=bool(metadata.get("test_simulation")),
+            )
             logger.info(f"[CSP] One-time pack access granted to {customer_email}")
-            try:
-                sent = await EmailService().send_html_email(
-                    user.email,
-                    "Your CSP Compliance Pack is active",
-                    _csp_activation_email_html("csp"),
-                )
-                if not sent:
-                    await _alert_payment_fulfillment_issue(
-                        reason="CSP one-time activated but activation email rejected by provider",
-                        product_type=product_type,
-                        customer_email=customer_email,
-                        session_id=session_id,
-                    )
-            except Exception as e:
-                logger.warning(f"[CSP] one-time activation email failed: {e}")
             return True
         finally:
             db.close()
@@ -218,7 +214,10 @@ async def _fulfill_standalone_no_report(
             if user:
                 owner_id = user.id
                 if not company_name:
-                    company_name = (getattr(user, "company", "") or "").strip()
+                    # Async context — must await the resolver, not the sync
+                    # bridge (see evidence_enricher.resolve_display_legal_name).
+                    from app.services.evidence_enricher import resolve_display_legal_name
+                    company_name = (await resolve_display_legal_name(user, db) or "").strip()
                 if not website:
                     website = (getattr(user, "website", "") or "").strip()
 

@@ -217,7 +217,36 @@ def generate_vendor_pro_report_pdf(data: Dict[str, Any]) -> bytes:
     else:
         story.append(Paragraph("No PDPA scan on file yet. Run a PDPA scan to start drift tracking.", s["body"]))
 
-    # ── 5. What your plan includes ─────────────────────────────────────────────
+    # ── 5. Score basis — what drove each dimension ─────────────────────────────
+    # A score with no stated basis is a number, not an argument. Every row here
+    # is the signal the scan actually recorded, plus whether that basis was
+    # inferred from public disclosure or backed by tested evidence.
+    basis_rows = data.get("score_basis") or []
+    if basis_rows:
+        story.append(Paragraph("Score basis", s["h2"]))
+        story.append(Paragraph(
+            "Each dimension below shows the public signal that drove its score and whether "
+            "the basis is an inference or evidence you have tested. Tested evidence is "
+            "annotated here; it does not itself change the score.", s["body"]))
+        story.append(Spacer(1, 6))
+        rows = [["Dimension", "Status", "Score", "Driving signal", "Basis"]]
+        for r in basis_rows:
+            score = r.get("score")
+            rows.append([
+                Paragraph(_xml_escape(r.get("dimension_name") or ""), s["cell"]),
+                Paragraph(_xml_escape(r.get("status") or "—"), s["cell"]),
+                Paragraph(str(score) if score is not None else "—", s["cell"]),
+                Paragraph(_xml_escape(r.get("signal") or ""), s["cell"]),
+                Paragraph(_xml_escape(r.get("basis") or ""), s["cell"]),
+            ])
+        story.append(_table(rows, [1.5 * inch, 0.75 * inch, 0.5 * inch, 2.35 * inch, 1.3 * inch]))
+        story.append(Spacer(1, 4))
+        story.append(Paragraph(
+            "\"Inferred (public scan)\" means the signal was read from publicly available "
+            "disclosure, not verified against your internal controls. Upload tested evidence "
+            "against the matching MAS TRM domain to change a row to \"Tested\".", s["small"]))
+
+    # ── 6. What your plan includes ─────────────────────────────────────────────
     story.append(Paragraph("What your Vendor Pro plan includes", s["h2"]))
     for line in [
         "This consolidated monthly intelligence report",
@@ -260,10 +289,12 @@ def build_pro_report_pdf(
         get_score_trend, get_sector_benchmark, get_tender_matches,
         get_competitor_pulse, get_pdpa_drift,
     )
+    from app.services.score_basis import build_score_basis
 
     user = db.query(User).filter(User.id == vendor_id).first()
     if not company:
-        company = (getattr(user, "company", None) or "Your Company")
+        from app.services.evidence_enricher import display_legal_name
+        company = display_legal_name(user, db) or "Your Company"
 
     if trust_score is None or compliance_score is None:
         sr = db.query(VendorScore).filter(VendorScore.vendor_id == vendor_id).first()
@@ -297,4 +328,5 @@ def build_pro_report_pdf(
         "tender_matches": get_tender_matches(db, vendor_id, limit=10, with_win_probability=True),
         "competitor_pulse": get_competitor_pulse(db, vendor_id),
         "pdpa_drift": get_pdpa_drift(db, vendor_id),
+        "score_basis": build_score_basis(db, vendor_id),
     })

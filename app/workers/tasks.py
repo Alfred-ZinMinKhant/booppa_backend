@@ -5068,7 +5068,8 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
         import uuid as _uuid
 
         user = UserRepository.get_by_id(db, str(vendor_id))
-        company = (override_company or "").strip() or (getattr(user, "company", "Customer") if user else "Customer")
+        from app.services.evidence_enricher import display_legal_name
+        company = (override_company or "").strip() or (display_legal_name(user, db) if user else "") or "Customer"
 
         # Atomic same-day reservation (closes the check-then-create race between
         # the daily anniversary cron and the Vendor-Pro quarterly cron, which can
@@ -5315,7 +5316,8 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
         email = vendor_email or user.email
         if not email:
             return
-        company = (override_company or "").strip() or (getattr(user, "company", "") or "").strip() or "Your Organisation"
+        from app.services.evidence_enricher import display_legal_name
+        company = (override_company or "").strip() or display_legal_name(user, db) or "Your Organisation"
         framework = "pdpa_quick_scan"
 
         if report_id:
@@ -5531,7 +5533,8 @@ def run_vendor_pro_pdpa_snapshot_for_user(self, vendor_id: str, vendor_email: st
         email = vendor_email or user.email
         if not email:
             return
-        company = (override_company or "").strip() or (getattr(user, "company", "") or "").strip() or "Your Organisation"
+        from app.services.evidence_enricher import display_legal_name
+        company = (override_company or "").strip() or display_legal_name(user, db) or "Your Organisation"
         framework = "pdpa_quick_scan"
 
         reports = (
@@ -7894,7 +7897,8 @@ def fulfill_pdpa_declaration_task(user_id: str, customer_email: str | None = Non
         keys = ["processing_purpose", "lawful_basis", "data_categories", "data_subjects",
                 "recipients", "retention_period", "safeguards"]
         dicts = [{k: getattr(r, k) for k in keys} for r in rows]
-        company_name = (getattr(user, "company", "") or "").strip() or "Your Organisation"
+        from app.services.evidence_enricher import display_legal_name
+        company_name = display_legal_name(user, db) or "Your Organisation"
         uen = getattr(user, "uen", None) or "Not provided"
 
         pdf_bytes = generate_pdpa_declaration_pdf(
@@ -9275,6 +9279,7 @@ def run_compliance_evidence_cycle_for_user(self, user_id: str, test_simulation: 
         if not user or not user.email:
             logger.warning("[CEFirstCycle] no user/email for id=%s", user_id)
             return
+        from app.services.evidence_enricher import display_legal_name
         website = (override_website or "").strip() or (getattr(user, "website", "") or "").strip()
         # CE now also produces the BCEP evidence pack, which is driven by a
         # structured intake (not a website scan), so a missing website no longer
@@ -9290,7 +9295,7 @@ def run_compliance_evidence_cycle_for_user(self, user_id: str, test_simulation: 
             session_id=None,
             customer_email=user.email,
             metadata={
-                "company_name": (override_company or "").strip() or getattr(user, "company", ""),
+                "company_name": (override_company or "").strip() or display_legal_name(user, db),
                 "vendor_url": website,
                 "subscription_cycle": True,
                 **({"test_simulation": "1"} if test_simulation else {}),

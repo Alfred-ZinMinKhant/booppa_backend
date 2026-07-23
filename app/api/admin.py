@@ -1081,6 +1081,77 @@ def _parse_bulk_scan_rows(filename: str, content: bytes) -> list[dict]:
     return rows
 
 
+class TrmDemoBaselineRequest(BaseModel):
+    customer_email: str = Field(..., description="Recipient — receives the real baseline email")
+    company_name: Optional[str] = Field(default="NovaPay Fintech Pte Ltd")
+    uen: Optional[str] = Field(default=None, description="Optional Singapore UEN for ACRA legal-name resolution")
+    live_ai: bool = Field(
+        default=True,
+        description="Use live DeepSeek gap analysis when a key is configured; "
+        "false forces the deterministic seeded narratives.",
+    )
+
+    @field_validator("company_name", mode="before")
+    @classmethod
+    def validate_names(cls, v):
+        if v in (None, "", "NovaPay Fintech Pte Ltd"):
+            return v or "NovaPay Fintech Pte Ltd"
+        return validate_name_field(v)
+
+
+# Defined `def`, not `async def`, on purpose: the baseline worker bridges to async
+# internally via asyncio.run(), which raises inside a live event loop. FastAPI runs
+# sync endpoints in a threadpool, so there is no running loop here.
+@router.post("/trm/demo-baseline")
+def admin_trm_demo_baseline(
+    body: TrmDemoBaselineRequest,
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    """Seed the evidence-graded MAS TRM demo tenant and regenerate its baseline.
+
+    Same code path as `scripts/demo_trm_baseline.py` — the point is that the
+    tested-vs-documented artifact is reproducible by clicking a button rather
+    than by having shell access to a box.
+    """
+    from app.services.trm_demo_harness import seed_and_generate
+
+    db = SessionLocal()
+    try:
+        result = seed_and_generate(
+            customer_email=body.customer_email,
+            company_name=body.company_name or "NovaPay Fintech Pte Ltd",
+            uen=body.uen,
+            live_ai=body.live_ai,
+            db=db,
+        )
+    except Exception as exc:
+        logger.exception("[AdminTRMDemo] baseline generation failed")
+        raise HTTPException(status_code=500, detail=f"Demo baseline failed: {exc}")
+    finally:
+        db.close()
+
+    result.pop("pdf_bytes", None)
+    return {"success": True, **result}
+
+
+@router.get("/trm/demo-baseline/{user_id}")
+def admin_trm_demo_baseline_latest(
+    user_id: str,
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    """Re-presign the latest baseline for a demo user (presigns expire in 7 days)."""
+    from app.services.trm_demo_harness import latest_baseline_url
+
+    db = SessionLocal()
+    try:
+        url = latest_baseline_url(user_id, db)
+    finally:
+        db.close()
+    if not url:
+        return {"available": False}
+    return {"available": True, "download_url": url}
+
+
 @router.post("/pdpa/bulk-scan")
 async def create_pdpa_bulk_scan(
     request: Request,

@@ -63,6 +63,9 @@ celery_app.conf.update(
         "build_pdpc_precedent_index": {"queue": "heavy_queue"},
 
         "app.workers.tasks.*": {"queue": "fast_queue"},
+        # Day-1 CSP baseline: PDF render + S3 upload + ACRA fetch — heavy. Must
+        # stay ABOVE the "csp.*" wildcard below; routes match in declaration order.
+        "csp.run_baseline": {"queue": "heavy_queue"},
         # CSP Compliance Pack tasks (csp.generate_documents, csp.notarize_record,
         # csp.refresh_sanctions_lists, csp.daily_monitoring, csp.run_sanctions_screening)
         "csp.*": {"queue": "fast_queue"},

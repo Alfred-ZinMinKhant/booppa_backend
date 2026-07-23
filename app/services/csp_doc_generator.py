@@ -841,6 +841,28 @@ def _xml_escape(s: str) -> str:
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _inline(s: str) -> str:
+    """Escape, then re-introduce `**bold**` as the one permitted inline tag.
+
+    Applied AFTER escaping so a `<b>` typed by a user stays inert text. The eight
+    generated AML/CFT documents contain no `**`, so this is a no-op for them; the
+    label/value lines in `csp_record_export` rely on it.
+    """
+    out = _xml_escape(s)
+    parts = out.split("**")
+    if len(parts) < 3:
+        return out
+    # Odd indices are the spans between paired markers. An unpaired trailing
+    # marker is left as literal text rather than emitting a dangling tag.
+    rebuilt = []
+    for i, part in enumerate(parts):
+        if i % 2 == 1 and i < len(parts) - 1:
+            rebuilt.append(f"<b>{part}</b>")
+        else:
+            rebuilt.append(part)
+    return "".join(rebuilt)
+
+
 def generate_csp_document_pdf(
     title: str,
     body: str,
@@ -894,9 +916,9 @@ def generate_csp_document_pdf(
             flow.append(Paragraph(_xml_escape(line[2:]), h2))
         elif line.lstrip().startswith(("- ", "* ")):
             txt = line.lstrip()[2:]
-            flow.append(Paragraph(_xml_escape(txt), bullet_style, bulletText="•"))
+            flow.append(Paragraph(_inline(txt), bullet_style, bulletText="•"))
         else:
-            flow.append(Paragraph(_xml_escape(line), body_style))
+            flow.append(Paragraph(_inline(line), body_style))
 
     flow.append(PageBreak())
     flow.append(KeepTogether([

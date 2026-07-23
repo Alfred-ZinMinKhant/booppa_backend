@@ -256,13 +256,44 @@ class NomineeDirectorOut(BooppaBase):
 
 
 class NomineeAssessmentUpdate(BooppaBase):
-    assessment_outcome:    str
+    # Same evidentiary bar as StrCreate above. Under the CSP Act 2024 the
+    # fit-and-proper assessment must be genuinely performed by the registered
+    # CSP — a one-word outcome with no reasoning is the "generic template"
+    # outcome ACRA does not accept, so both free-text fields are mandatory.
+    assessment_outcome:    str = Field(..., min_length=20)
     assessed_by:           str
     criminal_check_done:   bool
     bankruptcy_check_done: bool
     director_history_check: bool
-    assessment_notes:      Optional[str] = None
+    assessment_notes:      str = Field(
+        ..., min_length=20,
+        description="Your written reasoning — this is what answers an ACRA "
+                    "inspector asking why this person was passed or failed",
+    )
     result:                str = Field(..., description="fit_proper | not_fit | under_review")
+
+    @validator("result")
+    def validate_result(cls, v, values):
+        if v not in ("fit_proper", "not_fit", "under_review"):
+            raise ValueError("result must be: fit_proper | not_fit | under_review")
+        # A pass outcome with an unperformed check is not an assessment. Declared
+        # last so `values` already carries the three check flags (pydantic
+        # validates in field-declaration order).
+        if v == "fit_proper":
+            missing = [
+                label for label, key in (
+                    ("criminal record check", "criminal_check_done"),
+                    ("bankruptcy check", "bankruptcy_check_done"),
+                    ("director history check", "director_history_check"),
+                )
+                if not values.get(key)
+            ]
+            if missing:
+                raise ValueError(
+                    "cannot record a fit_proper outcome without performing: "
+                    + ", ".join(missing)
+                )
+        return v
 
 
 # ── BENEFICIAL OWNER ───────────────────────────────────────────────────────

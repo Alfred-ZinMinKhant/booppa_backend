@@ -161,6 +161,53 @@ async def test_resolve_display_legal_name_falls_back_on_timeout(test_db, mocker,
     assert "timed out" in caplog.text
 
 
+# ── Guard: no generator may default an entity name from `user.company` ───────
+# Four products shipped the "Assessed Entity: thunes.com" bug independently
+# (Vendor Proof, RFP kit, Buyer Welcome Pack, TRM Baseline) because each one
+# rolled its own fallback. This is the lint that stops the fifth.
+
+_ENTITY_FALLBACK_PATTERNS = (
+    'getattr(user, "company"',
+    "getattr(user, 'company'",
+    "user.company or",
+)
+
+# Modules that legitimately read the raw `company` string: the resolver itself
+# (it is the thing that turns raw -> legal), and non-artifact surfaces such as
+# directory listings, SEO pages and leaderboards where the trading name is what
+# the reader expects.
+_ENTITY_FALLBACK_ALLOWLIST = {
+    "evidence_enricher.py",
+    "leaderboard.py",
+    "seo_engine.py",
+    "vendor_comparison.py",
+    "csp_access.py",
+    "tender_service.py",
+}
+
+
+def test_no_generator_defaults_entity_name_from_raw_company():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "app" / "services"
+    offenders = []
+    for path in root.glob("*.py"):
+        if path.name in _ENTITY_FALLBACK_ALLOWLIST:
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if any(pat in line for pat in _ENTITY_FALLBACK_PATTERNS):
+                offenders.append(f"{path.name}:{lineno}: {line.strip()}")
+
+    assert not offenders, (
+        "These modules default an entity name from the raw `user.company` signup "
+        "string instead of the shared resolver "
+        "(app.services.evidence_enricher.display_legal_name / "
+        "resolve_display_legal_name in async contexts):\n  "
+        + "\n  ".join(offenders)
+    )
+
+
 @pytest.mark.asyncio
 async def test_resolve_display_legal_name_skips_lookup_when_already_resolved(
     test_db, mocker

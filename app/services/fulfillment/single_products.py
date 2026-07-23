@@ -190,7 +190,8 @@ async def _defer_rfp_to_intake(
             )
             return None
         resolved_url = vendor_url or (getattr(user, "website", "") or "") or None
-        resolved_company = company_name or (getattr(user, "company", "") or "") or None
+        from app.services.evidence_enricher import resolve_display_legal_name
+        resolved_company = company_name or (await resolve_display_legal_name(user, db) or "") or None
         pending = PendingRfpIntake(
             user_id=user.id,
             session_id=session_id,
@@ -1238,6 +1239,16 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             except Exception:
                 logger.exception("[VendorProof] sector benchmark computation failed")
 
+            # Score provenance — the driving signal behind each scanned dimension
+            # plus an Inferred/Tested basis. Empty when no Deep Scan is on file,
+            # in which case the section is simply omitted.
+            _vp_score_basis: list = []
+            try:
+                from app.services.score_basis import build_score_basis
+                _vp_score_basis = build_score_basis(db, vendor_id)
+            except Exception:
+                logger.exception("[VendorProof] score basis computation failed")
+
             cert_pdf = generate_vendor_proof_certificate(
                 company_name=company_name,
                 uen=_uen,
@@ -1253,6 +1264,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                 expires_on=_vp_expires_display,
                 notarization_credits=int(_vp_credits),
                 sector_benchmark=_vp_benchmark,
+                score_basis=_vp_score_basis,
             )
             cert_hash = _hashlib.sha256(cert_pdf).hexdigest()
 
