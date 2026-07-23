@@ -68,6 +68,13 @@ jobs:
           # Safe patch/minor fixes are applied in requirements.txt; the IDs below
           # are ignored because fixing them requires a risky major-version jump
           # (or has no fix at all). Revisit when we do a framework-upgrade pass.
+          #
+          # pip-audit queries the PyPI vulnerability API per package, so a single
+          # dropped connection aborts the whole scan with a traceback and exit 1 —
+          # indistinguishable, by exit code alone, from "found a vulnerability".
+          # Retry only when the output carries a transport-failure signature, so
+          # real findings still fail fast instead of being retried three times.
+          run_audit() {
           pip-audit -r requirements.txt --strict \
             `# ecdsa — no fixed version exists (transitive via python-jose/eth-account)` \
             --ignore-vuln PYSEC-2026-1325 \
@@ -118,6 +125,24 @@ jobs:
             --ignore-vuln PYSEC-2026-3026 \
             --ignore-vuln PYSEC-2026-3027 \
             --ignore-vuln GHSA-jm82-fx9c-mx94
+          }
+
+          for attempt in 1 2 3; do
+            set +e
+            out="$(run_audit 2>&1)"; status=$?
+            set -e
+            echo "$out"
+            [ "$status" -eq 0 ] && exit 0
+            if echo "$out" | grep -qE 'ConnectionError|RemoteDisconnected|Read timed out|ReadTimeout|Connection aborted|Temporary failure in name resolution|503 Server Error|502 Server Error'; then
+              echo "::warning::pip-audit attempt $attempt failed to reach the vulnerability API; retrying in $((attempt * 15))s"
+              sleep $((attempt * 15))
+              continue
+            fi
+            # A real finding (or a genuine usage error) — do not retry.
+            exit "$status"
+          done
+          echo "::error::pip-audit could not reach the vulnerability API after 3 attempts"
+          exit 1
 
       - name: Static analysis (bandit)
         run: |
