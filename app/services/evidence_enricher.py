@@ -14,6 +14,7 @@ All results are cached in Redis (TTLs vary by source freshness requirements).
 from __future__ import annotations
 
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -322,40 +323,98 @@ async def resolve_legal_name(
     return registered_name or getattr(user, "legal_name", None) or _company or "Your Organisation"
 
 
-def display_legal_name(user, db=None) -> str:
-    """Shared fallback order for rendering a user's entity name: resolved
-    legal name -> raw company field -> a neutral placeholder. Never falls
-    back to the Booppa platform name.
-    
-    If legal_name is missing and db is provided, attempts to actively resolve
-    the ACRA name synchronously via asyncio.run()."""
+# Outer deadline for an on-demand ACRA resolution performed while a customer's
+# document is being rendered. `fetch_acra_status` walks the deduped dataset IDs
+# from `_acra_dataset_ids()` sharing one `httpx.AsyncClient(timeout=10)`, so a
+# full walk can take ~30s. We deliberately do NOT budget for the full walk: 15s
+# covers the primary dataset lookup plus the fuzzy match, and the legacy-dataset
+# fallback is best-effort enrichment that must not hold a paid PDF open. Steady
+# state is ~0 either way — results are Redis-cached for 24h.
+ACRA_SYNC_RESOLVE_TIMEOUT = 15
+
+
+def _legal_name_fallback(user) -> str:
+    """Shared fallback order for a user's entity name: resolved legal name ->
+    raw company field -> a neutral placeholder. Never falls back to the Booppa
+    platform name."""
+    return (
+        getattr(user, "legal_name", None)
+        or getattr(user, "company", None)
+        or "Your Organisation"
+    )
+
+
+async def resolve_display_legal_name(
+    user, db=None, timeout: int = ACRA_SYNC_RESOLVE_TIMEOUT
+) -> str:
+    """Async-context version of `display_legal_name` — use this from any `async
+    def`.
+
+    `display_legal_name` backfills a missing legal name via `asyncio.run()`,
+    which raises inside a running loop. Every Celery fulfillment workflow runs
+    under `asyncio.run(...)`, so those callers MUST await this instead or the
+    ACRA backfill silently never happens.
+    """
     if not getattr(user, "legal_name", None) and db is not None:
         try:
-            import asyncio
-            # resolve_legal_name is async. Since display_legal_name is called from
-            # sync Celery tasks, we can safely run it here. If we are in an async
-            # endpoint context, this will raise a RuntimeError, which we catch.
-            # Hard-capped total wait: resolve_legal_name loops over several ACRA
-            # dataset IDs, each with its own httpx timeout — under a stalled/
-            # blackholed network those per-request timeouts don't always bound
-            # the total wall time (e.g. hung DNS resolution). A Celery task must
-            # never hang indefinitely here, so wrap the whole resolution in one
-            # outer deadline and fall back to the raw company field on expiry.
+            await asyncio.wait_for(
+                resolve_legal_name(user, db, company_hint=getattr(user, "company", None)),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "resolve_display_legal_name: ACRA resolution timed out after %ss for user %s",
+                timeout, getattr(user, "id", None),
+            )
+        except Exception as e:
+            logger.warning("Failed to resolve legal name: %s", e)
+
+    # resolve_legal_name mutates and commits `user`, so re-read the attribute.
+    return _legal_name_fallback(user)
+
+
+def display_legal_name(user, db=None, timeout: int = ACRA_SYNC_RESOLVE_TIMEOUT) -> str:
+    """Sync entry point for rendering a user's entity name.
+
+    If legal_name is missing and db is provided, actively resolves the ACRA name
+    via asyncio.run(). Only valid from a genuinely synchronous caller — from an
+    async context use `await resolve_display_legal_name(...)` instead.
+    """
+    if not getattr(user, "legal_name", None) and db is not None:
+        # Check for a running loop BEFORE building any coroutine. Constructing
+        # one and letting asyncio.run() reject it leaves two coroutine objects
+        # unawaited, which is where the "coroutine 'wait_for' was never awaited"
+        # RuntimeWarning pair in the worker logs came from.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass  # No loop running — safe to drive one ourselves.
+        else:
+            logger.warning(
+                "display_legal_name called from an async context for user %s — "
+                "use `await resolve_display_legal_name(...)` instead; "
+                "skipping ACRA resolution",
+                getattr(user, "id", None),
+            )
+            return _legal_name_fallback(user)
+
+        try:
+            # Hard-capped total wait: under a stalled/blackholed network the
+            # per-request httpx timeouts don't always bound total wall time
+            # (e.g. hung DNS). A Celery task must never hang indefinitely here.
             asyncio.run(asyncio.wait_for(
                 resolve_legal_name(user, db, company_hint=getattr(user, "company", None)),
-                timeout=45,
+                timeout=timeout,
             ))
-        except RuntimeError:
-            import logging
-            logging.getLogger(__name__).debug("display_legal_name: active event loop detected, cannot sync resolve")
         except asyncio.TimeoutError:
-            import logging
-            logging.getLogger(__name__).warning("display_legal_name: ACRA resolution timed out for user %s", getattr(user, "id", None))
+            logger.warning(
+                "display_legal_name: ACRA resolution timed out after %ss for user %s",
+                timeout, getattr(user, "id", None),
+            )
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning("Failed to sync-resolve legal name: %s", e)
+            logger.warning("Failed to sync-resolve legal name: %s", e)
 
-    return (getattr(user, "legal_name", None) or getattr(user, "company", None) or "Your Organisation")
+    return _legal_name_fallback(user)
 
 
 # ── 2. PDPC enforcement check ─────────────────────────────────────────────────

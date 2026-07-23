@@ -1273,12 +1273,16 @@ async def process_report_workflow(report_id: str) -> dict:
                                 or report.company_website or "")
                     pdf_service = PDFService()
                     from app.core.models import User
-                    from app.services.evidence_enricher import display_legal_name
+                    from app.services.evidence_enricher import resolve_display_legal_name
                     _owner = db.query(User).filter(User.id == report.owner_id).first() if report.owner_id else None
+                    _company_name = (
+                        await resolve_display_legal_name(_owner, db) if _owner
+                        else (report.company_name or "Your Organisation")
+                    )
                     pdf_data = {
                         "report_id": str(report.id),
                         "framework": report.framework,
-                        "company_name": display_legal_name(_owner, db) if _owner else (report.company_name or "Your Organisation"),
+                        "company_name": _company_name,
                         "created_at": report.created_at.isoformat(),
                         "status": "site_inaccessible",
                         "website_url": _url,
@@ -1741,13 +1745,17 @@ async def process_report_workflow(report_id: str) -> dict:
         logger.info(f"Step 4: Generating PDF for {report_id}")
         pdf_service = PDFService()
         from app.core.models import User
-        from app.services.evidence_enricher import display_legal_name
+        from app.services.evidence_enricher import resolve_display_legal_name
         _owner = db.query(User).filter(User.id == report.owner_id).first() if report.owner_id else None
+        _company_name = (
+            await resolve_display_legal_name(_owner, db) if _owner
+            else (report.company_name or "Your Organisation")
+        )
 
         pdf_data = {
             "report_id": str(report.id),
             "framework": report.framework,
-            "company_name": display_legal_name(_owner, db) if _owner else (report.company_name or "Your Organisation"),
+            "company_name": _company_name,
             "created_at": report.created_at.isoformat(),
             "status": "completed",
             "tx_hash": tx_hash,

@@ -364,15 +364,19 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
         try:
             pdf_service = PDFService()
             from app.core.models import User
-            from app.services.evidence_enricher import display_legal_name
+            from app.services.evidence_enricher import resolve_display_legal_name
             _owner = (
                 db.query(User).filter(User.email == contact_email).first()
                 if contact_email else None
             )
+            _company_name = (
+                await resolve_display_legal_name(_owner, db) if _owner
+                else (report.company_name or "Your Organisation")
+            )
             pdf_data = {
                 "report_id": report_id,
                 "framework": "compliance_notarization",
-                "company_name": display_legal_name(_owner, db) if _owner else (report.company_name or "Your Organisation"),
+                "company_name": _company_name,
                 "created_at": (
                     report.created_at.isoformat()
                     if report.created_at
@@ -979,8 +983,8 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             )
             return
         if real_user is not None:
-            from app.services.evidence_enricher import display_legal_name
-            company_name = display_legal_name(real_user, db)
+            from app.services.evidence_enricher import resolve_display_legal_name
+            company_name = await resolve_display_legal_name(real_user, db)
         else:
             company_name = report.company_name or "Vendor"
         verify_url = f"https://www.booppa.io/verify/{report_id}"
@@ -1416,12 +1420,15 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
             or assessment.get("customer_email")
         )
         from app.core.models import User
-        from app.services.evidence_enricher import display_legal_name
+        from app.services.evidence_enricher import resolve_display_legal_name
         _owner = (
             db.query(User).filter(User.email == contact_email).first()
             if contact_email else None
         )
-        company_name = display_legal_name(_owner, db) if _owner else (report.company_name or "Customer")
+        company_name = (
+            await resolve_display_legal_name(_owner, db) if _owner
+            else (report.company_name or "Customer")
+        )
         website_url = report.company_website or assessment.get("website", "")
 
         # ── Step 1: Ensure scan is complete ────────────────────────────────
