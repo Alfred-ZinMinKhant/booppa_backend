@@ -25,8 +25,16 @@ from app.services.vendor_artifacts_generator import (
 logger = logging.getLogger(__name__)
 
 
-def company_of(user: User) -> str:
-    return (getattr(user, "company", "") or "").strip() or "Your Company"
+def company_of(user: User, db=None) -> str:
+    """Entity name for a rendered artifact.
+
+    Routed through the shared resolver rather than reading `user.company`
+    directly — that raw signup string is how a bare domain ("thunes.com") ends
+    up stamped on a customer-facing document. Pass `db` so a missing
+    `legal_name` can be backfilled from ACRA.
+    """
+    from app.services.evidence_enricher import display_legal_name
+    return (display_legal_name(user, db) or "").strip() or "Your Company"
 
 
 def plan_label(user: User) -> str:
@@ -78,7 +86,7 @@ def build_badge_certificate(db: Session, user: User, company_override: str | Non
 
     verify_base = (getattr(settings, "VERIFY_BASE_URL", "https://www.booppa.io") or "https://www.booppa.io").rstrip("/")
     pdf = generate_badge_certificate_pdf({
-        "company_name": (company_override or "").strip() or company_of(user),
+        "company_name": (company_override or "").strip() or company_of(user, db),
         "verification_depth": getattr(snap, "verification_depth", None) or "BASIC",
         "procurement_readiness": readiness,
         "confidence_score": confidence,
@@ -108,7 +116,7 @@ def build_priority_placement(db: Session, user: User, company_override: str | No
     )
     label = plan_label(user)
     pdf = generate_priority_placement_pdf({
-        "company_name": (company_override or "").strip() or company_of(user),
+        "company_name": (company_override or "").strip() or company_of(user, db),
         "plan_label": label,
         "profile_views_30d": profile_views,
         "verification_depth": getattr(snap, "verification_depth", None) or "BASIC",
@@ -165,7 +173,7 @@ def build_bid_timing(db: Session, user: User, months_back: int = 12, company_ove
         if months else f"GeBIZ award history ({scope})"
     )
     pdf = generate_bid_timing_pdf({
-        "company_name": (company_override or "").strip() or company_of(user),
+        "company_name": (company_override or "").strip() or company_of(user, db),
         "period_label": period_label,
         "total_awards": len(rows),
         "busiest_month": busiest,
@@ -182,7 +190,7 @@ def build_competitor_signals(
 
     signals = _live_signals(tenderNo=tender_no, window_days=window_days, db=db, user=user)
     pdf = generate_competitor_signals_pdf({
-        "company_name": company_of(user),
+        "company_name": company_of(user, db),
         "tender_no": signals.get("tender_no"),
         "window_days": signals.get("window_days"),
         "lookups": signals.get("lookups"),

@@ -302,7 +302,8 @@ def build_buyer_procurement_report_pdf(
 
     user = db.query(User).filter(User.id == user_id).first()
     if not company:
-        company = (getattr(user, "company", None) or "Your Organisation")
+        from app.services.evidence_enricher import display_legal_name
+        company = display_legal_name(user, db) or "Your Organisation"
 
     suppliers = get_watched_suppliers_with_status(db, user_id)
     # `sample_data` drives the unmissable SAMPLE-DATA banner on every PDF page.

@@ -192,7 +192,9 @@ def get_intake(
         "session_id": row.session_id,
         # Prefill hints from the user profile so the form is fast to complete.
         "prefill": {
-            "org_name": getattr(user, "company", "") or "",
+            # Prefill the resolved legal entity, not the raw signup string, so a
+            # buyer who accepts the default doesn't stamp a bare domain on the pack.
+            "org_name": (getattr(user, "legal_name", None) or getattr(user, "company", "") or ""),
             "uen": getattr(user, "uen", "") or "",
             "domain": getattr(user, "website", "") or "",
         },

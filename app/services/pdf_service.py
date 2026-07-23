@@ -1860,6 +1860,18 @@ class PDFService:
                 # Pass raw scan data so scores are computed from actual evidence
                 _scan_data = report_data.get("scan_data") or report_data
                 story.append(self._compliance_score_table(findings, scan_data=_scan_data))
+                story.append(Spacer(1, 6))
+                # Provenance qualifier. A "Compliant" verdict here is inferred from
+                # what the public site disclosed on the scan date — not from an
+                # examination of internal controls. Saying so under the table is what
+                # keeps a positive result defensible to an inspector.
+                story.append(Paragraph(
+                    f"Basis: automated public-site scan on {_pdf_escape(scan_date_str)}; not an audit "
+                    "of internal controls. A \"Compliant\" result means the required signal was "
+                    "publicly disclosed at the time of scanning, not that the underlying control "
+                    "was tested.",
+                    s["small"],
+                ))
                 story.append(Spacer(1, 0.1 * inch))
 
                 # ── Remediation Status (Tier 6) ────────────────────────────────

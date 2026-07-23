@@ -250,10 +250,15 @@ def submit_intake(
         or row.vendor_url
         or (getattr(user, "website", "") or "")
     ).strip()
+    # Entity name always goes through the shared reader — never `user.company`
+    # directly. That inline fallback is how a raw signup string (e.g. a bare
+    # domain, "thunes.com") reaches a generated artifact. Sync endpoint, so the
+    # sync bridge is safe here; see evidence_enricher.display_legal_name.
+    from app.services.evidence_enricher import display_legal_name
     company_name = (
         (body.get("company_name") or "").strip()
         or row.company_name
-        or (getattr(user, "legal_name", None) or getattr(user, "company", "") or "")
+        or display_legal_name(user, db)
     ).strip()
     if not vendor_url:
         raise HTTPException(
@@ -378,10 +383,8 @@ def resolve_intake(
     if row.uen and not merged_intake.get("uen"):
         merged_intake["uen"] = row.uen
     vendor_url = (row.vendor_url or (getattr(user, "website", "") or "")).strip()
-    company_name = (
-        row.company_name
-        or (getattr(user, "legal_name", None) or getattr(user, "company", "") or "")
-    ).strip()
+    from app.services.evidence_enricher import display_legal_name
+    company_name = (row.company_name or display_legal_name(user, db)).strip()
     if not rfp_description:
         raise HTTPException(status_code=422, detail="No prior RFP brief found to regenerate from — submit the intake first.")
     if not vendor_url:

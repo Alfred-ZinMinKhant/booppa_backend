@@ -58,6 +58,7 @@ def generate_vendor_proof_certificate(
     expires_on: str | None = None,
     notarization_credits: int = 0,
     sector_benchmark: dict | None = None,
+    score_basis: list | None = None,
 ) -> bytes:
     """Render the Vendor Proof certificate. Returns PDF bytes.
 
@@ -202,6 +203,47 @@ def generate_vendor_proof_certificate(
             "population and move as more vendors are scored.",
             cell_value,
         ))
+
+    # Score basis — the same provenance table the Vendor Pro report carries, so
+    # the buyer-facing certificate and the vendor's own report never disagree on
+    # why a dimension scored what it did. See app/services/score_basis.py.
+    if score_basis:
+        story.append(Paragraph("Score basis", sec_style))
+        story.append(Paragraph(
+            "The public signal behind each scored dimension, and whether that basis is an "
+            "inference from public disclosure or evidence the vendor has tested. Tested "
+            "evidence is annotated; it does not itself change the score.",
+            cell_value,
+        ))
+        story.append(Spacer(1, 6))
+        _basis_rows = [[
+            Paragraph("Dimension", cell_label), Paragraph("Status", cell_label),
+            Paragraph("Score", cell_label), Paragraph("Driving signal", cell_label),
+            Paragraph("Basis", cell_label),
+        ]]
+        for _r in score_basis:
+            _sc = _r.get("score")
+            _basis_rows.append([
+                Paragraph(_xml_escape(_r.get("dimension_name")), cell_value),
+                Paragraph(_xml_escape(_r.get("status") or "—"), cell_value),
+                Paragraph(str(_sc) if _sc is not None else "—", cell_value),
+                Paragraph(_xml_escape(_r.get("signal")), cell_value),
+                Paragraph(_xml_escape(_r.get("basis")), cell_value),
+            ])
+        _bt = Table(
+            _basis_rows, hAlign="LEFT", repeatRows=1,
+            colWidths=[1.5 * inch, 0.8 * inch, 0.5 * inch, 2.5 * inch, 1.7 * inch],
+        )
+        _bt.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e2e8f0")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f1f5f9")),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(_bt)
 
     # Notarization credits — mirror the Cover Sheet's redemption line so the
     # holder knows they carry a credit balance and how to redeem it. Rendered

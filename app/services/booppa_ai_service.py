@@ -126,15 +126,37 @@ SINGAPORE_LEGISLATION = {
             ],
         },
     },
+    # Corrected against the actual MAS instruments (statutory under the FSMA
+    # since May 2024). The previous mapping had all three wrong — 644 was
+    # labelled "Cyber Hygiene" (that is 655) and 626 "Technology Risk
+    # Management" (that is AML/CFT for banks) — and the mislabel leaked into
+    # customer-facing violation narratives. `citation` is the single source of
+    # truth for any rendered string; do not repeat the title inline.
     "MAS_NOTICES": {
         "626": {
+            "title": "Prevention of Money Laundering and Countering the Financing of Terrorism (Banks)",
+            "scope": "Banks",
+            "citation": "MAS Notice 626 - AML/CFT (Banks)",
+        },
+        "644": {
             "title": "Technology Risk Management",
             "scope": "Financial institutions",
+            "citation": "MAS Notice 644/FSM-N05 - Technology Risk Management",
+            "key_points": [
+                "Major incidents notified to MAS within 1 hour of discovery",
+                "Critical systems recovered within 4 hours",
+                "Unscheduled downtime of a critical system capped at 4 hours in any 12 months",
+            ],
         },
-        "644": {"title": "Cyber Hygiene", "scope": "All regulated entities"},
         "655": {
-            "title": "Third Party Risk Management",
-            "scope": "Outsourcing arrangements",
+            "title": "Cyber Hygiene",
+            "scope": "All regulated financial institutions",
+            "citation": "MAS Notice 655/FSM-N06 - Cyber Hygiene",
+            "key_points": [
+                "Multi-factor authentication for administrative accounts",
+                "Rapid security patching",
+                "Privileged-account controls, malware protection, security standards",
+            ],
         },
     },
     "MTCS_LEVELS": {
@@ -146,6 +168,25 @@ SINGAPORE_LEGISLATION = {
         },
     },
 }
+
+
+def mas_notice_citation(number: str) -> str:
+    """Render a MAS notice citation from the single source of truth above.
+
+    Every customer-facing string that names a MAS notice must go through this
+    helper — inline titles are how "Notice 644 - Cyber Hygiene" (644 is
+    Technology Risk Management; 655 is Cyber Hygiene) reached buyer output.
+    """
+    entry = SINGAPORE_LEGISLATION["MAS_NOTICES"].get(str(number))
+    if not entry:
+        return f"MAS Notice {number}"
+    return entry.get("citation") or f"MAS Notice {number} - {entry['title']}"
+
+
+# Cyber-hygiene controls (MFA, patching, privileged access) are Notice 655/
+# FSM-N06 — this is the notice a security/data-protection failing engages.
+MAS_CYBER_HYGIENE_CITATION = mas_notice_citation("655")
+MAS_TRM_CITATION = mas_notice_citation("644")
 
 # ============================================
 # HELPER FUNCTIONS
@@ -519,7 +560,7 @@ NOTE: Implied consent (continued browsing) is NOT sufficient under PDPA""",
 
 LEGISLATION VIOLATED:
 • PDPA 2012 s.24 - Protection Obligation
-• MAS Notice 644 - Cyber Hygiene
+• """ + MAS_CYBER_HYGIENE_CITATION + """
 • MTCS Level 3 Requirements (if applicable)
 
 PENALTY: {penalty_amount}
@@ -1324,7 +1365,7 @@ Consult legal counsel for interpretation of regulatory requirements."""
             "security_violation": [
                 "PDPA 2012 s.24",
                 "Cybersecurity Act 2018",
-                "MAS Notice 644",
+                MAS_CYBER_HYGIENE_CITATION,
             ],
             "organizational_violation": [
                 "PDPA 2012 s.11",

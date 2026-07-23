@@ -214,7 +214,10 @@ async def _fulfill_standalone_no_report(
             if user:
                 owner_id = user.id
                 if not company_name:
-                    company_name = (getattr(user, "company", "") or "").strip()
+                    # Async context — must await the resolver, not the sync
+                    # bridge (see evidence_enricher.resolve_display_legal_name).
+                    from app.services.evidence_enricher import resolve_display_legal_name
+                    company_name = (await resolve_display_legal_name(user, db) or "").strip()
                 if not website:
                     website = (getattr(user, "website", "") or "").strip()
 
