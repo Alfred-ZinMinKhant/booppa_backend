@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -185,6 +186,87 @@ def _build_record_hash(record_type: str, record_id: str, record_data: Dict[str, 
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _csp_owner_email(db, profile) -> Optional[str]:
+    """Billing owner of the profile's org, falling back to the business email."""
+    from app.core.models import CspOrganisation, User
+
+    org = db.query(CspOrganisation).filter(
+        CspOrganisation.id == profile.organisation_id
+    ).first()
+    if org and org.owner_user_id:
+        user = db.query(User).filter(User.id == org.owner_user_id).first()
+        if user and user.email:
+            return user.email
+    return profile.business_email or None
+
+
+def _email_csp_documents(db, profile, attachments, generated_ok: int) -> bool:
+    """Deliver the generated AML/CFT documents as attachments.
+
+    Generation used to finish silently — the PDFs landed in S3 and the dashboard
+    and nothing told the buyer. Attachments are the deliverable; the dashboard
+    link is the durable copy (and the only place drafts can be attested).
+
+    Never raises: the documents are already generated, notarized, and committed,
+    so a mail failure must not trigger a retry that regenerates all of them.
+    """
+    from app.services.email_layout import branded_email_html, email_button
+    from app.services.email_service import EmailService
+
+    to_email = _csp_owner_email(db, profile)
+    if not to_email:
+        logger.error(
+            "[CSPDocs] no recipient for profile %s — documents generated but undelivered",
+            profile.id,
+        )
+        return False
+
+    try:
+        body_html = branded_email_html(
+            f"""
+            <p style="margin:0 0 4px;color:#64748b;text-transform:uppercase;letter-spacing:.1em;font-size:11px;">BOOPPA · CSP COMPLIANCE PACK</p>
+            <h2 style="margin:0 0 12px;color:#0f172a;font-size:20px;">Your {generated_ok} AML/CFT documents are ready</h2>
+            <p style="color:#334155;line-height:1.6;margin:0 0 16px;font-size:15px;">
+              Generated for <strong>{profile.legal_name}</strong> (UEN {profile.uen}) from the
+              profile you submitted, and attached to this email. Each document's SHA-256 hash
+              is anchored on-chain, so you can prove the version you hold is the version issued.
+            </p>
+            <p style="color:#334155;line-height:1.6;margin:0 0 16px;font-size:15px;">
+              <strong>These are drafts, and they are not yet your programme.</strong> ACRA expects
+              an AML/CFT programme adopted by your firm, not a document a vendor wrote. Review each
+              one, amend it to match how you actually operate, and attest to it in the dashboard —
+              that attestation is what marks it in force.
+            </p>
+            {email_button("https://www.booppa.io/csp/dashboard", "Review and attest your documents")}
+            """,
+            title=f"Your CSP AML/CFT documents — {profile.legal_name}",
+            preheader=f"{generated_ok} documents generated, attached, and anchored on-chain.",
+        )
+        sent = asyncio.run(EmailService().send_html_email(
+            to_email=to_email,
+            subject=f"Your {generated_ok} CSP AML/CFT documents are ready — {profile.legal_name}",
+            body_html=body_html,
+            attachments=attachments or None,
+        ))
+    except Exception as exc:
+        logger.error("[CSPDocs] delivery email failed for %s: %s", to_email, exc)
+        sent = False
+
+    if not sent:
+        try:
+            from app.services.fulfillment import alert_payment_fulfillment_issue
+            asyncio.run(alert_payment_fulfillment_issue(
+                reason="CSP documents generated but delivery email failed",
+                product_type="csp_pack",
+                customer_email=to_email,
+                extra={"profile_id": str(profile.id), "legal_name": profile.legal_name},
+                notify_customer=False,
+            ))
+        except Exception:
+            logger.exception("[CSPDocs] alert for failed delivery email also failed")
+    return bool(sent)
+
+
 # ── TASK 1: GENERATE CSP DOCUMENTS ───────────────────────────────────────────
 
 @celery_app.task(
@@ -228,6 +310,9 @@ def generate_csp_documents(self, profile_id: str) -> dict:
         doc_results = generate_all_csp_documents(profile_dict, client_dicts)
 
         generated_ok = 0
+        # (filename, bytes) for the completion email — the buyer gets the
+        # documents in hand, not just a dashboard they have to remember to open.
+        doc_attachments: list[tuple[str, bytes]] = []
         for dr in doc_results:
             if not dr.get("content"):
                 logger.warning("Skipping failed doc: %s — %s", dr.get("doc_type"), dr.get("error"))
@@ -242,6 +327,11 @@ def generate_csp_documents(self, profile_id: str) -> dict:
                 body=content,
                 meta={"legal_name": profile.legal_name, "uen": profile.uen, "doc_type": doc_type},
             )
+
+            doc_attachments.append((
+                f"{re.sub(r'[^A-Za-z0-9]+', '-', dr['title']).strip('-') or doc_type}-DRAFT.pdf",
+                pdf_bytes,
+            ))
 
             s3_key = f"csp/{profile_id}/documents/{doc_type}.pdf"
             try:
@@ -331,7 +421,14 @@ def generate_csp_documents(self, profile_id: str) -> dict:
             "CSP document generation complete for %s — %d/%d docs",
             profile.legal_name, generated_ok, len(doc_results)
         )
-        return {"profile_id": profile_id, "docs_generated": generated_ok}
+
+        emailed = _email_csp_documents(db, profile, doc_attachments, generated_ok)
+
+        return {
+            "profile_id": profile_id,
+            "docs_generated": generated_ok,
+            "emailed": emailed,
+        }
 
     except Exception as exc:
         logger.error("generate_csp_documents failed for %s: %s", profile_id, exc, exc_info=True)
@@ -674,5 +771,206 @@ def run_sanctions_screening_task(
             ),
         }
 
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, name="csp.run_baseline", max_retries=2)
+def run_csp_baseline_for_user(
+    self,
+    user_id: str,
+    plan: str = "csp",
+    billing_type: str = "one_time",
+    override_company: Optional[str] = None,
+    override_website: Optional[str] = None,
+    bypass_idempotency: bool = False,
+):
+    """Generate + email the Day-1 CSP Registration Readiness Baseline.
+
+    A CSP pack purchase used to deliver a two-line activation email with nothing
+    attached (both the one-time and monthly paths — see csp_access.
+    deliver_csp_activation, the only caller). The 8 AML/CFT documents still
+    correctly wait for a CSP profile; this closes the gap where the buyer had
+    nothing at all to open on day one.
+
+    Emails ONE message covering both activation and the artifact, so the buyer
+    doesn't receive two.
+    """
+    from app.core.models import Report, User
+    from app.core.cache import cache as _cache
+    from app.services.csp_baseline_generator import generate_csp_baseline_pdf
+    from app.services.email_service import EmailService
+    from app.services.email_layout import branded_email_html, email_button
+    from app.services.evidence_enricher import display_legal_name, fetch_acra_status
+    from app.services.storage import S3Service
+
+    # Atomic once-only guard on the SEND, claimed just before the email rather
+    # than at task entry: the body is wrapped in a broad retry, so an entry-time
+    # claim would make every retry a no-op. Claiming late means a retry re-renders
+    # and re-uploads (the S3 key is deterministic per user, so it overwrites
+    # itself) but can still never send a second email.
+    # `bypass_idempotency` is admin simulate-purchase harness only.
+    _lock_key = f"csp_baseline_email_lock:{user_id}"
+
+    db = _db()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or not user.email:
+            logger.warning("[CSPBaseline] no user/email for id=%s", user_id)
+            return {"skipped": "no_user"}
+
+        plan_label = (
+            "CSP Monitoring Add-On" if plan == "csp_monitoring"
+            else "CSP Compliance Pack — Full"
+        )
+        billing_label = (
+            "One-time purchase" if billing_type == "one_time" else "Monthly subscription"
+        )
+
+        # Assessed entity is the CUSTOMER. Harness override first (so an admin
+        # test checkout never stamps the real account's company onto a customer
+        # document), then the resolved ACRA legal name.
+        company_name = (override_company or "").strip() or display_legal_name(user, db)
+        website = (override_website or "").strip() or (getattr(user, "website", "") or "")
+        uen = (getattr(user, "uen", "") or "").strip() or None
+
+        acra = {}
+        try:
+            acra = asyncio.run(fetch_acra_status(uen, company_name)) or {}
+        except Exception as acra_err:
+            # A registry outage must not cost the buyer their Day-1 artifact —
+            # the generator renders an explicit "not confirmed" block instead.
+            logger.warning("[CSPBaseline] ACRA lookup failed for %s: %s", user.email, acra_err)
+
+        provisioning = [
+            {"capability": "CSP compliance workspace", "status": "Active",
+             "detail": f"{plan_label} active — open booppa.io/csp/dashboard"},
+            {"capability": "Regulatory compliance calendar", "status": "Ready",
+             "detail": "15 statutory deadlines seed automatically when you create your CSP profile"},
+            {"capability": "AML/CFT document generation (8 documents)", "status": "Ready",
+             "detail": "Queued the moment your CSP profile is submitted — issued as drafts for your attestation"},
+            {"capability": "Sanctions screening (OFAC SDN + UN Consolidated)", "status": "Active",
+             "detail": "Screen any client or UBO from the dashboard"},
+            {"capability": "Blockchain evidence ledger", "status": "Active",
+             "detail": "CDD, STR, and nominee assessment records are SHA-256 hashed and anchored on-chain"},
+        ]
+
+        pdf_bytes = generate_csp_baseline_pdf({
+            "company_name": company_name,
+            "website": website,
+            "plan_label": plan_label,
+            "billing_label": billing_label,
+            "acra": acra,
+            "provisioning": provisioning,
+        })
+
+        report_id = f"csp-baseline-{user.id}"
+        file_key = f"reports/{report_id}.pdf"
+        download_url = None
+        try:
+            download_url = asyncio.run(S3Service().upload_pdf(pdf_bytes, report_id))
+        except Exception as up_err:
+            logger.error("[CSPBaseline] S3 upload failed for %s: %s", user.email, up_err)
+
+        if not download_url:
+            raise RuntimeError("CSP baseline S3 upload produced no URL")
+
+        # Persist so GET /csp/baseline/latest can re-serve this without the buyer
+        # having to find the emailed link (presigns expire in 7 days).
+        try:
+            # The S3 key is deterministic per user, so a retry (or a re-purchase)
+            # overwrites the object rather than adding one — update the existing
+            # row in place instead of accumulating duplicate snapshots.
+            existing = (
+                db.query(Report)
+                .filter(Report.owner_id == user.id, Report.file_key == file_key)
+                .first()
+            )
+            snapshot = {
+                "plan_label": plan_label,
+                "billing_label": billing_label,
+                "s3_url": download_url,
+                "s3_key": file_key,
+                "acra_found": bool(acra.get("found")),
+                "uen": acra.get("uen") or uen,
+            }
+            if existing:
+                existing.company_name = company_name
+                existing.assessment_data = snapshot
+                existing.status = "completed"
+                existing.s3_url = download_url
+                existing.completed_at = datetime.now(timezone.utc)
+            else:
+                db.add(Report(
+                    owner_id=user.id,
+                    framework="csp_baseline",
+                    company_name=company_name,
+                    assessment_data=snapshot,
+                    status="completed",
+                    s3_url=download_url,
+                    file_key=file_key,
+                    completed_at=datetime.now(timezone.utc),
+                ))
+            db.commit()
+        except Exception as persist_err:
+            logger.warning("[CSPBaseline] snapshot persist failed for %s: %s", user.email, persist_err)
+            db.rollback()
+
+        if not bypass_idempotency and not _cache.add(_lock_key, {"sent": True}, ttl=86400):
+            logger.info("[CSPBaseline] Idempotency drop: baseline already emailed to %s", user_id)
+            return {"skipped": "idempotent", "download_url": download_url}
+
+        entity_line = (
+            f"We've confirmed <strong>{acra.get('registered_name') or company_name}</strong>"
+            f" (UEN {acra.get('uen')}) against the ACRA register"
+            if acra.get("found") and acra.get("uen")
+            else f"We've prepared your baseline for <strong>{company_name}</strong>"
+        )
+        body_html = branded_email_html(
+            f"""
+            <p style="margin:0 0 4px;color:#64748b;text-transform:uppercase;letter-spacing:.1em;font-size:11px;">BOOPPA · {plan_label}</p>
+            <h2 style="margin:0 0 12px;color:#0f172a;font-size:20px;">Your {plan_label} is active — baseline ready</h2>
+            <p style="color:#334155;line-height:1.6;margin:0 0 16px;font-size:15px;">
+              {entity_line}, and recorded what your purchase has initialised.
+            </p>
+            {email_button(download_url, "Download your CSP Readiness Baseline (PDF)")}
+            <p style="color:#334155;line-height:1.6;margin:16px 0 0;font-size:15px;">
+              <strong>Next:</strong> sign in, accept the Terms of Service, and create your CSP
+              profile. That submission is what generates your eight AML/CFT documents — they
+              can't be written before we know your business, and they're issued as drafts for
+              your attestation.
+            </p>
+            <p style="color:#64748b;font-size:13px;margin:12px 0 0;line-height:1.6;">
+              Open your <a href="https://www.booppa.io/csp/dashboard" style="color:#10b981;">CSP dashboard</a> to begin.
+            </p>
+            """,
+            title=f"Your {plan_label} is active",
+            preheader=f"CSP Registration Readiness Baseline for {company_name}.",
+        )
+        # Attached AND linked: the attachment is the deliverable in hand, the S3
+        # link survives a forwarded mail losing its attachment (and re-presigns
+        # via GET /csp/baseline/latest once the 7-day URL expires).
+        safe_name = re.sub(r"[^A-Za-z0-9]+", "-", company_name).strip("-") or "entity"
+        sent = asyncio.run(EmailService().send_html_email(
+            to_email=user.email,
+            subject=f"Your CSP Readiness Baseline — {plan_label}",
+            body_html=body_html,
+            attachments=[(f"CSP-Readiness-Baseline-{safe_name}.pdf", pdf_bytes)],
+        ))
+        if not sent:
+            logger.error("[CSPBaseline] delivery email rejected for %s", user.email)
+            from app.services.fulfillment.helpers import _alert_payment_fulfillment_issue
+            asyncio.run(_alert_payment_fulfillment_issue(
+                reason="CSP activated and baseline generated but delivery email rejected by provider",
+                product_type=f"csp:{plan}:{billing_type}",
+                customer_email=user.email,
+                session_id=report_id,
+            ))
+        else:
+            logger.info("[CSPBaseline] Delivered baseline to %s", user.email)
+        return {"user_id": str(user.id), "download_url": download_url, "emailed": bool(sent)}
+    except Exception as exc:
+        logger.error("[CSPBaseline] Failed for %s: %s", user_id, exc)
+        raise self.retry(exc=exc, countdown=120)
     finally:
         db.close()

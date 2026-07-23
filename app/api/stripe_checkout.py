@@ -509,6 +509,71 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         finally:
             _db.close()
 
+    # CSP Compliance Pack: same entity capture as the bundles above. The Day-1
+    # Registration Readiness Baseline (csp.run_baseline) is built from an ACRA
+    # lookup, so without a company + website the buyer pays SGD 3,999 and gets an
+    # activation email with nothing to open — the gap Gianpaolo hit. Gating here
+    # rather than at the webhook also means a struck-off entity is blocked BEFORE
+    # the charge; the webhook can only warn after the money has moved.
+    CSP_CHECKOUT_TYPES = {
+        "csp_pack_onetime", "csp_pack_monthly", "csp_monitoring_monthly",
+    }
+    if product_type in CSP_CHECKOUT_TYPES:
+        from app.core.db import SessionLocal
+
+        _db = SessionLocal()
+        try:
+            from app.core.repositories.user_repository import UserRepository
+            user = UserRepository.get_by_email(_db, prefill_email) if prefill_email else None
+            req_website = (data.get("website") or data.get("vendor_url") or "").strip()
+            req_company = (data.get("company_name") or "").strip()
+            website = req_website or ((getattr(user, "website", "") or "").strip() if user else "")
+            company_name = req_company or ((getattr(user, "company", "") or "").strip() if user else "")
+            # Back-fill the profile so the CSP profile form is pre-populated later.
+            if user:
+                if req_website and not user.website:
+                    user.website = req_website
+                if req_company and not user.company:
+                    user.company = req_company
+                if req_website or req_company:
+                    _db.commit()
+            if not company_name:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Your registered company name is required so we can confirm your entity against the ACRA register and issue your CSP Registration Readiness Baseline.",
+                )
+            if not website:
+                raise HTTPException(
+                    status_code=422,
+                    detail="A website URL is required so we can verify your firm and issue your CSP Registration Readiness Baseline.",
+                )
+            data["vendor_url"] = website
+            data["company_name"] = company_name
+
+            req_uen = (data.get("uen") or "").strip()
+            uen = req_uen or ((getattr(user, "uen", "") or "").strip() if user else "")
+
+            if not uen and company_name:
+                from app.services.evidence_enricher import fetch_acra_status
+                acra_res = await fetch_acra_status(company_name=company_name)
+                if acra_res and acra_res.get("found") and acra_res.get("uen"):
+                    uen = acra_res.get("uen")
+
+            if uen:
+                await _gate_acra_live(uen)
+                data["uen"] = uen
+                if user and not getattr(user, "uen", None):
+                    user.uen = uen
+                    _db.commit()
+
+            # Canonical legal name — the baseline PDF must stamp the ACRA
+            # registered name, never the raw domain.
+            if user:
+                from app.services.evidence_enricher import resolve_legal_name
+                await resolve_legal_name(user, _db, company_hint=company_name, uen=uen or None)
+        finally:
+            _db.close()
+
     # Block vendor_proof purchase if user is already verified
     if product_type == "vendor_proof" and prefill_email:
         from app.core.db import SessionLocal

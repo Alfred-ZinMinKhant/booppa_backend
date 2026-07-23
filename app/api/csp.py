@@ -24,6 +24,7 @@ Mounted via app/api/__init__.py (the composite api_router is dual-mounted at /ap
 
 import hashlib
 import json
+import logging
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
@@ -66,6 +67,8 @@ try:
 except ImportError:
     _HAS_RELATIVEDELTA = False
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/csp", route_class=RetryAPIRoute)
 
@@ -1037,6 +1040,148 @@ def list_nominees(current_user: dict = Depends(get_current_user), db=Depends(get
     return [_serialize_director(d) for d in dirs]
 
 
+# ── INSPECTION RECORD EXPORT ───────────────────────────────────────────────────
+#
+# The nominee fit-and-proper assessment and the STR decision both lived only as
+# database rows plus an on-chain hash. A hash is not something an ACRA inspector
+# can read: asked "why didn't you file an STR on this client", the CSP needs a
+# document carrying its own reasoning. These two endpoints render exactly that.
+# The reasoning is the CSP's — see app/services/csp_record_export.py.
+
+
+def _record_evidence(db, profile, record_type: str, record_id: uuid.UUID):
+    """Latest blockchain anchor for a record, or None if notarization is pending.
+
+    Same table `GET /csp/evidence` reads.
+    """
+    return (
+        db.query(CspBlockchainEvidence)
+        .filter(
+            CspBlockchainEvidence.csp_id == profile.id,
+            CspBlockchainEvidence.record_type == record_type,
+            CspBlockchainEvidence.record_id == record_id,
+        )
+        .order_by(CspBlockchainEvidence.created_at.desc())
+        .first()
+    )
+
+
+def _render_and_store_record(profile, kind: str, record_id: uuid.UUID,
+                             title: str, body: str) -> dict:
+    """Render to PDF, store, and presign. Shared by both record endpoints.
+
+    Reuses `generate_csp_document_pdf` (the same renderer the 8 AML/CFT documents
+    go through) rather than new layout code. Upload failure is not fatal — the
+    document is already rendered, and returning it inline beats returning nothing.
+    """
+    from app.services.csp_doc_generator import generate_csp_document_pdf
+
+    pdf_bytes, record_hash = generate_csp_document_pdf(
+        title, body,
+        meta={"legal_name": profile.legal_name, "uen": profile.uen},
+    )
+
+    key = f"csp/{profile.id}/records/{kind}-{record_id}.pdf"
+    download_url = None
+    try:
+        from app.services.storage import S3Service
+        s3 = S3Service()
+        s3.s3_client.put_object(
+            Bucket=s3.bucket, Key=key, Body=pdf_bytes,
+            ContentType="application/pdf", ServerSideEncryption="AES256",
+        )
+        download_url = s3.s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": s3.bucket, "Key": key},
+            ExpiresIn=604800,  # 7 days; re-presigned on every fetch
+        )
+    except Exception:
+        logger.exception("[CSPRecord] store/presign failed for %s %s", kind, record_id)
+
+    return {
+        "download_url": download_url,
+        "record_hash": record_hash,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.get("/nominees/directors/{nominee_id}/record",
+            summary="Inspection record — nominee fit-and-proper assessment (PDF)")
+def export_nominee_assessment_record(
+    nominee_id: uuid.UUID,
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_db),
+):
+    from app.services.csp_record_export import build_nominee_assessment_record
+
+    profile = _get_profile(db, current_user)
+    nominee = db.query(CspNomineeDirector).filter(
+        CspNomineeDirector.id == nominee_id,
+        CspNomineeDirector.csp_id == profile.id,
+    ).first()
+    if not nominee:
+        raise HTTPException(404, "Nominee director not found")
+
+    status_value = getattr(nominee.assessment_status, "value", nominee.assessment_status)
+    if str(status_value) in ("not_assessed", str(NomineeAssessment.NOT_ASSESSED)):
+        raise HTTPException(
+            409,
+            "No assessment has been recorded for this nominee director yet — there "
+            "is nothing to export. Record it with "
+            "POST /csp/nominees/directors/{id}/assess.",
+        )
+
+    client = db.query(CspClient).filter(CspClient.id == nominee.client_id).first()
+    evidence = _record_evidence(db, profile, "nominee_assessment", nominee_id)
+    title, body = build_nominee_assessment_record(
+        nominee, profile, evidence=evidence, client=client
+    )
+    out = _render_and_store_record(profile, "nominee-assessment", nominee_id, title, body)
+    return {
+        "nominee_id": str(nominee_id),
+        "title": title,
+        "blockchain_tx_hash": getattr(evidence, "tx_hash", None) or nominee.blockchain_tx_hash,
+        "polygonscan_url": getattr(evidence, "polygonscan_url", None) or nominee.polygonscan_url,
+        **out,
+    }
+
+
+@router.get("/str/{str_id}/record",
+            summary="Inspection record — STR decision, including a decision not to file (PDF)")
+def export_str_decision_record(
+    str_id: uuid.UUID,
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_db),
+):
+    from app.services.csp_record_export import build_str_decision_record
+
+    profile = _get_profile(db, current_user)
+    report = db.query(CspStrReport).filter(
+        CspStrReport.id == str_id,
+        CspStrReport.csp_id == profile.id,
+    ).first()
+    if not report:
+        raise HTTPException(404, "STR decision not found")
+
+    client = (
+        db.query(CspClient).filter(CspClient.id == report.client_id).first()
+        if report.client_id else None
+    )
+    evidence = _record_evidence(db, profile, "str", str_id)
+    title, body = build_str_decision_record(
+        report, profile, client=client, evidence=evidence
+    )
+    out = _render_and_store_record(profile, "str-decision", str_id, title, body)
+    return {
+        "str_id": str(str_id),
+        "title": title,
+        "decision": str(getattr(report.decision, "value", report.decision)),
+        "blockchain_tx_hash": getattr(evidence, "tx_hash", None) or report.blockchain_tx_hash,
+        "polygonscan_url": getattr(evidence, "polygonscan_url", None) or report.polygonscan_url,
+        **out,
+    }
+
+
 # ── BENEFICIAL OWNERS ──────────────────────────────────────────────────────────
 
 @router.post("/clients/{client_id}/ubos", status_code=status.HTTP_201_CREATED,
@@ -1209,6 +1354,65 @@ def list_documents(current_user: dict = Depends(get_current_user), db=Depends(ge
             if p.status == "draft" else None
         ),
     } for p in progs]
+
+
+# ── DAY-1 BASELINE ────────────────────────────────────────────────────────────
+
+@router.get("/baseline/latest", summary="Latest CSP Registration Readiness Baseline")
+def get_latest_csp_baseline(
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_db),
+):
+    """The Day-1 baseline PDF issued on purchase, with a freshly re-presigned URL.
+
+    Same document emailed by `csp.run_baseline` at activation — served here so the
+    buyer isn't dependent on still having that email. Presigned URLs expire after
+    7 days, hence the re-presign on every fetch.
+
+    This is NOT the AML/CFT programme (see GET /csp/documents, which stays empty
+    until a CSP profile is submitted). It confirms the legal entity against ACRA
+    and states what is initialised vs. still outstanding.
+    """
+    from app.core.models import Report
+
+    row = (
+        db.query(Report)
+        .filter(
+            Report.owner_id == uuid.UUID(current_user["id"]),
+            Report.framework == "csp_baseline",
+            Report.status == "completed",
+        )
+        .order_by(Report.completed_at.desc().nullslast())
+        .first()
+    )
+    if not row:
+        return {"available": False}
+
+    ad = row.assessment_data if isinstance(row.assessment_data, dict) else {}
+    key = row.file_key or ad.get("s3_key")
+    download_url = row.s3_url or ad.get("s3_url")
+    if key:
+        try:
+            from app.services.storage import S3Service
+            s3 = S3Service()
+            download_url = s3.s3_client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": s3.bucket, "Key": key},
+                ExpiresIn=604800,  # 7 days
+            )
+        except Exception:  # fall back to the stored (possibly expired) URL
+            pass
+
+    return {
+        "available": True,
+        "download_url": download_url,
+        "generated_at": row.completed_at.isoformat() if row.completed_at else None,
+        "company_name": row.company_name,
+        "plan_label": ad.get("plan_label"),
+        "billing_label": ad.get("billing_label"),
+        "acra_verified": bool(ad.get("acra_found")),
+        "uen": ad.get("uen"),
+    }
 
 
 # ── DOCUMENTS APPROVE — LAYER 1 ───────────────────────────────────────────────
