@@ -55,7 +55,14 @@ SUITE_PLAN_KEYS = {
 }
 
 # Pro Suite only (plus the legacy GOVERNMENT-tier Enterprise Pro).
-# Gates: SSO, white-label reports, multi-subsidiary management.
+# Gates: SSO and white-label reports.
+#
+# NOT multi-subsidiary. `multi_vendor` resolves off `tier == ENTERPRISE`, and
+# ENTERPRISE_PLAN_KEYS includes standard_suite — so multi-subsidiary is a
+# Suite-wide entitlement, deliberately. Do not "fix" the gate to this set to
+# match an older comment: that would revoke a feature Standard subscribers
+# already have. Pro's real differentiators are 100 vs 50 notarizations, SSO,
+# and white-label.
 PRO_SUITE_PLAN_KEYS = {
     "pro_suite", "pro_suite_monthly",
     "enterprise_pro", "enterprise_pro_monthly",

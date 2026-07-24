@@ -53,9 +53,20 @@ def _build_client(sso: SsoConfig, org: Organisation):
     if not sso.idp_metadata_url:
         raise ValueError("SAML idp_metadata_url is not set for this organisation")
 
+    # `file://` metadata is read from disk instead of fetched. Real tenants use an
+    # https metadata URL; the local form exists for IdPs that hand you an XML blob
+    # rather than a hosted endpoint, and for the demo/test IdP in
+    # `app/services/saml_mock_idp.py`, which has no public URL to fetch from.
+    if sso.idp_metadata_url.startswith("file://"):
+        metadata_cfg: dict[str, Any] = {
+            "local": [sso.idp_metadata_url[len("file://"):]]
+        }
+    else:
+        metadata_cfg = {"remote": [{"url": sso.idp_metadata_url}]}
+
     cfg_dict: dict[str, Any] = {
         "entityid": sp_entity_id(org.slug),
-        "metadata": {"remote": [{"url": sso.idp_metadata_url}]},
+        "metadata": metadata_cfg,
         "service": {
             "sp": {
                 "endpoints": {

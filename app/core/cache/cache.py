@@ -98,6 +98,31 @@ def add(key: str, value: dict[str, Any], ttl: int = DEFAULT_TTL) -> bool:
         return False
 
 
+def delete(key: str) -> bool:
+    """Drop `key`. Returns True if it existed.
+
+    The release half of `add`'s once-only claim — needed where a claim must be
+    deliberately relinquished (e.g. the admin test-checkout "force resend",
+    which re-fires activation side effects for the same simulated subscription).
+    Production paths should let claims expire by TTL rather than call this.
+    """
+    existed = False
+    if _redis is not None:
+        try:
+            return bool(_redis.delete(f"booppa:{key}"))
+        except Exception as e:
+            logger.warning(f"[cache] Redis delete failed, falling back to file: {e}")
+
+    path = CACHE_DIR / key
+    try:
+        existed = path.exists()
+        if existed:
+            path.unlink()
+    except Exception:
+        return False
+    return existed
+
+
 def rate_limit_check(key: str, max_count: int, window_seconds: int) -> bool:
     """
     Atomic per-key rate limit backed by Redis INCR+EXPIRE.

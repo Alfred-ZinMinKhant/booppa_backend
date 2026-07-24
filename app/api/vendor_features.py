@@ -432,32 +432,21 @@ def add_subsidiary(
     }
 
 
-@router.get("/trm/subsidiary-comparison")
-def trm_subsidiary_comparison(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Pro Suite: roll up MAS TRM control status across the parent tenant and all
-    its subsidiaries, so a group CISO sees one consolidated, per-domain view.
+def build_subsidiary_comparison(db: Session, parent_user: User) -> dict:
+    """Roll up MAS TRM control status across a parent tenant and its subsidiaries.
 
-    This is the concrete Pro-vs-Standard differentiator (Standard has no
-    multi-entity rollup). Each entity reports overall progress, open high/critical
-    controls, and a per-domain status map for a side-by-side matrix; we also flag
-    subsidiaries materially behind the group leader.
+    Extracted from the vendor route so the admin Pro Suite demo panel can render
+    the same group view without an authenticated vendor session. The route below
+    keeps the auth/feature gating; this function assumes the caller already
+    resolved and authorised the parent tenant.
     """
-    _require_feature(current_user, "multi_vendor", "Multi-subsidiary TRM comparison")
-    if current_user.parent_user_id is not None:
-        raise HTTPException(
-            status_code=400,
-            detail="Only the parent tenant can view the subsidiary comparison.",
-        )
     from app.core.models import (
         MAS_TRM_DOMAINS, Organisation, TrmControl,
     )
 
-    entities = [current_user] + (
+    entities = [parent_user] + (
         db.query(User)
-        .filter(User.parent_user_id == current_user.id)
+        .filter(User.parent_user_id == parent_user.id)
         .order_by(User.created_at.asc())
         .all()
     )
@@ -527,6 +516,28 @@ def trm_subsidiary_comparison(
         "entities": summaries,
         "alerts": alerts,
     }
+
+
+@router.get("/trm/subsidiary-comparison")
+def trm_subsidiary_comparison(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Pro Suite: roll up MAS TRM control status across the parent tenant and all
+    its subsidiaries, so a group CISO sees one consolidated, per-domain view.
+
+    This is the concrete Pro-vs-Standard differentiator (Standard has no
+    multi-entity rollup). Each entity reports overall progress, open high/critical
+    controls, and a per-domain status map for a side-by-side matrix; we also flag
+    subsidiaries materially behind the group leader.
+    """
+    _require_feature(current_user, "multi_vendor", "Multi-subsidiary TRM comparison")
+    if current_user.parent_user_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Only the parent tenant can view the subsidiary comparison.",
+        )
+    return build_subsidiary_comparison(db, current_user)
 
 
 @router.delete("/subsidiaries/{sub_id}", status_code=204)

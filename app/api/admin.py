@@ -12,6 +12,7 @@ from app.core.repositories.user_repository import UserRepository
 from app.core.models import ConsentLog, EnterpriseProfile, ActivityLog, VendorScore, User
 from app.core.config import settings
 from app.core.auth import create_admin_token, verify_admin_token
+import hashlib as _hashlib
 import logging
 import secrets
 
@@ -718,6 +719,12 @@ class SimulatePurchaseRequest(BaseModel):
         "DiscoveredVendor registry match + live ACRA lookup on the certificate.",
     )
     rfp_description: Optional[str] = Field(default=None)
+    force_resend: bool = Field(
+        default=False,
+        description="Subscriptions only: re-fire activation side effects (welcome "
+        "email, first-cycle deliverables) even if this test email already "
+        "activated this SKU. Off by default so a double-click doesn't double-send.",
+    )
 
     @field_validator("company_name", mode="before")
     @classmethod
@@ -780,6 +787,18 @@ async def simulate_purchase(
     uen = (body.uen or "").strip()
     rfp_description = (body.rfp_description or "").strip() or DEFAULT_QA_RFP_BRIEF
     sim_id = f"admin-sim-{_uuid.uuid4()}"
+    # The simulated *subscription* id is deterministic per (email, SKU), unlike
+    # sim_id — which doubles as a checkout session id for one-time products and
+    # must stay unique so each run gets its own stub Report.
+    #
+    # Why: `_activate_subscription` claims a once-per-subscription slot in Redis
+    # (`sub_activated:{stripe_subscription_id}`) to stop duplicate Stripe events
+    # double-sending the welcome email and double-queueing first-cycle work. A
+    # fresh uuid4 per click made that claim vacuous for QA, so two clicks on the
+    # Suite test checkout sent two identical "MAS TRM Baseline is ready" emails.
+    # Deterministic id ⇒ the existing guard dedupes repeat clicks too.
+    _sim_sub_seed = f"{customer_email}|{product_type}".encode()
+    sim_sub_id = f"admin-sim-{_hashlib.sha256(_sim_sub_seed).hexdigest()[:24]}"
 
     # Ensure a User row exists for the test email so fulfillment helpers can attach
     # owner_id / grant credits / activate plans.
@@ -839,11 +858,23 @@ async def simulate_purchase(
         # affects the buyer branch in _activate_subscription and never touches
         # the live-webhook path (where demo derives from Stripe livemode).
         is_buyer = product_type.startswith("buyer_")
+        # "Force resend" releases the once-per-subscription claim so the same QA
+        # email can deliberately re-receive the activation set. Without it the
+        # claim stands and a repeat click is a no-op on side effects.
+        if body.force_resend:
+            try:
+                from app.core.cache import cache as _cache
+                # Only the subscription claim needs releasing — the TRM baseline's
+                # own 24h lock is already skipped on the test path via
+                # bypass_idempotency=test_simulation.
+                _cache.delete(_cache.cache_key(f"sub_activated:{sim_sub_id}"))
+            except Exception as exc:
+                logger.warning("[simulate-purchase] force_resend cache clear failed: %s", exc)
         await activate_subscription(
             product_type=product_type,
             customer_email=customer_email,
-            stripe_subscription_id=sim_id,
-            stripe_customer_id=sim_id,
+            stripe_subscription_id=sim_sub_id,
+            stripe_customer_id=sim_sub_id,
             test_simulation=True,
             demo=is_buyer,
             # Test Identity drives first-cycle deliverables (Vendor snapshot,
@@ -855,11 +886,12 @@ async def simulate_purchase(
         try:
             u = UserRepository.get_by_email(db, customer_email)
             from app.core.repositories.subscription_repository import SubscriptionRepository
-            sub = SubscriptionRepository.get_by_stripe_subscription_id(db, sim_id)
+            sub = SubscriptionRepository.get_by_stripe_subscription_id(db, sim_sub_id)
             details = {
                 "plan": getattr(u, "plan", None),
                 "subscription_id": str(sub.id) if sub else None,
-                "stripe_subscription_id": sim_id,
+                "stripe_subscription_id": sim_sub_id,
+                "force_resend": body.force_resend,
             }
         finally:
             db.close()
@@ -1150,6 +1182,115 @@ def admin_trm_demo_baseline_latest(
     if not url:
         return {"available": False}
     return {"available": True, "download_url": url}
+
+
+class ProSuiteDemoRequest(BaseModel):
+    customer_email: str = Field(..., description="Recipient — the Pro tenant to activate")
+    company_name: Optional[str] = Field(default="NovaPay Group Pte Ltd")
+    subsidiary_names: Optional[list[str]] = Field(
+        default=None,
+        description="Override the two default subsidiary display names (positional).",
+    )
+    live_ai: bool = Field(
+        default=True,
+        description="Live gap analysis when a key is configured; false forces seeded narratives.",
+    )
+
+    @field_validator("company_name", mode="before")
+    @classmethod
+    def validate_names(cls, v):
+        if v in (None, "", "NovaPay Group Pte Ltd"):
+            return v or "NovaPay Group Pte Ltd"
+        return validate_name_field(v)
+
+
+# All three Pro Suite endpoints are `def`, not `async def`, on purpose: the harness
+# reuses the baseline worker (which bridges to async via asyncio.run()) and
+# `run_sso_roundtrip` drives a TestClient — both raise inside a live event loop.
+# FastAPI runs sync endpoints in a threadpool, so there is no running loop here.
+@router.post("/pro-suite/demo")
+def admin_pro_suite_demo(
+    body: ProSuiteDemoRequest,
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    """Activate all four Pro-exclusive capabilities on a demo tenant and regenerate
+    its branded baseline.
+
+    Same code path as `scripts/demo_pro_suite.py`. The point is that "Ready → Active"
+    for multi-subsidiary, white-label and SSO is reproducible by clicking a button,
+    with real artifacts, rather than being asserted in a document.
+    """
+    from app.services.pro_suite_demo_harness import activate_pro_features
+
+    db = SessionLocal()
+    try:
+        # capture_pdf=False so the baseline lands in S3 and the panel gets a
+        # download_url. with_mock_idp seeds a valid SsoConfig; the sso-roundtrip
+        # endpoint mints its own fresh IdP, so we clean the temp dir up here.
+        result = activate_pro_features(
+            customer_email=body.customer_email,
+            company_name=body.company_name or "NovaPay Group Pte Ltd",
+            subsidiary_names=body.subsidiary_names,
+            live_ai=body.live_ai,
+            capture_pdf=False,
+            db=db,
+        )
+    except Exception as exc:
+        logger.exception("[AdminProSuite] activation failed")
+        raise HTTPException(status_code=500, detail=f"Pro Suite demo failed: {exc}")
+    finally:
+        db.close()
+
+    if result.get("mock_idp_dir"):
+        import shutil
+        shutil.rmtree(result["mock_idp_dir"], ignore_errors=True)
+    result.pop("pdf_bytes", None)
+    result.pop("mock_idp_dir", None)
+    return {"success": True, **result}
+
+
+@router.get("/pro-suite/demo/{user_id}/rollup")
+def admin_pro_suite_rollup(
+    user_id: str,
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    """Group-level TRM rollup across the demo tenant and its subsidiaries, without
+    an authenticated vendor session — the consolidated view Gianpaolo's (a) asked for."""
+    from app.api.vendor_features import build_subsidiary_comparison
+    from app.core.models import User
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="No such tenant")
+        if user.parent_user_id is not None:
+            raise HTTPException(
+                status_code=400, detail="Pass the parent tenant, not a subsidiary."
+            )
+        return build_subsidiary_comparison(db, user)
+    finally:
+        db.close()
+
+
+@router.post("/pro-suite/demo/{user_id}/sso-roundtrip")
+def admin_pro_suite_sso_roundtrip(
+    user_id: str,
+    tamper: bool = False,
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    """Drive a signed SAML assertion through the real ACS route and report the
+    verdict. `tamper=true` mints a corrupted assertion, which must be rejected."""
+    from app.services.pro_suite_demo_harness import run_sso_roundtrip
+
+    db = SessionLocal()
+    try:
+        return run_sso_roundtrip(user_id=user_id, tamper=tamper, db=db)
+    except Exception as exc:
+        logger.exception("[AdminProSuite] SSO round trip failed")
+        raise HTTPException(status_code=500, detail=f"SSO round trip failed: {exc}")
+    finally:
+        db.close()
 
 
 @router.post("/pdpa/bulk-scan")

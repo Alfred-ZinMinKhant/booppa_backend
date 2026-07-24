@@ -869,6 +869,27 @@ def _saml_unavailable() -> HTTPException:
     )
 
 
+def _saml_rejection_errors() -> tuple:
+    """pysaml2 exception types that mean "this assertion is not acceptable".
+
+    Imported lazily and defensively: pysaml2 is an optional dependency (see
+    `_saml_unavailable`), and returning an empty tuple when it is absent makes
+    the `except` clause a no-op rather than an import error at request time.
+    """
+    try:
+        from saml2.sigver import SignatureError
+        from saml2.response import (
+            IncorrectlySigned, StatusError, UnsolicitedResponse,
+        )
+        from saml2.validate import ResponseLifetimeExceed, NotValid
+        return (
+            SignatureError, IncorrectlySigned, StatusError, UnsolicitedResponse,
+            ResponseLifetimeExceed, NotValid,
+        )
+    except Exception:  # pragma: no cover - pysaml2 missing or reshuffled
+        return ()
+
+
 def _resolve_saml_context(org_slug: str, db: Session):
     """Look up the org and an active SAML SsoConfig, raise 404/400/402 otherwise.
 
@@ -962,6 +983,15 @@ async def saml_acs(org_slug: str, request: Request, db: Session = Depends(get_db
     except ValueError as e:
         logger.warning("SAML assertion rejected for org=%s: %s", org_slug, e)
         raise HTTPException(status_code=401, detail=f"Invalid SAML assertion: {e}")
+    except _saml_rejection_errors() as e:
+        # A bad signature / expired or misaddressed assertion is the IdP's or the
+        # attacker's problem, not ours: it must read as 401, not 500. pysaml2
+        # raises its own exception types here, none of which subclass ValueError,
+        # so without this they fell through to the 500 branch and a rejected
+        # login looked like a server fault.
+        logger.warning("SAML assertion rejected for org=%s: %s: %s",
+                       org_slug, type(e).__name__, e)
+        raise HTTPException(status_code=401, detail="Invalid SAML assertion")
     except Exception as e:
         logger.exception("SAML ACS processing failed for %s: %s", org_slug, e)
         raise HTTPException(status_code=500, detail="Failed to process SAML response")

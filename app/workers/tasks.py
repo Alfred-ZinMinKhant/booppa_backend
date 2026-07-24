@@ -8702,6 +8702,12 @@ def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | 
         # configured when it needs the buyer's IdP details).
         from app.core.models import ENTERPRISE_NOTARIZATION_LIMITS
         _notar = ENTERPRISE_NOTARIZATION_LIMITS.get(plan, 50)
+        # Multi-subsidiary sits in the shared list, not the Pro-only block: the
+        # `multi_vendor` entitlement resolves off the ENTERPRISE tier
+        # (billing/enforcement.py), which Standard Suite is a member of, so
+        # Standard genuinely has this feature. Listing it as Pro-exclusive
+        # claimed a differentiator billing does not enforce.
+        _sub_count = db.query(User).filter(User.parent_user_id == user.id).count()
         provisioning = [
             {"capability": "MAS TRM workspace (13 domains)", "status": "Active",
              "detail": "Initialised — work each domain at booppa.io/vendor/trm"},
@@ -8709,6 +8715,10 @@ def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | 
              "detail": "Included this cycle — redeem at booppa.io/notarize"},
             {"capability": "RESTful API + webhooks", "status": "Ready",
              "detail": "Generate an API key at booppa.io/vendor/api-keys"},
+            {"capability": "Multi-subsidiary management",
+             "status": "Active" if _sub_count else "Ready",
+             "detail": (f"{_sub_count} subsidiaries linked — view group rollup at booppa.io/vendor/subsidiaries"
+                        if _sub_count else "Add subsidiaries at booppa.io/vendor/subsidiaries")},
         ]
         white_label = None
         if plan == "pro_suite":
@@ -8726,7 +8736,6 @@ def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | 
                 .first()
                 if org else None
             )
-            _sub_count = db.query(User).filter(User.parent_user_id == user.id).count()
 
             provisioning += [
                 {"capability": "SSO — SAML 2.0 / OIDC",
@@ -8737,10 +8746,6 @@ def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | 
                  "status": "Active" if _wl_cfg else "Ready",
                  "detail": ("Your brand is applied to generated reports"
                             if _wl_cfg else "Enable + add your brand at booppa.io/vendor/profile")},
-                {"capability": "Multi-subsidiary management",
-                 "status": "Active" if _sub_count else "Ready",
-                 "detail": (f"{_sub_count} subsidiaries linked — view group rollup at booppa.io/vendor/subsidiaries"
-                            if _sub_count else "Add subsidiaries at booppa.io/vendor/subsidiaries")},
             ]
 
             if _wl_cfg:
