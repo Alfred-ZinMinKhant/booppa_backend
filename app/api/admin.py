@@ -1293,6 +1293,51 @@ def admin_pro_suite_sso_roundtrip(
         db.close()
 
 
+class CspDemoRequest(BaseModel):
+    customer_email: str = Field(..., description="Recipient — the CSP tenant to onboard")
+    company_name: Optional[str] = Field(default=None)
+
+    @field_validator("company_name", mode="before")
+    @classmethod
+    def _clean_company(cls, v):
+        if v in (None, ""):
+            return v
+        return validate_name_field(v)
+
+
+# `def`, not `async def`: the harness renders the Day-1 baseline via a helper that
+# bridges the ACRA lookup with asyncio.run(), which raises inside a live event
+# loop. FastAPI runs sync endpoints in a threadpool, so there is no running loop.
+@router.post("/csp/demo")
+def admin_csp_demo(
+    body: CspDemoRequest,
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    """Walk a demo CSP org through onboarding and produce its inspection records.
+
+    Same code path as `scripts/demo_csp_onboarding.py`. Returns the Day-1 baseline
+    plus the nominee fit-and-proper record and the STR decision record (with their
+    download URLs), so the actual onboarding output can be judged — not described.
+    """
+    from app.services.csp_demo_harness import run_csp_onboarding_demo
+
+    db = SessionLocal()
+    try:
+        result = run_csp_onboarding_demo(
+            customer_email=body.customer_email,
+            company_name=body.company_name,
+            capture_pdfs=False,
+            db=db,
+        )
+    except Exception as exc:
+        logger.exception("[AdminCsp] onboarding demo failed")
+        raise HTTPException(status_code=500, detail=f"CSP onboarding demo failed: {exc}")
+    finally:
+        db.close()
+
+    return {"success": True, **result}
+
+
 @router.post("/pdpa/bulk-scan")
 async def create_pdpa_bulk_scan(
     request: Request,
