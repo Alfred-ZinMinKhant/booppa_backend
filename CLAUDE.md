@@ -67,17 +67,20 @@ None configured. Do not invent a `ruff`/`black`/`isort` command — there's no c
 
 `app/core/auth.py` mints/verifies JWTs with **type discrimination** (`access`, `refresh`, `admin`, `password_reset`). Endpoints gate with `Security(oauth2_scheme)` then `verify_access_token(token)`. Passwords are bcrypt-hashed. The `oauth2_scheme` URL is `/api/v1/auth/token` but the `/api/` mount means `/api/auth/token` works equivalently.
 
-### Models — versioned, not domain-split
+### Models — one consolidated file, section-marked by origin
 
-`app/core/models.py` defines the core tables (`User`, `Report`, `Subscription`, etc.) and **imports `models_v6.py` through `models_v12.py` plus `models_enterprise.py` at its tail**, so Alembic's metadata picks up the full schema from a single import.
+**All ORM tables now live in `app/core/models.py`.** The old per-version modules (`models_v6.py` … `models_v13.py`, `models_enterprise.py`, `models_csp.py`, `models_gebiz.py`, `models_vendor_pro.py`) no longer exist — their contents were merged into `models.py`, which delimits each former module with a `# Extracted from models_vN.py` header comment. Alembic's metadata therefore picks up the full schema from this single import.
 
-Convention: when adding a table tied to a product version N rollout, add it to `models_vN.py` rather than to `models.py`. Existing carve-outs:
+**Do not** `from app.core.models_vN import …` — those modules are gone and the import raises `ModuleNotFoundError` (this was a CI break in the industry-backfill script). Import everything from `app.core.models`.
+
+Convention: when adding a table tied to a product version N rollout, add it under the matching `# Extracted from models_vN.py` section of `models.py`. The section headers (searchable landmarks in `models.py`) map to:
 
 - `models_v6.py` — vendor verification artifacts
 - `models_v8.py` — PDPA dimension history / score snapshots
 - `models_v10.py` — marketplace, funnel events, achievements, `CertificateLog`
 - `models_v11.py` — compliance locker
 - `models_v12.py` — API keys, **`PendingRfpIntake`** (see Stripe pipeline below)
+- `models_v13.py`, `models_csp.py`, `models_gebiz.py`, `models_vendor_pro.py` — later rollouts (CSP, GeBIZ, Vendor Pro)
 - `models_enterprise.py` — orgs, webhooks, SSO
 
 `User.parent_user_id` is a nullable self-FK supporting multi-subsidiary tenancy. Don't filter by `user_id` alone if a parent/child distinction matters.
