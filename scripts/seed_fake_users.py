@@ -24,9 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.db import SessionLocal
 from app.core.models import User
-from app.core.models_v10 import MarketplaceVendor, DiscoveredVendor
-from app.core.models_v6 import VerifyRecord, LifecycleStatus, VerificationLevel, VendorScore, VendorSector
-from app.core.models_v8 import VendorStatusSnapshot
+from app.core.models import MarketplaceVendor, DiscoveredVendor
+from app.core.models import VerifyRecord, LifecycleStatus, VerificationLevel, VendorScore, VendorSector
+from app.core.models import VendorStatusSnapshot
 from app.core.auth import get_password_hash
 
 
