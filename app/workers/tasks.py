@@ -1098,6 +1098,10 @@ async def process_report_workflow(report_id: str) -> dict:
         
         policy = enforce_tier(ad, report.framework)
         features = policy.get("features", {}) if isinstance(policy, dict) else {}
+        # Admin test-checkout reports anchor with a mock tx hash (no gas) so QA
+        # runs never drain the shared gas wallet used by real customers.
+        from app.core.demo_flags import is_demo_anchor
+        demo_anchor = is_demo_anchor(assessment=ad)
         
         # Debug logging for tier resolution
         logger.info(f"Tier Resolution for {report_id}: framework={report.framework}, tier={policy.get('tier')}, paid={policy.get('paid')}, pdf_enabled={features.get('pdf')}")
@@ -1370,7 +1374,7 @@ async def process_report_workflow(report_id: str) -> dict:
                 for rem in remediations:
                     try:
                         meta = f"Booppa Proof: {rem['description']} for {report.company_website}"
-                        tx_hash = await blockchain_svc.anchor_evidence(rem["evidence_hash"], meta)
+                        tx_hash = await blockchain_svc.anchor_evidence(rem["evidence_hash"], meta, demo=demo_anchor)
                         if tx_hash:
                             rem["tx_hash"] = tx_hash
                             rem["anchored"] = True
@@ -1487,7 +1491,7 @@ async def process_report_workflow(report_id: str) -> dict:
             blockchain = BlockchainService()
             metadata = f"report:{report.id}"
             try:
-                tx_hash = await blockchain.anchor_evidence(evidence_hash, metadata=metadata)
+                tx_hash = await blockchain.anchor_evidence(evidence_hash, metadata=metadata, demo=demo_anchor)
                 report.tx_hash = tx_hash
                 db.commit()
             except Exception as anchor_err:
@@ -2481,6 +2485,9 @@ def fulfill_cover_sheet_task(
     import hashlib
     import uuid as _uuid
     metadata = metadata or {}
+    # Admin test-checkout (test_simulation in metadata) mocks the anchor — no gas.
+    from app.core.demo_flags import is_demo_anchor
+    _cs_demo = is_demo_anchor(metadata=metadata)
     try:
         from app.services.cover_sheet_generator import generate_cover_sheet
         from app.services.storage import S3Service
@@ -2608,7 +2615,7 @@ def fulfill_cover_sheet_task(
 
                             ropa_tx_hash = asyncio.run(
                                 BlockchainService().anchor_evidence(
-                                    ropa_file_hash, metadata=f"ropa_lite:{ropa_report_id}",
+                                    ropa_file_hash, metadata=f"ropa_lite:{ropa_report_id}", demo=_cs_demo,
                                 )
                             )
 
@@ -3082,7 +3089,7 @@ def fulfill_cover_sheet_task(
                 )
                 content_hash = hashlib.sha256(digest_input.encode()).hexdigest()
                 blockchain = BlockchainService()
-                tx = asyncio.run(blockchain.anchor_evidence(content_hash, metadata=f"cover_sheet:{report_id}"))
+                tx = asyncio.run(blockchain.anchor_evidence(content_hash, metadata=f"cover_sheet:{report_id}", demo=_cs_demo))
                 if tx:
                     cover_data["tx_hash"] = tx
                     _cache.set(anchor_cache_key, {"tx": tx}, ttl=86400)
@@ -5068,7 +5075,7 @@ def pdpa_monitor_monthly_alert_task(self, vendor_id: str, vendor_email: str):
 
 
 @celery_app.task(bind=True, max_retries=2, name="pdpa_monitor_monthly_rescan_task")
-def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, website_url: str, override_company: str | None = None, source: str = "pdpa_monitor_monthly"):
+def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, website_url: str, override_company: str | None = None, source: str = "pdpa_monitor_monthly", test_simulation: bool = False):
     """
     Monthly PDPA re-scan for PDPA Monitor subscribers.
     Creates a new PDPA report and queues fulfill_pdpa_task.
@@ -5076,6 +5083,10 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
 
     `override_company` is test-harness-only (admin Test Identity); production
     monthly runs leave it None and use the stored profile company.
+
+    `test_simulation` (admin test-checkout only) is stamped onto the created
+    Report so every downstream anchor — the scan's own anchor, the Vendor Pro
+    snapshot, the Monitor report — resolves to a mock tx hash (no gas).
     """
     db = SessionLocal()
     try:
@@ -5133,6 +5144,7 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
                 "tier": "PRO",
                 "contact_email": vendor_email,
                 "triggered_by": source,
+                "test_simulation": bool(test_simulation),
             },
         )
         db.add(stub)
@@ -5607,9 +5619,11 @@ def run_vendor_pro_pdpa_snapshot_for_user(self, vendor_id: str, vendor_email: st
         try:
             import hashlib
             from app.services.blockchain import BlockchainService
+            from app.core.demo_flags import is_demo_anchor
             digest = hashlib.sha256(pdf_bytes).hexdigest()
             anchor_tx = asyncio.run(BlockchainService().anchor_evidence(
-                digest, metadata=f"vendor_pro_pdpa_snapshot:{current.id}"))
+                digest, metadata=f"vendor_pro_pdpa_snapshot:{current.id}",
+                demo=is_demo_anchor(assessment=getattr(current, "assessment_data", None))))
         except Exception as anchor_err:
             logger.warning("[VendorProSnapshot] anchoring failed for %s: %s", email, anchor_err)
 
@@ -8526,7 +8540,7 @@ def run_vendor_active_check_for_user(self, user_id: str, override_company: str |
 
 
 @celery_app.task(bind=True, max_retries=2, name="run_pdpa_monitor_cycle_for_user")
-def run_pdpa_monitor_cycle_for_user(self, user_id: str, override_website: str | None = None, override_company: str | None = None):
+def run_pdpa_monitor_cycle_for_user(self, user_id: str, override_website: str | None = None, override_company: str | None = None, test_simulation: bool = False):
     """Per-user wrapper: queue PDPA Monitor's monthly rescan.
 
     `override_website` / `override_company` are test-harness-only (admin Test
@@ -8545,14 +8559,14 @@ def run_pdpa_monitor_cycle_for_user(self, user_id: str, override_website: str | 
                 user.email,
             )
             return
-        pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website, override_company)
+        pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website, override_company, test_simulation=test_simulation)
     finally:
         if db:
             db.close()
 
 
 @celery_app.task(bind=True, max_retries=2, name="run_vendor_pro_activation_for_user")
-def run_vendor_pro_activation_for_user(self, user_id: str, override_website: str | None = None, override_company: str | None = None):
+def run_vendor_pro_activation_for_user(self, user_id: str, override_website: str | None = None, override_company: str | None = None, test_simulation: bool = False):
     """Per-user wrapper: Vendor Pro inherits Vendor Active's monthly health
     check + an immediate first PDPA rescan (Vendor Pro's quarterly cycle
     normally fires Jan/Apr/Jul/Oct; on activation we kick the first one now).
@@ -8570,7 +8584,7 @@ def run_vendor_pro_activation_for_user(self, user_id: str, override_website: str
         # First PDPA rescan if a website is configured
         website = (override_website or "").strip() or (getattr(user, "website", "") or "").strip()
         if website:
-            pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website, override_company, source="vendor_pro")
+            pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website, override_company, source="vendor_pro", test_simulation=test_simulation)
         else:
             logger.warning(
                 "[VendorProFirstCycle] %s has no website — PDPA scan skipped; will fire after profile update",
@@ -9106,11 +9120,18 @@ def fulfill_evidence_pack_task(self, evidence_pack_id: str):
         row.status = "anchoring"; db.commit()
         anchoring: dict = {}
 
+        # Admin test-checkout packs mock every anchor so a single QA run doesn't
+        # burn gas across 8 document hashes. Bundle path carries an admin-sim-*
+        # session; the compliance_evidence_monthly subscription path has no
+        # session but stamps test_simulation into the auto-built intake.
+        from app.core.demo_flags import is_demo_anchor
+        _demo = is_demo_anchor(session_id=getattr(row, "session_id", None), assessment=getattr(row, "intake", None))
+
         async def _anchor_all():
             bsvc = BlockchainService()
             for dt, h in (pack.get("hashes") or {}).items():
                 try:
-                    tx = await bsvc.anchor_evidence(h, metadata=f"evidence_pack:{dt}:{pack['pack_id']}")
+                    tx = await bsvc.anchor_evidence(h, metadata=f"evidence_pack:{dt}:{pack['pack_id']}", demo=_demo)
                     if tx:
                         anchoring[dt] = {
                             "tx_hash": tx,
@@ -9120,7 +9141,7 @@ def fulfill_evidence_pack_task(self, evidence_pack_id: str):
                 except Exception as ae:
                     logger.warning("[EvidencePack] anchor failed for %s: %s", dt, ae)
             try:
-                mtx = await bsvc.anchor_evidence(pack["master_hash"], metadata=f"evidence_pack:MASTER:{pack['pack_id']}")
+                mtx = await bsvc.anchor_evidence(pack["master_hash"], metadata=f"evidence_pack:MASTER:{pack['pack_id']}", demo=_demo)
                 if mtx:
                     anchoring["master"] = {
                         "tx_hash": mtx,

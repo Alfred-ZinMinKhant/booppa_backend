@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Request, HTTPException
 from app.core.config import settings
 from app.core.db import SessionLocal
+from app.core.demo_flags import is_demo_anchor
 from app.core.models import Report, User
 from app.services.blockchain import BlockchainService
 from app.services.pdf_service import PDFService
@@ -310,11 +311,14 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
         )
 
         # Step 1: Anchor file hash on blockchain
+        # Admin test-checkout reports use a mock tx hash (no gas) — never spend
+        # real gas from the shared wallet on QA runs.
+        demo_anchor = is_demo_anchor(assessment=assessment)
         tx_hash = None
         try:
             blockchain = BlockchainService()
             tx_hash = await blockchain.anchor_evidence(
-                file_hash, metadata=f"notarization:{report_id}"
+                file_hash, metadata=f"notarization:{report_id}", demo=demo_anchor
             )
             # Only store a real hex tx_hash; None means already anchored (no new tx)
             if tx_hash:
@@ -617,7 +621,7 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
             logger.warning(f"[Notarize] Elevation update failed for {report_id}: {e}")
 
         logger.info(f"[Notarize] Fulfilled {report_id}: tx={tx_hash} pdf={pdf_url}")
-        _maybe_fire_cover_sheet(contact_email, user_id=vendor_id)
+        _maybe_fire_cover_sheet(contact_email, user_id=vendor_id, test_simulation=is_demo_anchor(assessment=assessment))
     except Exception as e:
         # A failure in the core steps (commit/anchor/upload) previously only logged
         # and returned, so the buyer paid, no certificate email went out, the Celery
@@ -780,7 +784,7 @@ async def _fulfill_rfp_package(
                         ce_user.compliance_evidence_rfp_ready = True
                     db.commit()
                     if getattr(ce_user, "pending_cover_sheet", False):
-                        _maybe_fire_cover_sheet(vendor_email, user_id=vendor_id)
+                        _maybe_fire_cover_sheet(vendor_email, user_id=vendor_id, test_simulation=is_demo_anchor(session_id=session_id))
             except Exception as flag_err:
                 logger.warning(
                     f"[RFP→CoverSheet] Could not record RFP completion for {vendor_email}: {flag_err}"
@@ -1271,8 +1275,10 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             try:
                 from app.services.blockchain import BlockchainService
 
+                # Admin test-checkout reports use a mock tx hash (no gas).
+                _demo_anchor = is_demo_anchor(assessment=(report.assessment_data or {}))
                 cert_tx_hash = await BlockchainService().anchor_evidence(
-                    cert_hash, metadata=f"vendor_proof:{report_id}",
+                    cert_hash, metadata=f"vendor_proof:{report_id}", demo=_demo_anchor,
                 )
             except Exception as _anchor_err:
                 logger.warning("[VendorProof] Anchor failed for %s: %s", report_id, _anchor_err)
@@ -1371,7 +1377,7 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                 logger.error(f"[VendorProof] Email failed for {contact_email}: {e}")
 
         logger.info(f"[VendorProof] Fulfilled {report_id} for vendor {vendor_id}")
-        _maybe_fire_cover_sheet(contact_email, user_id=vendor_id)
+        _maybe_fire_cover_sheet(contact_email, user_id=vendor_id, test_simulation=is_demo_anchor(assessment=(report.assessment_data or {})))
     except Exception as e:
         # A failure in the core persistence steps (VerifyRecord/snapshot/score/
         # commit) lands here. Previously this only logged and returned, so the
@@ -1667,7 +1673,7 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
         logger.info(
             f"[PDPA] Fulfilled {report_id} for vendor {vendor_id} pdf={pdf_url}"
         )
-        _maybe_fire_cover_sheet(contact_email, user_id=vendor_id)
+        _maybe_fire_cover_sheet(contact_email, user_id=vendor_id, test_simulation=is_demo_anchor(assessment=(report.assessment_data or {})))
     except Exception as e:
         logger.error(f"[PDPA] Fulfillment error for {report_id}: {e}")
         db.rollback()

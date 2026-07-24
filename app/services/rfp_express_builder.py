@@ -1464,10 +1464,14 @@ class RFPExpressBuilder:
                 self.report_id.encode()
             ).hexdigest()
             self.evidence_hash = evidence_hash
+            # Admin test-checkout runs (admin-sim-* session) mock the anchor so QA
+            # never spends real gas from the shared wallet.
+            from app.core.demo_flags import is_demo_anchor
             blockchain = BlockchainService()
             tx = await blockchain.anchor_evidence(
                 evidence_hash,
                 metadata=f"rfp_express:vendor:{self.vendor_id}",
+                demo=is_demo_anchor(session_id=self.session_id),
             )
             logger.info(f"RFP Express anchored on {settings.active_polygon_network_name}: {tx}")
             return tx

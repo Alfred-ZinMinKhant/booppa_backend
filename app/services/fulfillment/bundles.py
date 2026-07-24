@@ -431,6 +431,10 @@ async def _fulfill_compliance_evidence_pack(
             "cloud_provider": "AWS",
             "other_markets": "",
             "it_contact": "IT Manager",
+            # Marks the pack as an admin test-checkout run so fulfill_evidence_pack_task
+            # mocks every anchor (no gas). Reliable even when session_id is None
+            # (the compliance_evidence_monthly subscription cycle).
+            "test_simulation": True,
         }
         row.intake = intake
         row.status = "queued"

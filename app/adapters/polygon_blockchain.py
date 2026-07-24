@@ -94,7 +94,7 @@ class PolygonBlockchainAdapter(BlockchainPort):
             raise RuntimeError("BLOCKCHAIN_PRIVATE_KEY is not configured")
         return key
 
-    async def anchor_evidence(self, evidence_hash: str, metadata: str = "", force: bool = False) -> str:
+    async def anchor_evidence(self, evidence_hash: str, metadata: str = "", force: bool = False, demo: bool = False) -> str:
         """Anchor evidence hash on Polygon blockchain.
 
         Pass ``force=True`` when the caller needs a fresh tx_hash even if the
@@ -103,7 +103,17 @@ class PolygonBlockchainAdapter(BlockchainPort):
         save gas on mainnet, but on Polygon Amoy testnet gas is essentially
         free and the duplicate-anchor pattern is harmless — each call
         commits an additional evidence record for the same hash.
+
+        Pass ``demo=True`` for admin test-checkout / preview reports: return a
+        deterministic mock tx hash (``demo_tx_hash``) without building or
+        sending a transaction, so QA runs never spend real gas from the shared
+        wallet. This mirrors the subscription buyer-preview path.
         """
+        if demo:
+            from app.services.supplier_due_diligence_generator import demo_tx_hash
+            tx_hex = demo_tx_hash(evidence_hash)
+            logger.info("Evidence anchored in DEMO mode (no gas): %s", tx_hex)
+            return tx_hex
         try:
             # Idempotency check: Don't spend gas if already anchored, unless
             # the caller explicitly wants a fresh tx (force=True).

@@ -419,7 +419,7 @@ def _create_stub_report(
     return str(stub.id)
 
 
-def _maybe_fire_cover_sheet(customer_email: str | None, user_id: str | None = None) -> None:
+def _maybe_fire_cover_sheet(customer_email: str | None, user_id: str | None = None, test_simulation: bool = False) -> None:
     """
     Auto-fire the Compliance Evidence Pack cover sheet once ALL of its inputs
     have finished. The cover sheet is the centerpiece of the pack: it indexes
@@ -561,7 +561,9 @@ def _maybe_fire_cover_sheet(customer_email: str | None, user_id: str | None = No
                 "bundle_type": "compliance_evidence_pack",
                 "customer_email": customer_email,
                 "company_name": company_name,
-                "metadata": {"auto_fired": True},
+                # test_simulation flows into the task so its anchor is mocked
+                # (no gas) for admin test-checkout runs.
+                "metadata": {"auto_fired": True, "test_simulation": bool(test_simulation)},
             },
             countdown=10,
         )

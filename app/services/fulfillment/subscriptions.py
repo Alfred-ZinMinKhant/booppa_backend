@@ -369,6 +369,7 @@ async def _activate_subscription(
                     str(user.id),
                     override_website=override_website,
                     override_company=override_company,
+                    test_simulation=test_simulation,
                 )
             elif new_plan == "compliance_evidence":
                 _wtasks.run_compliance_evidence_cycle_for_user.delay(
@@ -385,6 +386,7 @@ async def _activate_subscription(
                     str(user.id),
                     override_website=override_website,
                     override_company=override_company,
+                    test_simulation=test_simulation,
                 )
             elif new_plan in ("buyer_starter", "buyer_pro", "buyer_enterprise"):
                 if demo:

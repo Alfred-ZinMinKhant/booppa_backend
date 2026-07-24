@@ -526,6 +526,90 @@ def retry_anchor(
     }
 
 
+class RequeueReportBody(BaseModel):
+    report_id: str = Field(..., description="UUID of the Report to re-run through process_report_task")
+
+
+@router.get("/failed-reports")
+def list_failed_reports(
+    limit: int = Query(50, ge=1, le=200),
+    _auth: bool = Depends(_admin_auth),
+):
+    """List reports stuck in ``status='failed'`` (newest first).
+
+    Primary use: after a gas-wallet outage, the anchor step of
+    ``process_report_task`` raises, the task exhausts its 3 retries, and the
+    report lands in ``failed``. Top up gas, then requeue these from the panel
+    via ``POST /admin/requeue-report``. ``missing_anchor`` flags the common
+    case (report done but ``tx_hash`` never set), which is the gas signature.
+    """
+    from app.core.models import Report
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Report)
+            .filter(Report.status == "failed")
+            .order_by(Report.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        out = []
+        for r in rows:
+            ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
+            out.append({
+                "report_id": str(r.id),
+                "framework": r.framework,
+                "company_name": r.company_name,
+                "contact_email": ad.get("contact_email") or ad.get("customer_email"),
+                "product_type": ad.get("product_type"),
+                "missing_anchor": r.tx_hash is None,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            })
+        return {"count": len(out), "reports": out}
+    finally:
+        db.close()
+
+
+@router.post("/requeue-report")
+def requeue_report(
+    body: RequeueReportBody,
+    _auth: bool = Depends(_admin_auth),
+):
+    """Re-run ``process_report_task`` for a failed/stuck report.
+
+    Resets ``status`` to ``pending`` and re-queues the full workflow (scan →
+    PDF → anchor). Idempotent-safe: a report already ``completed`` is left
+    untouched so an accidental click can't clobber a delivered cert.
+    """
+    from app.core.models import Report
+    from app.core.repositories.report_repository import ReportRepository
+    db = SessionLocal()
+    try:
+        report = ReportRepository.get_by_id(db, str(body.report_id))
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+        if report.status == "completed":
+            raise HTTPException(
+                status_code=409,
+                detail="Report is already completed — refusing to re-run.",
+            )
+        report.status = "pending"
+        db.commit()
+        logger.info(f"[requeue-report] Reset report={body.report_id} to pending, requeuing")
+    finally:
+        db.close()
+
+    from app.workers.tasks import process_report_task
+    process_report_task.apply_async(kwargs={"report_id": body.report_id}, countdown=2)
+    return {
+        "ok": True,
+        "report_id": body.report_id,
+        "queued": True,
+        "note": "Report requeued. It will re-run the scan, PDF and on-chain anchor.",
+    }
+
+
 @router.post("/grant-credits")
 def grant_credits(
     body: GrantCreditsBody,
