@@ -92,39 +92,7 @@ jobs:
             --ignore-vuln PYSEC-2026-2280 \
             --ignore-vuln PYSEC-2026-2281 \
             `# pytest — fix is pytest 9.x major upgrade (test-only dependency)` \
-            --ignore-vuln PYSEC-2026-1845 \
-            `# pypdf — fix requires pypdf 6.x major upgrade` \
-            --ignore-vuln PYSEC-2026-1827 \
-            --ignore-vuln PYSEC-2026-1828 \
-            --ignore-vuln PYSEC-2026-1829 \
-            --ignore-vuln PYSEC-2026-1830 \
-            --ignore-vuln PYSEC-2026-1831 \
-            --ignore-vuln PYSEC-2026-1832 \
-            --ignore-vuln PYSEC-2026-1833 \
-            --ignore-vuln PYSEC-2026-3004 \
-            --ignore-vuln PYSEC-2026-3005 \
-            --ignore-vuln PYSEC-2026-3006 \
-            --ignore-vuln PYSEC-2026-3007 \
-            --ignore-vuln PYSEC-2026-3009 \
-            --ignore-vuln PYSEC-2026-3010 \
-            --ignore-vuln PYSEC-2026-3011 \
-            --ignore-vuln PYSEC-2026-3012 \
-            --ignore-vuln PYSEC-2026-3013 \
-            --ignore-vuln PYSEC-2026-3014 \
-            --ignore-vuln PYSEC-2026-3015 \
-            --ignore-vuln PYSEC-2026-3016 \
-            --ignore-vuln PYSEC-2026-3017 \
-            --ignore-vuln PYSEC-2026-3018 \
-            --ignore-vuln PYSEC-2026-3019 \
-            --ignore-vuln PYSEC-2026-3020 \
-            --ignore-vuln PYSEC-2026-3021 \
-            --ignore-vuln PYSEC-2026-3022 \
-            --ignore-vuln PYSEC-2026-3023 \
-            --ignore-vuln PYSEC-2026-3024 \
-            --ignore-vuln PYSEC-2026-3025 \
-            --ignore-vuln PYSEC-2026-3026 \
-            --ignore-vuln PYSEC-2026-3027 \
-            --ignore-vuln GHSA-jm82-fx9c-mx94
+            --ignore-vuln PYSEC-2026-1845
           }
 
           for attempt in 1 2 3; do

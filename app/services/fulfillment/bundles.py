@@ -213,11 +213,13 @@ async def _fulfill_standalone_no_report(
             user = db.query(User).filter(User.email == customer_email).first()
             if user:
                 owner_id = user.id
-                if not company_name:
-                    # Async context — must await the resolver, not the sync
-                    # bridge (see evidence_enricher.resolve_display_legal_name).
-                    from app.services.evidence_enricher import resolve_display_legal_name
-                    company_name = (await resolve_display_legal_name(user, db) or "").strip()
+                # Do NOT fall back to the account's cached legal identity here. The
+                # subject of a PDPA/Vendor Proof purchase is whatever the buyer
+                # entered at checkout (stripe_checkout requires company_name for both
+                # SKUs); resolving from user.legal_name is exactly how a reused
+                # account's stale identity contaminated a different vendor's report.
+                # If company_name is somehow empty, leave it empty and let the stub
+                # Report's own subject drive report-scoped resolution downstream.
                 if not website:
                     website = (getattr(user, "website", "") or "").strip()
 

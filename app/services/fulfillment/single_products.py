@@ -190,8 +190,10 @@ async def _defer_rfp_to_intake(
             )
             return None
         resolved_url = vendor_url or (getattr(user, "website", "") or "") or None
-        from app.services.evidence_enricher import resolve_display_legal_name
-        resolved_company = company_name or (await resolve_display_legal_name(user, db) or "") or None
+        # Prefer the company entered for THIS purchase; fall back only to the raw
+        # (non-sticky) user.company, never the cached legal_name — the buyer
+        # confirms/edits this on the intake step anyway.
+        resolved_company = company_name or (getattr(user, "company", "") or "").strip() or None
         pending = PendingRfpIntake(
             user_id=user.id,
             session_id=session_id,
@@ -364,15 +366,9 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
         pdf_bytes = None
         try:
             pdf_service = PDFService()
-            from app.core.models import User
-            from app.services.evidence_enricher import resolve_display_legal_name
-            _owner = (
-                db.query(User).filter(User.email == contact_email).first()
-                if contact_email else None
-            )
-            _company_name = (
-                await resolve_display_legal_name(_owner, db) if _owner
-                else (report.company_name or "Your Organisation")
+            from app.services.evidence_enricher import resolve_report_legal_name
+            _company_name = await resolve_report_legal_name(report, db) or (
+                report.company_name or "Your Organisation"
             )
             pdf_data = {
                 "report_id": report_id,
@@ -983,11 +979,11 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
                 f"[VendorProof] No owner_id on report {report_id} and no user resolved from email"
             )
             return
-        if real_user is not None:
-            from app.services.evidence_enricher import resolve_display_legal_name
-            company_name = await resolve_display_legal_name(real_user, db)
-        else:
-            company_name = report.company_name or "Vendor"
+        # Certify the entity THIS report verifies, not the buyer account's cached
+        # identity — a reused account's stale legal_name must never be stamped onto
+        # a different vendor's proof.
+        from app.services.evidence_enricher import resolve_report_legal_name
+        company_name = await resolve_report_legal_name(report, db) or (report.company_name or "Vendor")
         verify_url = f"https://www.booppa.io/verify/{report_id}"
 
         # ── Honest score, computed BEFORE we persist it ─────────────────────
@@ -1431,15 +1427,9 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
             or assessment.get("contact_email")
             or assessment.get("customer_email")
         )
-        from app.core.models import User
-        from app.services.evidence_enricher import resolve_display_legal_name
-        _owner = (
-            db.query(User).filter(User.email == contact_email).first()
-            if contact_email else None
-        )
-        company_name = (
-            await resolve_display_legal_name(_owner, db) if _owner
-            else (report.company_name or "Customer")
+        from app.services.evidence_enricher import resolve_report_legal_name
+        company_name = await resolve_report_legal_name(report, db) or (
+            report.company_name or "Customer"
         )
         website_url = report.company_website or assessment.get("website", "")
 

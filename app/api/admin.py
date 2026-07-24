@@ -821,11 +821,15 @@ async def simulate_purchase(
             db.commit()
             logger.info(f"[simulate-purchase] Created test user {customer_email}")
         else:
-            # Backfill profile so handlers that read user.website / user.company succeed.
+            # Use the ACTIVE test-checkout input: when the admin supplies a
+            # company/website for this run, it overwrites whatever stale value a
+            # reused QA account is carrying (a prior run's identity must not mask
+            # what we're testing now). Empty form fields leave the existing value
+            # untouched. Mirrors the report-scoped resolution fix.
             updated = False
-            if vendor_url and not user.website:
+            if vendor_url and user.website != vendor_url:
                 user.website = vendor_url; updated = True
-            if company_name and not user.company:
+            if company_name and user.company != company_name:
                 user.company = company_name; updated = True
             if updated:
                 db.commit()

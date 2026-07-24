@@ -208,6 +208,82 @@ def test_no_generator_defaults_entity_name_from_raw_company():
     )
 
 
+# ── Report-scoped resolution (SPQR contamination fix) ────────────────────────
+# A reused account whose cached User.legal_name is stale (e.g. "SPQR
+# Communications") must NOT leak that identity into a report about a different
+# vendor. resolve_report_legal_name resolves strictly from the report's own
+# subject and never reads or writes User.
+
+
+class _FakeReport:
+    def __init__(self, company_name=None, company_website=None, assessment_data=None):
+        self.id = "rep-test"
+        self.company_name = company_name
+        self.company_website = company_website
+        self.assessment_data = assessment_data if assessment_data is not None else {}
+
+
+@pytest.mark.asyncio
+async def test_report_scoped_ignores_cached_user_identity(test_db, mocker):
+    """The classic SPQR case: cached account identity must not win over the
+    report's actual subject, and the account row must stay untouched."""
+    from app.services.evidence_enricher import resolve_report_legal_name
+
+    user = make_user(test_db, company="SPQR Communications")
+    user.legal_name = "SPQR COMMUNICATIONS PTE. LTD."
+    user.uen = "21374700J"
+    test_db.commit()
+
+    report = _FakeReport(company_name="Netpoleons")
+    mocker.patch(
+        "app.services.evidence_enricher.fetch_acra_status",
+        return_value={"found": True, "uen": "199901234B", "registered_name": "NETPOLEONS PTE. LTD."},
+    )
+
+    name = await resolve_report_legal_name(report, test_db)
+
+    assert name == "NETPOLEONS PTE. LTD."
+    # User cache is never mutated by a report-scoped resolution.
+    test_db.refresh(user)
+    assert user.legal_name == "SPQR COMMUNICATIONS PTE. LTD."
+    assert user.uen == "21374700J"
+    # Resolution is cached back onto the report, scoped to it.
+    assert report.company_name == "NETPOLEONS PTE. LTD."
+    assert report.assessment_data.get("resolved_uen") == "199901234B"
+
+
+@pytest.mark.asyncio
+async def test_report_scoped_falls_back_to_report_subject_on_no_match(test_db, mocker):
+    from app.services.evidence_enricher import resolve_report_legal_name
+
+    report = _FakeReport(company_name="Netpoleons")
+    mocker.patch(
+        "app.services.evidence_enricher.fetch_acra_status",
+        return_value={"found": False},
+    )
+    assert await resolve_report_legal_name(report, test_db) == "Netpoleons"
+
+
+@pytest.mark.asyncio
+async def test_resolve_legal_name_does_not_persist_foreign_hint(test_db, mocker):
+    """Persistence guard: a hint that does not match the user's own company must
+    resolve but never overwrite the account's cached identity."""
+    from app.services.evidence_enricher import resolve_legal_name
+
+    user = make_user(test_db, company="acme.com")
+    mocker.patch(
+        "app.services.evidence_enricher.fetch_acra_status",
+        return_value={"found": True, "uen": "199901234B", "registered_name": "NETPOLEONS PTE. LTD."},
+    )
+
+    name = await resolve_legal_name(user, test_db, company_hint="Netpoleons")
+
+    assert name == "NETPOLEONS PTE. LTD."  # returned to caller
+    test_db.refresh(user)
+    assert user.legal_name is None  # but not cached onto the foreign account
+    assert user.uen is None
+
+
 @pytest.mark.asyncio
 async def test_resolve_display_legal_name_skips_lookup_when_already_resolved(
     test_db, mocker

@@ -1272,12 +1272,9 @@ async def process_report_workflow(report_id: str) -> dict:
                                 or report.assessment_data.get("url")
                                 or report.company_website or "")
                     pdf_service = PDFService()
-                    from app.core.models import User
-                    from app.services.evidence_enricher import resolve_display_legal_name
-                    _owner = db.query(User).filter(User.id == report.owner_id).first() if report.owner_id else None
-                    _company_name = (
-                        await resolve_display_legal_name(_owner, db) if _owner
-                        else (report.company_name or "Your Organisation")
+                    from app.services.evidence_enricher import resolve_report_legal_name
+                    _company_name = await resolve_report_legal_name(report, db) or (
+                        report.company_name or "Your Organisation"
                     )
                     pdf_data = {
                         "report_id": str(report.id),
@@ -1489,9 +1486,30 @@ async def process_report_workflow(report_id: str) -> dict:
         if features.get("blockchain") and payment_confirmed:
             blockchain = BlockchainService()
             metadata = f"report:{report.id}"
-            tx_hash = await blockchain.anchor_evidence(evidence_hash, metadata=metadata)
-            report.tx_hash = tx_hash
-            db.commit()
+            try:
+                tx_hash = await blockchain.anchor_evidence(evidence_hash, metadata=metadata)
+                report.tx_hash = tx_hash
+                db.commit()
+            except Exception as anchor_err:
+                # Anchoring failed (commonly: gas wallet empty). The scan itself is
+                # done, but a real cert promises an on-chain anchor, so we still
+                # retry the whole task to re-anchor once funds return. Tell the buyer
+                # once about the short delay and ping ops (hourly) to top up gas —
+                # reusing the deduped alert. Pass a STABLE reason: the raw
+                # insufficient-funds message embeds changing balance/cost numbers,
+                # and reason is part of the alert's dedup key, so the raw string
+                # would re-send the buyer a delay email on every retry.
+                from app.services.fulfillment import alert_payment_fulfillment_issue
+
+                ad = report.assessment_data if isinstance(report.assessment_data, dict) else {}
+                await alert_payment_fulfillment_issue(
+                    reason="blockchain anchoring failed — gas wallet out of funds",
+                    product_type=ad.get("product_type") or report.framework,
+                    customer_email=ad.get("contact_email") or ad.get("customer_email"),
+                    session_id=str(report.id),
+                    extra={"report_id": str(report.id), "anchor_error": str(anchor_err)[:300]},
+                )
+                raise
         else:
             # leave tx_hash None; PDF will point to pending verification
             report.tx_hash = None
@@ -1744,12 +1762,9 @@ async def process_report_workflow(report_id: str) -> dict:
         # Step 4: Generate PDF with QR code
         logger.info(f"Step 4: Generating PDF for {report_id}")
         pdf_service = PDFService()
-        from app.core.models import User
-        from app.services.evidence_enricher import resolve_display_legal_name
-        _owner = db.query(User).filter(User.id == report.owner_id).first() if report.owner_id else None
-        _company_name = (
-            await resolve_display_legal_name(_owner, db) if _owner
-            else (report.company_name or "Your Organisation")
+        from app.services.evidence_enricher import resolve_report_legal_name
+        _company_name = await resolve_report_legal_name(report, db) or (
+            report.company_name or "Your Organisation"
         )
 
         pdf_data = {

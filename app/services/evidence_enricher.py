@@ -264,6 +264,42 @@ async def fetch_acra_status(uen: Optional[str] = None, company_name: Optional[st
     return result
 
 
+async def _match_acra(
+    db, uen: Optional[str], company: Optional[str]
+) -> tuple[Optional[str], Optional[str]]:
+    """Pure two-step ACRA match — writes nothing.
+
+    Returns `(registered_name, resolved_uen)` for the given UEN/company subject:
+    an exact `DiscoveredVendor` UEN lookup first, then a live data.gov.sg fuzzy
+    match on the company name. `fetch_acra_status` is Redis-cached 24h.
+    """
+    registered_name: Optional[str] = None
+    resolved_uen: Optional[str] = uen
+
+    if uen:
+        try:
+            from app.core.models import DiscoveredVendor
+
+            dv = db.query(DiscoveredVendor).filter(DiscoveredVendor.uen == uen).first()
+            if dv and dv.company_name:
+                registered_name = dv.company_name
+        except Exception as exc:
+            logger.warning("_match_acra: DiscoveredVendor lookup failed for %s: %s", uen, exc)
+
+    if not registered_name and (uen or company):
+        try:
+            live = await fetch_acra_status(uen, company_name=company)
+            if live.get("found"):
+                if not resolved_uen and live.get("uen"):
+                    resolved_uen = live.get("uen")
+                if live.get("registered_name"):
+                    registered_name = live.get("registered_name")
+        except Exception as exc:
+            logger.warning("_match_acra: live ACRA lookup failed for %s/%s: %s", uen, company, exc)
+
+    return registered_name, resolved_uen
+
+
 async def resolve_legal_name(
     user,
     db,
@@ -286,31 +322,23 @@ async def resolve_legal_name(
     """
     _uen = uen or getattr(user, "uen", None)
     _company = company_hint or getattr(user, "company", None)
-    registered_name: Optional[str] = None
-    resolved_uen: Optional[str] = _uen
 
-    if _uen:
-        try:
-            from app.core.models import DiscoveredVendor
+    registered_name, resolved_uen = await _match_acra(db, _uen, _company)
 
-            dv = db.query(DiscoveredVendor).filter(DiscoveredVendor.uen == _uen).first()
-            if dv and dv.company_name:
-                registered_name = dv.company_name
-        except Exception as exc:
-            logger.warning("resolve_legal_name: DiscoveredVendor lookup failed for %s: %s", _uen, exc)
-
-    if not registered_name and (_uen or _company):
-        try:
-            live = await fetch_acra_status(_uen, company_name=_company)
-            if live.get("found"):
-                if not resolved_uen and live.get("uen"):
-                    resolved_uen = live.get("uen")
-                if live.get("registered_name"):
-                    registered_name = live.get("registered_name")
-        except Exception as exc:
-            logger.warning("resolve_legal_name: live ACRA lookup failed for %s/%s: %s", _uen, _company, exc)
+    # Only persist the resolution back to the account when the hint we resolved
+    # actually corresponds to *this user's own* company. A hint derived from some
+    # other entity (e.g. a vendor being verified) must never overwrite the
+    # account's cached identity — that is exactly how a stray value like
+    # "SPQR Communications" became sticky and contaminated later reports. When the
+    # incoming hint diverges from the cached identity we still return the freshly
+    # resolved name to the caller, but we do not write it to User.
+    own_company = (getattr(user, "company", None) or "").strip().lower()
+    hint_used = (_company or "").strip().lower()
+    hint_is_own = (not hint_used) or (not own_company) or (hint_used == own_company)
 
     updated = False
+    if not hint_is_own:
+        return registered_name or getattr(user, "legal_name", None) or _company or "Your Organisation"
     if resolved_uen and resolved_uen != getattr(user, "uen", None):
         user.uen = resolved_uen
         updated = True
@@ -371,6 +399,63 @@ async def resolve_display_legal_name(
 
     # resolve_legal_name mutates and commits `user`, so re-read the attribute.
     return _legal_name_fallback(user)
+
+
+async def resolve_report_legal_name(
+    report, db=None, timeout: int = ACRA_SYNC_RESOLVE_TIMEOUT
+) -> str:
+    """Resolve the ACRA-registered legal name for the SUBJECT OF A REPORT.
+
+    Scoped strictly to the report's own subject (`company_name` / `company_website`
+    and the UEN carried in `assessment_data["uen"]`). NEVER reads or writes
+    `User.legal_name` / `User.uen` — a certified deliverable must reflect the entity
+    it was purchased to verify, not whatever identity is cached on the buyer's
+    account. This is the fix for the "wrong company certified" class of bug where a
+    reused account's stale `legal_name` (e.g. "SPQR Communications") leaked into a
+    report about a different vendor.
+
+    Returns the resolved registered name, falling back to the report's own
+    `company_name`, then "Your Organisation". Caches the resolution back onto the
+    report (`company_name` + `assessment_data["resolved_uen"]`) so re-renders stay
+    stable and scoped to this report.
+    """
+    subject_name = (getattr(report, "company_name", None) or "").strip() or None
+    assessment = report.assessment_data if isinstance(getattr(report, "assessment_data", None), dict) else {}
+    subject_uen = (
+        (assessment.get("uen") or getattr(report, "uen", None) or "").strip() or None
+        if (assessment.get("uen") or getattr(report, "uen", None))
+        else None
+    )
+
+    if db is None or (not subject_name and not subject_uen):
+        return subject_name or "Your Organisation"
+
+    try:
+        registered_name, resolved_uen = await asyncio.wait_for(
+            _match_acra(db, subject_uen, subject_name), timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "resolve_report_legal_name: ACRA resolution timed out after %ss for report %s",
+            timeout, getattr(report, "id", None),
+        )
+        return subject_name or "Your Organisation"
+    except Exception as e:
+        logger.warning("resolve_report_legal_name: resolution failed: %s", e)
+        return subject_name or "Your Organisation"
+
+    # Cache the scoped resolution onto the report (never onto User).
+    if registered_name and registered_name != subject_name:
+        try:
+            report.company_name = registered_name
+            if resolved_uen and isinstance(getattr(report, "assessment_data", None), dict):
+                report.assessment_data = {**report.assessment_data, "resolved_uen": resolved_uen}
+            db.commit()
+        except Exception as exc:
+            logger.warning("resolve_report_legal_name: report cache write failed: %s", exc)
+            db.rollback()
+
+    return registered_name or subject_name or "Your Organisation"
 
 
 def display_legal_name(user, db=None, timeout: int = ACRA_SYNC_RESOLVE_TIMEOUT) -> str:

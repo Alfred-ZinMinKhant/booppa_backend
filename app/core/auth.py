@@ -104,7 +104,9 @@ def verify_refresh_token(token: str):
 
 
 def create_admin_token(username: str, expires_delta: timedelta = None) -> str:
-    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(hours=12))
+    # 24h working-day session (was 12h). Keep in sync with the admin_token cookie
+    # maxAge in booppa-nextjs/app/api/admin/login/route.ts (60*60*24).
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(hours=24))
     return jwt.encode(
         {"sub": username, "exp": expire, "type": "admin"},
         settings.SECRET_KEY,
