@@ -139,3 +139,6 @@ cookies.txt
 # Local runtime artifacts
 .cache/
 celerybeat-schedule
+celerybeat-schedule*
+celery.log
+*.db

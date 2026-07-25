@@ -980,7 +980,10 @@ jobs:
             # Circuit breaker + rollback: paired with the container /ready health
             # check, a rollout whose tasks never become healthy auto-rolls back to
             # the last good task def, and `wait services-stable` below fails the job.
-            aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --task-definition "$APP_TASK_DEF_ARN" --force-new-deployment --region $AWS_REGION \
+            # desired-count 2: two app tasks (Fargate spreads them across AZs) remove
+            # the app-tier SPOF and give real zero-downtime rolling deploys. Beat
+            # stays a singleton; worker is already >1.
+            aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --task-definition "$APP_TASK_DEF_ARN" --desired-count 2 --force-new-deployment --region $AWS_REGION \
               --deployment-configuration "deploymentCircuitBreaker={enable=true,rollback=true},maximumPercent=200,minimumHealthyPercent=100"
           else
             echo "No APP_TASK_DEF_ARN found; forcing a new deployment of the existing service (not recommended)."

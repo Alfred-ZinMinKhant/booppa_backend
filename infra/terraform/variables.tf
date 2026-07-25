@@ -79,9 +79,9 @@ variable "hosted_zone_id" {
 }
 
 variable "app_desired_count" {
-  description = "ECS desired count for app service"
+  description = "ECS desired count for app service. 2 = no app-tier SPOF + real zero-downtime rolling deploys (Fargate spreads tasks across AZs). Beat must stay 1 (singleton scheduler); worker is already 2."
   type        = number
-  default     = 1
+  default     = 2
 }
 
 variable "worker_desired_count" {

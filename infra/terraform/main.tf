@@ -68,14 +68,14 @@ resource "aws_db_instance" "postgres" {
   # Durability (Phase 3, item #3). Multi-AZ deliberately left off to stay within
   # the Lean Mode (<$80/mo) budget — these settings buy data-loss protection, not
   # availability, at near-zero cost and no downtime.
-  backup_retention_period   = var.db_backup_retention_period      # automated daily snapshots, PITR
-  backup_window             = "17:00-17:30"                       # ~01:00-01:30 SGT, low traffic
+  backup_retention_period   = var.db_backup_retention_period # automated daily snapshots, PITR
+  backup_window             = "17:00-17:30"                  # ~01:00-01:30 SGT, low traffic
   copy_tags_to_snapshot     = true
-  deletion_protection       = true                                # guard against accidental delete
-  skip_final_snapshot       = false                               # take a snapshot if ever destroyed
+  deletion_protection       = true  # guard against accidental delete
+  skip_final_snapshot       = false # take a snapshot if ever destroyed
   final_snapshot_identifier = "${local.project}-postgres-final"
 
-  multi_az             = var.rds_multi_az                          # stays false under Lean Mode
+  multi_az             = var.rds_multi_az # stays false under Lean Mode
   db_subnet_group_name = aws_db_subnet_group.rds.id
   depends_on           = [aws_db_subnet_group.rds]
 }
@@ -94,11 +94,43 @@ resource "random_id" "elasticache_suffix" {
   byte_length = 3
 }
 
+# Cache SG: lock 6379 to the ECS tasks SG only. The broker holds Celery task
+# payloads, so it must never be reachable beyond the app/worker tasks. (Previously
+# the cache relied on subnet placement alone with no SG.)
+resource "aws_security_group" "redis" {
+  name        = "${local.project}-redis-sg"
+  description = "ElastiCache Redis SG — ingress only from ECS tasks"
+  vpc_id      = var.create_vpc ? aws_vpc.this[0].id : var.vpc_id
+
+  ingress {
+    from_port       = 6379
+    to_port         = 6379
+    protocol        = "tcp"
+    security_groups = [aws_security_group.ecs.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# NOTE on AUTH + in-transit encryption: `auth_token` and
+# `transit_encryption_enabled` are NOT supported on the single-node
+# `aws_elasticache_cluster` resource — they require an
+# `aws_elasticache_replication_group`. Migrating to one is coupled to the HA
+# upgrade deferred above (a recreate window + roughly double the cache bill), so
+# it is tracked as a follow-up, not applied here. When it lands: enable
+# transit encryption + an auth_token sourced from Secrets Manager, and switch the
+# app/worker REDIS_URL to `rediss://:<token>@...`.
 resource "aws_elasticache_cluster" "redis" {
-  cluster_id        = "${local.project}-redis-${random_id.elasticache_suffix.hex}"
-  engine            = "redis"
-  node_type         = "cache.t4g.micro"
-  num_cache_nodes   = 1
-  subnet_group_name = aws_elasticache_subnet_group.redis.name
-  depends_on        = [aws_elasticache_subnet_group.redis]
+  cluster_id         = "${local.project}-redis-${random_id.elasticache_suffix.hex}"
+  engine             = "redis"
+  node_type          = "cache.t4g.micro"
+  num_cache_nodes    = 1
+  subnet_group_name  = aws_elasticache_subnet_group.redis.name
+  security_group_ids = [aws_security_group.redis.id]
+  depends_on         = [aws_elasticache_subnet_group.redis]
 }
