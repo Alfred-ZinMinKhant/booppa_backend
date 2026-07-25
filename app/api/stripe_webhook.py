@@ -475,7 +475,14 @@ async def _stripe_webhook_impl(
                         .first()
                     )
                     if _owner:
-                        company_name = display_legal_name(_owner)
+                        # No per-purchase company on the Stripe metadata — fall back to
+                        # the buyer's own resolved entity. Pass the (here empty) metadata
+                        # company as the hint so a stale account cache is re-resolved
+                        # rather than blindly trusted if the hint ever diverges; the
+                        # authoritative per-purchase company is collected at /rfp-intake.
+                        company_name = display_legal_name(
+                            _owner, db, company_hint=metadata.get("company_name")
+                        )
                 rfp_desc = (metadata.get("rfp_description") or "").strip()
                 # No brief on file → defer to /rfp-intake instead of generating a placeholder kit.
                 if not rfp_desc:

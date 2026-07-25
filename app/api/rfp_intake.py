@@ -258,7 +258,9 @@ def submit_intake(
     company_name = (
         (body.get("company_name") or "").strip()
         or row.company_name
-        or display_legal_name(user, db)
+        # Scope the fallback to THIS purchase's company (the intake row), never the
+        # account's sticky cached legal_name — a divergent hint re-resolves fresh.
+        or display_legal_name(user, db, company_hint=row.company_name)
     ).strip()
     if not vendor_url:
         raise HTTPException(
@@ -384,7 +386,7 @@ def resolve_intake(
         merged_intake["uen"] = row.uen
     vendor_url = (row.vendor_url or (getattr(user, "website", "") or "")).strip()
     from app.services.evidence_enricher import display_legal_name
-    company_name = (row.company_name or display_legal_name(user, db)).strip()
+    company_name = (row.company_name or display_legal_name(user, db, company_hint=row.company_name)).strip()
     if not rfp_description:
         raise HTTPException(status_code=422, detail="No prior RFP brief found to regenerate from — submit the intake first.")
     if not vendor_url:

@@ -300,6 +300,31 @@ async def _match_acra(
     return registered_name, resolved_uen
 
 
+def _norm(s) -> str:
+    """Case/space-insensitive normalization for comparing company hint strings."""
+    return (s or "").strip().lower()
+
+
+def _cache_trusted_for_hint(user, company_hint) -> bool:
+    """Whether the cached `User.legal_name`/`User.uen` may be reused for a render
+    scoped to `company_hint`.
+
+    Trusted when: no hint is given (an own-account render — today's behaviour), the
+    hint is the account's own `company`, or the hint matches the provenance recorded
+    in `User.legal_name_hint` (i.e. the cache was resolved from this same hint). A
+    divergent hint means the cache belongs to a *different* entity/purchase and must
+    be re-resolved fresh — this is what stops a reused account from stamping a
+    previously cached entity (the sticky "SPQR Communications" leak)."""
+    hint = _norm(company_hint)
+    if not hint:
+        return True
+    if hint == _norm(getattr(user, "company", None)):
+        return True
+    if hint == _norm(getattr(user, "legal_name_hint", None)):
+        return True
+    return False
+
+
 async def resolve_legal_name(
     user,
     db,
@@ -332,18 +357,27 @@ async def resolve_legal_name(
     # "SPQR Communications" became sticky and contaminated later reports. When the
     # incoming hint diverges from the cached identity we still return the freshly
     # resolved name to the caller, but we do not write it to User.
-    own_company = (getattr(user, "company", None) or "").strip().lower()
-    hint_used = (_company or "").strip().lower()
+    own_company = _norm(getattr(user, "company", None))
+    hint_used = _norm(_company)
     hint_is_own = (not hint_used) or (not own_company) or (hint_used == own_company)
 
     updated = False
     if not hint_is_own:
-        return registered_name or getattr(user, "legal_name", None) or _company or "Your Organisation"
+        # Cross-entity hint: never write to the account, and never fall back to the
+        # account's cached legal_name — that belongs to a *different* entity and is
+        # exactly the leak we are killing. Scope strictly to the resolved-from-hint
+        # value, then the raw hint.
+        return registered_name or _company or "Your Organisation"
     if resolved_uen and resolved_uen != getattr(user, "uen", None):
         user.uen = resolved_uen
         updated = True
     if registered_name and registered_name != getattr(user, "legal_name", None):
         user.legal_name = registered_name
+        updated = True
+    # Record the hint this cache was resolved from so a later purchase with a
+    # different company can detect the cache is stale (see _cache_trusted_for_hint).
+    if registered_name and _company and getattr(user, "legal_name_hint", None) != _company:
+        user.legal_name_hint = _company
         updated = True
     if updated:
         db.commit()
@@ -372,8 +406,20 @@ def _legal_name_fallback(user) -> str:
     )
 
 
+def _display_fallback(user, company_hint, trusted: bool) -> str:
+    """Fallback entity name when resolution didn't yield a fresh value.
+
+    For a trusted (own-account) render, fall back to the account's cached
+    identity as before. For a cross-entity hint we must NOT surface the cached
+    `legal_name` (it belongs to a different entity); prefer the purchase's own
+    hint, then a neutral placeholder."""
+    if trusted:
+        return _legal_name_fallback(user)
+    return (company_hint or "").strip() or "Your Organisation"
+
+
 async def resolve_display_legal_name(
-    user, db=None, timeout: int = ACRA_SYNC_RESOLVE_TIMEOUT
+    user, db=None, timeout: int = ACRA_SYNC_RESOLVE_TIMEOUT, company_hint: str | None = None
 ) -> str:
     """Async-context version of `display_legal_name` — use this from any `async
     def`.
@@ -382,13 +428,23 @@ async def resolve_display_legal_name(
     which raises inside a running loop. Every Celery fulfillment workflow runs
     under `asyncio.run(...)`, so those callers MUST await this instead or the
     ACRA backfill silently never happens.
+
+    Pass `company_hint` to scope the render to a *specific purchase's* company
+    rather than the account's cached identity. When the hint diverges from what
+    the cache was resolved from, the cached `legal_name` is treated as stale and
+    re-resolved fresh (and never written back to the account).
     """
-    if not getattr(user, "legal_name", None) and db is not None:
+    trusted = _cache_trusted_for_hint(user, company_hint)
+    if db is not None and (not getattr(user, "legal_name", None) or not trusted):
         try:
-            await asyncio.wait_for(
-                resolve_legal_name(user, db, company_hint=getattr(user, "company", None)),
+            resolved = await asyncio.wait_for(
+                resolve_legal_name(
+                    user, db, company_hint=company_hint or getattr(user, "company", None)
+                ),
                 timeout=timeout,
             )
+            if resolved:
+                return resolved
         except asyncio.TimeoutError:
             logger.warning(
                 "resolve_display_legal_name: ACRA resolution timed out after %ss for user %s",
@@ -397,8 +453,9 @@ async def resolve_display_legal_name(
         except Exception as e:
             logger.warning("Failed to resolve legal name: %s", e)
 
-    # resolve_legal_name mutates and commits `user`, so re-read the attribute.
-    return _legal_name_fallback(user)
+    # resolve_legal_name mutates and commits `user` for own-account hints, so the
+    # fallback re-reads the attribute; for cross-entity hints it prefers the hint.
+    return _display_fallback(user, company_hint, trusted)
 
 
 async def resolve_report_legal_name(
@@ -458,14 +515,22 @@ async def resolve_report_legal_name(
     return registered_name or subject_name or "Your Organisation"
 
 
-def display_legal_name(user, db=None, timeout: int = ACRA_SYNC_RESOLVE_TIMEOUT) -> str:
+def display_legal_name(
+    user, db=None, timeout: int = ACRA_SYNC_RESOLVE_TIMEOUT, company_hint: str | None = None
+) -> str:
     """Sync entry point for rendering a user's entity name.
 
-    If legal_name is missing and db is provided, actively resolves the ACRA name
-    via asyncio.run(). Only valid from a genuinely synchronous caller — from an
-    async context use `await resolve_display_legal_name(...)` instead.
+    If legal_name is missing (or stale for `company_hint`) and db is provided,
+    actively resolves the ACRA name via asyncio.run(). Only valid from a
+    genuinely synchronous caller — from an async context use
+    `await resolve_display_legal_name(...)` instead.
+
+    Pass `company_hint` to scope the render to a *specific purchase's* company
+    rather than the account's cached identity; a divergent hint treats the cache
+    as stale and re-resolves fresh (never written back to the account).
     """
-    if not getattr(user, "legal_name", None) and db is not None:
+    trusted = _cache_trusted_for_hint(user, company_hint)
+    if db is not None and (not getattr(user, "legal_name", None) or not trusted):
         # Check for a running loop BEFORE building any coroutine. Constructing
         # one and letting asyncio.run() reject it leaves two coroutine objects
         # unawaited, which is where the "coroutine 'wait_for' was never awaited"
@@ -481,16 +546,20 @@ def display_legal_name(user, db=None, timeout: int = ACRA_SYNC_RESOLVE_TIMEOUT) 
                 "skipping ACRA resolution",
                 getattr(user, "id", None),
             )
-            return _legal_name_fallback(user)
+            return _display_fallback(user, company_hint, trusted)
 
         try:
             # Hard-capped total wait: under a stalled/blackholed network the
             # per-request httpx timeouts don't always bound total wall time
             # (e.g. hung DNS). A Celery task must never hang indefinitely here.
-            asyncio.run(asyncio.wait_for(
-                resolve_legal_name(user, db, company_hint=getattr(user, "company", None)),
+            resolved = asyncio.run(asyncio.wait_for(
+                resolve_legal_name(
+                    user, db, company_hint=company_hint or getattr(user, "company", None)
+                ),
                 timeout=timeout,
             ))
+            if resolved:
+                return resolved
         except asyncio.TimeoutError:
             logger.warning(
                 "display_legal_name: ACRA resolution timed out after %ss for user %s",
@@ -499,7 +568,7 @@ def display_legal_name(user, db=None, timeout: int = ACRA_SYNC_RESOLVE_TIMEOUT) 
         except Exception as e:
             logger.warning("Failed to sync-resolve legal name: %s", e)
 
-    return _legal_name_fallback(user)
+    return _display_fallback(user, company_hint, trusted)
 
 
 # ── 2. PDPC enforcement check ─────────────────────────────────────────────────

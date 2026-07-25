@@ -32,6 +32,14 @@ class User(Base):
     # what generators should render as "Assessed Entity" / "Legal entity". Nullable until
     # resolved; see scripts/backfill_legal_names.py for existing rows.
     legal_name = Column(String(255), nullable=True)
+    # The exact `company` hint string that `legal_name` was last resolved from
+    # (evidence_enricher.resolve_legal_name). Used to detect a stale cache: when a
+    # later purchase resolves a *different* company hint, the cached `legal_name`/`uen`
+    # must NOT be trusted — otherwise a reused account (or a customer whose company
+    # changes) keeps emitting the previously cached entity. NULL = unknown provenance,
+    # treated as stale so the resolver re-resolves fresh. See the sticky-"SPQR
+    # Communications" identity-leak fix.
+    legal_name_hint = Column(String(255), nullable=True)
     uen = Column(String(50), unique=True, nullable=True)
     plan = Column(String(50), default="free", nullable=False, server_default="free")
     temp_password = Column(Boolean, default=False)

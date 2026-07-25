@@ -299,3 +299,100 @@ async def test_resolve_display_legal_name_skips_lookup_when_already_resolved(
 
     assert await resolve_display_legal_name(user, test_db) == "NOVAPAY PTE. LTD."
     resolver.assert_not_called()
+
+
+# ── Sticky-cache staleness fix (SPQR leak into RFP kit) ──────────────────────
+# The durable half of the identity fix: a cached User.legal_name is only reused
+# when the current purchase's company hint matches what the cache was resolved
+# from (User.legal_name_hint). A reused account (or a customer whose company
+# changed) must re-resolve fresh instead of stamping the previously cached
+# entity. These pin the two-purchase acceptance scenario Gianpaolo specified.
+
+
+@pytest.mark.asyncio
+async def test_resolve_legal_name_records_hint_provenance(test_db, mocker):
+    """An own-account resolution records the hint it was resolved from so a later
+    divergent purchase can detect the cache is stale."""
+    from app.services.evidence_enricher import resolve_legal_name
+
+    user = make_user(test_db, company="Nova Pay")
+    mocker.patch(
+        "app.services.evidence_enricher.fetch_acra_status",
+        return_value={"found": True, "uen": "202099999Z", "registered_name": "NOVAPAY PTE. LTD."},
+    )
+
+    await resolve_legal_name(user, test_db, company_hint="Nova Pay")
+    test_db.refresh(user)
+    assert user.legal_name == "NOVAPAY PTE. LTD."
+    assert user.legal_name_hint == "Nova Pay"
+
+
+@pytest.mark.asyncio
+async def test_cached_identity_not_reused_for_divergent_hint(test_db, mocker):
+    """A cached legal_name whose provenance hint differs from the current
+    purchase must be re-resolved fresh, not blindly trusted."""
+    from app.services.evidence_enricher import resolve_display_legal_name
+
+    # Reused test account: cache still holds a PRIOR purchase's entity.
+    user = make_user(test_db, company="SPQR Communications")
+    user.legal_name = "SPQR COMMUNICATIONS PTE. LTD."
+    user.legal_name_hint = "SPQR Communications"
+    user.uen = "21374700J"
+    test_db.commit()
+
+    mocker.patch(
+        "app.services.evidence_enricher.fetch_acra_status",
+        return_value={"found": True, "uen": "199901234B", "registered_name": "NETPOLEONS PTE. LTD."},
+    )
+
+    # This purchase is for a DIFFERENT company.
+    name = await resolve_display_legal_name(user, test_db, company_hint="Netpoleons")
+
+    assert name == "NETPOLEONS PTE. LTD."  # fresh, not the sticky SPQR value
+    # A cross-entity hint must never overwrite the account cache.
+    test_db.refresh(user)
+    assert user.legal_name == "SPQR COMMUNICATIONS PTE. LTD."
+    assert user.uen == "21374700J"
+
+
+@pytest.mark.asyncio
+async def test_two_purchases_back_to_back_distinct_identities(test_db, mocker):
+    """Acceptance scenario: two fulfillments on the SAME reused account with two
+    different company inputs must each render their OWN entity — the exact
+    sequence that exposed the four-document leak."""
+    from app.services.evidence_enricher import resolve_display_legal_name
+
+    user = make_user(test_db, company="SPQR Communications")
+    user.legal_name = "SPQR COMMUNICATIONS PTE. LTD."
+    user.legal_name_hint = "SPQR Communications"
+    test_db.commit()
+
+    acra = {
+        "netpoleons": {"found": True, "uen": "199901234B", "registered_name": "NETPOLEONS PTE. LTD."},
+        "globex": {"found": True, "uen": "200500001C", "registered_name": "GLOBEX PTE. LTD."},
+    }
+
+    async def _fetch(uen=None, company_name=None):
+        key = (company_name or "").strip().lower()
+        return acra.get(key, {"found": False})
+
+    mocker.patch("app.services.evidence_enricher.fetch_acra_status", side_effect=_fetch)
+
+    first = await resolve_display_legal_name(user, test_db, company_hint="Netpoleons")
+    second = await resolve_display_legal_name(user, test_db, company_hint="Globex")
+
+    assert first == "NETPOLEONS PTE. LTD."
+    assert second == "GLOBEX PTE. LTD."  # NOT the first purchase's value, NOT SPQR
+
+
+def test_display_legal_name_no_hint_still_trusts_cache():
+    """No hint = own-account render: cached legal_name is still used verbatim so
+    the many legitimate own-account callers are unaffected."""
+    from app.services.evidence_enricher import display_legal_name
+
+    class _U:
+        legal_name = "NOVAPAY PTE. LTD."
+        legal_name_hint = "Nova Pay"
+        company = "novapay.io"
+
+    assert display_legal_name(_U()) == "NOVAPAY PTE. LTD."
