@@ -81,7 +81,7 @@ class TestRFPAnchorUsesHashedReportId:
         expected = hashlib.sha256(report_id.encode()).hexdigest()
         captured = {}
 
-        async def fake_anchor(evidence_hash, metadata=""):
+        async def fake_anchor(evidence_hash, metadata="", demo=False):
             captured["evidence_hash"] = evidence_hash
             return "0x" + "c" * 64
 
@@ -94,6 +94,7 @@ class TestRFPAnchorUsesHashedReportId:
             builder = RFPExpressBuilder.__new__(RFPExpressBuilder)
             builder.report_id = report_id
             builder.vendor_id = "vendor-123"
+            builder.session_id = None
             builder.warnings = []
 
             tx = asyncio.run(builder._anchor_to_blockchain())
@@ -131,6 +132,7 @@ class TestContentBoundEvidenceHash:
         b = RFPExpressBuilder.__new__(RFPExpressBuilder)
         b.report_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "rfp:cs_test_xyz"))
         b.vendor_id = "vendor-789"
+        b.session_id = None
         b.warnings = []
         return b
 
@@ -152,7 +154,7 @@ class TestContentBoundEvidenceHash:
     def test_anchored_hash_equals_displayed_evidence_hash(self):
         captured = {}
 
-        async def fake_anchor(evidence_hash, metadata=""):
+        async def fake_anchor(evidence_hash, metadata="", demo=False):
             captured["evidence_hash"] = evidence_hash
             return "0x" + "d" * 64
 

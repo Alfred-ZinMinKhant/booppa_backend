@@ -34,7 +34,7 @@ def _run(report_id, email, mocker, anchor="0xanchored"):
         assert pdf_bytes[:4] == b"%PDF"
         return f"https://s3.example/{report_id}.pdf"
 
-    async def fake_anchor(self, evidence_hash, metadata="", force=False):
+    async def fake_anchor(self, evidence_hash, metadata="", force=False, demo=False):
         return anchor
 
     mocker.patch("app.services.email_service.EmailService.send_html_email", fake_email)
