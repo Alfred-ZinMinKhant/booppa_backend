@@ -22,6 +22,7 @@ from typing import Any, Dict, List
 from reportlab.lib import colors
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
+from reportlab.lib.pagesizes import A4
 from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 from app.services.pdf_styles import get_unified_styles
 from app.services.pdf_logo import draw_logo_header
@@ -62,10 +63,6 @@ _TIER_INCLUDES = {
         "Priority support",
     ],
 }
-
-
-def _xml_escape(s) -> str:
-    return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 

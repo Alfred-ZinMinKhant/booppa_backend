@@ -17,6 +17,8 @@ from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 from app.services import pdf_layout as _pl
 from app.services.pdf_layout import build_doc, render, xml_escape
+from app.services.pdf_styles import get_unified_styles
+from app.core.company import COMPANY_NAME
 
 _xml_escape = xml_escape
 

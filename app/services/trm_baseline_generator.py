@@ -23,6 +23,8 @@ from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 from app.services import pdf_layout as _pl
 from app.services.pdf_layout import build_doc, render, xml_escape
+from app.services.pdf_styles import get_unified_styles
+from app.core.company import COMPANY_NAME
 
 _xml_escape = xml_escape
 
@@ -79,10 +81,6 @@ _STATUS_COLOR = {
     "compliant": "#065f46",
     "gap": "#dc2626",
 }
-
-
-def _xml_escape(s: str) -> str:
-    return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 _EVIDENCE_TESTED_COLOR = "#065f46"      # mirrors _STATUS_COLOR["compliant"]
@@ -240,7 +238,6 @@ def generate_trm_baseline_pdf(data: Dict[str, Any]) -> bytes:
         Paragraph("<b>Next Action</b>", s["cell_b"]),
     ]
     rows = [header]
-    status_row_styles = []
     for i, c in enumerate(controls, start=1):
         st = (c.get("status") or "not_started")
         color_hex = _STATUS_COLOR.get(st, "#334155")

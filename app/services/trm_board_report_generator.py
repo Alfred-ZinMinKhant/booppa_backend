@@ -18,10 +18,28 @@ from typing import Any, Dict, List
 from reportlab.lib import colors
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
+from reportlab.platypus import Image, Paragraph, Spacer, Table, TableStyle
 from app.services import pdf_layout as _pl
 from app.services.pdf_layout import build_doc, render, xml_escape
+from app.services.pdf_logo import draw_logo_header
+from app.core.company import COMPANY_NAME
 
 _xml_escape = xml_escape
+
+# status → (RAG label, colour). not_started/in_progress are Amber (work owed);
+# gap is Red; compliant is Green.
+_RAG = {
+    "compliant": ("GREEN", "#065f46"),
+    "in_progress": ("AMBER", "#b45309"),
+    "not_started": ("AMBER", "#b45309"),
+    "gap": ("RED", "#dc2626"),
+}
+_STATUS_LABEL = {
+    "not_started": "Not Started",
+    "in_progress": "In Progress",
+    "compliant": "Compliant",
+    "gap": "Gap Identified",
+}
 
 
 def board_data_from_controls(controls, sector: str | None) -> dict:

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 from reportlab.lib import colors
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import KeepTogether, Paragraph, Spacer, Table, TableStyle
 from app.services import pdf_layout as _pl
 from app.services.pdf_layout import build_doc, render, xml_escape, keep_together_safe
 
@@ -86,15 +86,6 @@ PDPA_DECLARATION_SCHEMA = [
 _REQUIRED_KEYS = [f["key"] for f in PDPA_DECLARATION_SCHEMA]
 _MAX_LENGTHS = {f["key"]: f["max_length"] for f in PDPA_DECLARATION_SCHEMA}
 _LABELS = {f["key"]: f["label"] for f in PDPA_DECLARATION_SCHEMA}
-
-
-def _xml_escape(value) -> str:
-    return (
-        str(value if value is not None else "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
 
 
 def validate_pdpa_declaration(activities) -> list[str]:

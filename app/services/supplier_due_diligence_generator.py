@@ -27,6 +27,7 @@ from typing import Any, Dict
 from app.services.tx_utils import is_real_onchain_tx
 
 from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
@@ -37,6 +38,10 @@ from app.services import pdf_layout as _pl
 from app.services.pdf_layout import build_doc, render, xml_escape
 
 _xml_escape = xml_escape
+
+logger = logging.getLogger(__name__)
+
+SUPPLIER_DUE_DILIGENCE_SCHEMA_VERSION = 1
 
 _INK = colors.HexColor("#0f172a")
 _MUTED = colors.HexColor("#64748b")
