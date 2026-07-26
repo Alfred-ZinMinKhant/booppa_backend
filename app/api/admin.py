@@ -996,10 +996,8 @@ async def simulate_purchase(
         # Surface any rows the bundle just created.
         db = SessionLocal()
         try:
-            from sqlalchemy import String, cast
-
             from app.core.repositories.report_repository import ReportRepository
-            stubs = ReportRepository.get_by_stripe_session_id(db, sim_id)
+            stubs = ReportRepository.list_by_stripe_session_id(db, sim_id)
             pending = (
                 db.query(PendingRfpIntake)
                 .filter(PendingRfpIntake.session_id == sim_id)
@@ -1080,10 +1078,8 @@ async def simulate_purchase(
         )
         db = SessionLocal()
         try:
-            from sqlalchemy import String, cast
-
             from app.core.repositories.report_repository import ReportRepository
-            stub_list = ReportRepository.get_by_stripe_session_id(db, sim_id)
+            stub_list = ReportRepository.list_by_stripe_session_id(db, sim_id)
             stub = stub_list[0] if stub_list else None
             u = UserRepository.get_by_email(db, customer_email)
             details = {

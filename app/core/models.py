@@ -3524,9 +3524,9 @@ The model is defined in `models_v12.py` (picked up by metadata via the single
 `from .models_v12 import *` in models.py). Sprint code imports it from
 `app.core.pdpa_declaration_models`, so this re-exports it from its canonical home.
 """
-from app.core.models import PdpaSelfDeclaration
-
-__all__ = ["PdpaSelfDeclaration"]
+# PdpaSelfDeclaration is defined above in this file; the shim's self-import and
+# its `__all__` were dropped when the module was merged in — the second `__all__`
+# below would have shadowed this one anyway.
 
 
 # --- Merged from ropa_models.py ---
@@ -3538,6 +3538,6 @@ Alembic's metadata picks it up through the single `from .models_v12 import *`
 in models.py). Sprint 5's API and fulfillment code import it from
 `app.core.ropa_models`, so this module re-exports it from its canonical home.
 """
-from app.core.models import RopaActivities
-
-__all__ = ["RopaActivities"]
+# RopaActivities is defined above in this file. No `__all__` here either: a
+# module-level `__all__` naming one model would break `import *` for every other
+# table in this file.

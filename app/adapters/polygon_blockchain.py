@@ -6,6 +6,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# How long to wait for an anchor tx receipt before giving up. A timeout is
+# treated as a failure (unknown != confirmed) so the caller's retry/sweep path
+# runs; the tx hex is logged so an eventually-mined tx stays traceable.
+ANCHOR_RECEIPT_TIMEOUT_SECONDS = 180
+
 
 def _raw_txn(signed) -> bytes:
     """Return the raw signed-transaction bytes across web3.py versions.
@@ -36,16 +41,6 @@ class PolygonBlockchainAdapter(BlockchainPort):
                     {"internalType": "string", "name": "metadata", "type": "string"},
                 ],
                 "name": "anchorHash",
-                "outputs": [],
-                "stateMutability": "nonpayable",
-                "type": "function",
-            },
-            {
-                "inputs": [
-                    {"internalType": "bytes32[]", "name": "fileHashes", "type": "bytes32[]"},
-                    {"internalType": "string", "name": "batchMetadata", "type": "string"},
-                ],
-                "name": "batchAnchor",
                 "outputs": [],
                 "stateMutability": "nonpayable",
                 "type": "function",
@@ -94,15 +89,42 @@ class PolygonBlockchainAdapter(BlockchainPort):
             raise RuntimeError("BLOCKCHAIN_PRIVATE_KEY is not configured")
         return key
 
+    async def _confirm_receipt(self, tx_hash, tx_hex: str) -> None:
+        """Block until the tx is mined and raise unless it succeeded.
+
+        ``send_raw_transaction`` only proves the tx was broadcast — a tx that
+        reverts on-chain (e.g. duplicate hash, onlyOwner, out of gas) still
+        returns a normal-looking hash. Mirrors the ``receipt.status == 1``
+        check in ``get_anchor_status``, run inline instead of on demand.
+        """
+        import asyncio
+        try:
+            receipt = await asyncio.to_thread(
+                self.w3.eth.wait_for_transaction_receipt, tx_hash, ANCHOR_RECEIPT_TIMEOUT_SECONDS
+            )
+        except Exception as e:
+            # Timed out / RPC error: unknown is not confirmed. Log the hex so an
+            # eventually-mined tx can still be reconciled by hand.
+            logger.error("Anchor tx %s not confirmed within timeout: %s", tx_hex, e)
+            raise
+        if receipt.status != 1:
+            raise RuntimeError(f"Anchor tx {tx_hex} reverted on-chain (status={receipt.status})")
+
     async def anchor_evidence(self, evidence_hash: str, metadata: str = "", force: bool = False, demo: bool = False) -> str:
         """Anchor evidence hash on Polygon blockchain.
 
         Pass ``force=True`` when the caller needs a fresh tx_hash even if the
         hash is already on-chain (e.g. signed-Cover-Sheet anchoring, which has
-        to surface a tx for the buyer to see). The idempotency skip exists to
-        save gas on mainnet, but on Polygon Amoy testnet gas is essentially
-        free and the duplicate-anchor pattern is harmless — each call
-        commits an additional evidence record for the same hash.
+        to surface a tx for the buyer to see). This skips the local idempotency
+        check, which exists to save gas.
+
+        Note the contract is *not* additive: ``anchorHash()`` has
+        ``require(anchoredTimestamps[fileHash] == 0)``, so re-anchoring a hash
+        that is already on-chain reverts when mined. ``send_raw_transaction``
+        only confirms the tx was broadcast, so this method waits for the
+        receipt and raises when ``status != 1`` rather than returning a
+        tx_hash that resolves to a failed transaction on Polygonscan. Callers'
+        existing retry / ``anchor_failed`` handling then applies.
 
         Pass ``demo=True`` for admin test-checkout / preview reports: return a
         deterministic mock tx hash (``demo_tx_hash``) without building or
@@ -142,51 +164,21 @@ class PolygonBlockchainAdapter(BlockchainPort):
             tx_hash = await asyncio.to_thread(self.w3.eth.send_raw_transaction, _raw_txn(signed))
             tx_hex = tx_hash.hex()
 
-            logger.info("Evidence anchored on blockchain: %s", tx_hex)
+            await self._confirm_receipt(tx_hash, tx_hex)
+
+            logger.info("Evidence anchored and confirmed on blockchain: %s", tx_hex)
             return tx_hex
 
         except Exception as e:
             logger.error("Blockchain anchoring failed: %s", e)
             raise
 
-    async def batch_anchor_hashes(self, evidence_hashes: list[str], batch_metadata: str = "") -> str:
-        """Batch anchor multiple evidence hashes on Polygon blockchain for efficiency"""
-        try:
-            hashes_to_anchor = []
-            for h in evidence_hashes:
-                # Idempotency check: Skip if already anchored
-                status = await self.get_anchor_status(h)
-                if not status.get("anchored"):
-                    hashes_to_anchor.append(self._hash_to_bytes32(h))
-            
-            if not hashes_to_anchor:
-                logger.info("All hashes in batch already anchored. Skipping transaction.")
-                return "already_anchored"
-
-            private_key = self._get_private_key()
-            account = self.w3.eth.account.from_key(private_key)
-
-            import asyncio
-            nonce = await asyncio.to_thread(self.w3.eth.get_transaction_count, account.address)
-            txn = self.contract.functions.batchAnchor(hashes_to_anchor, batch_metadata).build_transaction(
-                {
-                    "from": account.address,
-                    "nonce": nonce,
-                    "gas": 100000 + (len(hashes_to_anchor) * 50000), # Linear gas estimation
-                    "gasPrice": self.w3.eth.gas_price,
-                }
-            )
-            signed = self.w3.eth.account.sign_transaction(txn, private_key)
-            import asyncio
-            tx_hash = await asyncio.to_thread(self.w3.eth.send_raw_transaction, _raw_txn(signed))
-            tx_hex = tx_hash.hex()
-
-            logger.info("Batch of %s hashes anchored: %s", len(hashes_to_anchor), tx_hex)
-            return tx_hex
-
-        except Exception as e:
-            logger.error("Blockchain batch anchoring failed: %s", e)
-            raise
+    # NOTE: batch_anchor_hashes was removed (2026-07-26). It had zero callers
+    # and could never have worked: its ABI entry declared
+    # batchAnchor(bytes32[], string) while EvidenceAnchorV3 actually exposes
+    # anchorBatch(bytes32[] fileHashes, string[] metadata) — wrong name and
+    # wrong signature. Re-add it against the real contract signature if batching
+    # is ever needed, and give it the same _confirm_receipt gate as anchor_evidence.
 
     async def get_anchor_status(self, evidence_hash: str, tx_hash: Optional[str] = None) -> Dict[str, Any]:
         """Verify if evidence is anchored on blockchain and optionally confirm tx."""

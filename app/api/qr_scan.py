@@ -38,14 +38,16 @@ async def qr_scan(payload: QRScanRequest):
         uses_https = website_url.lower().startswith("https://")
         month_ago = datetime.now(timezone.utc) - timedelta(days=30)
 
-        from sqlalchemy import String, cast
+        # `assessment_data` is a plain `json` column: cast(data -> 'k', String)
+        # yields JSON-quoted text ('"a@b.com"') and never matches a bare email,
+        # which left this rate limit unreachable. `.as_string()` renders `->>`.
         existing = (
             db.query(Report)
             .filter(
                 and_(
                     Report.framework == "pdpa_free_scan",
                     Report.created_at >= month_ago,
-                    cast(Report.assessment_data["contact_email"], String) == payload.email,
+                    Report.assessment_data["contact_email"].as_string() == str(payload.email),
                 )
             )
             .first()

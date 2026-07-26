@@ -36,7 +36,23 @@ def test_demo_returns_mock_hash_without_touching_chain():
     tx = asyncio.run(svc.anchor_evidence(_HASH, metadata="notarization:test", demo=True))
 
     assert tx == demo_tx_hash(_HASH)
-    assert tx.startswith("0x") and len(tx) == 66
+    assert tx.startswith("demo-0x") and len(tx) == 71
+
+
+def test_demo_hash_is_rejected_as_a_real_onchain_tx():
+    """The invariant the whole demo-safety story rests on.
+
+    Renderers gate customer-facing "ANCHORED" language on is_real_onchain_tx,
+    which is shape-only. demo_tx_hash used to return a bare 0x + 64 hex value,
+    which PASSED that gate — the Evidence Pack PDF printed a demo hash as a
+    verified anchor with a QR to a nonexistent tx. The demo- prefix is what
+    makes it fail. If this test breaks, that leak is back.
+    """
+    from app.services.tx_utils import is_real_onchain_tx
+
+    assert is_real_onchain_tx(demo_tx_hash(_HASH)) is False
+    # Sanity: a genuine-shaped hash still passes, so we didn't break the gate.
+    assert is_real_onchain_tx("0x" + "a" * 64) is True
 
 
 def test_demo_is_deterministic_per_hash():

@@ -56,6 +56,9 @@ async def run(url: str) -> dict[str, Any]:
             tx_hash = await blockchain.anchor_evidence(report["notary_hash"])
         except Exception as exc:
             logger.warning("Monitor anchor failed: %s", exc)
+    # None means "not anchored" — anchoring is off, failed, or the hash was
+    # already on-chain. Consumers must check before building an explorer link;
+    # this is returned straight to the API caller.
     report["blockchain_tx_hash"] = tx_hash
 
     set(key, report)

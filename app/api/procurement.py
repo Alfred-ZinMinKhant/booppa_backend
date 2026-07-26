@@ -723,6 +723,9 @@ async def procurement_vendor_evidence(
     from app.core.models import NotarizationMetadata, ComplianceDriftEvent
 
     # ── Blockchain anchors (every Report with a tx_hash) ─────────────────────
+    from app.core.config import settings as _explorer_settings
+
+    _explorer_base = _explorer_settings.active_polygon_explorer_url.rstrip("/")
     anchored_reports = (
         db.query(Report)
         .filter(Report.owner_id == user.id, Report.tx_hash.isnot(None))
@@ -737,7 +740,9 @@ async def procurement_vendor_evidence(
             "txHash":     r.tx_hash,
             "auditHash":  r.audit_hash,
             "anchoredAt": (r.completed_at or r.created_at).isoformat() if (r.completed_at or r.created_at) else None,
-            "explorerUrl": f"https://polygonscan.com/tx/{r.tx_hash}" if r.tx_hash else None,
+            # Must follow USE_MAINNET — hardcoding polygonscan.com produced a
+            # dead link for every anchor while we run on Amoy.
+            "explorerUrl": f"{_explorer_base}/tx/{r.tx_hash}" if r.tx_hash else None,
         }
         for r in anchored_reports
     ]

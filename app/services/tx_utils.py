@@ -19,9 +19,14 @@ def is_real_onchain_tx(tx: Any) -> bool:
     """True only for a well-formed on-chain transaction hash.
 
     Rejects None, ``PENDING``, ``admin-sim-…`` session ids, order references,
+    the ``demo-0x…`` values minted by ``demo_tx_hash`` for admin test checkout,
     and any value that isn't a 0x-prefixed 32-byte hex string. Note this is a
     *shape* check — it does not (and cannot, offline) prove the tx is mined; it
     exists to stop non-tx sentinels from ever being rendered as proof.
+
+    Because this is shape-only, anything that must be rejected has to be made
+    structurally invalid at the source (see ``demo_tx_hash``'s ``demo-``
+    prefix). A shape-valid fake will pass here.
     """
     if not isinstance(tx, str):
         return False

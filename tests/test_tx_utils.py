@@ -6,7 +6,21 @@ from app.services.tx_utils import is_real_onchain_tx
 
 def test_accepts_wellformed_tx():
     assert is_real_onchain_tx("0x" + "a" * 64)
-    assert is_real_onchain_tx("0x" + "0" * 64)  # demo/deterministic still 0x-shaped
+    assert is_real_onchain_tx("0x" + "0" * 64)
+
+
+def test_rejects_demo_test_checkout_hash():
+    """demo_tx_hash must never pass this gate.
+
+    It used to return a bare "0x" + 64 hex value, which is shape-valid, so the
+    Evidence Pack PDF rendered admin test-checkout runs as "ANCHORED" with a QR
+    pointing at a transaction that does not exist on any chain. The "demo-"
+    prefix is what makes it fail here.
+    """
+    from app.services.supplier_due_diligence_generator import demo_tx_hash
+
+    assert not is_real_onchain_tx(demo_tx_hash("a" * 64))
+    assert not is_real_onchain_tx("demo-0x" + "a" * 64)
 
 
 def test_rejects_simulated_session_id():

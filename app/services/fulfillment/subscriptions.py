@@ -560,11 +560,15 @@ async def _activate_subscription(
                     title=f"{label} activated",
                     preheader=f"Your {label} subscription is now active.",
                 )
-                await email_svc.send_html_email(
+                if not await email_svc.send_html_email(
                     to_email=customer_email,
                     subject=f"Your {label} subscription is active — BOOPPA",
                     body_html=body_html,
-                )
+                ):
+                    logger.error(
+                        f"[Subscription] Activation email REJECTED by provider "
+                        f"for {customer_email} ({label})"
+                    )
             except Exception as e:
                 logger.error(f"[Subscription] Email failed for {customer_email}: {e}")
 

@@ -129,5 +129,13 @@ def test_demo_tx_hash_is_deterministic_and_offchain():
     h1 = demo_tx_hash(ev_hash)
     h2 = demo_tx_hash(ev_hash)
     assert h1 == h2                       # deterministic
-    assert h1.startswith("0x") and len(h1) == 66
     assert h1 != demo_tx_hash(ev_hash[::-1])  # varies with input
+
+    # Off-chain by construction: the demo- prefix makes the value fail
+    # is_real_onchain_tx, which is the gate every renderer uses before printing
+    # "ANCHORED". It used to be a bare 0x + 64 hex string, which PASSED that
+    # gate and got rendered as a real anchor. Don't relax this back.
+    from app.services.tx_utils import is_real_onchain_tx
+
+    assert h1.startswith("demo-0x") and len(h1) == 71
+    assert not is_real_onchain_tx(h1)

@@ -42,12 +42,16 @@ async def _notify_owner_of_qr_scan(owner_id: str, company_name: str, owner_email
             title="Your profile was just verified",
             preheader="A buyer just scanned your BOOPPA verification badge.",
         )
-        await EmailService().send_html_email(
+        if not await EmailService().send_html_email(
             to_email=owner_email,
             subject="A buyer just verified your BOOPPA profile — BOOPPA",
             body_html=body_html,
-        )
-        logger.info(f"[Verify] QR scan email sent to {owner_email}")
+        ):
+            # Release the cooldown claimed above so the next scan can retry.
+            _qr_scan_email_sent.pop(owner_id, None)
+            logger.error(f"[Verify] QR scan email REJECTED by provider for {owner_email}")
+        else:
+            logger.info(f"[Verify] QR scan email sent to {owner_email}")
     except Exception as e:
         logger.warning(f"[Verify] QR scan email failed for {owner_email}: {e}")
 

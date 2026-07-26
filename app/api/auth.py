@@ -514,7 +514,15 @@ async def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get
             preheader="Reset your BOOPPA password — link expires in 30 minutes.",
         )
         try:
-            await EmailService().send_html_email(user.email, "Reset your BOOPPA password", body_html)
+            # Returns False on provider rejection without raising — the response
+            # stays {"ok": True} for account-enumeration resistance, but the
+            # failure must not be invisible to us.
+            if not await EmailService().send_html_email(
+                user.email, "Reset your BOOPPA password", body_html
+            ):
+                logger.error(
+                    f"[Auth] Password reset email REJECTED by provider for {user.email}"
+                )
         except Exception as exc:
             logger.error(f"[Auth] Failed to send password reset email: {exc}")
     return {"ok": True}

@@ -376,8 +376,12 @@ def _cover_page(pack: dict, doc_meta: dict) -> list:
     # be presented as blockchain proof).
     _anchor_tx = anchor.get("tx_hash") if isinstance(anchor, dict) else None
     _is_anchored = is_real_onchain_tx(_anchor_tx)
+    # Network name must follow USE_MAINNET — a hardcoded "Amoy testnet" label
+    # would keep claiming testnet after the mainnet switch while the explorer
+    # link below correctly points at polygonscan.com.
+    _network = settings.active_polygon_network_name
     status_text = (
-        "ANCHORED · Polygon Amoy testnet" if _is_anchored
+        f"ANCHORED · {_network}" if _is_anchored
         else "PENDING · anchoring in progress"
     )
 
@@ -410,7 +414,7 @@ def _cover_page(pack: dict, doc_meta: dict) -> list:
     chain_rows = [
         ("SHA-256 Hash",    doc_hash or "Computing..."),
         ("Transaction",     tx_hash),
-        ("Anchored On",     "Polygon Amoy testnet"),
+        ("Anchored On",     _network),
         ("Anchor Time",     anchor.get("anchor_time_utc", "Pending")[:19].replace("T", " ") + " UTC"),
         ("Verify At",       verify_url),
     ]
@@ -431,7 +435,7 @@ def _cover_page(pack: dict, doc_meta: dict) -> list:
     # QR code
     if _HAS_QR and tx_hash and tx_hash != "PENDING":
         qr_img = _make_qr(verify_url, size_mm=28)
-        qr_label = Paragraph("Scan to verify on the Polygon Amoy testnet explorer · No login required", S["center"])
+        qr_label = Paragraph(f"Scan to verify on the {_network} explorer · No login required", S["center"])
         qr_table = Table([[qr_img, qr_label]], colWidths=[32*mm, INNER_W - 32*mm])
         qr_table.setStyle(TableStyle([
             ("VALIGN", (0,0), (-1,-1), "MIDDLE"),

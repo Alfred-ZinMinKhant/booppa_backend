@@ -311,6 +311,22 @@ async def _alert_payment_fulfillment_issue(
         except Exception:
             return True
 
+    def _alert_release(kind: str) -> None:
+        """Drop the dedupe marker so a rejected send is retried next time.
+
+        send_html_email returns False on provider rejection without raising, and
+        the marker was already claimed by _alert_should_send — without this the
+        ops alert stays suppressed for an hour, the customer notice for a week.
+        """
+        if _alert_cache is None or not _alert_base:
+            return
+        try:
+            _alert_cache.delete(
+                _alert_cache.cache_key(f"fulfill_alert:{kind}:{_alert_base}")
+            )
+        except Exception:
+            pass
+
     try:
         body_html = f"""
         <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;padding:24px;">
@@ -330,11 +346,17 @@ async def _alert_payment_fulfillment_issue(
         # doesn't bury the team in 30 identical alerts (they still get re-pinged
         # hourly while the problem persists).
         if _alert_should_send("ops", ttl=3600):
-            await EmailService().send_html_email(
+            _ops_sent = await EmailService().send_html_email(
                 to_email=settings.SUPPORT_EMAIL,
                 subject=f"[FULFILLMENT] {reason} ({product_type or '?'})",
                 body_html=body_html,
             )
+            if not _ops_sent:
+                logger.error(
+                    f"[Fulfillment-ALERT] ops email REJECTED by provider "
+                    f"(to={settings.SUPPORT_EMAIL}, reason={reason})"
+                )
+                _alert_release("ops")
     except Exception as alert_err:
         logger.error(f"[Fulfillment-ALERT] ops email failed: {alert_err}")
 
@@ -342,7 +364,7 @@ async def _alert_payment_fulfillment_issue(
     # buyer with repeated "one small delay" notices on every retry.
     if notify_customer and customer_email and _alert_should_send("cust", ttl=604800):
         try:
-            await EmailService().send_html_email(
+            _cust_sent = await EmailService().send_html_email(
                 to_email=customer_email,
                 subject="We received your payment — one small delay",
                 body_html=branded_email_html(
@@ -365,6 +387,12 @@ async def _alert_payment_fulfillment_issue(
                     preheader="Your payment is received — we're finalising your account.",
                 ),
             )
+            if not _cust_sent:
+                logger.error(
+                    f"[Fulfillment-ALERT] customer email REJECTED by provider "
+                    f"(to={customer_email}, reason={reason})"
+                )
+                _alert_release("cust")
         except Exception as cust_err:
             logger.warning(f"[Fulfillment-ALERT] customer email failed: {cust_err}")
 
@@ -646,14 +674,18 @@ async def _fire_strategy_6(sector: str | None, buyer_rfp_title: str) -> None:
                     title="You were shortlisted",
                     preheader=f"You're in the top 5 shortlisted vendors in {sector}.",
                 )
-                await email_svc.send_html_email(
+                if not await email_svc.send_html_email(
                     to_email=user.email,
                     subject="You Were Shortlisted — New Procurement Opportunity",
                     body_html=body_html,
-                )
-                logger.info(
-                    f"[Strategy6] Notified vendor {user.email} for sector {sector}"
-                )
+                ):
+                    logger.error(
+                        f"[Strategy6] Shortlist email REJECTED by provider for {user.email}"
+                    )
+                else:
+                    logger.info(
+                        f"[Strategy6] Notified vendor {user.email} for sector {sector}"
+                    )
             except Exception as e:
                 logger.warning(f"[Strategy6] Email failed for {user.email}: {e}")
 

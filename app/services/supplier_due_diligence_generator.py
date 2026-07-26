@@ -51,13 +51,22 @@ def _xml_escape(s) -> str:
 
 
 def demo_tx_hash(evidence_hash: str) -> str:
-    """Deterministic, realistic-looking mock tx hash for demo/test-checkout mode.
+    """Deterministic mock tx hash for demo/test-checkout mode.
 
     Never hits the chain (no gas). Derived from the evidence hash so the same
-    certificate renders the same hash, but clearly a demo value.
+    certificate renders the same value every time.
+
+    The ``demo-`` prefix is LOAD-BEARING, not cosmetic: it makes the value fail
+    ``app.services.tx_utils.is_real_onchain_tx`` (a 0x + 64-hex shape check), so
+    every renderer that gates on that helper falls back to PENDING instead of
+    printing a demo value as a verified anchor. This used to return a bare
+    ``0x…`` — shape-valid, therefore accepted as real — and the Evidence Pack
+    PDF rendered it as "ANCHORED" with a QR to a tx that does not exist.
+    Do not restore the bare-0x form without adding an explicit demo flag to
+    every renderer first.
     """
     digest = hashlib.sha256(f"demo:{evidence_hash}".encode()).hexdigest()
-    return "0x" + digest[:64]
+    return "demo-0x" + digest[:64]
 
 
 

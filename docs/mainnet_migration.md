@@ -35,6 +35,11 @@ Costo mensile totale a 20 clienti Enterprise: **< SGD 12/mese**. Assorbibile nel
 - [ ] Generare 3 anchor di test, verificare su [polygonscan.com](https://polygonscan.com)
 - [ ] Verificare che `active_polygon_explorer_url` nei PDF punti a `polygonscan.com`
 - [ ] Verificare che il notice nei PDF riporti "Polygon Mainnet" (non "Amoy Testnet")
+      - `evidence_pack/pdf_builder.py` usa già `settings.active_polygon_network_name` (fix 2026-07-26) — nessuna azione
+      - **Da riscrivere a mano** (prosa legale specifica per testnet, non basta sostituire il nome — dicono "un timestamp testnet non ha le garanzie di settlement di una mainnet", frase che diventa autocontraddittoria su mainnet):
+        - `app/services/vendor_artifacts_generator.py:95` (`_anchor_note`)
+        - `app/services/evidence_pack/document_generator.py:90` (`timestamping_note`)
+        - `app/services/evidence_pack/pdf_builder.py:456` (`warning_text`)
 - [ ] Testare un ciclo completo: PDPA scan → anchor → Cover Sheet → email
 
 ### Fase 3 — Switch produzione

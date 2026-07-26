@@ -1492,7 +1492,30 @@ async def process_report_workflow(report_id: str) -> dict:
             metadata = f"report:{report.id}"
             try:
                 tx_hash = await blockchain.anchor_evidence(evidence_hash, metadata=metadata, demo=demo_anchor)
-                report.tx_hash = tx_hash
+                if tx_hash:
+                    report.tx_hash = tx_hash
+                else:
+                    # None = idempotency skip (this hash is already on-chain).
+                    # Inherit the prior report's tx so this paid report still
+                    # shows a verifiable anchor. Assigning None here overwrote
+                    # a good tx_hash with NULL on re-runs.
+                    prior = (
+                        db.query(Report)
+                        .filter(
+                            Report.audit_hash == evidence_hash,
+                            Report.id != report.id,
+                            Report.tx_hash.isnot(None),
+                            Report.tx_hash != "already_anchored",
+                        )
+                        .order_by(Report.created_at.asc())
+                        .first()
+                    )
+                    if prior and prior.tx_hash:
+                        report.tx_hash = prior.tx_hash
+                        logger.info(
+                            f"Hash already anchored — inherited tx={prior.tx_hash} "
+                            f"from prior report {prior.id} for {report_id}"
+                        )
                 db.commit()
             except Exception as anchor_err:
                 # Anchoring failed (commonly: gas wallet empty). The scan itself is
@@ -2340,7 +2363,10 @@ def anchor_signed_cover_sheet_task(self, report_id: str, customer_email: str | N
                 from app.core.models import Report
                 _db = SessionLocal()
                 try:
-                    _r = ReportRepository.get_by_id(db, str(report_id))
+                    # NOTE: must use _db — the outer `db` is already closed by
+                    # the finally block above, so the old `db` here silently
+                    # failed to persist anchor_failed.
+                    _r = ReportRepository.get_by_id(_db, str(report_id))
                     if _r:
                         from sqlalchemy.orm.attributes import flag_modified
                         _ad = _r.assessment_data if isinstance(_r.assessment_data, dict) else {}
@@ -2632,7 +2658,12 @@ def fulfill_cover_sheet_task(
                                     "s3_key": ropa_s3_key,
                                     "row_count": len(ropa_dicts),
                                     "original_filename": f"ROPA_Lite_{user.id}.pdf",
-                                    "blockchain_anchored_at": datetime.now(timezone.utc).isoformat(),
+                                    # Only when an anchor actually happened —
+                                    # see the PDPA self-declaration note above.
+                                    **(
+                                        {"blockchain_anchored_at": datetime.now(timezone.utc).isoformat()}
+                                        if ropa_tx_hash else {}
+                                    ),
                                 },
                             )
                             db.add(ropa_report)
@@ -5114,8 +5145,10 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
             logger.info(f"[PdpaMonitor] Atomic drop: rescan already reserved today for {vendor_id} source={source}")
             return
 
-        # Idempotency lock: drop if a scan is already pending or recently run (24h)
-        from datetime import datetime, timezone, timedelta
+        # Idempotency lock: drop if a scan is already pending or recently run (24h).
+        # Do NOT re-import datetime/timezone/timedelta here — they are module-level,
+        # and a local import makes them local for the whole function body, which
+        # made the `datetime.now()` call above raise UnboundLocalError on every run.
         recent_threshold = datetime.now(timezone.utc) - timedelta(hours=24)
         recent_scan = (
             db.query(Report)
@@ -7961,7 +7994,14 @@ def fulfill_pdpa_declaration_task(user_id: str, customer_email: str | None = Non
                 "s3_url": s3_url,
                 "row_count": len(dicts),
                 "original_filename": f"PDPA_Level2_Declaration_{user.id}.pdf",
-                "blockchain_anchored_at": datetime.now(timezone.utc).isoformat(),
+                # Only stamp an anchored-at time when there is actually a tx.
+                # This used to be unconditional, so a failed or skipped anchor
+                # still produced a declaration claiming it was anchored at
+                # <now> with a NULL tx_hash.
+                **(
+                    {"blockchain_anchored_at": datetime.now(timezone.utc).isoformat()}
+                    if tx_hash else {}
+                ),
             },
         )
         report.s3_url = s3_url

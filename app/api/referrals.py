@@ -17,6 +17,11 @@ from app.core.models import Referral
 router = APIRouter(route_class=RetryAPIRoute)
 
 
+def _as_utc(value: datetime) -> datetime:
+    """Attach UTC to a naive datetime read back from a `timestamp` column."""
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
 class CreateReferralRequest(BaseModel):
     referrer_id: str
     referred_email: Optional[str] = None
@@ -83,7 +88,10 @@ async def redeem_referral(code: str, user_id: str, db: Session = Depends(get_db)
     if referral.status != "PENDING":
         raise HTTPException(status_code=400, detail=f"Referral already in status: {referral.status}")
 
-    if referral.expires_at and referral.expires_at < datetime.now(timezone.utc):
+    # `expires_at` is a naive `timestamp without time zone` column, so a value
+    # read back from the DB has no tzinfo — comparing it against an aware
+    # datetime.now(timezone.utc) raises TypeError and 500s every redemption.
+    if referral.expires_at and _as_utc(referral.expires_at) < datetime.now(timezone.utc):
         referral.status = "EXPIRED"
         db.commit()
         raise HTTPException(status_code=400, detail="Referral code has expired")

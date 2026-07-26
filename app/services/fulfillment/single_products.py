@@ -347,10 +347,15 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
                         f"from prior report {prior.id}"
                     )
             report.audit_hash = file_hash  # keep as original file hash for verification
-            assessment["blockchain_anchored"] = True
-            assessment["blockchain_anchored_at"] = datetime.now(
-                timezone.utc
-            ).isoformat()
+            # Only claim anchored when we actually hold a tx — either freshly
+            # mined or inherited from the prior report above. Stamping this
+            # unconditionally marked reports as anchored-at-<now> with a NULL
+            # tx_hash when the anchor returned nothing.
+            if tx_hash:
+                assessment["blockchain_anchored"] = True
+                assessment["blockchain_anchored_at"] = datetime.now(
+                    timezone.utc
+                ).isoformat()
             report.assessment_data = assessment
             flag_modified(report, "assessment_data")
             db.commit()

@@ -710,7 +710,14 @@ class PDFService:
     # ── Blockchain section ─────────────────────────────────────────────────────
 
     def _blockchain_block(self, report_data: dict) -> list:
-        tx_hash = report_data.get("tx_hash") or "—"
+        from app.services.tx_utils import is_real_onchain_tx
+
+        # Anything that isn't a real on-chain tx (None, PENDING, a demo-0x…
+        # test-checkout value, a stray session/order id) collapses to "—" so it
+        # takes the pending branch below instead of being printed as a
+        # transaction and turned into an explorer QR the buyer would trust.
+        _tx = report_data.get("tx_hash")
+        tx_hash = _tx if is_real_onchain_tx(_tx) else "—"
         audit_hash = report_data.get("audit_hash") or "—"
         payment_ok = bool(report_data.get("payment_confirmed"))
         verify_url = report_data.get("verify_url") or ""

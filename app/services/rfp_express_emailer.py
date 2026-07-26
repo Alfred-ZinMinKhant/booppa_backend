@@ -102,12 +102,28 @@ class RFPExpressEmailer:
                 _filename = "RFP_Complete_Kit" if product_type == "rfp_complete" else "RFP_Kit_Express"
                 _attachments = [(f"{_filename}_{_safe_co}.pdf", pdf_bytes)]
 
-            await svc.send_html_email(
+            # send_html_email returns False on provider rejection without raising —
+            # never report the kit as delivered on a bounce.
+            sent = await svc.send_html_email(
                 to_email=customer_email,
                 subject=f"Your {product_label} Evidence is Ready — {vendor_name}",
                 body_html=body_html,
                 attachments=_attachments,
             )
+            if not sent:
+                logger.error(
+                    f"{product_label} delivery email REJECTED by provider for {customer_email}"
+                )
+                from app.services.fulfillment.helpers import (
+                    _alert_payment_fulfillment_issue,
+                )
+
+                await _alert_payment_fulfillment_issue(
+                    reason="RFP kit delivery email rejected by provider",
+                    product_type=product_type,
+                    customer_email=customer_email,
+                )
+                return False
             logger.info(f"{product_label} delivery email sent to {customer_email}")
             return True
         except Exception as e:
