@@ -129,11 +129,14 @@ def generate_trm_baseline_pdf(data: Dict[str, Any]) -> bytes:
     controls: List[Dict[str, Any]] = data.get("controls") or []
     gen_at = data.get("generated_at") or datetime.now(timezone.utc).strftime("%d %B %Y")
 
+    _wl = data.get("white_label") or {}
+
     buf = BytesIO()
     doc = build_doc(
         buf,
         title=f"MAS TRM Baseline — {company}",
         header_label="MAS TRM BASELINE ASSESSMENT",
+        branding=_wl or None,
     )
     story: list = []
 
@@ -147,7 +150,6 @@ def generate_trm_baseline_pdf(data: Dict[str, Any]) -> bytes:
     # White-label: the customer's brand replaces ours in the attribution and the
     # closing disclaimer. Colours and logo alone were not enough — a PDF still
     # reading "Prepared by Booppa" is not a white-labelled document.
-    _wl = data.get("white_label") or {}
     _preparer = (_wl.get("report_header_text") or "").strip() or COMPANY_NAME
     story.append(Paragraph(
         f"Prepared by {_xml_escape(_preparer)} on behalf of {_xml_escape(company)}",

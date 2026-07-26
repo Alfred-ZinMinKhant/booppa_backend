@@ -143,6 +143,7 @@ def generate_trm_board_report_pdf(data: Dict[str, Any]) -> bytes:
         buf,
         title=f"MAS TRM Board Report — {company}",
         header_label="MAS TRM BOARD REPORT",
+        branding=wl,
     )
     story: list = []
 
