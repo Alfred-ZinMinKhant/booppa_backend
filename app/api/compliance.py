@@ -343,7 +343,11 @@ async def regenerate_cover_sheet(email: str = Form(...)):
                 detail="No existing Compliance Cover Sheet found for this account.",
             )
         from app.services.evidence_enricher import display_legal_name
-        company_name = display_legal_name(user)
+        # Regenerating an EXISTING sheet: keep it scoped to the entity that sheet
+        # was issued to, not the account's current cached company.
+        company_name = (existing.company_name or "").strip() or display_legal_name(
+            user, db, company_hint=existing.company_name
+        )
     finally:
         db.close()
 
@@ -431,12 +435,27 @@ async def upload_signed_cover_sheet(
             logger.error(f"[SignedCS] S3 upload failed: {e}")
             raise HTTPException(status_code=500, detail="File upload failed.")
 
+        # Name the entity the Cover Sheet was issued to, not the account's cached
+        # company — the two diverge on accounts reused across companies.
+        issued_sheet = (
+            db.query(Report)
+            .filter(
+                Report.owner_id == user.id,
+                Report.framework == "compliance_evidence_pack",
+            )
+            .order_by(Report.created_at.desc())
+            .first()
+        )
+        from app.services.evidence_enricher import display_legal_name as _dln
+        issued_name = (getattr(issued_sheet, "company_name", "") or "").strip()
+        signed_company = issued_name or _dln(user, db, company_hint=issued_name or None)
+
         # Persist report row + decrement credit + flip flag atomically
         report = Report(
             id=report_id,
             owner_id=user.id,
             framework="compliance_evidence_signed_sheet",
-            company_name=(user.company or "Your Organisation"),
+            company_name=signed_company,
             assessment_data={
                 "file_hash": file_hash,
                 "hash_algorithm": "SHA-256",
@@ -456,8 +475,7 @@ async def upload_signed_cover_sheet(
         user.compliance_evidence_credits = max(0, credits - 1)
         user.signed_cover_sheet_uploaded = True
         user.pending_cover_sheet = False
-        from app.services.evidence_enricher import display_legal_name
-        company_name = display_legal_name(user)
+        company_name = signed_company
         db.commit()
         logger.info(
             f"[SignedCS] {email} uploaded signed cover sheet (report={report_id}), "
@@ -558,6 +576,14 @@ async def sign_cover_sheet_electronically(payload: ESignRequest, request: Reques
                 status_code=409,
                 detail="No completed Cover Sheet found yet. Wait for the unsigned PDF to generate before signing.",
             )
+        # The signature page must name the entity the Cover Sheet was ISSUED to,
+        # not whatever company the account currently caches — accounts get reused
+        # across companies (the SPQR leak shape).
+        from app.services.evidence_enricher import display_legal_name as _dln
+        cs_company = (unsigned_report.company_name or "").strip() or _dln(
+            user, db, company_hint=unsigned_report.company_name
+        )
+
         ad = unsigned_report.assessment_data or {}
         unsigned_s3_key = ad.get("s3_key")
         if not unsigned_s3_key:
@@ -585,7 +611,7 @@ async def sign_cover_sheet_electronically(payload: ESignRequest, request: Reques
                 signer_name=payload.signer_name.strip(),
                 signer_title=payload.signer_title.strip(),
                 signer_email=payload.email,
-                company_name=(user.company or "Your Organisation"),
+                company_name=cs_company,
                 signer_ip=signer_ip,
                 unsigned_pdf_sha256=unsigned_sha256,
                 attestations={
@@ -625,7 +651,7 @@ async def sign_cover_sheet_electronically(payload: ESignRequest, request: Reques
             id=report_id,
             owner_id=user.id,
             framework="compliance_evidence_signed_sheet",
-            company_name=(user.company or "Your Organisation"),
+            company_name=cs_company,
             assessment_data={
                 "file_hash": signed_sha256,
                 "hash_algorithm": "SHA-256",
@@ -657,8 +683,7 @@ async def sign_cover_sheet_electronically(payload: ESignRequest, request: Reques
         user.compliance_evidence_credits = max(0, credits - 1)
         user.signed_cover_sheet_uploaded = True
         user.pending_cover_sheet = False
-        from app.services.evidence_enricher import display_legal_name
-        company_name = display_legal_name(user)
+        company_name = cs_company
         db.commit()
         logger.info(
             f"[ESignCS] {payload.email} signed cover sheet electronically (report={report_id}), "

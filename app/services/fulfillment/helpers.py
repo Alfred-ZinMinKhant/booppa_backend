@@ -592,7 +592,16 @@ def _maybe_fire_cover_sheet(customer_email: str | None, user_id: str | None = No
         user.pending_cover_sheet = False
         db.commit()
         from app.services.evidence_enricher import display_legal_name
-        company_name = display_legal_name(user, db)
+        # Hint the resolver with the entity THIS sheet's inputs were issued to.
+        # Without a hint `_cache_trusted_for_hint` returns True and the sticky
+        # legal_name cache is silently trusted, which is how one company's name
+        # lands on another's certified document (the SPQR leak shape).
+        cover_hint = (
+            (getattr(latest_pack, "organisation", "") or "").strip()
+            or (getattr(pdpa_report, "company_name", "") or "").strip()
+            or None
+        )
+        company_name = display_legal_name(user, db, company_hint=cover_hint)
     finally:
         db.close()
 

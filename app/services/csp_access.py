@@ -125,6 +125,7 @@ async def deliver_csp_activation(
                 "override_website": (
                     meta.get("vendor_url") or meta.get("website_url") or ""
                 ).strip() or None,
+                "override_uen": (meta.get("uen") or "").strip() or None,
                 # The admin simulate-purchase harness re-runs the same purchase
                 # for the same user; the 24h once-only send lock would otherwise
                 # swallow every run after the first.

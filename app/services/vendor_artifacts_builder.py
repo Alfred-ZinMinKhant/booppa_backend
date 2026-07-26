@@ -25,16 +25,23 @@ from app.services.vendor_artifacts_generator import (
 logger = logging.getLogger(__name__)
 
 
-def company_of(user: User, db=None) -> str:
+def company_of(user: User, db=None, company_hint: str | None = None) -> str:
     """Entity name for a rendered artifact.
 
     Routed through the shared resolver rather than reading `user.company`
     directly — that raw signup string is how a bare domain ("thunes.com") ends
     up stamped on a customer-facing document. Pass `db` so a missing
     `legal_name` can be backfilled from ACRA.
+
+    Pass `company_hint` whenever the artifact is scoped to a specific purchase's
+    company: with no hint the account's sticky `legal_name` cache is trusted
+    unconditionally, which is how a reused account stamps a prior company's name
+    on a later document.
     """
     from app.services.evidence_enricher import display_legal_name
-    return (display_legal_name(user, db) or "").strip() or "Your Company"
+    return (
+        display_legal_name(user, db, company_hint=company_hint) or ""
+    ).strip() or "Your Company"
 
 
 def plan_label(user: User) -> str:

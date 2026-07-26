@@ -9511,3 +9511,59 @@ def bulk_pdpa_scan_item_task(self, item_id: str):
         db.commit()
     finally:
         db.close()
+
+
+@celery_app.task(name="publish_queue_depth_metrics")
+def publish_queue_depth_metrics():
+    """Publish Celery queue depths to CloudWatch as ``Booppa/Celery QueueDepth``.
+
+    The tripwire for a wedged worker. On 2026-07-26 the worker's broker
+    connection was dropped during a deploy ("max number of clients reached");
+    Celery reconnected, logged "ready", then sat blocked in BRPOP for two hours
+    while ECS reported the service at steady state the whole time. Nothing
+    anywhere noticed — four paid-flow fulfilments simply never ran, and the only
+    symptom was silence in the worker log.
+
+    Beat schedules this every 5 minutes and the worker executes it, which gives
+    two independent alarm conditions:
+
+    * ``QueueDepth`` for ``heavy_queue`` > 0 across 3 consecutive 5-minute
+      periods — work is queued and nobody is draining it.
+    * **No datapoint at all** (alarm with ``treatMissingData=breaching``) — the
+      worker is not running tasks, which is exactly the wedged state above. The
+      silence is the signal; that is the case a worker-side heartbeat that only
+      reports when healthy would have missed.
+    """
+    import redis as _redis_mod
+
+    queues = ("fast_queue", "heavy_queue", "celery")
+    depths = {}
+    try:
+        client = _redis_mod.from_url(settings.REDIS_URL, socket_connect_timeout=10)
+        for queue in queues:
+            depths[queue] = client.llen(queue)
+    except Exception as exc:  # noqa: BLE001 — never let the monitor break beat
+        logger.warning(f"[QueueDepth] Redis read failed: {exc}")
+        return {"error": str(exc)[:200]}
+
+    logger.info(f"[QueueDepth] {depths}")
+
+    try:
+        import boto3
+
+        boto3.client("cloudwatch", region_name=settings.AWS_REGION).put_metric_data(
+            Namespace="Booppa/Celery",
+            MetricData=[
+                {
+                    "MetricName": "QueueDepth",
+                    "Dimensions": [{"Name": "QueueName", "Value": queue}],
+                    "Value": float(depth),
+                    "Unit": "Count",
+                }
+                for queue, depth in depths.items()
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001 — the log line above is the fallback
+        logger.warning(f"[QueueDepth] CloudWatch publish failed: {exc}")
+
+    return depths

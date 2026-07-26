@@ -783,6 +783,7 @@ def run_csp_baseline_for_user(
     billing_type: str = "one_time",
     override_company: Optional[str] = None,
     override_website: Optional[str] = None,
+    override_uen: Optional[str] = None,
     bypass_idempotency: bool = False,
 ):
     """Generate + email the Day-1 CSP Registration Readiness Baseline.
@@ -830,9 +831,17 @@ def run_csp_baseline_for_user(
         # Assessed entity is the CUSTOMER. Harness override first (so an admin
         # test checkout never stamps the real account's company onto a customer
         # document), then the resolved ACRA legal name.
-        company_name = (override_company or "").strip() or display_legal_name(user, db)
+        company_name = (override_company or "").strip() or display_legal_name(
+            user, db, company_hint=override_company
+        )
         website = (override_website or "").strip() or (getattr(user, "website", "") or "")
-        uen = (getattr(user, "uen", "") or "").strip() or None
+        # Purchase-scoped UEN wins. If the purchase names a DIFFERENT company than
+        # the account, the account UEN belongs to another entity and must not be
+        # used at all — feeding it to fetch_acra_status returns a real, correct
+        # ACRA record for the wrong company (the SPQR leak shape).
+        uen = (override_uen or "").strip() or None
+        if not uen and not (override_company or "").strip():
+            uen = (getattr(user, "uen", "") or "").strip() or None
 
         acra = {}
         try:

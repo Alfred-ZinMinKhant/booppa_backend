@@ -23,10 +23,37 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     broker_connection_retry_on_startup=True,
+    # A channel error (broker dropped/reset the connection mid-consume) must
+    # rebuild the connection rather than leave the consumer parked.
+    broker_channel_error_retry=True,
     worker_max_tasks_per_child=100,
     broker_pool_limit=1,
     redis_max_connections=5,
     worker_send_task_events=False,
+    # Half-open-socket protection. Redis Cloud dropped the worker's consumer
+    # connection during a deploy ("max number of clients reached"); Celery
+    # reconnected, logged "ready", then sat blocked in BRPOP for two hours
+    # (CLIENT LIST: idle=6772s) while fast_queue/heavy_queue filled up. ECS saw
+    # a live process and reported steady state the whole time.
+    #
+    # health_check_interval is the fix: redis-py PINGs an idle connection on
+    # that cadence and rebuilds it if the socket is dead, so a wedged consumer
+    # self-heals instead of blocking forever. socket_keepalive lets the OS
+    # notice a broken path underneath. Both broker and result backend need it —
+    # they are separate connection pools to the same server.
+    broker_transport_options={
+        "visibility_timeout": 3600,
+        "socket_keepalive": True,
+        "health_check_interval": 30,
+        "retry_on_timeout": True,
+        "max_retries": None,
+    },
+    result_backend_transport_options={
+        "visibility_timeout": 3600,
+        "socket_keepalive": True,
+        "health_check_interval": 30,
+        "retry_on_timeout": True,
+    },
     # Fallback queue for any task without an explicit route below. MUST be
     # "fast_queue" (a queue the worker consumes via `-Q fast_queue`), not
     # Celery's built-in "celery" queue — otherwise explicitly-named tasks that
@@ -78,6 +105,13 @@ celery_app.conf.update(
             # and was rejected by the worker, so the hourly cleanup never ran.
             "task": "cleanup_old_tasks",
             "schedule": 3600.0,  # Every hour
+        },
+        # Wedged-worker tripwire — see publish_queue_depth_metrics. Alarm on the
+        # metric with treatMissingData=breaching: a wedged worker never runs
+        # this task, so the *silence* is itself the alert.
+        "publish-queue-depth-metrics": {
+            "task": "publish_queue_depth_metrics",
+            "schedule": 300.0,  # Every 5 minutes
         },
         # Backstop for Compliance Evidence Pack cover-sheet delivery — re-fires
         # the idempotent _maybe_fire_cover_sheet for any buyer still owed a

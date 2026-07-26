@@ -294,7 +294,11 @@ def build_pro_report_pdf(
     user = db.query(User).filter(User.id == vendor_id).first()
     if not company:
         from app.services.evidence_enricher import display_legal_name
-        company = display_legal_name(user, db) or "Your Company"
+        # Reached only when the caller supplied no company, so there is no
+        # purchase-scoped hint to gate the cache with — the account name is the
+        # only signal available. Callers rendering for a specific purchase must
+        # pass `company` rather than relying on this fallback.
+        company = display_legal_name(user, db, company_hint=company) or "Your Company"
 
     if trust_score is None or compliance_score is None:
         sr = db.query(VendorScore).filter(VendorScore.vendor_id == vendor_id).first()

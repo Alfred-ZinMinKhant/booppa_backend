@@ -417,7 +417,11 @@ async def _fulfill_compliance_evidence_pack(
         user = db.query(User).filter(User.id == owner_id).first()
         intake = {
             "org_name": org,
-            "uen": (getattr(user, "uen", "") or "").strip() or metadata.get("uen") or "Not provided",
+            # Purchase metadata first: this pack is scoped to the company bought
+            # for, and accounts get reused across companies (the SPQR leak shape).
+            "uen": (metadata.get("uen") or "").strip()
+            or (getattr(user, "uen", "") or "").strip()
+            or "Not provided",
             "domain": (website or getattr(user, "website", "") or "").replace("https://", "").replace("http://", "").strip("/"),
             "sector": metadata.get("sector") or "Professional Services",
             "employee_count": metadata.get("employee_count") or "11-50",

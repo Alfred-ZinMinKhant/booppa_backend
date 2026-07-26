@@ -220,7 +220,15 @@ def build_appendix_d_pdf(
         intake = intake or {}
         acra_live = acra_live or {}
 
-        company = company_name or vendor_ctx.get("acra_name") or "Your Organisation"
+        # Intake-first: the report-scoped name resolved by the builder outranks the
+        # `company_name` argument, which may be checkout/account-derived (SPQR leak).
+        company = (
+            intake.get("company_name")
+            or vendor_ctx.get("company_name")
+            or company_name
+            or vendor_ctx.get("acra_name")
+            or "Your Organisation"
+        )
         uen = vendor_ctx.get("uen") or intake.get("uen") or "_______________"
         acra_name = vendor_ctx.get("acra_name")
         entity_status = acra_live.get("entity_status") or acra_live.get("status")

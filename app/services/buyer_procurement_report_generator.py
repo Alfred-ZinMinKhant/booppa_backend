@@ -303,7 +303,9 @@ def build_buyer_procurement_report_pdf(
     user = db.query(User).filter(User.id == user_id).first()
     if not company:
         from app.services.evidence_enricher import display_legal_name
-        company = display_legal_name(user, db) or "Your Organisation"
+        # Fallback only — reached when the caller supplied no company, so there
+        # is no purchase-scoped hint available to gate the sticky cache with.
+        company = display_legal_name(user, db, company_hint=company) or "Your Organisation"
 
     suppliers = get_watched_suppliers_with_status(db, user_id)
     # `sample_data` drives the unmissable SAMPLE-DATA banner on every PDF page.

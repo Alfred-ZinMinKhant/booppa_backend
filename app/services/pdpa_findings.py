@@ -95,12 +95,38 @@ def resolve_pdpa_score(assessment_data: Any) -> Optional[int]:
         return None
 
 
-def latest_pdpa_score(db: Any, user_id: Any) -> Optional[int]:
+def _normalise_host(url: Optional[str]) -> Optional[str]:
+    """Bare lowercase hostname from a URL or hostname, ``None`` if unusable."""
+    if not url:
+        return None
+    raw = str(url).strip().lower()
+    if not raw:
+        return None
+    if "//" not in raw:
+        raw = "//" + raw
+    try:
+        from urllib.parse import urlsplit
+
+        host = urlsplit(raw).hostname or ""
+    except Exception:  # noqa: BLE001
+        return None
+    host = host.removeprefix("www.")
+    return host or None
+
+
+def latest_pdpa_score(db: Any, user_id: Any, domain: Optional[str] = None) -> Optional[int]:
     """Resolve the compliance score from a user's most recent PDPA report.
 
     Mirrors exactly what the Compliance Evidence Cover Sheet reads, so the RFP
     Supplier Declaration prints the same number instead of "not available".
     Best-effort: returns ``None`` on any lookup/parse failure.
+
+    ``domain`` scopes the lookup to reports scanned for that website. Accounts
+    get reused across companies, so an account-wide "latest score" can print one
+    company's score in another company's certified deliverable — the same
+    account-cache contamination as the SPQR UEN leak. Callers rendering a
+    report-scoped document should always pass it; omitting it keeps the legacy
+    account-wide behaviour for genuinely account-scoped products.
     """
     if db is None or user_id is None:
         return None
@@ -124,7 +150,10 @@ def latest_pdpa_score(db: Any, user_id: Any) -> Optional[int]:
             .limit(5)
             .all()
         )
+        want_host = _normalise_host(domain)
         for report in reports:
+            if want_host and _normalise_host(report.company_website) != want_host:
+                continue
             score = resolve_pdpa_score(report.assessment_data)
             if score is not None:
                 return score

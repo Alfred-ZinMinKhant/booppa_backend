@@ -601,7 +601,16 @@ jobs:
           DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW:-5}
           DB_POOL_TIMEOUT=${DB_POOL_TIMEOUT:-30}
           DB_POOL_RECYCLE=${DB_POOL_RECYCLE:-300}
-          # Worker runs distinct command using the same app image
+          # Worker runs distinct command using the same app image.
+          #
+          # healthCheck: `celery inspect ping` is answered by the worker's own
+          # consumer loop, so it fails when that loop is wedged — which is the
+          # failure we actually hit (broker connection dropped during a deploy,
+          # Celery logged "ready", then blocked in BRPOP for two hours while ECS
+          # happily reported steady state). Without it a dead worker is
+          # indistinguishable from an idle one. 120s interval, not 60s, because
+          # each probe opens short-lived Redis connections and the Redis Cloud
+          # free tier ceiling is 30 clients.
           cat > task-def-worker.json <<JSON
           {
             "family": "booppa-worker",
@@ -678,7 +687,14 @@ jobs:
                   { "name": "CSP_PII_KEY_LOCAL", "valueFrom": "${APP_SECRETS_ARN}:CSP_PII_KEY_LOCAL::" },
                   { "name": "CSP_PII_SEARCH_PEPPER", "valueFrom": "${APP_SECRETS_ARN}:CSP_PII_SEARCH_PEPPER::" }
                 ],
-                "logConfiguration": { "logDriver": "awslogs", "options": { "awslogs-group": "/ecs/booppa-worker", "awslogs-region": "${AWS_REGION}", "awslogs-stream-prefix": "ecs" } }
+                "logConfiguration": { "logDriver": "awslogs", "options": { "awslogs-group": "/ecs/booppa-worker", "awslogs-region": "${AWS_REGION}", "awslogs-stream-prefix": "ecs" } },
+                "healthCheck": {
+                  "command": ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping -d celery@$HOSTNAME -t 10 || exit 1"],
+                  "interval": 120,
+                  "timeout": 15,
+                  "retries": 3,
+                  "startPeriod": 180
+                }
               }
             ]
           }
@@ -691,12 +707,15 @@ jobs:
           # Celery beat runs as its own single-replica service (NOT embedded in the
           # worker), so workers can scale horizontally without firing every cron N
           # times. Derive the beat task def from the worker one — same image/env/secrets,
-          # only the family, container name, command and log group differ.
+          # only the family, container name, command and log group differ. The
+          # worker's healthCheck is dropped: beat is a scheduler, not a consumer,
+          # so `inspect ping` addressed to it always fails.
           jq '
             .family = "booppa-beat"
             | .containerDefinitions[0].name = "beat"
             | .containerDefinitions[0].command = ["python","-m","celery","-A","app.workers.celery_app","beat","--loglevel=info"]
             | .containerDefinitions[0].logConfiguration.options["awslogs-group"] = "/ecs/booppa-beat"
+            | del(.containerDefinitions[0].healthCheck)
           ' task-def-worker.json > task-def-beat.json
 
           aws ecs register-task-definition --cli-input-json file://task-def-beat.json --region $AWS_REGION > task-def-beat-out.json

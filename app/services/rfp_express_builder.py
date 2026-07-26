@@ -136,6 +136,14 @@ class RFPExpressBuilder:
         # 1. Gather vendor context (DB: UEN, sector, trust score, ACRA local match)
         vendor_ctx = self._build_vendor_context(company_name, vendor_url, db, intake=intake)
 
+        # Identity is resolved ONCE, intake-first, and used for everything below:
+        # ACRA/PDPC/GeBIZ lookups, the evidence hash, the PDF/DOCX/declaration/
+        # Appendix-D renderers, and the fulfilment email. The raw `company_name`
+        # argument is checkout/account-derived and must never outrank this
+        # report's own intake — that precedence inversion is the SPQR leak,
+        # which has now bitten two separate generators.
+        company_name = vendor_ctx["company_name"]
+
         # 1b. External evidence enrichment (parallel async calls)
         from app.services.dns_security import fetch_dns_security
         from app.services.gebiz_service import get_vendor_gebiz_history
@@ -368,7 +376,7 @@ class RFPExpressBuilder:
                     # kit was building (they run concurrently), we want the final score here,
                     # not the 'Pending' state from 3 minutes ago when this task began.
                     from app.services.pdpa_findings import latest_pdpa_score
-                    fresh_score = latest_pdpa_score(db, self.vendor_id)
+                    fresh_score = latest_pdpa_score(db, self.vendor_id, domain=vendor_url)
                     # If `self.vendor_id` is an email, it gracefully handles it, but maybe we should use user_id if we have it:
                     if fresh_score is None and vendor_ctx.get("uen"):
                         # We don't have the user object here directly, so if fresh_score returns None
@@ -474,6 +482,7 @@ class RFPExpressBuilder:
             "vendor_id":      self.vendor_id,
             "company_name":   company_name,
             "vendor_url":     vendor_url,
+            "vendor_context": vendor_ctx,
             "download_url":   download_url,
             "pdf_s3_key":     getattr(self, "pdf_s3_key", None),
             "docx_url":       docx_url,
@@ -522,19 +531,30 @@ class RFPExpressBuilder:
     # ── Step 1: vendor context ────────────────────────────────────────────────
 
     def _build_vendor_context(self, company_name: str, vendor_url: str, db, intake: dict | None = None) -> Dict:
+        intake_dict = intake or {}
+        # Precedence rule for EVERY identity field in this function: this report's
+        # own intake wins; the account-level User row is a fallback only. Accounts
+        # get reused across companies in testing and by resellers, so an account
+        # cache is specific to nothing.
+        eff_company_name = (
+            intake_dict.get("company_name")
+            or intake_dict.get("legal_name")
+            or intake_dict.get("company")
+            or company_name
+        )
         ctx: Dict[str, Any] = {
-            "company_name": company_name,
+            "company_name": eff_company_name,
             "vendor_url":   vendor_url,
-            "uen":          intake.get("uen") if intake else None,
-            "sector":       None,
+            "uen":          intake_dict.get("uen"),
+            "sector":       intake_dict.get("sector") or intake_dict.get("industry"),
             "trust_score":  None,
             "acra_name":    None,
             "acra_entity_type": None,
             "verification_depth": None,
             "gebiz_supplier": False,
             "gebiz_contracts_count": 0,
-            "privacy_policy_url": None,
-            "compliance_score": None,
+            "privacy_policy_url": intake_dict.get("privacy_policy_url"),
+            "compliance_score": intake_dict.get("compliance_score") or intake_dict.get("pdpa_score"),
         }
         if db is None:
             return ctx
@@ -548,15 +568,19 @@ class RFPExpressBuilder:
             else:
                 user = db.query(User).filter(User.email == self.vendor_id).first()
             if user:
-                ctx["uen"] = getattr(user, "uen", None)
+                # Precedence: intake UEN ALWAYS wins over account-level User fallback.
+                ctx["uen"] = ctx.get("uen") or getattr(user, "uen", None)
                 # Single source of truth with the Cover Sheet's PDPA score, so
                 # the Supplier Declaration prints the same number (e.g. 66/100)
                 # instead of "not available".
-                try:
-                    from app.services.pdpa_findings import latest_pdpa_score
-                    ctx["compliance_score"] = latest_pdpa_score(db, user.id)
-                except Exception as score_err:
-                    logger.warning(f"PDPA score lookup failed for {self.vendor_id}: {score_err}")
+                if ctx.get("compliance_score") is None:
+                    try:
+                        from app.services.pdpa_findings import latest_pdpa_score
+                        # Scoped to THIS report's website: an account reused across
+                        # companies must not print a prior company's PDPA score.
+                        ctx["compliance_score"] = latest_pdpa_score(db, user.id, domain=vendor_url)
+                    except Exception as score_err:
+                        logger.warning(f"PDPA score lookup failed for {self.vendor_id}: {score_err}")
             # VendorScore / VendorSector are keyed by UUID — skip if vendor_id is an email
             is_uuid = _re.match(r'^[0-9a-f-]{36}$', self.vendor_id or '', _re.IGNORECASE)
             if is_uuid:
@@ -566,7 +590,7 @@ class RFPExpressBuilder:
             sector_row = db.query(VendorSector).filter(
                 VendorSector.vendor_id == (user.id if user else self.vendor_id)
             ).first() if is_uuid or user else None
-            if sector_row:
+            if sector_row and not ctx.get("sector"):
                 ctx["sector"] = sector_row.sector
 
             # ACRA lookup — enrich with registered company name and entity type
