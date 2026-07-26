@@ -306,17 +306,22 @@ celery_app.conf.update(
     },
 )
 
-# CRITICAL FIX for Redis Connection Exhaustion on Free Tier (30 connections)
-# worker_enable_mingle=False and worker_enable_gossip=False are often ignored by Celery 5.x 
-# unless explicitly passed as CLI flags. To ensure they are universally disabled across 
-# AWS ECS, local Docker, and any other environment, we programmatically discard the bootsteps.
-from celery.worker.consumer.mingle import Mingle
-from celery.worker.consumer.gossip import Gossip
-from celery.worker.consumer.heart import Heart
-
-celery_app.steps['consumer'].discard(Mingle)
-celery_app.steps['consumer'].discard(Gossip)
-celery_app.steps['consumer'].discard(Heart)
+# Redis connection exhaustion on the free tier (30-client ceiling): gossip,
+# mingle and the heartbeat must stay OFF. They are disabled by the CLI flags
+# `--without-gossip --without-mingle --without-heartbeat` on every worker
+# command line (.github/workflows/ci.yml and docker-compose.yml) — that is the
+# only mechanism that works. There is no `worker_enable_gossip`/`_mingle`
+# setting to configure here, and discarding the bootstep classes from
+# `celery_app.steps['consumer']` does NOT work either: that set holds only
+# *custom* steps, while Mingle/Gossip/Heart live in the Consumer blueprint's own
+# default_steps. A previous version of this file did exactly that and the
+# bootsteps kept running.
+#
+# Why it matters: Gossip opens an extra broker channel beside the consumer's.
+# When that channel raises (e.g. "max number of clients reached" during a
+# deploy) the whole consumer blueprint restarts, opening fresh connections that
+# fail the same way — one dropped connection becomes a ~1/second reconnect storm
+# that keeps Redis saturated and locks you out of inspecting it.
 
 
 # ── Live pull of reference datasets on deploy ────────────────────────────────

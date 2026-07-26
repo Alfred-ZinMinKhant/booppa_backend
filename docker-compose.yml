@@ -25,7 +25,10 @@ services:
 
   worker_fast:
     build: .
-    command: python -m celery -A app.workers.celery_app worker -B --loglevel=info -Q fast_queue
+    # --without-gossip/mingle/heartbeat: mandatory, and kept identical to the ECS
+    # worker command so the Redis client-exhaustion failure mode is reproducible
+    # locally. See the comment block in app/workers/celery_app.py.
+    command: python -m celery -A app.workers.celery_app worker -B --loglevel=info -Q fast_queue --without-gossip --without-mingle --without-heartbeat
     restart: unless-stopped
     env_file: .env
     environment:
@@ -41,7 +44,7 @@ services:
 
   worker_heavy:
     build: .
-    command: python -m celery -A app.workers.celery_app worker --loglevel=info -Q heavy_queue
+    command: python -m celery -A app.workers.celery_app worker --loglevel=info -Q heavy_queue --without-gossip --without-mingle --without-heartbeat
     restart: unless-stopped
     env_file: .env
     environment:

@@ -603,14 +603,47 @@ jobs:
           DB_POOL_RECYCLE=${DB_POOL_RECYCLE:-300}
           # Worker runs distinct command using the same app image.
           #
+          # --without-gossip --without-mingle --without-heartbeat are MANDATORY on
+          # the Redis Cloud free tier (30-client ceiling). These CLI flags are the
+          # only mechanism that disables those bootsteps — there is no equivalent
+          # setting, and discarding the classes in celery_app.py silently did
+          # nothing. Gossip in particular opens an extra broker channel whose
+          # failure restarts the whole consumer blueprint, turning one dropped
+          # connection into a ~1/second reconnect storm that keeps Redis
+          # saturated. See the comment block in app/workers/celery_app.py.
+          #
           # healthCheck: `celery inspect ping` is answered by the worker's own
           # consumer loop, so it fails when that loop is wedged — which is the
           # failure we actually hit (broker connection dropped during a deploy,
           # Celery logged "ready", then blocked in BRPOP for two hours while ECS
           # happily reported steady state). Without it a dead worker is
-          # indistinguishable from an idle one. 120s interval, not 60s, because
-          # each probe opens short-lived Redis connections and the Redis Cloud
-          # free tier ceiling is 30 clients.
+          # indistinguishable from an idle one. 300s interval, not 60s, because
+          # `inspect ping` is a broadcast: every probe opens short-lived Redis
+          # clients plus a temporary reply queue, i.e. it adds pressure exactly
+          # when the 30-client Redis Cloud free-tier ceiling is tightest. The
+          # primary wedge tripwire is the publish_queue_depth_metrics beat task
+          # (300s, alarm on *missing* datapoints); this check is the backstop.
+          #
+          # Two non-obvious requirements in this probe — both verified by running
+          # it inside the worker image against a real worker:
+          #
+          # 1. `-b "\$REDIS_URL"`, NOT `-A app.workers.celery_app`. Loading our app
+          #    config applies `broker_pool_limit=1`, and `inspect ping` needs a
+          #    publish connection PLUS a reply-consumer connection — so it blocks
+          #    on the exhausted pool forever, ignoring its own `-t` and blowing the
+          #    15s healthCheck timeout on every probe. Measured: with `-A` it hung
+          #    past 90s; with `-b` it answers `pong` in ~0.2s. A control ping needs
+          #    only the broker URL, so the bare form is both correct and immune to
+          #    our connection-conserving settings. `-t 8` keeps the *failure* path
+          #    (no reply) at ~9s end to end, comfortably inside the 15s timeout —
+          #    with `-t 10` it took 11s, leaving too little margin.
+          #
+          # 2. `\$(hostname)`, escaped, NOT `$HOSTNAME`. This heredoc is unquoted, so
+          #    an unescaped $HOSTNAME expands on the GitHub runner and bakes the
+          #    RUNNER's hostname into the JSON — addressing a node no worker ever
+          #    has. The backslashes defer expansion to probe time in the container,
+          #    and `hostname` works under the dash /bin/sh in python:3.11-slim,
+          #    where $HOSTNAME is unset.
           cat > task-def-worker.json <<JSON
           {
             "family": "booppa-worker",
@@ -625,7 +658,7 @@ jobs:
                 "name": "worker",
                 "image": "${APP_IMAGE}",
                 "essential": true,
-                "command": ["python", "-m", "celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info", "-Q", "fast_queue,heavy_queue"],
+                "command": ["python", "-m", "celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info", "-Q", "fast_queue,heavy_queue", "--without-gossip", "--without-mingle", "--without-heartbeat"],
                 "environment": [                  { "name": "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY", "value": "${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}" },
                   { "name": "STRIPE_PDPA_QUICK_SCAN", "value": "${STRIPE_PDPA_QUICK_SCAN}" },
                   { "name": "STRIPE_COMPLIANCE_NOTARIZATION_1", "value": "${STRIPE_COMPLIANCE_NOTARIZATION_1}" },
@@ -689,8 +722,8 @@ jobs:
                 ],
                 "logConfiguration": { "logDriver": "awslogs", "options": { "awslogs-group": "/ecs/booppa-worker", "awslogs-region": "${AWS_REGION}", "awslogs-stream-prefix": "ecs" } },
                 "healthCheck": {
-                  "command": ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping -d celery@$HOSTNAME -t 10 || exit 1"],
-                  "interval": 120,
+                  "command": ["CMD-SHELL", "celery -b \"\$REDIS_URL\" inspect ping -d celery@\$(hostname) -t 8 || exit 1"],
+                  "interval": 300,
                   "timeout": 15,
                   "retries": 3,
                   "startPeriod": 180
@@ -942,7 +975,15 @@ jobs:
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           echo "Updating worker service to task definition ARN: $WORKER_TASK_DEF_ARN"
-          aws ecs update-service --cluster $CLUSTER --service $SERVICE --task-definition "$WORKER_TASK_DEF_ARN" --force-new-deployment --region $AWS_REGION
+          # maximumPercent=100,minimumHealthyPercent=0 — drain the old worker BEFORE
+          # starting the new one. The ECS default (200/100) runs both concurrently,
+          # doubling this service's Redis client count mid-deploy and pushing the
+          # free tier past its 30-client ceiling; that saturation is what drops the
+          # broker connection in the first place. Safe here because both queues are
+          # durable, so tasks simply wait for the new consumer. Do NOT copy this to
+          # the app service, which needs minimumHealthyPercent=100 for zero-downtime HTTP.
+          aws ecs update-service --cluster $CLUSTER --service $SERVICE --task-definition "$WORKER_TASK_DEF_ARN" --force-new-deployment --region $AWS_REGION \
+            --deployment-configuration "maximumPercent=100,minimumHealthyPercent=0"
 
       - name: Update ECS service to use new task definition (beat)
         env:
@@ -962,7 +1003,11 @@ jobs:
           if aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --region "$AWS_REGION" \
                --query 'services[?status==`ACTIVE`].serviceName' --output text | grep -q "$SERVICE"; then
             echo "Updating beat service to task definition ARN: $BEAT_TASK_DEF_ARN"
-            aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --task-definition "$BEAT_TASK_DEF_ARN" --force-new-deployment --region "$AWS_REGION"
+            # 100/0 as with the worker: beat MUST be singleton — two overlapping beats
+            # double-fire every entry in beat_schedule — and the overlap also doubles
+            # this service's Redis clients against the 30-client free-tier ceiling.
+            aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --task-definition "$BEAT_TASK_DEF_ARN" --force-new-deployment --region "$AWS_REGION" \
+              --deployment-configuration "maximumPercent=100,minimumHealthyPercent=0"
           else
             echo "Beat service not found — creating it (single replica) from worker network config"
             NET_CONFIG=$(aws ecs describe-services --cluster "$CLUSTER" --services "$WORKER_SERVICE" --region "$AWS_REGION" \
@@ -974,6 +1019,7 @@ jobs:
               --desired-count 1 \
               --launch-type FARGATE \
               --network-configuration "$NET_CONFIG" \
+              --deployment-configuration "maximumPercent=100,minimumHealthyPercent=0" \
               --region "$AWS_REGION"
           fi
 
