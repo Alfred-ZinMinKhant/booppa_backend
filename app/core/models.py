@@ -107,7 +107,14 @@ class Report(Base):
 
     # Blockchain evidence
     audit_hash = Column(String(64), nullable=True)
-    tx_hash = Column(String(66), nullable=True, index=True)
+    # 80, not 66: a real Polygon tx is `0x` + 64 hex = 66 chars, but demo /
+    # test-checkout anchoring stores `demo_tx_hash()` — `demo-0x` + 64 hex = 71
+    # chars, whose `demo-` prefix is load-bearing (it must fail
+    # tx_utils.is_real_onchain_tx). At 66 every demo-mode fulfillment died on
+    # StringDataRightTruncation *after* generating the PDF, then retried forever.
+    # Every tx_hash / blockchain_tx_hash column below is widened for the same
+    # reason — see migration 2026_07_26_0002.
+    tx_hash = Column(String(80), nullable=True, index=True)
 
     # Storage
     s3_url = Column(Text, nullable=True)
@@ -597,7 +604,7 @@ class CspCddRecord(Base):
     next_review_date = Column(DateTime(timezone=True))
     failure_reason  = Column(Text())
     evidence_files  = Column(JSONB)
-    blockchain_tx_hash   = Column(String(66))
+    blockchain_tx_hash   = Column(String(80))
     blockchain_timestamp = Column(DateTime(timezone=True))
     polygonscan_url      = Column(String(500))
     created_at = Column(DateTime(timezone=True), default=utcnow)
@@ -639,7 +646,7 @@ class CspEddRecord(Base):
     status           = Column(String(30), default="in_progress")
     completed_at     = Column(DateTime(timezone=True))
     evidence_files   = Column(JSONB)
-    blockchain_tx_hash = Column(String(66))
+    blockchain_tx_hash = Column(String(80))
     polygonscan_url  = Column(String(500))
     created_at = Column(DateTime(timezone=True), default=utcnow)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -673,7 +680,7 @@ class CspStrReport(Base):
     senior_mgmt_name         = Column(String(255))
     escalation_date          = Column(DateTime(timezone=True))
     evidence_files     = Column(JSONB)
-    blockchain_tx_hash = Column(String(66))
+    blockchain_tx_hash = Column(String(80))
     polygonscan_url    = Column(String(500))
     created_at = Column(DateTime(timezone=True), default=utcnow)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -725,7 +732,7 @@ class CspNomineeDirector(Base):
     last_reviewed             = Column(DateTime(timezone=True))
     next_review               = Column(DateTime(timezone=True))
     evidence_files            = Column(JSONB)
-    blockchain_tx_hash        = Column(String(66))
+    blockchain_tx_hash        = Column(String(80))
     polygonscan_url           = Column(String(500))
     created_at = Column(DateTime(timezone=True), default=utcnow)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -760,7 +767,7 @@ class CspNomineeShareholder(Base):
     acra_filing_date         = Column(DateTime(timezone=True))
     acra_filing_ref          = Column(String(100))
     evidence_files           = Column(JSONB)
-    blockchain_tx_hash       = Column(String(66))
+    blockchain_tx_hash       = Column(String(80))
     polygonscan_url          = Column(String(500))
     created_at = Column(DateTime(timezone=True), default=utcnow)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -797,7 +804,7 @@ class CspBeneficialOwner(Base):
     last_updated              = Column(DateTime(timezone=True))
     next_review               = Column(DateTime(timezone=True))
     evidence_files            = Column(JSONB)
-    blockchain_tx_hash        = Column(String(66))
+    blockchain_tx_hash        = Column(String(80))
     polygonscan_url           = Column(String(500))
     created_at = Column(DateTime(timezone=True), default=utcnow)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -830,7 +837,7 @@ class CspAmlProgramme(Base):
     generation_cost_usd = Column(Float)
     s3_key           = Column(String(500))
     pdf_hash         = Column(String(64))
-    blockchain_tx_hash    = Column(String(66))
+    blockchain_tx_hash    = Column(String(80))
     blockchain_timestamp  = Column(DateTime(timezone=True))
     polygonscan_url       = Column(String(500))
     generated_at = Column(DateTime(timezone=True), default=utcnow)
@@ -865,7 +872,7 @@ class CspRiskAssessment(Base):
     review_frequency = Column(String(50))
     next_review_date = Column(DateTime(timezone=True))
     notes           = Column(Text())
-    blockchain_tx_hash = Column(String(66))
+    blockchain_tx_hash = Column(String(80))
     polygonscan_url    = Column(String(500))
     created_at = Column(DateTime(timezone=True), default=utcnow)
 
@@ -925,7 +932,7 @@ class CspStaffTraining(Base):
     score         = Column(Integer)
     certificate_ref = Column(String(255))
     evidence_s3_key = Column(String(500))
-    blockchain_tx_hash = Column(String(66))
+    blockchain_tx_hash = Column(String(80))
     polygonscan_url    = Column(String(500))
     created_at = Column(DateTime(timezone=True), default=utcnow)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -949,7 +956,7 @@ class CspBlockchainEvidence(Base):
     record_title  = Column(String(255))
     related_client = Column(String(255))
     document_hash  = Column(String(64), nullable=False)
-    tx_hash        = Column(String(66), nullable=False)
+    tx_hash        = Column(String(80), nullable=False)
     block_number   = Column(Integer)
     network        = Column(String(50), default="polygon-mainnet")
     blockchain_timestamp = Column(DateTime(timezone=True))
@@ -1000,7 +1007,7 @@ class CspTosAcceptance(Base):
 
     # Blockchain proof
     content_hash        = Column(String(64))
-    blockchain_tx_hash  = Column(String(66))
+    blockchain_tx_hash  = Column(String(80))
     polygonscan_url     = Column(String(500))
     notarized_at        = Column(DateTime(timezone=True))
 
@@ -1039,7 +1046,7 @@ class CspProgrammeAttestation(Base):
 
     # Blockchain proof
     content_hash       = Column(String(64))
-    blockchain_tx_hash = Column(String(66))
+    blockchain_tx_hash = Column(String(80))
     polygonscan_url    = Column(String(500))
     notarized_at       = Column(DateTime(timezone=True))
 
@@ -1078,7 +1085,7 @@ class CspRiskClassificationAudit(Base):
 
     # Blockchain proof
     content_hash       = Column(String(64))
-    blockchain_tx_hash = Column(String(66))
+    blockchain_tx_hash = Column(String(80))
     polygonscan_url    = Column(String(500))
     notarized_at       = Column(DateTime(timezone=True))
 
@@ -1220,7 +1227,7 @@ class TrmEvidence(Base):
     file_name = Column(String(255))
     s3_key = Column(Text)
     hash_value = Column(String(64))
-    tx_hash = Column(String(66))                           # blockchain anchor
+    tx_hash = Column(String(80))                           # blockchain anchor
     # MAS treats an untested control/plan as "an aspiration, not a control".
     # evidence_type distinguishes a documented policy from tested evidence
     # (e.g. an annual DR test); tested_at + attestation record the test.

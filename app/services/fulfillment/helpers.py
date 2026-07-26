@@ -274,6 +274,16 @@ async def _alert_payment_fulfillment_issue(
 
     All sends are best-effort: failure of an alert email never propagates.
     """
+    # Normalize `reason` ONCE, up front: callers pass raw exception text, which
+    # for a SQLAlchemy error carries newlines, the full SQL statement and a
+    # `[parameters: {...}]` tail. That tail changes on every Celery retry (fresh
+    # tx_hash, updated_at, presigned URL), so keying the dedupe cache on the raw
+    # reason produced a different key each retry and the buyer received the same
+    # "one small delay" mail once per attempt. 300 chars keeps the identifying
+    # part (exception type + message + start of the statement) and drops the
+    # varying tail. Use this value for the log line, subject, body and key.
+    reason = " ".join(str(reason or "").split())[:300]
+
     extra_str = ""
     if extra:
         try:
@@ -328,17 +338,22 @@ async def _alert_payment_fulfillment_issue(
             pass
 
     try:
+        # `reason` and `extra_str` are exception text going into HTML — escape.
+        import html as _html
+
+        reason_html = _html.escape(reason)
+        extra_html = _html.escape(extra_str)
         body_html = f"""
         <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;padding:24px;">
           <h2 style="color:#b91c1c;">Fulfillment alert — manual review needed</h2>
           <p>A Stripe payment landed in a branch that could not complete automatic fulfillment.</p>
           <table style="border-collapse:collapse;width:100%;font-size:14px;">
-            <tr><td style="padding:6px 8px;color:#64748b;">Reason</td><td style="padding:6px 8px;"><strong>{reason}</strong></td></tr>
+            <tr><td style="padding:6px 8px;color:#64748b;">Reason</td><td style="padding:6px 8px;"><strong>{reason_html}</strong></td></tr>
             <tr><td style="padding:6px 8px;color:#64748b;">Product</td><td style="padding:6px 8px;">{product_type or '(unknown)'}</td></tr>
             <tr><td style="padding:6px 8px;color:#64748b;">Customer email</td><td style="padding:6px 8px;">{customer_email or '(missing)'}</td></tr>
             <tr><td style="padding:6px 8px;color:#64748b;">Stripe session</td><td style="padding:6px 8px;font-family:monospace;">{session_id or '(missing)'}</td></tr>
             <tr><td style="padding:6px 8px;color:#64748b;">Webhook event</td><td style="padding:6px 8px;font-family:monospace;">{event_id or '(unknown)'}</td></tr>
-            <tr><td style="padding:6px 8px;color:#64748b;">Extra</td><td style="padding:6px 8px;font-family:monospace;">{extra_str or '-'}</td></tr>
+            <tr><td style="padding:6px 8px;color:#64748b;">Extra</td><td style="padding:6px 8px;font-family:monospace;">{extra_html or '-'}</td></tr>
           </table>
         </div>
         """

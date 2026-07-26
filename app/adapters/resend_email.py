@@ -100,6 +100,14 @@ class ResendEmailAdapter(EmailPort):
         recipient is skipped and reported as success (there is nothing to
         retry and no fulfillment failure to alert on).
         """
+        # Single choke point for subject hygiene. Alert subjects are built from
+        # exception text, which can carry newlines and multi-KB SQL — SES then
+        # rejects the whole send with
+        # `InvalidParameterValue: Invalid message subject`, silently dropping the
+        # one signal ops has that a fulfillment is failing. Collapse whitespace
+        # and cap the length here so no caller can reintroduce it.
+        subject = " ".join(str(subject or "").split())[:200]
+
         if getattr(settings, "SKIP_EMAIL", False):
             logger.info(f"[Email] Skipped (SKIP_EMAIL=True): to={to_email} subject={subject}")
             return True
