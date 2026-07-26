@@ -9,16 +9,23 @@ _RULE = colors.HexColor("#e2e8f0")
 def get_unified_styles() -> StyleSheet1:
     """
     Returns the standard typography styles for Booppa PDF reports.
+
+    Heading styles carry ``keepWithNext=1`` so a section title can never widow
+    at the foot of a page without at least the first line of its content. This
+    is set here rather than per-generator because 23 modules import this
+    stylesheet — 10 of them previously had no orphan protection at all, purely
+    because this function didn't set it.
     """
     base = getSampleStyleSheet()
-    
-    for k in ["title", "sub", "h2", "body", "metric", "metric_lbl", "small", "cell", "cell_b", "big", "lbl", "mono"]:
+
+    for k in ["title", "sub", "h2", "h3", "body", "metric", "metric_lbl", "small", "cell", "cell_b", "big", "lbl", "mono"]:
         base.byAlias.pop(k, None)
         base.byName.pop(k, None)
-        
-    base.add(ParagraphStyle("title", parent=base["Title"], fontSize=20, textColor=_INK, spaceAfter=4))
+
+    base.add(ParagraphStyle("title", parent=base["Title"], fontSize=20, textColor=_INK, spaceAfter=4, keepWithNext=1))
     base.add(ParagraphStyle("sub", parent=base["Normal"], fontSize=10, textColor=colors.HexColor("#475569"), spaceAfter=2))
-    base.add(ParagraphStyle("h2", parent=base["Heading2"], fontSize=13, textColor=_INK, spaceBefore=16, spaceAfter=6))
+    base.add(ParagraphStyle("h2", parent=base["Heading2"], fontSize=13, textColor=_INK, spaceBefore=16, spaceAfter=6, keepWithNext=1))
+    base.add(ParagraphStyle("h3", parent=base["Heading3"], fontSize=11, textColor=_INK, spaceBefore=10, spaceAfter=4, keepWithNext=1))
     base.add(ParagraphStyle("body", parent=base["Normal"], fontSize=9.5, textColor=colors.HexColor("#334155"), leading=14))
     base.add(ParagraphStyle("metric", parent=base["Normal"], fontSize=22, textColor=_INK, leading=24))
     base.add(ParagraphStyle("metric_lbl", parent=base["Normal"], fontSize=8, textColor=_MUTED, leading=11))

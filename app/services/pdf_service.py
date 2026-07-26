@@ -11,6 +11,17 @@ Findings carry severity-colour badges (red/orange/amber/green).
 """
 from __future__ import annotations
 
+from app.services import pdf_layout as _pl
+from app.services.pdf_layout import (
+    CONTENT_W,
+    FOOTER_H,
+    HEADER_H,
+    MARGIN,
+    PAGE_H,
+    PAGE_W,
+    keep_together_safe,
+    make_table,
+)
 from app.services.pdf_styles import get_unified_styles
 
 import base64
@@ -60,18 +71,27 @@ AMBER_BG = colors.HexColor("#fffbeb")
 AMBER_BORDER = colors.HexColor("#fcd34d")
 
 
-def _pdf_escape(text) -> str:
-    """Escape user-supplied strings for ReportLab's Paragraph mini-XML.
+# Escaping now lives in pdf_layout (one implementation, was 17). The alias is
+# kept because ~40 call sites in this file use the old name.
+_pdf_escape = _pl.xml_escape
 
-    `&`, `<`, `>` would otherwise be read as entity/tag starts. Mirrors
-    cover_sheet_generator._xml_escape — kept local to avoid a cross-import.
+
+def _as_list(value) -> list:
+    """Coerce a bullet-list field to a list.
+
+    These fields (requirements, acceptance_criteria, recommended_tools) come
+    from AI output and are sometimes a single string rather than a list. Left
+    as a bare string, `for x in value` iterates its *characters* and renders one
+    bullet per letter — a page of "• T / • h / • e".
     """
-    return (
-        str(text if text is not None else "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    if not value:
+        return []
+    if isinstance(value, str):
+        parts = [p.strip(" -•\t") for p in value.splitlines()]
+        return [p for p in parts if p] or [value.strip()]
+    if isinstance(value, (list, tuple)):
+        return [v for v in value if v]
+    return [value]
 
 
 def _format_date_long(value) -> str:
@@ -147,138 +167,36 @@ _DIMENSION_WEIGHTS: dict[str, int] = {
     "Data Subject Rights Mechanism": 1,
 }
 
-# ── Logo resolution (tried at import time) ─────────────────────────────────────
-_HERE = os.path.dirname(__file__)
-_LOGO_CANDIDATES = [
-    os.path.join(_HERE, "..", "..", "static", "logo.png"),
-    "/app/static/logo.png",
-    os.path.join(_HERE, "..", "..", "data", "logo.png"),
-    "/app/data/logo.png",
-]
-_LOGO_PATH: str | None = None
-for _c in _LOGO_CANDIDATES:
-    _abs = os.path.abspath(_c)
-    if os.path.exists(_abs):
-        _LOGO_PATH = _abs
-        break
-
-# ── Page geometry ──────────────────────────────────────────────────────────────
-PAGE_W, PAGE_H = A4
-MARGIN = 0.75 * inch
-CONTENT_W = PAGE_W - 2 * MARGIN
-HEADER_H = 0.65 * inch
-FOOTER_H = 0.40 * inch
-
-
-# ── Per-page canvas callback ───────────────────────────────────────────────────
+# Page geometry, the logo, the header/footer callback and the doc template all
+# come from pdf_layout now. `draw_booppa_page` and `get_booppa_doc_template`
+# survive as the public names because pdpa_monitor_delta_generator imports them.
 
 
 def draw_booppa_page(canvas, doc):
-    canvas.saveState()
+    """Header band, logo, report label and footer — see ``pdf_layout.draw_page``.
 
-    # ── Watermark (logo centred, diagonal, low opacity) ───────────────────────
-    if _LOGO_PATH:
-        try:
-            canvas.saveState()
-            canvas.setFillAlpha(0.06)
-            wm_w = 5.5 * inch
-            wm_h = wm_w * 0.35  # approximate logo aspect ratio
-            canvas.translate(PAGE_W / 2, PAGE_H / 2)
-            canvas.rotate(35)
-            canvas.drawImage(
-                _LOGO_PATH,
-                -wm_w / 2,
-                -wm_h / 2,
-                width=wm_w,
-                height=wm_h,
-                preserveAspectRatio=True,
-                mask="auto",
-            )
-            canvas.restoreState()
-        except Exception:
-            pass  # silently skip watermark if logo unavailable
-
-    # ── Header band (white-label override) ──────────────────────────────────
-    _branding = getattr(doc, "_branding", None)
-    header_color = colors.HexColor(_branding["secondary_color"]) if _branding and _branding.get("secondary_color") else NAVY
-    canvas.setFillColor(header_color)
-    canvas.rect(0, PAGE_H - HEADER_H, PAGE_W, HEADER_H, fill=1, stroke=0)
-
-    logo_h = 0.35 * inch
-    logo_y = PAGE_H - HEADER_H + (HEADER_H - logo_h) / 2
-
-    if _LOGO_PATH:
-        try:
-            # Explicit width required — canvas.drawImage silently drops the PNG
-            # when given only height + preserveAspectRatio (logo is ~2.79:1).
-            canvas.drawImage(
-                _LOGO_PATH,
-                MARGIN,
-                logo_y,
-                width=logo_h * 2.79,
-                height=logo_h,
-                mask="auto",
-            )
-        except Exception:
-            _draw_logo_text(canvas, logo_y)
-    else:
-        _draw_logo_text(canvas, logo_y)
-
-    # Report-type label — right side of header (white-label override)
-    label = getattr(doc, "_report_type_label", "AUDIT REPORT")
-    accent_color = colors.HexColor(_branding["primary_color"]) if _branding and _branding.get("primary_color") else EMERALD
-    canvas.setFillColor(accent_color)
-    canvas.setFont("Helvetica-Bold", 7.5)
-    canvas.drawRightString(PAGE_W - MARGIN, PAGE_H - HEADER_H + 0.24 * inch, label)
-
-    # ── Footer ───────────────────────────────────────────────────────────────
-    canvas.setStrokeColor(BORDER)
-    canvas.setLineWidth(0.5)
-    canvas.line(MARGIN, FOOTER_H, PAGE_W - MARGIN, FOOTER_H)
-
-    canvas.setFillColor(SLATE)
-    pdpa_footer_lines = getattr(doc, "_pdpa_footer_lines", None)
-    if pdpa_footer_lines:
-        # PDPA: two-line italic disclaimer at 7pt
-        canvas.setFont("Helvetica-Oblique", 7)
-        y = FOOTER_H - 9
-        for line in pdpa_footer_lines:
-            canvas.drawString(MARGIN, y, line)
-            y -= 9
-        canvas.setFont("Helvetica", 7)
-        canvas.drawRightString(PAGE_W - MARGIN, FOOTER_H - 9, f"Page {doc.page}")
-    else:
-        canvas.setFont("Helvetica", 6.5)
-        footer_str = (_branding.get("footer_text") or COMPANY_LEGAL_FOOTER) if _branding else COMPANY_LEGAL_FOOTER
-        canvas.drawString(MARGIN, FOOTER_H - 9, footer_str)
-        canvas.drawRightString(PAGE_W - MARGIN, FOOTER_H - 9, f"Page {doc.page}")
-
-    canvas.restoreState()
-
-
-def _draw_logo_text(canvas, y: float):
-    canvas.setFillColor(WHITE)
-    canvas.setFont("Helvetica-Bold", 13)
-    canvas.drawString(MARGIN, y + 0.08 * inch, "BOOPPA")
-    canvas.setFillColor(EMERALD)
-    canvas.setFont("Helvetica", 7)
-    canvas.drawString(MARGIN + 56, y + 0.09 * inch, "·  Trust Intelligence")
-
+    ``pdf_layout`` reads ``doc._header_label`` / ``doc._footer_lines``; the
+    older attribute names are mapped across for any caller that still sets them
+    directly rather than going through :func:`get_booppa_doc_template`.
+    """
+    if getattr(doc, "_header_label", None) is None:
+        doc._header_label = getattr(doc, "_report_type_label", "AUDIT REPORT")
+    if getattr(doc, "_footer_lines", None) is None:
+        doc._footer_lines = getattr(doc, "_pdpa_footer_lines", None)
+    if not hasattr(doc, "_watermark"):
+        doc._watermark = True
+    _pl.draw_page(canvas, doc)
 
 
 def get_booppa_doc_template(buffer, title, report_type_label="AUDIT REPORT", is_pdpa=False, branding=None):
-    from reportlab.platypus import SimpleDocTemplate
-    doc = SimpleDocTemplate(
+    doc = _pl.build_doc(
         buffer,
-        pagesize=A4,
-        leftMargin=MARGIN,
-        rightMargin=MARGIN,
-        topMargin=HEADER_H + 0.35 * inch,
-        bottomMargin=FOOTER_H + 0.35 * inch,
         title=title,
+        header_label=report_type_label,
+        branding=branding,
+        watermark=True,
     )
     doc._report_type_label = report_type_label
-    doc._branding = branding
     if is_pdpa:
         _disc = (
             f"Automated compliance assessment by {COMPANY_NAME} · "
@@ -289,7 +207,13 @@ def get_booppa_doc_template(buffer, title, report_type_label="AUDIT REPORT", is_
             f"Does not substitute for legal counsel. {COMPANY_NAME}."
         )
         doc._pdpa_footer_lines = [_disc, _disc2]
+        doc._footer_lines = [_disc, _disc2]
     return doc
+
+
+def build_booppa_pdf(doc, story) -> None:
+    """Build ``story`` with the shared furniture and real ``Page N of M``."""
+    _pl.render(doc, story)
 
 # ── PDFService ──
 
@@ -588,7 +512,10 @@ class PDFService:
         """Amber warning box with a left accent bar (scope notice, template warning)."""
         flow = [Paragraph(_pdf_escape(head), self._s["RfpCalloutHead"]), Spacer(1, 4)]
         flow.extend(body_flowables)
-        t = Table([[flow]], colWidths=[CONTENT_W])
+        # splitInRow: this is a one-row table, so without it the whole callout is
+        # unbreakable by construction and gets clipped once the body outgrows a
+        # page (the scope notice does, on kits with a long scope_intro).
+        t = Table([[flow]], colWidths=[CONTENT_W], splitInRow=1)
         t.setStyle(
             TableStyle(
                 [
@@ -702,7 +629,9 @@ class PDFService:
                         Paragraph(f'<font color="{badge_color}"><b>{verif}</b></font>', s["RfpVerif"])
                     )
                 block.append(Spacer(1, 9))
-                items.append(KeepTogether(block))
+                # Answers are AI free text and routinely exceed a page; a plain
+                # KeepTogether would make ReportLab silently drop the overflow.
+                items.extend(keep_together_safe(block))
             items.append(Spacer(1, 0.1 * inch))
 
         return items
@@ -956,25 +885,19 @@ class PDFService:
             out_style_rows.append(r)
 
         col_w = [CONTENT_W * 0.26, CONTENT_W * 0.52, CONTENT_W * 0.22]
-        t = Table(rows, colWidths=col_w)
-        style_cmds = [
-            ("BACKGROUND", (0, 0), (-1, 0), NAVY),
-            ("TEXTCOLOR",  (0, 0), (-1, 0), WHITE),
-            ("FONTNAME",   (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE",   (0, 0), (-1, -1), 8),
-            ("GRID",       (0, 0), (-1, -1), 0.5, BORDER),
-            ("VALIGN",     (0, 0), (-1, -1), "TOP"),
+        style_extra = [
+            ("GRID",          (0, 0), (-1, -1), 0.5, BORDER),
             ("LEFTPADDING",   (0, 0), (-1, -1), 8),
             ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
             ("TOPPADDING",    (0, 0), (-1, -1), 5),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
         ]
         for r in in_style_rows:
-            style_cmds.append(("BACKGROUND", (2, r), (2, r), GREEN))
+            style_extra.append(("BACKGROUND", (2, r), (2, r), GREEN))
         for r in out_style_rows:
-            style_cmds.append(("BACKGROUND", (2, r), (2, r), RED_BG))
-        t.setStyle(TableStyle(style_cmds))
-        return t
+            style_extra.append(("BACKGROUND", (2, r), (2, r), RED_BG))
+        # zebra off: the In/Out-of-Scope column carries its own per-row colour.
+        return make_table(rows, colWidths=col_w, zebra=False, style_extra=style_extra)
 
     # ── PDPA: Compliance Score by Dimension ────────────────────────────────────
 
@@ -1362,24 +1285,17 @@ class PDFService:
         ])
 
         col_w = [CONTENT_W * 0.26, CONTENT_W * 0.12, CONTENT_W * 0.18, CONTENT_W * 0.44]
-        t = Table(rows, colWidths=col_w)
-        style_cmds = [
-            ("BACKGROUND",    (0, 0), (-1, 0), NAVY),
-            ("TEXTCOLOR",     (0, 0), (-1, 0), WHITE),
-            ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE",      (0, 0), (-1, -1), 8),
+        return make_table(rows, colWidths=col_w, zebra=False, style_extra=[
             ("GRID",          (0, 0), (-1, -1), 0.5, BORDER),
-            ("VALIGN",        (0, 0), (-1, -1), "TOP"),
             ("LEFTPADDING",   (0, 0), (-1, -1), 8),
             ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
             ("TOPPADDING",    (0, 0), (-1, -1), 5),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            # Zebra stops short of the last row, which is the Overall Score band.
             ("ROWBACKGROUNDS", (0, 1), (-1, -2), [WHITE, LIGHT_BG]),
             ("BACKGROUND",    (0, -1), (-1, -1), overall_bg),
             ("FONTNAME",      (0, -1), (-1, -1), "Helvetica-Bold"),
-        ]
-        t.setStyle(TableStyle(style_cmds))
-        return t
+        ])
 
     # ── PDPA: Remediation Status (Tier 6) ─────────────────────────────────────
 
@@ -1413,21 +1329,13 @@ class PDFService:
             ])
 
         col_w = [CONTENT_W * 0.46, CONTENT_W * 0.16, CONTENT_W * 0.22, CONTENT_W * 0.16]
-        t = Table(rows, colWidths=col_w)
-        t.setStyle(TableStyle([
-            ("BACKGROUND",    (0, 0), (-1, 0), NAVY),
-            ("TEXTCOLOR",     (0, 0), (-1, 0), WHITE),
-            ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE",      (0, 0), (-1, -1), 8),
+        return make_table(rows, colWidths=col_w, style_extra=[
             ("GRID",          (0, 0), (-1, -1), 0.5, BORDER),
-            ("VALIGN",        (0, 0), (-1, -1), "TOP"),
             ("LEFTPADDING",   (0, 0), (-1, -1), 8),
             ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
             ("TOPPADDING",    (0, 0), (-1, -1), 5),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, LIGHT_BG]),
-        ]))
-        return t
+        ])
 
     # ── PDPA: Assessment Conducted By ─────────────────────────────────────────
 
@@ -1620,7 +1528,7 @@ class PDFService:
             # Add PageTemplate since PDFService used BaseDocTemplate before, 
             # but wait, get_booppa_doc_template returns a SimpleDocTemplate!
             # SimpleDocTemplate already sets up a Frame and PageTemplate in its build() method!
-            # So we don't need to add a PageTemplate manually if we call doc.build(story, onFirstPage=draw_booppa_page, onLaterPages=draw_booppa_page).
+            # So we don't need to add a PageTemplate manually if we call build_booppa_pdf(doc, story).
             # We'll just build it at the end.
 
             story = []
@@ -1637,10 +1545,11 @@ class PDFService:
             story.append(Spacer(1, 0.25 * inch))
 
             # Logo on cover page (if available) — shown for every report type
-            if _LOGO_PATH:
+            if _pl.LOGO_PATH:
                 try:
-                    story.append(Image(_LOGO_PATH, width=1.2 * inch, height=0.4 * inch,
-                                       hAlign="LEFT"))
+                    _logo = _pl.logo_flowable(1.2 * inch, 0.4 * inch, hAlign="LEFT")
+                    if _logo is not None:
+                        story.append(_logo)
                     story.append(Spacer(1, 0.1 * inch))
                 except Exception:
                     pass
@@ -1743,7 +1652,7 @@ class PDFService:
                 structured = report_data.get("structured_report") or {}
                 findings = structured.get("detailed_findings") or []
 
-                from reportlab.platypus import PageBreak as _PageBreak
+                from reportlab.platypus import CondPageBreak as _CondBreak
 
                 company_name = report_data.get("company_name") or "the organisation"
                 scan_date_str = report_data.get("created_at", "")[:10] or datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -1795,7 +1704,7 @@ class PDFService:
                     story.extend(self._assessment_conducted_by_section(report_data))
 
                     # Skip all normal PDPA sections — jump to end
-                    doc.build(story, onFirstPage=draw_booppa_page, onLaterPages=draw_booppa_page)
+                    build_booppa_pdf(doc, story)
                     buffer.seek(0)
                     logger.info("PDF generated (site inaccessible report)")
                     return buffer.getvalue()
@@ -1847,7 +1756,7 @@ class PDFService:
                     ))
                     story.append(Spacer(1, 8))
                     for i, f in enumerate(findings, 1):
-                        story.append(KeepTogether(self._finding_summary_block(i, f)))
+                        story.extend(keep_together_safe(self._finding_summary_block(i, f)))
                         story.append(Spacer(1, 8))
                 story.append(Spacer(1, 0.1 * inch))
 
@@ -1897,7 +1806,10 @@ class PDFService:
                     story.append(Spacer(1, 0.1 * inch))
 
                 # ── Section 5: Developer Implementation Tasks ──────────────────
-                story.append(_PageBreak())
+                # Conditional, not unconditional: this used to force a break even
+                # when Section 4 ended near the top of a page, leaving the rest of
+                # that page blank.
+                story.append(_CondBreak(2.5 * inch))
                 story.append(self._section_header("5. Developer Implementation Tasks"))
                 story.append(Spacer(1, 6))
                 if findings:
@@ -1908,7 +1820,7 @@ class PDFService:
                     ))
                     story.append(Spacer(1, 8))
                     for i, f in enumerate(findings, 1):
-                        story.append(KeepTogether(self._task_block(i, f)))
+                        story.extend(keep_together_safe(self._task_block(i, f)))
                         story.append(Spacer(1, 8))
                 else:
                     story.append(Paragraph(
@@ -1923,11 +1835,12 @@ class PDFService:
                 story.extend(self._assessment_conducted_by_section(report_data))
 
                 # ── Section 7: Blockchain Evidence Anchoring (Changes 3 & 4) ──
-                # Explicit break: the blockchain section is a distinct
-                # evidentiary block — verify links, hash table, anchoring
-                # explainer — and reads better on a fresh page than wedged
-                # under the short "Assessment Conducted By" block.
-                story.append(_PageBreak())
+                # The blockchain section is a distinct evidentiary block — verify
+                # links, hash table, anchoring explainer — so it wants a healthy
+                # run of page beneath it, but not a guaranteed break: the
+                # unconditional one here reliably stranded a near-blank page
+                # after the short "Assessment Conducted By" block.
+                story.append(_CondBreak(3.5 * inch))
                 story.append(self._section_header("7. Blockchain Evidence Anchoring"))
                 story.append(Spacer(1, 6))
                 if findings:
@@ -1991,10 +1904,9 @@ class PDFService:
                 story.append(Spacer(1, 0.1 * inch))
 
                 # ── Section 10: Legal References ───────────────────────────────
-                # Explicit break: legal refs close out the report; keep them on
-                # their own page so they don't get split off a multi-line
-                # timeline table above.
-                story.append(_PageBreak())
+                # Legal refs close out the report; keep them clear of the
+                # multi-line timeline table above without forcing a fresh page.
+                story.append(_CondBreak(2.5 * inch))
                 story.append(self._section_header("10. Legal References"))
                 story.append(Spacer(1, 6))
                 refs = (structured.get("legal_references") or []) or self._default_legal_references(findings)
@@ -2095,7 +2007,7 @@ class PDFService:
                                 )
                             )
                         block.append(Spacer(1, 6))
-                        story.append(KeepTogether(block))
+                        story.extend(keep_together_safe(block))
                     story.append(Spacer(1, 0.1 * inch))
 
                 # Recommendations
@@ -2120,7 +2032,7 @@ class PDFService:
                         if tl:
                             block.append(Paragraph(f"<b>Timeline:</b> {tl}", s["Body"]))
                         block.append(Spacer(1, 6))
-                        story.append(KeepTogether(block))
+                        story.extend(keep_together_safe(block))
                     story.append(Spacer(1, 0.1 * inch))
 
                 # Legal references
@@ -2171,7 +2083,7 @@ class PDFService:
                     )
                 )
 
-            doc.build(story, onFirstPage=draw_booppa_page, onLaterPages=draw_booppa_page)
+            build_booppa_pdf(doc, story)
             buffer.seek(0)
             logger.info("PDF generated successfully")
             return buffer.getvalue()
@@ -2369,25 +2281,25 @@ class PDFService:
         items.append(Paragraph(f"<b>Owner:</b> {owner}", s["Body"]))
         items.append(Spacer(1, 4))
 
-        requirements = f.get("requirements") or []
+        requirements = _as_list(f.get("requirements"))
         if requirements:
             items.append(Paragraph("<b>Requirements:</b>", s["Body"]))
             for j, req in enumerate(requirements, 1):
-                items.append(Paragraph(f"{j}. {req}", s["Bullet"]))
+                items.append(Paragraph(f"{j}. {_pdf_escape(req)}", s["Bullet"]))
             items.append(Spacer(1, 4))
 
-        acceptance = f.get("acceptance_criteria") or []
+        acceptance = _as_list(f.get("acceptance_criteria"))
         if acceptance:
             items.append(Paragraph("<b>Acceptance Criteria:</b>", s["Body"]))
             for ac in acceptance:
-                items.append(Paragraph(f"• {ac}", s["Bullet"]))
+                items.append(Paragraph(f"• {_pdf_escape(ac)}", s["Bullet"]))
             items.append(Spacer(1, 4))
 
-        tools = f.get("recommended_tools") or []
+        tools = _as_list(f.get("recommended_tools"))
         if tools:
             items.append(Paragraph("<b>Recommended Tools / Libraries:</b>", s["Body"]))
             for tool in tools:
-                items.append(Paragraph(f"• {tool}", s["Bullet"]))
+                items.append(Paragraph(f"• {_pdf_escape(tool)}", s["Bullet"]))
 
         # PDPC enforcement precedent line — a real published decision when one is
         # on file, else an honest statutory basis. Statute-only grounding is never
@@ -2472,22 +2384,18 @@ class PDFService:
                 Paragraph(f"{self._sev_badge(priority)}", self._s["Body"])
             ])
             
-        t = Table(data, colWidths=[CONTENT_W * 0.15, CONTENT_W * 0.25, CONTENT_W * 0.40, CONTENT_W * 0.20])
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), NAVY),
-            ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
-            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 8),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, LIGHT_BG]),
-        ]))
-        return t
+        return make_table(
+            data,
+            colWidths=[CONTENT_W * 0.15, CONTENT_W * 0.25, CONTENT_W * 0.40, CONTENT_W * 0.20],
+            style_extra=[
+                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+            ],
+        )
 
     def _blockchain_anchoring_table(self, findings: list) -> Table:
         """Create a table for Blockchain Evidence Anchoring artifacts."""
@@ -2505,20 +2413,17 @@ class PDFService:
             Paragraph("Developer / Legal", self._s["Body"])
         ])
         
-        t = Table(data, colWidths=[CONTENT_W * 0.45, CONTENT_W * 0.30, CONTENT_W * 0.25])
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), NAVY),
-            ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
-            ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
-            ("LEFTPADDING", (0, 0), (-1, -1), 8),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, LIGHT_BG]),
-        ]))
-        return t
+        return make_table(
+            data,
+            colWidths=[CONTENT_W * 0.45, CONTENT_W * 0.30, CONTENT_W * 0.25],
+            style_extra=[
+                ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ],
+        )
 
     def _create_detail_paragraphs(self, report_data: dict) -> list:
         return [

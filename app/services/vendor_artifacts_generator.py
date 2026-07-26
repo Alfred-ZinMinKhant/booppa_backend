@@ -20,33 +20,20 @@ from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-
+from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 from app.services.pdf_styles import get_unified_styles
-from app.core.company import COMPANY_NAME
 from app.services.pdf_logo import draw_logo_header
+from app.core.company import COMPANY_NAME
+from app.services import pdf_layout as _pl
+from app.services.pdf_layout import build_doc, render, xml_escape
 
-logger = logging.getLogger(__name__)
-
-VENDOR_ARTIFACTS_SCHEMA_VERSION = 1
-
-
-def _xml_escape(s: str) -> str:
-    return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+_xml_escape = xml_escape
 
 
-
-
-def _doc(buf: BytesIO, title: str) -> SimpleDocTemplate:
-    return SimpleDocTemplate(
-        buf, pagesize=A4,
-        leftMargin=0.8 * inch, rightMargin=0.8 * inch,
-        topMargin=0.8 * inch, bottomMargin=0.8 * inch,
-        title=title,
-    )
+def _doc(buf: BytesIO, title: str) -> Any:
+    return build_doc(buf, title=title, header_label="VENDOR ARTIFACT")
 
 
 def _metric_card(s, value: str, label: str) -> List:
@@ -161,7 +148,8 @@ def generate_badge_certificate_pdf(data: Dict[str, Any]) -> bytes:
     story.append(Spacer(1, 16))
     story.append(_footer(s, company))
 
-    _doc(buf, f"Verification Badge Certificate — {company}").build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
+    doc = _doc(buf, f"Verification Badge Certificate — {company}")
+    render(doc, story)
     return buf.getvalue()
 
 
@@ -204,7 +192,8 @@ def generate_priority_placement_pdf(data: Dict[str, Any]) -> bytes:
     story.append(Spacer(1, 16))
     story.append(_footer(s, company))
 
-    _doc(buf, f"Priority Placement Report — {company}").build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
+    doc = _doc(buf, f"Priority Placement Report — {company}")
+    render(doc, story)
     return buf.getvalue()
 
 
@@ -256,7 +245,8 @@ def generate_competitor_signals_pdf(data: Dict[str, Any]) -> bytes:
     story.append(Spacer(1, 16))
     story.append(_footer(s, company))
 
-    _doc(buf, f"Competitor Activity Report — {company}").build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
+    doc = _doc(buf, f"Competitor Activity Report — {company}")
+    render(doc, story)
     return buf.getvalue()
 
 
@@ -307,5 +297,6 @@ def generate_bid_timing_pdf(data: Dict[str, Any]) -> bytes:
     story.append(Spacer(1, 16))
     story.append(_footer(s, company))
 
-    _doc(buf, f"Bid-Timing Report — {company}").build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
+    doc = _doc(buf, f"Bid-Timing Report — {company}")
+    render(doc, story)
     return buf.getvalue()

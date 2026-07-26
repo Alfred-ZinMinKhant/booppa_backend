@@ -18,28 +18,19 @@ from app.services.tx_utils import is_real_onchain_tx
 
 logger = logging.getLogger(__name__)
 
-try:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib import colors
-    from reportlab.lib.units import inch
-    from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether,
-    )
-    from app.services.pdf_logo import draw_logo_header
-    _REPORTLAB_OK = True
-except ImportError:  # pragma: no cover
-    _REPORTLAB_OK = False
-    logger.warning("[VendorProof] ReportLab not installed — PDF generation disabled")
+from reportlab.lib import colors
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+from app.services import pdf_layout as _pl
+from app.services.pdf_layout import (
+    build_doc, render, xml_escape, kv_table, make_table,
+    NAVY, SLATE, LIGHT, BORDER, WHITE,
+)
 
+_xml_escape = xml_escape
+_REPORTLAB_OK = True
 
-def _xml_escape(value) -> str:
-    return (
-        str(value if value is not None else "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
 
 
 def generate_vendor_proof_certificate(
@@ -76,11 +67,10 @@ def generate_vendor_proof_certificate(
     verified_on = verified_on or datetime.now(timezone.utc).strftime("%d %B %Y")
 
     buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        leftMargin=0.7 * inch, rightMargin=0.7 * inch,
-        topMargin=0.7 * inch, bottomMargin=0.7 * inch,
+    doc = build_doc(
+        buf,
         title=f"Vendor Proof — {company_name}",
+        header_label="VENDOR PROOF VERIFICATION",
     )
 
     styles = get_unified_styles()
@@ -295,5 +285,5 @@ def generate_vendor_proof_certificate(
         foot_style,
     ))
 
-    doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
+    render(doc, story)
     return buf.getvalue()

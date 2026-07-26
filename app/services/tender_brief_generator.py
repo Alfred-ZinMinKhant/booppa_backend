@@ -16,13 +16,14 @@ from io import BytesIO
 from typing import Any, Dict, List, Optional
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+from app.services import pdf_layout as _pl
+from app.services.pdf_layout import build_doc, render, xml_escape
+from app.services.buyer_procurement_report_generator import _table, _styles
 
-from app.services.pdf_logo import draw_logo_header
-from app.services.buyer_procurement_report_generator import _xml_escape, _table, _styles
+_xml_escape = xml_escape
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +42,10 @@ def generate_tender_brief_pdf(data: Dict[str, Any]) -> bytes:
     """
     s = _styles()
     buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        topMargin=1.35 * inch, bottomMargin=0.8 * inch,
-        leftMargin=0.75 * inch, rightMargin=0.75 * inch,
+    doc = build_doc(
+        buf,
         title="Tender Opportunity Brief",
+        header_label="TENDER OPPORTUNITY BRIEF",
     )
 
     title = _xml_escape((data.get("tender_title") or "").strip()[:180] or "Government tender opportunity")
@@ -123,5 +123,5 @@ def generate_tender_brief_pdf(data: Dict[str, Any]) -> bytes:
         s["small"],
     ))
 
-    doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
+    render(doc, story)
     return buf.getvalue()

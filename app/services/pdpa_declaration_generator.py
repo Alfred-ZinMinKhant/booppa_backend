@@ -19,19 +19,15 @@ from app.services.ropa_generator import PDPA_LEGAL_BASIS_OPTIONS  # single sourc
 
 logger = logging.getLogger(__name__)
 
-try:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib import colors
-    from reportlab.lib.units import inch
-    from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether,
-    )
-    from app.services.pdf_logo import draw_logo_header
-    _REPORTLAB_OK = True
-except ImportError:  # pragma: no cover
-    _REPORTLAB_OK = False
-    logger.warning("[PDPADeclaration] ReportLab not installed — PDF generation disabled")
+from reportlab.lib import colors
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+from app.services import pdf_layout as _pl
+from app.services.pdf_layout import build_doc, render, xml_escape, keep_together_safe
+
+_xml_escape = xml_escape
+_REPORTLAB_OK = True
 
 
 # `max_length` mirrors the column limits in models_v12.PdpaSelfDeclaration.
@@ -145,11 +141,10 @@ def generate_pdpa_declaration_pdf(
         raise RuntimeError("ReportLab is required for PDPA declaration generation")
 
     buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        leftMargin=0.6 * inch, rightMargin=0.6 * inch,
-        topMargin=0.6 * inch, bottomMargin=0.6 * inch,
+    doc = build_doc(
+        buf,
         title=f"PDPA Level-2 Self-Declaration — {company_name}",
+        header_label="PDPA LEVEL-2 SELF-DECLARATION",
     )
 
     styles = get_unified_styles()
@@ -217,5 +212,5 @@ def generate_pdpa_declaration_pdf(
         foot_style,
     ))
 
-    doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
+    render(doc, story)
     return buf.getvalue()

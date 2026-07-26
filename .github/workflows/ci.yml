@@ -983,6 +983,7 @@ jobs:
           # durable, so tasks simply wait for the new consumer. Do NOT copy this to
           # the app service, which needs minimumHealthyPercent=100 for zero-downtime HTTP.
           aws ecs update-service --cluster $CLUSTER --service $SERVICE --task-definition "$WORKER_TASK_DEF_ARN" --force-new-deployment --region $AWS_REGION \
+            --availability-zone-rebalancing DISABLED \
             --deployment-configuration "maximumPercent=100,minimumHealthyPercent=0"
 
       - name: Update ECS service to use new task definition (beat)
@@ -1007,6 +1008,7 @@ jobs:
             # double-fire every entry in beat_schedule — and the overlap also doubles
             # this service's Redis clients against the 30-client free-tier ceiling.
             aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --task-definition "$BEAT_TASK_DEF_ARN" --force-new-deployment --region "$AWS_REGION" \
+              --availability-zone-rebalancing DISABLED \
               --deployment-configuration "maximumPercent=100,minimumHealthyPercent=0"
           else
             echo "Beat service not found — creating it (single replica) from worker network config"

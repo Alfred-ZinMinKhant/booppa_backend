@@ -25,37 +25,25 @@ from typing import Optional, Dict, Any
 
 import qrcode
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
-from reportlab.platypus import (
-    BaseDocTemplate, Frame, HRFlowable, Image, KeepTogether, PageBreak,
-    PageTemplate, Paragraph, Spacer, Table, TableStyle,
-)
+from reportlab.platypus import Image, Paragraph, Spacer, Table, TableStyle
 
 # Booppa has no Singapore UEN — the disclaimer names the entity only. (A prior
 # hardcoded UEN was fabricated; printing one on a compliance artifact handed to
 # a procurer/regulator is a misrepresentation.)
 from app.core.company import COMPANY_NAME
+from app.services import pdf_layout as _pl
+from app.services.pdf_layout import (
+    BORDER, CONTENT_W, EMERALD, FOOTER_H, HEADER_H, LIGHT, MARGIN, NAVY,
+    PAGE_H, PAGE_W, SLATE, WHITE, keep_together_safe, make_table,
+)
 from app.services.tx_utils import is_real_onchain_tx
 
 logger = logging.getLogger(__name__)
 
-# Logo resolution mirrors pdf_service.py so both generators find the same asset
-# regardless of whether running from source tree or container.
-_HERE = os.path.dirname(__file__)
-_LOGO_CANDIDATES = [
-    os.path.join(_HERE, "..", "..", "static", "logo.png"),
-    "/app/static/logo.png",
-    os.path.join(_HERE, "..", "..", "data", "logo.png"),
-    "/app/data/logo.png",
-]
-_LOGO_PATH: str | None = None
-for _c in _LOGO_CANDIDATES:
-    _abs = os.path.abspath(_c)
-    if os.path.exists(_abs):
-        _LOGO_PATH = _abs
-        break
+# Logo, geometry, palette and the page callback all come from pdf_layout now.
+_LOGO_PATH = _pl.LOGO_PATH
 
 # Bumped whenever the visible structure of the cover sheet changes (sections,
 # branding, copy). Stored on the Report row so the UI can detect customers
@@ -97,106 +85,39 @@ for _c in _LOGO_CANDIDATES:
 #      "Full Report" is the untruncated presentation of the SAME automated scan as
 #      the standalone PDPA Quick Scan (same public-web surface), not a deeper scan.
 #      Flags v12 copies as outdated so customers get the disambiguated cover sheet.
-COVER_SHEET_SCHEMA_VERSION = 14  # Legislation cell falls back to `legislation` key (free-scan findings)
+# v15: layout refresh — shared pdf_layout geometry/furniture, real "Page N of M",
+#      repeating header rows on split tables, conditional section breaks (no more
+#      near-blank pages), and oversized finding/Q&A cards no longer clipped.
+COVER_SHEET_SCHEMA_VERSION = 15
 
-PAGE_W, PAGE_H = A4
-MARGIN = 0.75 * inch
-# Header tall enough to fit the Booppa logo at a legible size on the navy band.
-HEADER_H = 0.7 * inch
-FOOTER_H = 0.45 * inch
-
-NAVY    = colors.HexColor("#0f172a")
-EMERALD = colors.HexColor("#10b981")
-SLATE   = colors.HexColor("#64748b")
-LIGHT   = colors.HexColor("#f8fafc")
-BORDER  = colors.HexColor("#e2e8f0")
-WHITE   = colors.white
+_HEADER_LABEL = "COMPLIANCE EVIDENCE PACK · COVER SHEET"
 
 
 def _draw_page(canvas, doc):
-    canvas.saveState()
-    canvas.setFillColor(NAVY)
-    canvas.rect(0, PAGE_H - HEADER_H, PAGE_W, HEADER_H, fill=1, stroke=0)
-
-    # The logo is ~423×144 px → aspect ~2.94. ReportLab's drawImage with only
-    # `height` and preserveAspectRatio is unreliable on some builds (silently
-    # skips). Compute the matching width explicitly so the logo always renders.
-    logo_h = 0.48 * inch
-    logo_w = logo_h * 2.94
-    logo_y = PAGE_H - HEADER_H + (HEADER_H - logo_h) / 2
-    logo_drawn = False
-    if _LOGO_PATH:
-        try:
-            canvas.drawImage(
-                _LOGO_PATH,
-                MARGIN,
-                logo_y,
-                width=logo_w,
-                height=logo_h,
-                preserveAspectRatio=True,
-                mask="auto",
-            )
-            logo_drawn = True
-        except Exception:
-            logo_drawn = False
-    if not logo_drawn:
-        canvas.setFillColor(EMERALD)
-        canvas.setFont("Helvetica-Bold", 10)
-        canvas.drawString(MARGIN, PAGE_H - HEADER_H + 0.26 * inch, "BOOPPA")
-
-    # Right side: pack label. Drop the centre "Compliance Evidence Pack"
-    # caption — the logo + right label is enough and was overlapping the
-    # logo at the old size.
-    canvas.setFillColor(EMERALD)
-    canvas.setFont("Helvetica-Bold", 7.5)
-    canvas.drawRightString(PAGE_W - MARGIN, PAGE_H - HEADER_H + 0.26 * inch, "COMPLIANCE EVIDENCE PACK · COVER SHEET")
-
-    canvas.setStrokeColor(BORDER)
-    canvas.setLineWidth(0.5)
-    canvas.line(MARGIN, FOOTER_H, PAGE_W - MARGIN, FOOTER_H)
-    canvas.setFillColor(SLATE)
-    canvas.setFont("Helvetica", 6.5)
-    canvas.drawString(MARGIN, FOOTER_H - 9, "Booppa Smart Care LLC · booppa.io · Confidential")
-    canvas.drawRightString(PAGE_W - MARGIN, FOOTER_H - 9, f"Page {doc.page}")
-    canvas.restoreState()
+    """Header band, logo and footer — delegated to the shared implementation."""
+    if getattr(doc, "_header_label", None) is None:
+        doc._header_label = _HEADER_LABEL
+    _pl.draw_page(canvas, doc)
 
 
 def _section(title: str, styles, *, page_break: bool = False) -> list:
-    """Section header. Pass `page_break=True` to start the section on a fresh
-    page (used between heavy variable-length sections so they don't collide).
-    The HR is wrapped in a KeepTogether with the next flowable via ReportLab's
-    keepWithNext on the h2 style — set globally below so the title never
-    widows at the end of a page on its own.
+    """Section header.
+
+    ``page_break=True`` used to emit an unconditional ``PageBreak``, which is
+    where this document's blank pages came from: the four heavy sections force
+    a break even when the previous one ended two lines into a page. It now maps
+    to a ``CondPageBreak`` — the section still gets a clean run of page when it
+    needs one, without manufacturing an empty one when it doesn't.
     """
-    out: list = []
-    if page_break:
-        out.append(PageBreak())
-    else:
-        out.append(Spacer(1, 0.15 * inch))
-    out.append(Paragraph(f'<font color="#10b981">■</font>  <b>{title}</b>', styles["h2"]))
-    out.append(HRFlowable(width="100%", thickness=0.5, color=BORDER, spaceAfter=6))
-    return out
+    return _pl.section(
+        title, styles,
+        min_space=3.0 * inch if page_break else 1.2 * inch,
+    )
 
 
 def _kv_table(rows: list[tuple[str, str]]) -> Table:
-    def _val(v):
-        # User/AI-supplied KV values (company names, URLs, statuses) routinely
-        # contain `&`/`<` (e.g. "Ernst & Young", query-string URLs). Escape or
-        # ReportLab's Paragraph paraparser raises and the whole PDF fails to build.
-        return v if isinstance(v, Paragraph) else Paragraph(_xml_escape(str(v)), _STYLES["Normal"])
-    data = [[Paragraph(f"<b>{k}</b>", _STYLES["Normal"]), _val(v)] for k, v in rows]
-    t = Table(data, colWidths=[2.2 * inch, 4.5 * inch])
-    t.setStyle(TableStyle([
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [LIGHT, WHITE]),
-        ("GRID", (0, 0), (-1, -1), 0.3, BORDER),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
-    return t
+    """Label/value table — the shared one, which escapes values for us."""
+    return _pl.kv_table(rows)
 
 
 _RAW_STYLES = get_unified_styles()
@@ -210,16 +131,10 @@ _STYLES: Dict[str, ParagraphStyle] = {
     "caption": ParagraphStyle("cs_caption", fontSize=9, leading=13, textColor=colors.HexColor("#334155")),
 }
 
-_SEVERITY_COLORS = {
-    "CRITICAL": colors.HexColor("#7f1d1d"),
-    "HIGH":     colors.HexColor("#dc2626"),
-    "MEDIUM":   colors.HexColor("#f59e0b"),
-    "LOW":      colors.HexColor("#10b981"),
-    "INFO":     SLATE,
-}
+_SEVERITY_COLORS = _pl.SEVERITY_COLORS
 
 
-def _pdpa_finding_block(idx: int, f: dict):
+def _pdpa_finding_block(idx: int, f: dict) -> list:
     """Render a single PDPA finding as a bordered card: title + severity badge,
     description, legislation, evidence, recommendation. Uses KeepTogether so
     findings don't split across pages mid-card when possible.
@@ -287,19 +202,14 @@ def _pdpa_finding_block(idx: int, f: dict):
         ("LINEBEFORE", (0, 0), (0, -1), 2, sev_color),
     ]))
 
-    return KeepTogether([header, body])
+    # Descriptions and AI answers are unbounded; a plain KeepTogether would
+    # make ReportLab silently drop anything past one page.
+    return keep_together_safe([header, body])
 
 
-def _xml_escape(s: str) -> str:
-    """Escape user-supplied text so ReportLab's Paragraph mini-XML doesn't
-    misinterpret `&`, `<`, `>` (e.g. "Q&A" → entity-start, breaks rendering).
-    """
-    return (
-        (s or "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+# The local copy took `str` only and raised AttributeError on the int/Decimal/
+# None values that arrive from the ORM. The shared one coerces first.
+_xml_escape = _pl.xml_escape
 
 
 # Verification source → label + colour. Mirrors SOURCE_BADGE on the web result
@@ -351,7 +261,7 @@ def _is_qa_incomplete(qa: dict) -> bool:
     return False
 
 
-def _rfp_qa_block(idx: int, qa: dict):
+def _rfp_qa_block(idx: int, qa: dict) -> list:
     """Render a single RFP Q&A entry: question, answer, verification-source
     badge, and the evidence line that justifies the badge.
     """
@@ -418,7 +328,9 @@ def _rfp_qa_block(idx: int, qa: dict):
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
 
-    return KeepTogether([header, body])
+    # Descriptions and AI answers are unbounded; a plain KeepTogether would
+    # make ReportLab silently drop anything past one page.
+    return keep_together_safe([header, body])
 
 
 def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
@@ -436,15 +348,8 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
       bundle_type,
     """
     buf = BytesIO()
-    doc = BaseDocTemplate(
-        buf,
-        pagesize=A4,
-        leftMargin=MARGIN, rightMargin=MARGIN,
-        topMargin=HEADER_H + 0.3 * inch,
-        bottomMargin=FOOTER_H + 0.3 * inch,
-    )
-    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="main")
-    doc.addPageTemplates([PageTemplate(id="main", frames=frame, onPage=_draw_page)])
+    doc = _pl.build_doc(buf, title="Compliance Evidence Pack — Cover Sheet",
+                        header_label=_HEADER_LABEL)
 
     story = []
     now = datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC")
@@ -458,7 +363,9 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     if _LOGO_PATH:
         try:
             story.append(Spacer(1, 0.05 * inch))
-            story.append(Image(_LOGO_PATH, width=2.4 * inch, height=0.82 * inch, kind="proportional"))
+            _logo = _pl.logo_flowable(2.4 * inch, 0.82 * inch, kind="proportional")
+            if _logo is not None:
+                story.append(_logo)
             story.append(Spacer(1, 0.12 * inch))
         except Exception as e:
             logger.warning(f"[CoverSheet] Body logo render failed: {e}")
@@ -680,7 +587,7 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
         ))
         story.append(Spacer(1, 0.04 * inch))
         for idx, f in enumerate(findings_full, 1):
-            story.append(_pdpa_finding_block(idx, f))
+            story.extend(_pdpa_finding_block(idx, f))
             story.append(Spacer(1, 0.06 * inch))
     else:
         # Render an explicit placeholder so the buyer sees the section attempted
@@ -699,7 +606,7 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
         ))
 
     # ── Section 4: RFP Complete Kit — Full Q&A ────────────────────────────────
-    story += _section("RFP Complete Kit — Full Q&amp;A", _STYLES, page_break=True)
+    story += _section("RFP Complete Kit — Full Q&A", _STYLES, page_break=True)
     rfp_d = data.get("rfp_details") or {}
     generated_at = rfp_d.get("generated_at") or "—"
     if isinstance(generated_at, str) and "T" in generated_at:
@@ -768,7 +675,7 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
         ))
         story.append(Spacer(1, 0.04 * inch))
         for idx, qa in enumerate(qa_answers, 1):
-            story.append(_rfp_qa_block(idx, qa))
+            story.extend(_rfp_qa_block(idx, qa))
             story.append(Spacer(1, 0.05 * inch))
     else:
         story.append(Paragraph(
@@ -860,20 +767,17 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
             tx = d.get("tx_hash") if is_real_onchain_tx(d.get("tx_hash")) else ""
             short_tx = (tx[:12] + "…" + tx[-6:]) if tx else "Pending"
             doc_rows.append([str(i), descriptor[:48], short_hash, short_tx])
-        doc_table = Table(doc_rows, colWidths=[0.3 * inch, 2.6 * inch, 2.5 * inch, 1.3 * inch])
-        doc_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), NAVY),
-            ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
-            ("FONTSIZE", (0, 0), (-1, -1), 7),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTNAME", (2, 1), (3, -1), "Courier"),
-            ("GRID", (0, 0), (-1, -1), 0.3, BORDER),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [LIGHT, WHITE]),
-            ("LEFTPADDING", (0, 0), (-1, -1), 4),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ]))
-        story.append(doc_table)
+        story.append(make_table(
+            doc_rows,
+            colWidths=[0.3 * inch, 2.6 * inch, 2.5 * inch, 1.3 * inch],
+            style_extra=[
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ("FONTNAME", (2, 1), (3, -1), "Courier"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ],
+        ))
         story.append(Spacer(1, 0.05 * inch))
         story.append(Paragraph(
             "Each document above has been hashed with SHA-256 and anchored to the "
@@ -889,19 +793,16 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
         trm_rows = [["Domain", "Status", "Risk"]]
         for d in trm_domains:
             trm_rows.append([d.get("domain", ""), d.get("status", "not_started"), d.get("risk_rating") or "—"])
-        trm_table = Table(trm_rows, colWidths=[3.5 * inch, 1.8 * inch, 1.4 * inch])
-        trm_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), NAVY),
-            ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
-            ("FONTSIZE", (0, 0), (-1, -1), 7.5),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("GRID", (0, 0), (-1, -1), 0.3, BORDER),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [LIGHT, WHITE]),
-            ("LEFTPADDING", (0, 0), (-1, -1), 5),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ]))
-        story.append(trm_table)
+        story.append(make_table(
+            trm_rows,
+            colWidths=[3.5 * inch, 1.8 * inch, 1.4 * inch],
+            style_extra=[
+                ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ],
+        ))
 
     # ── Section 7: Risk Overview ───────────────────────────────────────────────
     # Surface the buyer's top 3 risks tied to specific PDPA findings so the
@@ -989,7 +890,7 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
         _STYLES["small"],
     ))
 
-    doc.build(story)
+    _pl.render(doc, story)
     return buf.getvalue()
 
 
@@ -1022,15 +923,8 @@ def append_signature_page(
     signed_at = (signed_at_utc or datetime.now(timezone.utc)).strftime("%d %b %Y %H:%M UTC")
 
     sig_buf = BytesIO()
-    sig_doc = BaseDocTemplate(
-        sig_buf,
-        pagesize=A4,
-        leftMargin=MARGIN, rightMargin=MARGIN,
-        topMargin=HEADER_H + 0.3 * inch,
-        bottomMargin=FOOTER_H + 0.3 * inch,
-    )
-    frame = Frame(sig_doc.leftMargin, sig_doc.bottomMargin, sig_doc.width, sig_doc.height, id="sig")
-    sig_doc.addPageTemplates([PageTemplate(id="sig", frames=frame, onPage=_draw_page)])
+    sig_doc = _pl.build_doc(sig_buf, title="Cover Sheet — Signature Page",
+                            header_label=_HEADER_LABEL)
 
     story: list = []
 
@@ -1096,7 +990,7 @@ def append_signature_page(
         _STYLES["small"],
     ))
 
-    sig_doc.build(story)
+    _pl.render(sig_doc, story)
     signature_pdf_bytes = sig_buf.getvalue()
 
     # Concatenate unsigned cover sheet + signature page using pypdf. We never

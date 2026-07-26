@@ -18,18 +18,13 @@ from io import BytesIO
 from typing import Any, Dict, List
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import (
-    Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
-)
+from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+from app.services import pdf_layout as _pl
+from app.services.pdf_layout import build_doc, render, xml_escape
 
-from app.services.pdf_styles import get_unified_styles
-from app.core.company import COMPANY_NAME
-from app.services.pdf_logo import draw_logo_header
-
-logger = logging.getLogger(__name__)
+_xml_escape = xml_escape
 
 # Bump when the visible structure of the baseline PDF changes.
 # v2: added an Initial Gap Analysis section (per-domain requirement, priority,
@@ -137,11 +132,10 @@ def generate_trm_baseline_pdf(data: Dict[str, Any]) -> bytes:
     gen_at = data.get("generated_at") or datetime.now(timezone.utc).strftime("%d %B %Y")
 
     buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        leftMargin=0.7 * inch, rightMargin=0.7 * inch,
-        topMargin=0.7 * inch, bottomMargin=0.7 * inch,
+    doc = build_doc(
+        buf,
         title=f"MAS TRM Baseline — {company}",
+        header_label="MAS TRM BASELINE ASSESSMENT",
     )
     story: list = []
 
@@ -454,7 +448,5 @@ def generate_trm_baseline_pdf(data: Dict[str, Any]) -> bytes:
 
     # Pro Suite white-label override (logo_bytes / primary_color / secondary_color) —
     # draw_logo_header reads doc._branding the same way pdf_service.py's header does.
-    doc._branding = data.get("white_label")
-
-    doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
+    render(doc, story)
     return buf.getvalue()

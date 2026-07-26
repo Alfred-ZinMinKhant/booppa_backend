@@ -16,36 +16,12 @@ from io import BytesIO
 from typing import Any, Dict, List
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from app.services import pdf_layout as _pl
+from app.services.pdf_layout import build_doc, render, xml_escape
 
-from app.core.company import COMPANY_NAME
-from app.services.pdf_logo import draw_logo_header
-
-logger = logging.getLogger(__name__)
-
-TRM_BOARD_REPORT_SCHEMA_VERSION = 1
-
-# status → (RAG label, colour). not_started/in_progress are Amber (work owed);
-# gap is Red; compliant is Green.
-_RAG = {
-    "compliant": ("GREEN", "#065f46"),
-    "in_progress": ("AMBER", "#b45309"),
-    "not_started": ("AMBER", "#b45309"),
-    "gap": ("RED", "#dc2626"),
-}
-_STATUS_LABEL = {
-    "not_started": "Not Started",
-    "in_progress": "In Progress",
-    "compliant": "Compliant",
-    "gap": "Gap Identified",
-}
-
-
-def _xml_escape(s: str) -> str:
-    return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+_xml_escape = xml_escape
 
 
 def board_data_from_controls(controls, sector: str | None) -> dict:
@@ -145,11 +121,10 @@ def generate_trm_board_report_pdf(data: Dict[str, Any]) -> bytes:
     next_focus = data.get("next_focus")
 
     buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        leftMargin=0.8 * inch, rightMargin=0.8 * inch,
-        topMargin=0.8 * inch, bottomMargin=0.8 * inch,
+    doc = build_doc(
+        buf,
         title=f"MAS TRM Board Report — {company}",
+        header_label="MAS TRM BOARD REPORT",
     )
     story: list = []
 

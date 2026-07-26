@@ -27,27 +27,21 @@ from typing import Any, Dict
 from app.services.tx_utils import is_real_onchain_tx
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-
+from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 from app.services.pdf_styles import get_unified_styles
 from app.services.pdf_logo import draw_logo_header
 from app.core.company import COMPANY_NAME
+from app.services import pdf_layout as _pl
+from app.services.pdf_layout import build_doc, render, xml_escape
 
-logger = logging.getLogger(__name__)
-
-SUPPLIER_DUE_DILIGENCE_SCHEMA_VERSION = 1
+_xml_escape = xml_escape
 
 _INK = colors.HexColor("#0f172a")
 _MUTED = colors.HexColor("#64748b")
 _RULE = colors.HexColor("#e2e8f0")
 _PAPER = colors.HexColor("#f8fafc")
-
-
-def _xml_escape(s) -> str:
-    return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def demo_tx_hash(evidence_hash: str) -> str:
@@ -107,11 +101,10 @@ def generate_certificate_pdf(data: Dict[str, Any]) -> bytes:
     doc_title = "Supplier Due-Diligence Certificate" if is_cert else "Supplier Verification Snapshot"
 
     buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        leftMargin=0.8 * inch, rightMargin=0.8 * inch,
-        topMargin=0.8 * inch, bottomMargin=0.8 * inch,
+    doc = build_doc(
+        buf,
         title=f"{'[SAMPLE] ' if sample_data else ''}{doc_title} — {supplier}",
+        header_label=doc_title.upper(),
     )
     story: list = []
 
@@ -240,7 +233,7 @@ def generate_certificate_pdf(data: Dict[str, Any]) -> bytes:
     else:
         on_first = on_later = draw_logo_header
 
-    doc.build(story, onFirstPage=on_first, onLaterPages=on_later)
+    render(doc, story)
     return buf.getvalue()
 
 

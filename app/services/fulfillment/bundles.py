@@ -318,7 +318,8 @@ async def _fulfill_standalone_no_report(
         # the stub report on the user's result page. The session was created without
         # a report_id (the stub didn't exist yet); without this backfill the result
         # page would 404-poll until timeout even though fulfillment succeeded.
-        if session_id:
+        # Skip for admin test-checkout simulations (admin-sim-*) which do not exist on Stripe.
+        if session_id and not session_id.startswith("admin-sim-"):
             try:
                 stripe.api_key = settings.STRIPE_SECRET_KEY
                 stripe.checkout.Session.modify(

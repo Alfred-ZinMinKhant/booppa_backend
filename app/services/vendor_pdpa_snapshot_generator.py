@@ -20,23 +20,13 @@ from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+from app.services import pdf_layout as _pl
+from app.services.pdf_layout import build_doc, render, xml_escape
 
-from app.services.pdf_styles import get_unified_styles
-from app.core.company import COMPANY_NAME
-from app.services.pdf_logo import draw_logo_header
-from app.services.tx_utils import is_real_onchain_tx
-
-logger = logging.getLogger(__name__)
-
-VENDOR_PDPA_SNAPSHOT_SCHEMA_VERSION = 2
-
-
-def _xml_escape(s: str) -> str:
-    return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+_xml_escape = xml_escape
 
 
 
@@ -108,11 +98,10 @@ def generate_vendor_pdpa_snapshot_pdf(data: Dict[str, Any]) -> bytes:
         return "—" if v is None else str(v)
 
     buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        leftMargin=0.8 * inch, rightMargin=0.8 * inch,
-        topMargin=0.8 * inch, bottomMargin=0.8 * inch,
+    doc = build_doc(
+        buf,
         title=f"Quarterly PDPA Snapshot — {company}",
+        header_label="QUARTERLY PDPA SNAPSHOT",
     )
     story: list = []
 
@@ -231,5 +220,5 @@ def generate_vendor_pdpa_snapshot_pdf(data: Dict[str, Any]) -> bytes:
         f"Prepared by {_xml_escape(COMPANY_NAME)} for {_xml_escape(company)} for informational "
         "purposes only. Not a statement of regulatory compliance.", s["small"]))
 
-    doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
+    render(doc, story)
     return buf.getvalue()

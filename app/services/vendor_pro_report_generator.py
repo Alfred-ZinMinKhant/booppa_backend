@@ -19,27 +19,13 @@ from io import BytesIO
 from typing import Any, Dict, List
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+from app.services import pdf_layout as _pl
+from app.services.pdf_layout import build_doc, render, xml_escape
 
-from app.services.pdf_styles import get_unified_styles
-from app.services.pdf_logo import draw_logo_header
-from app.core.company import COMPANY_NAME
-
-logger = logging.getLogger(__name__)
-
-VENDOR_PRO_REPORT_SCHEMA_VERSION = 1
-
-_INK = colors.HexColor("#0f172a")
-_MUTED = colors.HexColor("#64748b")
-_RULE = colors.HexColor("#e2e8f0")
-_PAPER = colors.HexColor("#f8fafc")
-
-
-def _xml_escape(s) -> str:
-    return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+_xml_escape = xml_escape
 
 
 

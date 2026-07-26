@@ -835,10 +835,11 @@ LEGAL_DISCLAIMER = (
 )
 
 
-def _xml_escape(s: str) -> str:
+def _xml_escape(s) -> str:
     """Escape user/AI text so ReportLab's Paragraph mini-XML doesn't misinterpret
     `&`, `<`, `>` (e.g. "Q&A" becomes an entity-start and breaks rendering)."""
-    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    from app.services.pdf_layout import xml_escape
+    return xml_escape(s)
 
 
 def _inline(s: str) -> str:
@@ -876,13 +877,13 @@ def generate_csp_document_pdf(
     Markdown handled: ``#``/``##``/``###`` headings, ``- ``/``* `` bullets, blank-line
     paragraph breaks. All text is ``_xml_escape``d before entering a Paragraph.
     """
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import inch
     from reportlab.lib import colors
-    from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, PageBreak, KeepTogether,
-    )
+    from reportlab.platypus import CondPageBreak, Paragraph, Spacer
+
+    from app.services import pdf_layout as _pl
+    from app.services.pdf_layout import keep_together_safe
 
     meta = meta or {}
     styles = get_unified_styles()
@@ -920,18 +921,18 @@ def generate_csp_document_pdf(
         else:
             flow.append(Paragraph(_inline(line), body_style))
 
-    flow.append(PageBreak())
-    flow.append(KeepTogether([
+    # Conditional: the disclaimer is ~6 lines, and an unconditional PageBreak
+    # here gave every one of these eight documents a final page containing
+    # nothing but it.
+    flow.append(CondPageBreak(1.6 * inch))
+    flow.extend(keep_together_safe([
         Paragraph("Legal Disclaimer", h3),
         Paragraph(_xml_escape(LEGAL_DISCLAIMER), small),
     ]))
 
     buf = BytesIO()
-    SimpleDocTemplate(
-        buf, pagesize=A4,
-        leftMargin=0.85 * inch, rightMargin=0.85 * inch,
-        topMargin=0.85 * inch, bottomMargin=0.85 * inch,
-        title=title, author="Booppa Smart Care LLC",
-    ).build(flow)
+    doc = _pl.build_doc(buf, title=title, header_label="CSP COMPLIANCE DOCUMENT")
+    doc.author = "Booppa Smart Care LLC"
+    _pl.render(doc, flow)
     pdf_bytes = buf.getvalue()
     return pdf_bytes, hashlib.sha256(pdf_bytes).hexdigest()

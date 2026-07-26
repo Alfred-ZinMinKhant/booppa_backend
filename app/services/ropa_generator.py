@@ -21,14 +21,12 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 try:
-    from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib import colors
     from reportlab.lib.units import inch
-    from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether,
-    )
-    from app.services.pdf_logo import draw_logo_header
+    from reportlab.platypus import Paragraph, Spacer
+    from app.services import pdf_layout as _pl
+    from app.services.pdf_layout import keep_together_safe, make_table
     _REPORTLAB_OK = True
 except ImportError:  # pragma: no cover
     _REPORTLAB_OK = False
@@ -97,14 +95,9 @@ _REQUIRED_KEYS = [f["key"] for f in ROPA_INTAKE_SCHEMA]
 _MAX_LENGTHS = {f["key"]: f["max_length"] for f in ROPA_INTAKE_SCHEMA}
 
 
-def _xml_escape(value: str) -> str:
+def _xml_escape(value) -> str:
     """Escape &, <, > for ReportLab's Paragraph mini-XML parser."""
-    return (
-        str(value or "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    return _pl.xml_escape(value)
 
 
 def validate_ropa_intake(activities) -> list[str]:
@@ -167,11 +160,10 @@ def generate_ropa_lite_pdf(
         raise RuntimeError("ReportLab is required for ROPA PDF generation")
 
     buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        leftMargin=0.6 * inch, rightMargin=0.6 * inch,
-        topMargin=0.6 * inch, bottomMargin=0.6 * inch,
+    doc = _pl.build_doc(
+        buf,
         title=f"ROPA Lite — {company_name}",
+        header_label="ROPA LITE · RECORD OF PROCESSING ACTIVITIES",
     )
 
     styles = get_unified_styles()
@@ -249,19 +241,24 @@ def generate_ropa_lite_pdf(
                 Paragraph(_xml_escape(value) or "—", cell_value),
             ])
 
-        t = Table(table_data, hAlign="LEFT", colWidths=[1.9 * inch, 5.3 * inch])
-        t.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("FONTSIZE", (0, 0), (-1, -1), 9),
-            ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
-            ("LINEBELOW", (0, 0), (-1, -1), 0.25, colors.HexColor("#e2e8f0")),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("LEFTPADDING", (0, 0), (-1, -1), 6),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ]))
+        label_w = 1.9 * inch
+        t = make_table(
+            table_data,
+            colWidths=[label_w, _pl.CONTENT_W - label_w],
+            header=False,
+            grid=False,
+            hAlign="LEFT",
+            style_extra=[
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("LINEBELOW", (0, 0), (-1, -1), 0.25, _pl.BORDER),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ],
+        )
         block.append(t)
-        story.append(KeepTogether(block))
+        # A single activity with long free-text values can exceed a page; a
+        # plain KeepTogether would drop the overflow rather than split it.
+        story.extend(keep_together_safe(block))
 
     if not rows:
         story.append(Paragraph("No processing activities were declared.", cell_value))
@@ -274,5 +271,5 @@ def generate_ropa_lite_pdf(
         foot_style,
     ))
 
-    doc.build(story, onFirstPage=draw_logo_header, onLaterPages=draw_logo_header)
+    _pl.render(doc, story)
     return buf.getvalue()

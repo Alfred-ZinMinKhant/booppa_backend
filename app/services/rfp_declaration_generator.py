@@ -23,171 +23,50 @@ bare "VERIFIED".
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any, Dict, Optional
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import (
-    BaseDocTemplate, Frame, HRFlowable, KeepTogether, PageTemplate,
-    Paragraph, Spacer, Table, TableStyle,
+from reportlab.platypus import HRFlowable, Paragraph, Spacer, Table
+
+from app.services import pdf_layout as _pl
+from app.services import rfp_doc_common as _common
+from app.services.pdf_layout import (
+    BORDER, CONTENT_W, EMERALD, LIGHT, NAVY, SLATE, WHITE, xml_escape as _xml_escape,
 )
+from app.services.rfp_doc_common import AMBER, BLUE
 
 logger = logging.getLogger(__name__)
 
-# Logo resolution mirrors cover_sheet_generator.py.
-_HERE = os.path.dirname(__file__)
-_LOGO_CANDIDATES = [
-    os.path.join(_HERE, "..", "..", "static", "logo.png"),
-    "/app/static/logo.png",
-    os.path.join(_HERE, "..", "..", "data", "logo.png"),
-    "/app/data/logo.png",
-]
-_LOGO_PATH: str | None = None
-for _c in _LOGO_CANDIDATES:
-    _abs = os.path.abspath(_c)
-    if os.path.exists(_abs):
-        _LOGO_PATH = _abs
-        break
-
-PAGE_W, PAGE_H = A4
-MARGIN = 0.75 * inch
-HEADER_H = 0.7 * inch
-FOOTER_H = 0.45 * inch
-
-NAVY    = colors.HexColor("#0f172a")
-EMERALD = colors.HexColor("#10b981")
-SLATE   = colors.HexColor("#64748b")
-LIGHT   = colors.HexColor("#f8fafc")
-BORDER  = colors.HexColor("#e2e8f0")
-WHITE   = colors.white
-BLUE    = colors.HexColor("#0284c7")
-AMBER   = colors.HexColor("#d97706")
-
-_STYLES: Dict[str, ParagraphStyle] = {
-    "normal": ParagraphStyle("decl_normal", fontSize=8, leading=12, textColor=colors.HexColor("#334155")),
-    "h1":     ParagraphStyle("decl_h1", fontSize=16, leading=20, textColor=NAVY, fontName="Helvetica-Bold"),
-    "h2":     ParagraphStyle("decl_h2", fontSize=10, leading=14, textColor=NAVY, fontName="Helvetica-Bold", spaceBefore=4, keepWithNext=1),
-    "small":  ParagraphStyle("decl_small", fontSize=7, leading=10, textColor=SLATE),
-    "item_t": ParagraphStyle("decl_item_t", fontSize=9, leading=12, textColor=NAVY, fontName="Helvetica-Bold"),
-    "item_b": ParagraphStyle("decl_item_b", fontSize=8, leading=11, textColor=colors.HexColor("#334155")),
-    "badge":  ParagraphStyle("decl_badge", fontSize=6, leading=8, textColor=WHITE, fontName="Helvetica-Bold", alignment=1),
-}
+# Logo, geometry, palette and page furniture come from pdf_layout; the
+# styles/badge/item-card that this document shares with its sibling live in
+# rfp_doc_common.
+_STYLES = _common.make_styles("decl_")
+_HEADER_LABEL = "SUPPLIER COMPLIANCE DECLARATION"
+_FOOTER_TEXT = (
+    "Booppa Smart Care LLC · booppa.io · Confidential"
+)
 
 
-def _xml_escape(s: Any) -> str:
-    """Escape user-supplied text so ReportLab's Paragraph mini-XML doesn't
-    misinterpret `&`, `<`, `>`."""
-    return (
-        (str(s) if s is not None else "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
+def _kv_table(rows) -> Table:
+    return _common.kv_table(rows, _STYLES)
+
+
+def _declaration_item(code, title, body, badge_text, badge_color) -> list:
+    """One D-item card. Returns a list of flowables — the previous
+    KeepTogether-around-a-one-row-Table was doubly unbreakable and clipped
+    long answers off a document that gets signed and anchored."""
+    return _common.item_card(
+        code, title, body, badge_text, badge_color, _STYLES,
+        separator=". ",
     )
 
 
-def _draw_page(canvas, doc):
-    canvas.saveState()
-    canvas.setFillColor(NAVY)
-    canvas.rect(0, PAGE_H - HEADER_H, PAGE_W, HEADER_H, fill=1, stroke=0)
-
-    logo_h = 0.48 * inch
-    logo_w = logo_h * 2.94
-    logo_y = PAGE_H - HEADER_H + (HEADER_H - logo_h) / 2
-    logo_drawn = False
-    if _LOGO_PATH:
-        try:
-            canvas.drawImage(
-                _LOGO_PATH, MARGIN, logo_y,
-                width=logo_w, height=logo_h,
-                preserveAspectRatio=True, mask="auto",
-            )
-            logo_drawn = True
-        except Exception:
-            logo_drawn = False
-    if not logo_drawn:
-        canvas.setFillColor(EMERALD)
-        canvas.setFont("Helvetica-Bold", 10)
-        canvas.drawString(MARGIN, PAGE_H - HEADER_H + 0.26 * inch, "BOOPPA")
-
-    canvas.setFillColor(EMERALD)
-    canvas.setFont("Helvetica-Bold", 7.5)
-    canvas.drawRightString(
-        PAGE_W - MARGIN, PAGE_H - HEADER_H + 0.26 * inch,
-        "SUPPLIER COMPLIANCE DECLARATION",
-    )
-
-    canvas.setStrokeColor(BORDER)
-    canvas.setLineWidth(0.5)
-    canvas.line(MARGIN, FOOTER_H, PAGE_W - MARGIN, FOOTER_H)
-    canvas.setFillColor(SLATE)
-    canvas.setFont("Helvetica", 6.5)
-    canvas.drawString(MARGIN, FOOTER_H - 9, "Booppa Smart Care LLC · booppa.io · Confidential")
-    canvas.drawRightString(PAGE_W - MARGIN, FOOTER_H - 9, f"Page {doc.page}")
-    canvas.restoreState()
-
-
-def _badge(text: str, color) -> Paragraph:
-    style = ParagraphStyle(
-        "b_" + text.replace(" ", "_"), parent=_STYLES["badge"], backColor=color, borderPadding=2,
-    )
-    return Paragraph(text, style)
-
-
-def _kv_table(rows: list[tuple[str, str]]) -> Table:
-    data = [[Paragraph(f"<b>{_xml_escape(k)}</b>", _STYLES["normal"]),
-             Paragraph(_xml_escape(v), _STYLES["normal"])] for k, v in rows]
-    t = Table(data, colWidths=[2.2 * inch, 4.5 * inch])
-    t.setStyle(TableStyle([
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [LIGHT, WHITE]),
-        ("GRID", (0, 0), (-1, -1), 0.3, BORDER),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
-    return t
-
-
-def _declaration_item(code: str, title: str, body: str, badge_text: str, badge_color):
-    """One D-item card: code + title + status badge, declaration body underneath."""
-    header = Table(
-        [[
-            Paragraph(f"{_xml_escape(code)}. {_xml_escape(title)}", _STYLES["item_t"]),
-            _badge(badge_text, badge_color),
-        ]],
-        colWidths=[5.1 * inch, 1.7 * inch],
-    )
-    header.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("BACKGROUND", (1, 0), (1, 0), badge_color),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-    ]))
-    body_t = Table([[Paragraph(body, _STYLES["item_b"])]], colWidths=[6.8 * inch])
-    body_t.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("BACKGROUND", (0, 0), (-1, -1), LIGHT),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("LINEBEFORE", (0, 0), (0, -1), 2, badge_color),
-    ]))
-    return KeepTogether([header, body_t, Spacer(1, 0.12 * inch)])
-
-
-# Badge presentation.
-_VERIFIED = ("VERIFIED — BOOPPA", EMERALD)
-_DECLARED = ("CLIENT-DECLARED", AMBER)
+_VERIFIED = _common.VERIFIED
+_DECLARED = _common.DECLARED
 
 
 def build_supplier_declaration_pdf(
@@ -265,7 +144,7 @@ def build_supplier_declaration_pdf(
         story.append(HRFlowable(width="100%", thickness=0.5, color=BORDER, spaceAfter=8))
 
         # ── D1 Conflict of interest ────────────────────────────────────────
-        story.append(_declaration_item(
+        story.extend(_declaration_item(
             "D1", "Conflict of Interest",
             f"{_xml_escape(company)} declares that, to the best of its knowledge, no "
             "director, officer, or employee involved in this submission has any actual, "
@@ -276,7 +155,7 @@ def build_supplier_declaration_pdf(
         ))
 
         # ── D2 Non-collusion ───────────────────────────────────────────────
-        story.append(_declaration_item(
+        story.extend(_declaration_item(
             "D2", "Non-Collusion",
             "The supplier declares that this offer is made independently and without "
             "any agreement, communication, or arrangement with any competitor to fix "
@@ -298,7 +177,7 @@ def build_supplier_declaration_pdf(
                 " Booppa was unable to corroborate this declaration against ACRA "
                 "records; it rests on the supplier's attestation alone."
             )
-        story.append(_declaration_item(
+        story.extend(_declaration_item(
             "D3", "Debarment / Blacklisting Status",
             "The supplier declares that it is not currently debarred, suspended, or "
             "blacklisted from participating in Singapore Government procurement, and is "
@@ -323,10 +202,10 @@ def build_supplier_declaration_pdf(
                 "PDPA assessment score was not available at generation time."
             )
             d4_badge = _DECLARED
-        story.append(_declaration_item("D4", "PDPA Compliance", d4_body, *d4_badge))
+        story.extend(_declaration_item("D4", "PDPA Compliance", d4_body, *d4_badge))
 
         # ── D5 Confidentiality undertaking ─────────────────────────────────
-        story.append(_declaration_item(
+        story.extend(_declaration_item(
             "D5", "Confidentiality Undertaking",
             "The supplier undertakes to keep confidential all information disclosed by the "
             "procuring agency in connection with this tender, to use it solely for the "
@@ -336,7 +215,7 @@ def build_supplier_declaration_pdf(
         ))
 
         # ── D6 Accuracy of information + signature ──────────────────────────
-        story.append(_declaration_item(
+        story.extend(_declaration_item(
             "D6", "Accuracy of Information",
             "The authorised signatory declares that all information provided in this "
             "declaration and the accompanying RFP evidence kit is true, accurate, and "
@@ -369,18 +248,11 @@ def build_supplier_declaration_pdf(
 
         # ── Render ─────────────────────────────────────────────────────────
         buf = BytesIO()
-        doc = BaseDocTemplate(
-            buf, pagesize=A4,
-            leftMargin=MARGIN, rightMargin=MARGIN,
-            topMargin=HEADER_H + 0.2 * inch, bottomMargin=FOOTER_H + 0.2 * inch,
+        doc = _common.build_doc(
+            buf, title="Supplier Compliance Declaration",
+            header_label=_HEADER_LABEL, footer_text=_FOOTER_TEXT,
         )
-        frame = Frame(
-            MARGIN, FOOTER_H + 0.1 * inch,
-            PAGE_W - 2 * MARGIN, PAGE_H - HEADER_H - FOOTER_H - 0.3 * inch,
-            id="body",
-        )
-        doc.addPageTemplates([PageTemplate(id="main", frames=[frame], onPage=_draw_page)])
-        doc.build(story)
+        _pl.render(doc, story)
         return buf.getvalue()
     except Exception as e:
         logger.error(f"Supplier declaration PDF generation failed: {e}")
