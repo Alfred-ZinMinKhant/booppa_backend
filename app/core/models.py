@@ -40,6 +40,12 @@ class User(Base):
     # treated as stale so the resolver re-resolves fresh. See the sticky-"SPQR
     # Communications" identity-leak fix.
     legal_name_hint = Column(String(255), nullable=True)
+    # The website/domain the cached identity was last resolved alongside. A purchase
+    # naming a *different* website is a different subject even when the company string
+    # happens to match (trading names collide; "Assessed Entity: <domain>" renders off
+    # this), so a divergent website breaks cache trust exactly like a divergent company
+    # hint does. NULL = unknown provenance, treated as stale.
+    website_hint = Column(String(500), nullable=True)
     uen = Column(String(50), unique=True, nullable=True)
     plan = Column(String(50), default="free", nullable=False, server_default="free")
     temp_password = Column(Boolean, default=False)

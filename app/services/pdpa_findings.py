@@ -58,6 +58,44 @@ def resolve_pdpa_findings(assessment_data: Any) -> list:
     return findings
 
 
+def resolve_pdpa_risk_score(assessment_data: Any) -> Optional[int]:
+    """Return the raw 0–100 *risk* score (0 = clean, 100 = high risk), or None.
+
+    Single source of truth for "has the scan produced a score yet?". The score
+    lives in one of four places depending on which path wrote it, and reading
+    only a subset is how paid Quick Scans got stranded: the fulfillment gate
+    checked top-level ``risk_score`` / ``risk_assessment.score``, neither of
+    which ``process_report_task`` ever writes — it persists the AI score nested
+    under ``booppa_report.risk_assessment.score``.
+    """
+    ad = assessment_data if isinstance(assessment_data, dict) else {}
+
+    structured = ad.get("booppa_report")
+    structured = structured if isinstance(structured, dict) else {}
+    structured_ra = structured.get("risk_assessment")
+    structured_ra = structured_ra if isinstance(structured_ra, dict) else {}
+    top_ra = ad.get("risk_assessment")
+    top_ra = top_ra if isinstance(top_ra, dict) else {}
+
+    raw_risk = (
+        ad.get("overall_risk_score")
+        if ad.get("overall_risk_score") is not None
+        else ad.get("score")
+        if ad.get("score") is not None
+        else ad.get("risk_score")
+        if ad.get("risk_score") is not None
+        else structured_ra.get("score")
+        if structured_ra.get("score") is not None
+        else top_ra.get("score")
+    )
+    if raw_risk is None:
+        return None
+    try:
+        return max(0, min(100, int(round(float(raw_risk)))))
+    except (TypeError, ValueError):
+        return None
+
+
 def resolve_pdpa_score(assessment_data: Any) -> Optional[int]:
     """Return the 0–100 compliance score from a Report's ``assessment_data``.
 
@@ -73,26 +111,10 @@ def resolve_pdpa_score(assessment_data: Any) -> Optional[int]:
     if isinstance(canonical, (int, float)):
         return int(round(canonical))
 
-    structured = ad.get("booppa_report")
-    structured = structured if isinstance(structured, dict) else {}
-    structured_ra = structured.get("risk_assessment")
-    structured_ra = structured_ra if isinstance(structured_ra, dict) else {}
-
-    raw_risk = (
-        ad.get("overall_risk_score")
-        if ad.get("overall_risk_score") is not None
-        else ad.get("score")
-        if ad.get("score") is not None
-        else ad.get("risk_score")
-        if ad.get("risk_score") is not None
-        else structured_ra.get("score")
-    )
+    raw_risk = resolve_pdpa_risk_score(ad)
     if raw_risk is None:
         return None
-    try:
-        return max(0, min(100, 100 - int(round(float(raw_risk)))))
-    except (TypeError, ValueError):
-        return None
+    return max(0, min(100, 100 - raw_risk))
 
 
 def _normalise_host(url: Optional[str]) -> Optional[str]:

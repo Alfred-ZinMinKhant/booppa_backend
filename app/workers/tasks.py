@@ -2087,6 +2087,84 @@ async def process_report_workflow(report_id: str) -> dict:
         db.close()
 
 
+def _retry_or_alert(
+    task,
+    exc: Exception,
+    *,
+    product_type: str,
+    customer_email: str | None = None,
+    session_id: str | None = None,
+    extra: dict | None = None,
+    countdown: int | None = None,
+    on_exhausted=None,
+):
+    """Retry a post-payment fulfillment task; alert ops loudly when retries run out.
+
+    Every branch here runs AFTER the customer's money has been taken, so a task
+    that exhausts its retries and dies is a silent undelivered purchase. Celery
+    logs `MaxRetriesExceededError` and nothing else reaches a human — which is
+    how a stranded PDPA Quick Scan sat undelivered with ops seeing one alert and
+    then silence.
+
+    The exhaustion `reason` is deliberately distinct from whatever alert the
+    fulfillment body already raised: `_alert_payment_fulfillment_issue` dedupes
+    on a key that includes the reason text, so an identical string would be
+    swallowed by the earlier alert's hourly suppression.
+
+    The alert is ops-only (`notify_customer=False`): the fulfillment body already
+    sent the buyer "we received your payment — one small delay" when the failure
+    first fired, and the customer dedupe key includes the reason text — so a
+    terminal alert with different wording would land as a second, near-identical
+    delay notice. Exhaustion is an ops-actionable event, not news for the buyer.
+
+    `on_exhausted` runs before the alert for product-specific cleanup (e.g. the
+    RFP path writes an error marker to the result cache so the buyer's result
+    page stops polling "Generating…"). Always re-raises.
+    """
+    from celery.exceptions import MaxRetriesExceededError
+
+    if countdown is None:
+        countdown = 60 * (2 ** task.request.retries)
+    try:
+        raise task.retry(exc=exc, countdown=countdown)
+    except MaxRetriesExceededError:
+        logger.error(
+            f"[{product_type}] fulfillment permanently failed after "
+            f"{task.max_retries} retries: {type(exc).__name__}: {exc}"
+        )
+        if on_exhausted is not None:
+            try:
+                on_exhausted()
+            except Exception as cleanup_err:
+                logger.error(
+                    f"[{product_type}] exhaustion cleanup failed: {cleanup_err}"
+                )
+        try:
+            from app.services.fulfillment.helpers import (
+                _alert_payment_fulfillment_issue,
+            )
+
+            # Safe to open a loop here: the fulfillment body's own asyncio.run()
+            # has already unwound by the time we reach this except block.
+            asyncio.run(
+                _alert_payment_fulfillment_issue(
+                    reason=(
+                        f"{product_type} fulfillment permanently failed after "
+                        f"{task.max_retries} retries — manual fulfillment required. "
+                        f"Last error: {type(exc).__name__}: {exc}"
+                    ),
+                    product_type=product_type,
+                    customer_email=customer_email,
+                    session_id=session_id,
+                    extra={**(extra or {}), "retries": task.max_retries},
+                    notify_customer=False,
+                )
+            )
+        except Exception as alert_err:
+            logger.error(f"[{product_type}] terminal alert failed: {alert_err}")
+        raise
+
+
 @celery_app.task(bind=True, max_retries=3, name="activate_subscription_task")
 def activate_subscription_task(
     self,
@@ -2107,7 +2185,13 @@ def activate_subscription_task(
         logger.info(f"[activate_subscription_task] plan={product_type} email={customer_email}")
     except Exception as exc:
         logger.error(f"[activate_subscription_task] failed: {exc}")
-        raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+        _retry_or_alert(
+            self,
+            exc,
+            product_type=product_type,
+            customer_email=customer_email,
+            extra={"stripe_subscription_id": stripe_subscription_id},
+        )
 
 
 @celery_app.task(bind=True, max_retries=3, name="fulfill_bundle_task")
@@ -2132,7 +2216,14 @@ def fulfill_bundle_task(
         logger.info(f"[fulfill_bundle_task] bundle={product_type} email={customer_email}")
     except Exception as exc:
         logger.error(f"[fulfill_bundle_task] failed: {exc}")
-        raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+        _retry_or_alert(
+            self,
+            exc,
+            product_type=product_type,
+            customer_email=customer_email,
+            session_id=session_id,
+            extra={"report_id": report_id},
+        )
 
 
 @celery_app.task(bind=True, max_retries=2, name="fire_strategy_6_task")
@@ -2180,17 +2271,26 @@ def fulfill_vendor_proof_task(self, report_id: str, customer_email: str | None =
         logger.info(f"Vendor proof fulfilled for report {report_id}")
     except Exception as exc:
         logger.error(f"Vendor proof fulfillment failed for {report_id}: {exc}")
-        countdown = 60 * (2 ** self.request.retries)
-        raise self.retry(exc=exc, countdown=countdown)
+        _retry_or_alert(
+            self,
+            exc,
+            product_type="vendor_proof",
+            customer_email=customer_email,
+            extra={"report_id": report_id},
+        )
 
 
-@celery_app.task(bind=True, max_retries=10, name="fulfill_pdpa_task")
+@celery_app.task(bind=True, max_retries=4, name="fulfill_pdpa_task")
 def fulfill_pdpa_task(self, report_id: str, customer_email: str | None = None, send_email: bool = True):
     """Celery task: generate PDPA PDF, update compliance score, write CertificateLog, send email.
 
     Fulfillment is chained to the scan (see `_fulfill_pdpa`), so this retry path is
     only a fallback. Backoff is capped at 10 min so a fallback retry can't push the
     confirmation email hours out.
+
+    Retries are deliberately few: they exist to ride out a transient failure, NOT
+    to mask a permanent one. A stranded report previously burned ten retries in
+    silence before Celery gave up with no alert — see `_retry_or_alert`.
     """
     try:
         from app.services.fulfillment import fulfill_pdpa
@@ -2198,8 +2298,14 @@ def fulfill_pdpa_task(self, report_id: str, customer_email: str | None = None, s
         logger.info(f"PDPA snapshot fulfilled for report {report_id}")
     except Exception as exc:
         logger.error(f"PDPA fulfillment failed for {report_id}: {exc}")
-        countdown = min(60 * (2 ** self.request.retries), 600)
-        raise self.retry(exc=exc, countdown=countdown)
+        _retry_or_alert(
+            self,
+            exc,
+            product_type="pdpa_quick_scan",
+            customer_email=customer_email,
+            extra={"report_id": report_id},
+            countdown=min(60 * (2 ** self.request.retries), 600),
+        )
 
 
 @celery_app.task(bind=True, max_retries=3, name="fulfill_notarization_task")
@@ -2226,8 +2332,13 @@ def fulfill_notarization_task(self, report_id: str, customer_email: str | None =
             db.close()
     except Exception as exc:
         logger.error(f"Notarization fulfillment failed for {report_id}: {exc}")
-        countdown = 60 * (2 ** self.request.retries)
-        raise self.retry(exc=exc, countdown=countdown)
+        _retry_or_alert(
+            self,
+            exc,
+            product_type="notarization",
+            customer_email=customer_email,
+            extra={"report_id": report_id},
+        )
 
 
 @celery_app.task(bind=True, max_retries=3, name="fulfill_rfp_task")
@@ -2260,12 +2371,10 @@ def fulfill_rfp_task(
         logger.info(f"RFP package fulfilled for vendor {vendor_id} session {session_id}")
     except Exception as exc:
         logger.error(f"RFP fulfillment failed for vendor {vendor_id}: {exc}")
-        try:
-            from celery.exceptions import MaxRetriesExceededError
-            countdown = 60 * (2 ** self.request.retries)
-            raise self.retry(exc=exc, countdown=countdown)
-        except MaxRetriesExceededError:
-            logger.error(f"RFP fulfillment permanently failed for vendor {vendor_id} after {self.max_retries} retries")
+
+        def _mark_result_failed():
+            # Unblock the buyer's result page, which otherwise polls
+            # `rfp_result:{session_id}` on "Generating…" forever.
             if session_id:
                 from app.core.cache import cache as cache_mod
                 cache_mod.set(
@@ -2273,7 +2382,16 @@ def fulfill_rfp_task(
                     {"error": True, "detail": "Generation failed. Please contact support."},
                     ttl=86400
                 )
-            raise
+
+        _retry_or_alert(
+            self,
+            exc,
+            product_type=product_type,
+            customer_email=vendor_email,
+            session_id=session_id,
+            extra={"vendor_id": vendor_id, "company_name": company_name},
+            on_exhausted=_mark_result_failed,
+        )
 
 
 @celery_app.task(bind=True, max_retries=5, name="anchor_signed_cover_sheet_task")
@@ -2593,7 +2711,16 @@ def fulfill_cover_sheet_task(
                                 "legal_basis": r.legal_basis,
                             } for r in ropa_rows]
 
-                            ropa_uen = getattr(user, "uen", None) or "Not provided"
+                            # Gate the account UEN on provenance: an unprovenanced or
+                            # cross-entity cached UEN must not be stamped on this ROPA
+                            # or fed to the ACRA lookup below.
+                            from app.services.evidence_enricher import trusted_cached_uen
+
+                            ropa_uen = trusted_cached_uen(
+                                user,
+                                company_hint=company_name or getattr(user, "company", None),
+                                website_hint=getattr(user, "website", None),
+                            ) or "Not provided"
                             # DPO name/email live on the most recent rfp_complete
                             # Report's assessment_data["intake_data"] (collected at
                             # RFP intake), not on the User model. Independent of
@@ -3363,11 +3490,37 @@ def fulfill_cover_sheet_task(
         # every time and clog the queue (and waste the readiness/anchor work
         # already done this attempt). Fail fast so an oncall can ship a fix.
         logger.exception(f"Cover sheet fulfillment failed permanently (code bug): {exc}")
+        # Failing fast must not mean failing quietly — the buyer already paid for
+        # this cover sheet, so a bare `return` drops a purchase on the floor.
+        try:
+            from app.services.fulfillment.helpers import (
+                _alert_payment_fulfillment_issue,
+            )
+
+            asyncio.run(
+                _alert_payment_fulfillment_issue(
+                    reason=(
+                        f"Cover sheet fulfillment aborted on a code bug (not retried) "
+                        f"— manual fulfillment required. {type(exc).__name__}: {exc}"
+                    ),
+                    product_type=bundle_type,
+                    customer_email=customer_email,
+                    extra={"company_name": company_name},
+                )
+            )
+        except Exception as alert_err:
+            logger.error(f"Cover sheet code-bug alert failed: {alert_err}")
         return
     except Exception as exc:
         logger.error(f"Cover sheet fulfillment failed: {exc}")
-        countdown = 120 * (2 ** self.request.retries)
-        raise self.retry(exc=exc, countdown=countdown)
+        _retry_or_alert(
+            self,
+            exc,
+            product_type=bundle_type,
+            customer_email=customer_email,
+            extra={"company_name": company_name, "component": "cover_sheet"},
+            countdown=120 * (2 ** self.request.retries),
+        )
 
 
 @celery_app.task(bind=True, max_retries=2, name="vendor_active_health_check_task")
@@ -3849,7 +4002,16 @@ def buyer_procurement_digest_task(
 
         user = UserRepository.get_by_id(db, str(user_id))
         from app.services.evidence_enricher import display_legal_name
-        company = (override_company or "").strip() or display_legal_name(user, db)
+        company = (override_company or "").strip() or display_legal_name(
+            user,
+            db,
+            # Account-scoped render (no per-purchase override). Passing the
+            # account's own company/website enables the staleness check: a cached
+            # identity with no matching provenance is re-resolved instead of
+            # stamped verbatim.
+            company_hint=getattr(user, "company", None),
+            website_hint=getattr(user, "website", None),
+        )
 
         def _esc(s) -> str:
             return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -5126,7 +5288,16 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
 
         user = UserRepository.get_by_id(db, str(vendor_id))
         from app.services.evidence_enricher import display_legal_name
-        company = (override_company or "").strip() or (display_legal_name(user, db) if user else "") or "Customer"
+        company = (override_company or "").strip() or (display_legal_name(
+            user,
+            db,
+            # Account-scoped render (no per-purchase override). Passing the
+            # account's own company/website enables the staleness check: a cached
+            # identity with no matching provenance is re-resolved instead of
+            # stamped verbatim.
+            company_hint=getattr(user, "company", None),
+            website_hint=getattr(user, "website", None),
+        ) if user else "") or "Customer"
 
         # Atomic same-day reservation (closes the check-then-create race between
         # the daily anniversary cron and the Vendor-Pro quarterly cron, which can
@@ -5377,7 +5548,16 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
         if not email:
             return
         from app.services.evidence_enricher import display_legal_name
-        company = (override_company or "").strip() or display_legal_name(user, db) or "Your Organisation"
+        company = (override_company or "").strip() or display_legal_name(
+            user,
+            db,
+            # Account-scoped render (no per-purchase override). Passing the
+            # account's own company/website enables the staleness check: a cached
+            # identity with no matching provenance is re-resolved instead of
+            # stamped verbatim.
+            company_hint=getattr(user, "company", None),
+            website_hint=getattr(user, "website", None),
+        ) or "Your Organisation"
         framework = "pdpa_quick_scan"
 
         if report_id:
@@ -5594,7 +5774,16 @@ def run_vendor_pro_pdpa_snapshot_for_user(self, vendor_id: str, vendor_email: st
         if not email:
             return
         from app.services.evidence_enricher import display_legal_name
-        company = (override_company or "").strip() or display_legal_name(user, db) or "Your Organisation"
+        company = (override_company or "").strip() or display_legal_name(
+            user,
+            db,
+            # Account-scoped render (no per-purchase override). Passing the
+            # account's own company/website enables the staleness check: a cached
+            # identity with no matching provenance is re-resolved instead of
+            # stamped verbatim.
+            company_hint=getattr(user, "company", None),
+            website_hint=getattr(user, "website", None),
+        ) or "Your Organisation"
         framework = "pdpa_quick_scan"
 
         reports = (
@@ -7960,7 +8149,16 @@ def fulfill_pdpa_declaration_task(user_id: str, customer_email: str | None = Non
                 "recipients", "retention_period", "safeguards"]
         dicts = [{k: getattr(r, k) for k in keys} for r in rows]
         from app.services.evidence_enricher import display_legal_name
-        company_name = display_legal_name(user, db) or "Your Organisation"
+        company_name = display_legal_name(
+            user,
+            db,
+            # Account-scoped render (no per-purchase override). Passing the
+            # account's own company/website enables the staleness check: a cached
+            # identity with no matching provenance is re-resolved instead of
+            # stamped verbatim.
+            company_hint=getattr(user, "company", None),
+            website_hint=getattr(user, "website", None),
+        ) or "Your Organisation"
         uen = getattr(user, "uen", None) or "Not provided"
 
         pdf_bytes = generate_pdpa_declaration_pdf(
@@ -8750,7 +8948,11 @@ def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | 
                     sub_controls = _fetch_controls(sub_org)
                     if sub_controls:
                         subsidiaries_data.append({
-                            "company_name": display_legal_name(sub_u, db) or getattr(sub_org, "name", "Subsidiary"),
+                            "company_name": display_legal_name(
+                                sub_u, db,
+                                company_hint=getattr(sub_org, "name", None),
+                                website_hint=getattr(sub_u, "website", None),
+                            ) or getattr(sub_org, "name", "Subsidiary"),
                             "controls": sub_controls
                         })
 
@@ -8761,7 +8963,16 @@ def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | 
         # neutral placeholder if truly unknown. (Kills the "Assessed Entity:
         # thunes.com" bug class — see evidence_enricher.display_legal_name.)
         from app.services.evidence_enricher import display_legal_name
-        company_name = (override_company or "").strip() or display_legal_name(user, db)
+        company_name = (override_company or "").strip() or display_legal_name(
+            user,
+            db,
+            # Account-scoped render (no per-purchase override). Passing the
+            # account's own company/website enables the staleness check: a cached
+            # identity with no matching provenance is re-resolved instead of
+            # stamped verbatim.
+            company_hint=getattr(user, "company", None),
+            website_hint=getattr(user, "website", None),
+        )
 
         # Configuration & provisioning evidence — tangible proof of what the
         # subscription unlocked (audit: suites showed "zero evidence of active
@@ -8939,7 +9150,16 @@ def run_trm_board_report_for_user(self, user_id: str, override_company: str | No
         is_pro = plan.startswith("pro")
         plan_label = "Pro Suite" if is_pro else "Standard Suite"
         from app.services.evidence_enricher import display_legal_name
-        company_name = (override_company or "").strip() or display_legal_name(user, db)
+        company_name = (override_company or "").strip() or display_legal_name(
+            user,
+            db,
+            # Account-scoped render (no per-purchase override). Passing the
+            # account's own company/website enables the staleness check: a cached
+            # identity with no matching provenance is re-resolved instead of
+            # stamped verbatim.
+            company_hint=getattr(user, "company", None),
+            website_hint=getattr(user, "website", None),
+        )
         org = (
             db.query(Organisation)
             .filter(Organisation.owner_user_id == user.id)
@@ -9376,7 +9596,11 @@ def run_compliance_evidence_cycle_for_user(self, user_id: str, test_simulation: 
             session_id=None,
             customer_email=user.email,
             metadata={
-                "company_name": (override_company or "").strip() or display_legal_name(user, db),
+                "company_name": (override_company or "").strip() or display_legal_name(
+                    user, db,
+                    company_hint=getattr(user, "company", None),
+                    website_hint=website or getattr(user, "website", None),
+                ),
                 "vendor_url": website,
                 "subscription_cycle": True,
                 **({"test_simulation": "1"} if test_simulation else {}),

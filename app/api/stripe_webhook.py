@@ -468,7 +468,7 @@ async def _stripe_webhook_impl(
                     # make `User` function-local for the ENTIRE handler body and
                     # leave the module-level import unbound in the cancel branch.
                     from app.core.models import User as _UserModel
-                    from app.services.evidence_enricher import display_legal_name
+                    from app.services.evidence_enricher import resolve_display_legal_name
                     _owner = (
                         db.query(_UserModel)
                         .filter(_UserModel.email == customer_email)
@@ -480,7 +480,7 @@ async def _stripe_webhook_impl(
                         # company as the hint so a stale account cache is re-resolved
                         # rather than blindly trusted if the hint ever diverges; the
                         # authoritative per-purchase company is collected at /rfp-intake.
-                        company_name = display_legal_name(
+                        company_name = await resolve_display_legal_name(
                             _owner, db, company_hint=metadata.get("company_name")
                         )
                 rfp_desc = (metadata.get("rfp_description") or "").strip()

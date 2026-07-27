@@ -1031,11 +1031,34 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         # Match the buyer's UEN against the imported ACRA registry so the
         # certificate can state real registration details instead of nothing.
         acra_info: dict = {"matched": False}
+        # The subject of THIS certificate — used both to gate the account's cached
+        # UEN below and as the provenance recorded on any write-back.
+        _subject_company = report.company_name or company_name
+        _subject_website = getattr(report, "company_website", None) or (
+            (report.assessment_data or {}).get("url")
+        )
+
         _uen = (report.assessment_data or {}).get("uen")
         if not _uen:
             from app.core.models import User
+            from app.services.evidence_enricher import trusted_cached_uen
+
             u = db.query(User).filter(User.id == str(vendor_id)).first()
-            _uen = u.uen if u else None
+            # The account's cached UEN is only usable when its provenance matches
+            # this report's subject. Reading `u.uen` raw is what certified SPQR
+            # Communications' registration (21374700J) as "netpoleons" — the stale
+            # UEN is a *real* UEN, so the registry lookup below succeeds and returns
+            # genuine ACRA data for the wrong company. When untrusted we leave `_uen`
+            # empty and fall through to the name-only lookup instead.
+            _uen = (
+                trusted_cached_uen(
+                    u,
+                    company_hint=_subject_company,
+                    website_hint=_subject_website,
+                )
+                if u
+                else None
+            )
 
         # Whether the match started from a caller-supplied UEN (exact) vs. a
         # company-name-only lookup (fuzzy). Drives the "Matched" vs. "Matched by
@@ -1102,20 +1125,25 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         if acra_info.get("matched"):
             u = db.query(User).filter(User.id == str(vendor_id)).first()
             if u:
-                _update_made = False
-                _matched_uen = _uen or acra_info.get("uen")
-                if _matched_uen and (not u.uen or u.uen != _matched_uen):
-                    u.uen = _matched_uen
-                    _update_made = True
-                # Write the registry-verified name to `legal_name`, the shared
-                # canonical field every generator reads — not `company`, which
-                # stays whatever the buyer typed at signup (see evidence_enricher.py).
-                _reg_name = acra_info.get("registry_company_name")
-                if _reg_name and u.legal_name != _reg_name:
-                    u.legal_name = _reg_name
-                    _update_made = True
-                if _update_made:
-                    db.commit()
+                # Cache the registry-verified identity on the account — but ONLY via
+                # the sanctioned write path, which refuses when this certificate's
+                # subject is not the account's own entity. The direct write that used
+                # to live here is what made the SPQR contamination self-perpetuating:
+                # a wrong match was written back with no provenance, so the next run
+                # re-read it, re-confirmed it, and re-wrote it.
+                #
+                # `legal_name` is the shared canonical field every generator reads —
+                # not `company`, which stays whatever the buyer typed at signup.
+                from app.services.evidence_enricher import record_verified_identity
+
+                record_verified_identity(
+                    u,
+                    db,
+                    uen=_uen or acra_info.get("uen"),
+                    legal_name=acra_info.get("registry_company_name"),
+                    company_hint=_subject_company,
+                    website_hint=_subject_website,
+                )
 
         # Step 1: Create or upsert VerifyRecord
         # Vendor Proof certificates are valid for 12 months; expiry drives the
@@ -1424,6 +1452,8 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
     effects still run; only the email is gated.
     """
     db = SessionLocal()
+    session_id = None
+    contact_email = customer_email
     try:
         report = db.query(Report).filter(Report.id == report_id).first()
         if not report:
@@ -1433,6 +1463,10 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
         assessment = (
             report.assessment_data if isinstance(report.assessment_data, dict) else {}
         )
+        # Read early so the tail handler can always attribute an alert to a
+        # Stripe session — alerts from this path used to render "(missing)"
+        # even though _create_stub_report persists the session id right here.
+        session_id = assessment.get("stripe_session_id")
         contact_email = (
             customer_email
             or assessment.get("contact_email")
@@ -1444,15 +1478,55 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
         )
         website_url = report.company_website or assessment.get("website", "")
 
+        # ── Step 0: Already fulfilled? ─────────────────────────────────────
+        # The scan→fulfill chain, the webhook branch and a manual re-queue can
+        # each land here for the same report. Without this guard every pass
+        # inserts a duplicate CertificateLog and re-sends the buyer's snapshot
+        # email (the scan path dedupes its own mail via
+        # `_send_report_ready_email_once`; this one had no equivalent).
+        if assessment.get("pdf_generated"):
+            from app.core.models import CertificateLog
+
+            already = (
+                db.query(CertificateLog)
+                .filter(
+                    CertificateLog.report_id == report.id,
+                    CertificateLog.certificate_type == "PDPA",
+                )
+                .first()
+            )
+            if already:
+                logger.info(f"[PDPA] {report_id} already fulfilled — skipping")
+                return
+
         # ── Step 1: Ensure scan is complete ────────────────────────────────
-        # If the report already has a risk_score from a prior scan, use it.
-        # Otherwise trigger the generic processing task synchronously.
-        risk_score = assessment.get("risk_score") or (
-            assessment.get("risk_assessment", {}).get("score")
-            if isinstance(assessment.get("risk_assessment"), dict)
-            else None
-        )
+        # If the report already has a risk score from a prior scan, use it.
+        # Otherwise chain the generic processing task. Read the score through
+        # the canonical resolver: process_report_task persists it nested under
+        # `booppa_report.risk_assessment.score`, so a top-level-only read is
+        # never satisfied and the report strands (paid, undelivered).
+        from app.services.pdpa_findings import resolve_pdpa_risk_score
+
+        risk_score = resolve_pdpa_risk_score(assessment)
         if risk_score is None:
+            # A scan that ended in one of these states cannot ever produce a
+            # score — rescanning a 403 site or a blocked report just burns AI
+            # spend and ends in a silent MaxRetriesExceeded. Fail loudly now.
+            if report.status in ("site_inaccessible", "blocked", "failed"):
+                logger.error(
+                    f"[PDPA] {report_id} terminal status={report.status}, cannot fulfil"
+                )
+                await _alert_payment_fulfillment_issue(
+                    reason=(
+                        f"PDPA scan ended in terminal state '{report.status}' — "
+                        f"no score can be produced, manual fulfillment required"
+                    ),
+                    product_type="pdpa_quick_scan",
+                    customer_email=contact_email,
+                    session_id=session_id,
+                    extra={"report_id": report_id, "report_status": report.status},
+                )
+                return
             # Scan not yet run. Rather than raise and lean on blind exponential
             # backoff (which pushed the confirmation email hours out — or never,
             # if no worker drained the retry), chain fulfillment to the scan so
@@ -1478,11 +1552,13 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
                         f"[PDPA] Chained scan→fulfillment for {report_id} (risk_score missing)"
                     )
                     return
-                # Scan already ran once but risk_score still missing — queue
-                # another scan and fall through to the bounded task-retry safety net.
-                process_report_task.delay(str(report.id))
-                logger.info(
-                    f"[PDPA] Re-queued scan for {report_id} (still missing after chain)"
+                # Scan already ran once and the score is still missing. Do NOT
+                # queue another scan — a retry loop that re-runs the full AI scan
+                # + anchoring on every attempt is how one stranded report cost us
+                # ~11 scans. Fall through to the bounded task-retry safety net,
+                # which now alerts loudly when it gives up.
+                logger.warning(
+                    f"[PDPA] Score still missing for {report_id} after chained scan"
                 )
             except Exception as e:
                 logger.error(f"[PDPA] Could not chain scan for {report_id}: {e}")
@@ -1670,6 +1746,7 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
                         reason="PDPA snapshot report email rejected by provider",
                         product_type="pdpa_quick_scan",
                         customer_email=contact_email,
+                        session_id=session_id,
                         extra={"report_id": report_id},
                     )
             except Exception as e:
@@ -1685,8 +1762,9 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
         await _alert_payment_fulfillment_issue(
             reason=f"PDPA fulfillment raised exception: {type(e).__name__}: {e}",
             product_type="pdpa_quick_scan",
-            customer_email=customer_email,
-            extra={"report_id": report_id}
+            customer_email=contact_email,
+            session_id=session_id,
+            extra={"report_id": report_id},
         )
         raise
     finally:

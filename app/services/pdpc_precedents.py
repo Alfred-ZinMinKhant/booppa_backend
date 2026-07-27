@@ -7,15 +7,36 @@ each violation. Persuasive for procurement committees and legal review.
 
 DATA QUALITY POLICY
 -------------------
-This file ships with a small, curated seed of well-documented public PDPC
-decisions where the facts (year, fine, vendor, section) are widely reported.
-Specific dollar amounts and case names from less-publicised decisions MUST be
-verified against the PDPC's official decisions register before being added:
+When in doubt, leave a case out. A short list is far more defensible in front of
+a procurement officer than a long list that contains errors.
+
+Citations come from the live index that evidence_enricher builds from the PDPC
+decisions register, and a case may only be NAMED when the index read a financial
+penalty off its decision page (see get_citable_precedents). That penalty is what
+proves the decision was an enforcement finding: a cleared organisation has none.
+Nothing about a citation is inferred from the decision's title — the title says
+what a decision is ABOUT, only the page says how it ENDED. A delivered report
+once cited "BHG (Singapore)", which the register had cleared, because the title
+alone was trusted.
+
+The PRECEDENTS dict below is a hand-checked floor used only when the live index
+is unavailable — it is NOT merged on top of the index, because the same decision
+appears in both under different names and URLs and would be counted twice. Its
+entries (year, fine, vendor, section) must be verified against the register
+before being added:
 
     https://www.pdpc.gov.sg/all-commissions-decisions
 
-When in doubt, leave a case out. A short curated list is far more defensible
-in front of a procurement officer than a long list that contains errors.
+WHAT THE RENDERED SENTENCE DOES AND DOES NOT CLAIM
+--------------------------------------------------
+Counts and totals are stated as floors ("at least"), because decisions under
+obligations we do not classify, and pages whose penalty could not be parsed, are
+absent from the index. Undertakings and cleared decisions are excluded by design
+— no penalty was imposed. What the cited cases share with the finding is the
+OBLIGATION, which is named explicitly; they are not claimed to share its facts.
+Each year is labelled with where it came from — "published" is the register's
+publication year (which can trail the decision date across a year boundary),
+"decided" is the neutral-citation year or a hand-checked one.
 
 Schema:
     {
@@ -37,7 +58,13 @@ Finding keys are the stable identifiers from app/services/finding_keys.py.
 from __future__ import annotations
 
 
+import re
+from collections import Counter
 from typing import Optional
+
+# Parties the register anonymised — truthful, but nothing a buyer can look up,
+# so they are ranked below named organisations when choosing which to cite.
+_ANON_PARTY_RE = re.compile(r"^(a|an)\s", re.IGNORECASE)
 
 # ── Seed data ─────────────────────────────────────────────────────────────────
 # Cases included here are widely reported in Singapore media and on the PDPC
@@ -107,12 +134,41 @@ PRECEDENTS: dict[str, list[dict]] = {
             "summary": "Fined S$250,000 as data controller in the 2018 SingHealth breach for failing to make reasonable security arrangements.",
         },
     ],
+    # Security-header / web-misconfiguration findings. Verified against the live
+    # decision page (Case No. DP-2107-B8562, published 18 Feb 2022).
+    "security_headers:protection": [
+        {
+            "vendor": "North London Collegiate School (Singapore)",
+            "year": 2022,
+            "fine_sgd": 10_000,
+            "section": "§24 Protection Obligation",
+            "url": "https://www.pdpc.gov.sg/all-commissions-decisions/2022/02/breach-of-the-protection-obligation-by-north-london-collegiate-school",
+            "summary": "Fined S$10,000 (Case DP-2107-B8562) after admission documents uploaded through the school website sat in an inadequately secured directory and became reachable through search engines.",
+        },
+    ],
+    # DNC Registry findings. Intentionally EMPTY: the published DNC decisions
+    # reviewed for this bucket were warnings/directions rather than financial
+    # penalties, or were criminal prosecutions rather than Commission decisions,
+    # so none could be cited as an enforcement precedent with a verified penalty.
+    # Findings in this category fall back to _CATEGORY_BASIS["dnc"], which states
+    # the Part 9 obligation honestly. Add entries only after confirming the
+    # organisation, year, penalty and provision on a live PDPC decision page.
+    "dnc:registry": [],
     # Legacy NRIC entries were removed because their old register URLs now
     # redirect away from the original decisions. Re-add only after a live PDPC
     # decision page and exact section / penalty can be re-verified.
     "nric:collection": [],
     "nric:leakage": [],
 }
+
+# ── Statutory maximum penalty ────────────────────────────────────────────────
+# Single source of truth for the penalty ceiling quoted in customer documents.
+# The S$1M cap is the base; since 1 Oct 2022 the PDPA (Amendment) uplift applies
+# 10% of Singapore annual turnover to organisations turning over more than S$10M.
+MAX_PENALTY_TEXT = (
+    "Up to S$1,000,000, or 10% of annual turnover in Singapore for organisations "
+    "exceeding S$10M, whichever is higher"
+)
 
 
 # ── Finding-key → obligation category ─────────────────────────────────────────
@@ -137,6 +193,11 @@ _FINDING_KEY_TO_CATEGORY: dict[str, str] = {
     "free:cookie_secure": "protection",
     "free:https": "protection",
     "breach:pdpc_enforcement": "protection",
+    # Breach NOTIFICATION duty (§26A-D) — distinct from the Protection duty
+    "breach:notification": "notification",
+    "security_headers:protection": "protection",
+    # Do Not Call (Part 9)
+    "dnc:registry": "dnc",
     # NRIC / national identifiers
     "free:nric_exposure": "nric",
     "nric:collection": "nric",
@@ -158,6 +219,14 @@ _CATEGORY_SUBSTRINGS: list[tuple[str, str]] = [
     ("privacy_policy", "openness_dpo"),
     ("nric", "nric"),
     ("retention", "retention"),
+    # Categories the live index populates but no substring reached, so findings
+    # of these types silently resolved to neither a precedent nor a basis.
+    ("cross_border", "transfer"),
+    ("cross-border", "transfer"),
+    ("transfer", "transfer"),
+    ("accuracy", "accuracy"),
+    ("breach_notification", "notification"),
+    ("notification", "notification"),
     ("header", "protection"),
     ("security", "protection"),
 ]
@@ -203,33 +272,77 @@ def _live_precedents_for_category(category: str) -> list[dict]:
     if not index:
         return []
     cases = (index.get("categories") or {}).get(category) or []
-    # Only rows with a real decision URL + summary are citable.
+    # A row needs a real decision URL + summary to be usable at all; whether it
+    # may be NAMED is decided by its `verified` flag (see get_citable_precedents).
     return [c for c in cases if c.get("url") and c.get("summary")]
+
+
+def _static_precedents_for_category(category: str) -> list[dict]:
+    """Human-verified seed cases for an obligation category.
+
+    PRECEDENTS is keyed by finding_key, but the finding keys that reach us from
+    a scan are free-form slugs (pdf_service._finding_key_from emits
+    ``free:<type>_<title>``), which never match a seed key exactly. Resolving the
+    seed by category as well is what makes the curated list actually reachable —
+    without it a scan finding could only ever be served by the live index.
+    """
+    if not category:
+        return []
+    out: list[dict] = []
+    for key, cases in PRECEDENTS.items():
+        if finding_category(key) == category:
+            out.extend(cases)
+    return out
 
 
 def get_precedents(finding_key: str) -> list[dict]:
     """Return precedent dicts for this finding key, or [] if none.
 
-    Resolution order: the live classified index (real published decisions,
-    keyed by obligation category) first, then the human-verified static seed as
-    a floor. Static entries carry verified=True; live entries verified=False.
+    Merges the hand-curated seed (resolved by exact key and by obligation
+    category) with the live index of published decisions. Seed entries are always
+    verified=True; a live entry is verified only when the index read a financial
+    penalty and a citation year off its decision page. Callers that intend to
+    NAME a case in a customer document must use get_citable_precedents().
     """
     category = finding_category(finding_key)
     live = _live_precedents_for_category(category) if category else []
     static = list(PRECEDENTS.get(finding_key, []))
+    seen_static = {c.get("url") for c in static}
+    for c in _static_precedents_for_category(category):
+        if c.get("url") not in seen_static:
+            static.append(c)
+    # A curated entry's year is a hand-checked decision year; scraped rows carry
+    # their own year_source ("decided" or "published") from the index.
+    static = [{**c, "verified": True, "source": "curated"} for c in static]
+    # The live index covers PDPC's whole register, so when it is available it is
+    # authoritative on its own and the seed is NOT merged on top. Merging would
+    # double-count: the same decision sits in both under different names and URLs
+    # ("Singapore Health Services (SingHealth)" in the seed vs "SingHealth and
+    # IHiS" on the register), which inflates the case count and penalty total we
+    # quote. The seed's job is to be the floor when the scrape is unavailable.
     if live:
-        # De-dupe by URL, static (verified) first so it wins on ties.
-        seen: set[str] = set()
-        merged: list[dict] = []
-        for c in [*static, *live]:
-            u = c.get("url") or ""
-            if u and u in seen:
-                continue
-            if u:
-                seen.add(u)
-            merged.append(c)
-        return merged
+        return live
     return static
+
+
+def get_citable_precedents(finding_key: str) -> list[dict]:
+    """Precedents that may be NAMED in a customer-facing document.
+
+    A case qualifies on EVIDENCE, not on provenance: either it is in the curated
+    seed, or the index read a financial penalty AND a "[YYYY] SGPDPC N" citation
+    year off its decision page. The penalty is the load-bearing signal — a
+    cleared organisation has none, so an acquittal cannot pass this gate.
+
+    Why the gate is not the decision title: the index classifies obligation from
+    the title, and "No Breach of the Protection Obligation by BHG (Singapore)"
+    reads as `protection` exactly like a real breach does. That is how a cleared
+    organisation came to be printed in a delivered report as a "Notable case".
+    Titles say what a decision is ABOUT; only the page says how it ENDED.
+
+    Every citable row therefore carries a disclosed penalty, which is what lets
+    precedent_summary() quote a count and a total that describe the same set.
+    """
+    return [c for c in get_precedents(finding_key) if c.get("verified")]
 
 
 def regulatory_basis(finding_key: str) -> Optional[str]:
@@ -245,28 +358,72 @@ def regulatory_basis(finding_key: str) -> Optional[str]:
 
 def precedent_summary(finding_key: str, max_items: int = 2) -> Optional[str]:
     """Render a short human-readable sentence summarising precedent for a
-    finding type. Returns None when no precedents are on file.
+    finding type. Returns None when no citable precedents are on file — callers
+    then fall back to regulatory_basis(), which is honest rather than empty.
+
+    Only evidence-verified cases are summarised (see get_citable_precedents), so
+    the count and the penalty total always describe the same set. Both figures
+    are stated as floors, and the shared obligation is named rather than any
+    similarity of facts being implied.
 
     Output format:
-        "PDPC has fined N organisations a total of S$X for this violation
-         class, including [Vendor 1, 2019] and [Vendor 2, 2021]."
+        "PDPC has published at least N financial penalties totalling S$X or more
+         under the §24 Protection Obligation. Most recent:
+         [Vendor 1 (published 2026)] and [Vendor 2 (decided 2023)]."
     """
-    items = get_precedents(finding_key)
+    items = get_citable_precedents(finding_key)
     if not items:
         return None
 
     count = len(items)
-    # Only sum fines we actually have (live index rows may carry fine_sgd=None
-    # when the figure could not be parsed — never treat that as S$0).
+    # Every verified case carries a disclosed penalty; a 0 or missing figure is
+    # excluded from the total rather than counted as S$0.
     fines = [int(i["fine_sgd"]) for i in items if i.get("fine_sgd")]
     total = sum(fines)
-    # Examples: name + year when both known, else just the organisation name.
+    if not fines or len(fines) != count:
+        # Should not happen (a citable case carries a penalty by definition), but
+        # never emit a count next to a total that describes a different set —
+        # that mismatch is what produced the misleading "209 enforcement
+        # decisions … at least S$621k" line.
+        return None
+
+    # Which obligation these cases were decided under. Stated explicitly rather
+    # than implied: a §24 bucket spans ransomware, lost laptops and misconfigured
+    # servers, so "under similar facts" would overclaim — what the cases share is
+    # the obligation, not the facts.
+    sections = [i.get("section") for i in items if i.get("section")]
+    section = Counter(sections).most_common(1)[0][0] if sections else None
+
+    # Examples: the most recent decisions, heaviest penalty first within a year,
+    # preferring a named party over one the register anonymised ("a Registered
+    # Salesperson") — the anonymised ones still count, they just read as nothing
+    # a buyer can look up. Recency is what makes a citation land: a 2026 case
+    # reads as live risk, a 2017 one as history.
+    def _named(c: dict) -> int:
+        return 0 if _ANON_PARTY_RE.match(c.get("vendor") or "") else 1
+
+    ranked = sorted(
+        items,
+        key=lambda c: (_named(c), c.get("year") or 0, c.get("fine_sgd") or 0),
+        reverse=True,
+    )
+    # Each year carries its own provenance, because the two are different facts:
+    # "published" is the register's publication year, which can trail the
+    # decision date across a year boundary; "decided" comes from the neutral
+    # citation ("[2023] SGPDPC 4") or, for a curated entry, a hand-checked
+    # decision year. Labelling per case rather than per sentence keeps a mixed
+    # list unambiguous.
     examples = []
-    for i in items[:max_items]:
+    for i in ranked[:max_items]:
         vendor = i.get("vendor")
         if not vendor:
             continue
-        examples.append(f"{vendor} ({i['year']})" if i.get("year") else vendor)
+        year = i.get("year")
+        if not year:
+            examples.append(vendor)
+            continue
+        source = i.get("year_source") or ("decided" if i.get("source") == "curated" else None)
+        examples.append(f"{vendor} ({source} {year})" if source else f"{vendor} ({year})")
 
     def _sgd(x: int) -> str:
         if x >= 1_000_000:
@@ -275,31 +432,23 @@ def precedent_summary(finding_key: str, max_items: int = 2) -> Optional[str]:
             return f"S${x/1_000:.0f}k"
         return f"S${x}"
 
-    cases = " and ".join(examples) if examples else None
+    # "at least": the index covers the published decisions we could classify by
+    # obligation and read a penalty from. Decisions under obligations we do not
+    # classify, and any page whose penalty we could not parse, are absent — so
+    # the true figures are floors, never exact counts. Undertakings and cleared
+    # decisions are excluded by design (no penalty was imposed).
+    dec_word, pen_word = (
+        ("decision", "a financial penalty") if count == 1
+        else ("decisions", "financial penalties")
+    )
+    base = (
+        f"PDPC has published at least {count} {dec_word} imposing {pen_word} "
+        f"totalling at least {_sgd(total)}"
+    )
+    base += f" under the {section}." if section else " under this obligation."
 
-    if fines and len(fines) == count:
-        # Every case has a disclosed penalty (the human-verified static seed) —
-        # keep the precise, established phrasing.
-        org_word = "organisation" if count == 1 else "organisations"
-        base = (
-            f"PDPC has fined {count} {org_word} a total of {_sgd(total)} "
-            f"under similar facts."
-        )
-    elif fines:
-        # Live-index rows: some penalties parsed, some not — quote only what we
-        # have and say so, never implying the total is complete.
-        dec_word = "decision" if count == 1 else "decisions"
-        base = (
-            f"PDPC has published {count} enforcement {dec_word} on this obligation, "
-            f"with penalties totalling at least {_sgd(total)} across the cases where "
-            f"a figure was disclosed."
-        )
-    else:
-        # Real decisions on file but no parsed penalty figure — do not invent one.
-        dec_word = "decision" if count == 1 else "decisions"
-        base = f"PDPC has published {count} enforcement {dec_word} on this obligation."
-    if cases:
-        base += f" Notable cases: {cases}."
+    if examples:
+        base += f" Most recent: {' and '.join(examples)}."
     return base
 
 

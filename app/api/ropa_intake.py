@@ -211,7 +211,15 @@ def submit_ropa_activities(
     if pdpa_done and rfp_done:
         from app.workers.tasks import fulfill_cover_sheet_task
         from app.services.evidence_enricher import display_legal_name
-        company_name = display_legal_name(user)
+        # Passing `db` + hints is what enables the staleness check and a fresh
+        # resolve; without them this could only echo the account's cached
+        # `legal_name`, however stale.
+        company_name = display_legal_name(
+            user,
+            db,
+            company_hint=getattr(user, "company", None),
+            website_hint=getattr(user, "website", None),
+        )
         # NOTE: fulfill_cover_sheet_task's own docstring says it normally
         # runs ~300s after bundle components are queued, to give PDPA/RFP
         # generation time to finish. That doesn't apply here — this branch

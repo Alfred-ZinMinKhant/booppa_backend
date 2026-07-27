@@ -278,7 +278,11 @@ def submit_intake(
         ((intake_data or {}).get("uen") or "").strip()
         or (body.get("uen") or "").strip()
         or (getattr(row, "uen", "") or "")
-        or (getattr(user, "uen", "") or "")
+        or (trusted_cached_uen(
+            user,
+            company_hint=row.company_name,
+            website_hint=getattr(row, "vendor_url", None),
+        ) or "")
     ).strip()
     if not uen:
         raise HTTPException(

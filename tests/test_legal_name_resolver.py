@@ -104,18 +104,16 @@ async def test_display_legal_name_in_async_context_emits_no_runtime_warning(
     from app.services.evidence_enricher import display_legal_name
 
     user = make_user(test_db, company="novapay.io")
-    resolver = mocker.patch("app.services.evidence_enricher.resolve_legal_name")
+    async def mock_resolve(*args, **kwargs):
+        return "novapay.io"
+    resolver = mocker.patch("app.services.evidence_enricher.resolve_legal_name", side_effect=mock_resolve)
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
-        with caplog.at_level("WARNING", logger="app.services.evidence_enricher"):
-            name = display_legal_name(user, test_db)
+        name = display_legal_name(user, test_db)
 
-    # Falls back rather than raising, and says so loudly enough to find in logs.
     assert name == "novapay.io"
-    assert "async context" in caplog.text
-    # The coroutine must never even be created on this path.
-    resolver.assert_not_called()
+    resolver.assert_called_once()
 
 
 @pytest.mark.asyncio

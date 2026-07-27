@@ -23,6 +23,16 @@ from app.core.db import get_db
 from app.core.models import User
 from app.core.models import EvidencePack
 
+from app.services.evidence_enricher import (
+    _cache_trusted_for_hint as _cache_trusted,
+    trusted_cached_uen,
+)
+
+
+def _identity_trusted(user) -> bool:
+    """Whether the account's cached legal_name may be offered as a prefill."""
+    return _cache_trusted(user, getattr(user, "company", None))
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(route_class=RetryAPIRoute)
@@ -194,8 +204,12 @@ def get_intake(
         "prefill": {
             # Prefill the resolved legal entity, not the raw signup string, so a
             # buyer who accepts the default doesn't stamp a bare domain on the pack.
-            "org_name": (getattr(user, "legal_name", None) or getattr(user, "company", "") or ""),
-            "uen": getattr(user, "uen", "") or "",
+            "org_name": (
+                (getattr(user, "legal_name", None) if _identity_trusted(user) else None)
+                or getattr(user, "company", "")
+                or ""
+            ),
+            "uen": (trusted_cached_uen(user, company_hint=getattr(user, "company", None)) or ""),
             "domain": getattr(user, "website", "") or "",
         },
         "download_urls": row.download_urls or {},
@@ -230,7 +244,14 @@ def submit_intake(
     intake = dict(body.get("intake") or body)
     # Fall back to the profile where the buyer left a field blank.
     intake.setdefault("org_name", (getattr(user, "company", "") or "").strip())
-    intake.setdefault("uen", (getattr(user, "uen", "") or "").strip())
+    intake.setdefault(
+        "uen",
+        (trusted_cached_uen(
+            user,
+            company_hint=intake.get("org_name") or getattr(user, "company", None),
+            website_hint=intake.get("domain") or getattr(user, "website", None),
+        ) or "").strip(),
+    )
     intake.setdefault("domain", (getattr(user, "website", "") or "").strip())
 
     missing = [f for f in _REQUIRED_INTAKE if not str(intake.get(f) or "").strip()]

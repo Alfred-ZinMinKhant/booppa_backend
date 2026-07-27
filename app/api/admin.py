@@ -530,6 +530,66 @@ class RequeueReportBody(BaseModel):
     report_id: str = Field(..., description="UUID of the Report to re-run through process_report_task")
 
 
+class RefulfillBody(BaseModel):
+    report_id: str = Field(..., description="UUID of the paid Report to re-run delivery for")
+
+
+# Delivery evidence per framework: what proves the buyer actually RECEIVED the
+# thing they paid for. `status == "completed"` is not that proof — it only means
+# the scan finished. The stranded PDPA Quick Scan that prompted this was
+# `completed` with no certificate, no PDF and no email.
+_FULFILLMENT_FRAMEWORKS = ("pdpa_quick_scan", "vendor_proof", "compliance_notarization")
+
+
+def _delivery_evidence(db, report) -> tuple[bool, str]:
+    """Return (delivered, human-readable evidence) for a paid report."""
+    from app.core.models import CertificateLog, VerifyRecord
+
+    ad = report.assessment_data if isinstance(report.assessment_data, dict) else {}
+
+    if report.framework == "pdpa_quick_scan":
+        cert = (
+            db.query(CertificateLog)
+            .filter(
+                CertificateLog.report_id == report.id,
+                CertificateLog.certificate_type == "PDPA",
+            )
+            .first()
+        )
+        return (bool(cert), "CertificateLog(PDPA)" if cert else "no PDPA CertificateLog")
+
+    if report.framework == "compliance_notarization":
+        sent = bool(ad.get("notarization_email_sent"))
+        return (sent, "certificate emailed" if sent else "certificate never emailed")
+
+    if report.framework == "vendor_proof":
+        rec = (
+            db.query(VerifyRecord)
+            .filter(VerifyRecord.vendor_id == report.owner_id)
+            .first()
+        )
+        return (bool(rec), "VerifyRecord" if rec else "no VerifyRecord")
+
+    return (True, "unknown framework — not assessed")
+
+
+# Which Celery task actually DELIVERS each framework. Note this is deliberately
+# not process_report_task: re-running the scan does not re-send the deliverable,
+# and for a report that already scanned fine it burns a full AI run for nothing.
+def _delivery_task_for(framework: str):
+    from app.workers.tasks import (
+        fulfill_notarization_task,
+        fulfill_pdpa_task,
+        fulfill_vendor_proof_task,
+    )
+
+    return {
+        "pdpa_quick_scan": fulfill_pdpa_task,
+        "vendor_proof": fulfill_vendor_proof_task,
+        "compliance_notarization": fulfill_notarization_task,
+    }.get(framework)
+
+
 @router.get("/failed-reports")
 def list_failed_reports(
     limit: int = Query(50, ge=1, le=200),
@@ -607,6 +667,121 @@ def requeue_report(
         "report_id": body.report_id,
         "queued": True,
         "note": "Report requeued. It will re-run the scan, PDF and on-chain anchor.",
+    }
+
+
+@router.get("/stranded-fulfillments")
+def list_stranded_fulfillments(
+    limit: int = Query(50, ge=1, le=200),
+    _auth: bool = Depends(_admin_auth),
+):
+    """Paid orders that were never actually delivered, whatever their status.
+
+    Distinct from ``/failed-reports``, which only surfaces ``status='failed'``.
+    A fulfillment can strand on a ``completed`` report: the scan succeeds, then
+    the delivery step (PDF → CertificateLog → email) never runs. That was the
+    2026-07-27 PDPA case — buyer charged, report ``completed``, nothing sent,
+    and invisible to every existing admin view.
+
+    ``fulfillable`` says whether ``POST /admin/refulfill`` can fix it now: false
+    means the underlying scan never produced a score, so the scan has to be
+    re-run first via ``POST /admin/requeue-report``.
+    """
+    from app.core.models import Report
+    from app.services.pdpa_findings import resolve_pdpa_risk_score
+
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Report)
+            .filter(Report.framework.in_(_FULFILLMENT_FRAMEWORKS))
+            .order_by(Report.created_at.desc())
+            .limit(1000)
+            .all()
+        )
+        out = []
+        for r in rows:
+            ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
+            if not ad.get("payment_confirmed"):
+                continue
+            delivered, evidence = _delivery_evidence(db, r)
+            if delivered:
+                continue
+            fulfillable = (
+                resolve_pdpa_risk_score(ad) is not None
+                if r.framework == "pdpa_quick_scan"
+                else True
+            )
+            out.append({
+                "report_id": str(r.id),
+                "framework": r.framework,
+                "status": r.status,
+                "company_name": r.company_name,
+                "contact_email": ad.get("contact_email") or ad.get("customer_email"),
+                "product_type": ad.get("product_type") or ad.get("bundle_source"),
+                "stripe_session_id": ad.get("stripe_session_id"),
+                "missing": evidence,
+                "fulfillable": fulfillable,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            })
+            if len(out) >= limit:
+                break
+        return {"count": len(out), "reports": out}
+    finally:
+        db.close()
+
+
+@router.post("/refulfill")
+def refulfill_report(
+    body: RefulfillBody,
+    _auth: bool = Depends(_admin_auth),
+):
+    """Re-run DELIVERY for a paid report that was never fulfilled.
+
+    Queues the framework's ``fulfill_*`` task — not ``process_report_task``.
+    Re-running the scan would not re-send the deliverable and would burn a full
+    AI run on a report that already scanned fine.
+
+    Refuses when delivery evidence already exists, so an accidental click can't
+    double-charge gas, duplicate a CertificateLog or re-email the buyer.
+    """
+    from app.core.models import Report
+
+    db = SessionLocal()
+    try:
+        report = db.query(Report).filter(Report.id == body.report_id).first()
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+
+        task = _delivery_task_for(report.framework)
+        if task is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No delivery task for framework '{report.framework}'",
+            )
+
+        delivered, evidence = _delivery_evidence(db, report)
+        if delivered:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Already delivered ({evidence}) — refusing to re-fulfil.",
+            )
+
+        ad = report.assessment_data if isinstance(report.assessment_data, dict) else {}
+        contact_email = ad.get("contact_email") or ad.get("customer_email")
+        task_name = task.name
+        report_id = str(report.id)
+    finally:
+        db.close()
+
+    task.delay(report_id, contact_email)
+    logger.info(f"[refulfill] queued {task_name} for report={report_id}")
+    return {
+        "ok": True,
+        "report_id": report_id,
+        "queued": task_name,
+        "contact_email": contact_email,
+        "note": "Delivery requeued. The buyer will receive their deliverable by email.",
     }
 
 

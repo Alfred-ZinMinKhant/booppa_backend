@@ -11,6 +11,7 @@ import logging
 from app.core.config import settings
 from app.services.ai_provider import DeepSeekProvider
 from app.services.scan_version import scan_version_meta as _scan_version_meta
+from app.services.pdpc_precedents import MAX_PENALTY_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,8 @@ SINGAPORE_LEGISLATION = {
         },
         "penalties": {
             "tier1": "Up to S$1,000,000",
-            "tier2": "Up to 10% of annual turnover in Singapore",
+            "tier2": "Up to 10% of annual turnover in Singapore (organisations with "
+                     "Singapore turnover above S$10M, since 1 Oct 2022)",
         },
     },
     "PDPC_ADVISORIES": {
@@ -197,17 +199,17 @@ def get_penalty_for_violation(violation_type: str) -> Dict:
     """Get specific penalty information for violation type"""
     penalties = {
         "nric_collection": {
-            "amount": "Up to S$1,000,000",
+            "amount": MAX_PENALTY_TEXT,
             "legislation": "PDPA 2012 s.18",
             "reference": "PDPC Advisory Guidelines 2018",
         },
         "no_consent": {
-            "amount": "Up to S$1,000,000",
+            "amount": MAX_PENALTY_TEXT,
             "legislation": "PDPA 2012 s.13",
             "reference": "PDPC Guide to Enhanced Notice 2021",
         },
         "data_breach": {
-            "amount": "Up to S$1,000,000 or 10% annual turnover",
+            "amount": MAX_PENALTY_TEXT,
             "legislation": "PDPA 2012 s.24",
             "reference": "Cybersecurity Act 2018",
         },
@@ -217,7 +219,7 @@ def get_penalty_for_violation(violation_type: str) -> Dict:
             "reference": "Spam Control Act",
         },
         "no_https": {
-            "amount": "Up to S$1,000,000",
+            "amount": MAX_PENALTY_TEXT,
             "legislation": "PDPA 2012 s.24",
             "reference": "PDPC Guide to Data Protection by Design",
         },
@@ -225,7 +227,7 @@ def get_penalty_for_violation(violation_type: str) -> Dict:
     return penalties.get(
         violation_type,
         {
-            "amount": "Up to S$1,000,000",
+            "amount": MAX_PENALTY_TEXT,
             "legislation": "PDPA General",
             "reference": "Consult legal counsel",
         },
@@ -912,7 +914,7 @@ BLOCKCHAIN EVIDENCE:
             "description": description,
             "evidence": violation.get("evidence", "Automated scan detection"),
             "penalty": penalty_info,
-            "max_penalty": penalty_info.get("amount", "Up to S$1,000,000"),
+            "max_penalty": penalty_info.get("amount", MAX_PENALTY_TEXT),
             "deadline": deadline,
             "deadline_short": meta.get("deadline_short") or self._get_deadline_short(violation.get("severity", "MEDIUM")),
             "legislation_references": legislation_refs,
@@ -934,7 +936,7 @@ BLOCKCHAIN EVIDENCE:
         return f"""{violation.get('severity', 'MEDIUM')} VIOLATION: {violation.get('details', 'Compliance issue detected')}
 
 Legislation: PDPA General Provisions
-Penalty: Up to S$1,000,000
+Penalty: {MAX_PENALTY_TEXT}
 Location: {violation.get('location', 'Website')}
 Evidence: {violation.get('evidence', 'Automated scan')}
 

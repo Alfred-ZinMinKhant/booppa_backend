@@ -568,8 +568,16 @@ class RFPExpressBuilder:
             else:
                 user = db.query(User).filter(User.email == self.vendor_id).first()
             if user:
-                # Precedence: intake UEN ALWAYS wins over account-level User fallback.
-                ctx["uen"] = ctx.get("uen") or getattr(user, "uen", None)
+                # Precedence: intake UEN ALWAYS wins over account-level User fallback,
+                # and the fallback itself is gated on provenance — an unprovenanced or
+                # cross-entity cached UEN must never reach a GeBIZ-ready kit.
+                from app.services.evidence_enricher import trusted_cached_uen
+
+                ctx["uen"] = ctx.get("uen") or trusted_cached_uen(
+                    user,
+                    company_hint=ctx.get("company_name") or self.company_name,
+                    website_hint=ctx.get("vendor_url") or ctx.get("website"),
+                )
                 # Single source of truth with the Cover Sheet's PDPA score, so
                 # the Supplier Declaration prints the same number (e.g. 66/100)
                 # instead of "not available".

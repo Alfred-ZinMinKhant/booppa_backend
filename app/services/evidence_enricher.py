@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 from datetime import date
 from typing import Any, Dict, List, Optional
@@ -305,16 +306,96 @@ def _norm(s) -> str:
     return (s or "").strip().lower()
 
 
-def _cache_trusted_for_hint(user, company_hint) -> bool:
-    """Whether the cached `User.legal_name`/`User.uen` may be reused for a render
-    scoped to `company_hint`.
+def _norm_domain(s) -> str:
+    """Normalize a website/domain for comparison: drop scheme, `www.`, path and
+    trailing slash, lowercase. `https://WWW.Acme.com/about` -> `acme.com`."""
+    v = (s or "").strip().lower()
+    if not v:
+        return ""
+    v = re.sub(r"^[a-z][a-z0-9+.-]*://", "", v)
+    v = v.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if v.startswith("www."):
+        v = v[4:]
+    return v.rstrip(".")
 
-    Trusted when: no hint is given (an own-account render — today's behaviour), the
-    hint is the account's own `company`, or the hint matches the provenance recorded
-    in `User.legal_name_hint` (i.e. the cache was resolved from this same hint). A
+
+def _cache_trusted_for_hint(user, company_hint, website_hint=None) -> bool:
+    """Whether the cached `User.legal_name`/`User.uen` may be reused for a render
+    scoped to `company_hint` (and, when given, `website_hint`).
+
+    Company trust: no hint given (an own-account render), the hint is the account's
+    own `company`, or the hint matches the provenance recorded in
+    `User.legal_name_hint` (i.e. the cache was resolved from this same hint). A
     divergent hint means the cache belongs to a *different* entity/purchase and must
     be re-resolved fresh — this is what stops a reused account from stamping a
-    previously cached entity (the sticky "SPQR Communications" leak)."""
+    previously cached entity (the sticky "SPQR Communications" leak).
+
+    Website trust: a `website_hint` that matches neither the account's own `website`
+    nor the `User.website_hint` provenance breaks trust **on its own**, even when the
+    company string matches. Trading names collide, and several deliverables render the
+    domain as the assessed subject, so a different site is a different subject.
+    """
+    site = _norm_domain(website_hint)
+    if site:
+        known_sites = {
+            _norm_domain(getattr(user, "website", None)),
+            _norm_domain(getattr(user, "website_hint", None)),
+        }
+        known_sites.discard("")
+        if known_sites and site not in known_sites:
+            return False
+
+    hint = _norm(company_hint)
+    if not hint:
+        return True
+    if hint == _norm(getattr(user, "legal_name_hint", None)):
+        return True
+    # A cached identity with NO recorded provenance predates the provenance write and
+    # cannot be vouched for — even when the hint equals the account's own `company`.
+    # This is the reported failure: company="netpoleons" with a cached
+    # legal_name/uen belonging to SPQR Communications and legal_name_hint=NULL. The
+    # company match would wave it through, so provenance is checked first; distrust
+    # forces a fresh resolution, which then writes correct provenance and self-heals.
+    _has_cache = bool(
+        _norm(getattr(user, "legal_name", None)) or _norm(getattr(user, "uen", None))
+    )
+    _has_provenance = bool(_norm(getattr(user, "legal_name_hint", None)))
+    if _has_cache and not _has_provenance:
+        return False
+    if hint == _norm(getattr(user, "company", None)):
+        return True
+    # Unclaimed account: nothing cached and no company on file, so there is no other
+    # entity's identity to leak and the first resolution legitimately claims it. Note
+    # a cached `legal_name` with NULL provenance does NOT qualify — that is precisely
+    # the pre-fix signature we must distrust.
+    if not any(
+        _norm(getattr(user, f, None))
+        for f in ("company", "legal_name", "legal_name_hint")
+    ):
+        return True
+    return False
+
+
+def _subject_is_own_account(user, company_hint, website_hint=None) -> bool:
+    """Whether the subject being resolved *is* this account's own entity — i.e.
+    whether a freshly resolved identity may be persisted onto the account.
+
+    Deliberately distinct from `_cache_trusted_for_hint`, which answers the *read*
+    question ("may I reuse what's cached?"). A pre-fix row with a poisoned cache and
+    no provenance fails the read check but must still pass this one: the account
+    genuinely is that company, so resolving its own name afresh is exactly what
+    repairs the row. Conflating the two would leave poisoned accounts unable to heal.
+    """
+    site = _norm_domain(website_hint)
+    if site:
+        known_sites = {
+            _norm_domain(getattr(user, "website", None)),
+            _norm_domain(getattr(user, "website_hint", None)),
+        }
+        known_sites.discard("")
+        if known_sites and site not in known_sites:
+            return False
+
     hint = _norm(company_hint)
     if not hint:
         return True
@@ -322,7 +403,101 @@ def _cache_trusted_for_hint(user, company_hint) -> bool:
         return True
     if hint == _norm(getattr(user, "legal_name_hint", None)):
         return True
-    return False
+    # Unclaimed account — no company on file and nothing cached to overwrite.
+    return not any(
+        _norm(getattr(user, f, None))
+        for f in ("company", "legal_name", "legal_name_hint")
+    )
+
+
+def trusted_cached_uen(user, company_hint=None, website_hint=None) -> Optional[str]:
+    """The account's cached `User.uen`, but **only** when it may be trusted for this
+    subject — otherwise `None`.
+
+    This is the read-side gate. Callers must treat `None` as "no UEN supplied" and
+    fall through to a name-only ACRA lookup rather than reaching for `user.uen`
+    directly. Reading the raw column is how a stale UEN (SPQR's `21374700J`) got
+    matched against the registry and certified as another company's identity.
+    """
+    if not _cache_trusted_for_hint(user, company_hint, website_hint=website_hint):
+        logger.info(
+            "trusted_cached_uen: refusing cached UEN for user %s (company_hint=%r, "
+            "website_hint=%r) — cache provenance does not match this subject",
+            getattr(user, "id", None), company_hint, website_hint,
+        )
+        return None
+    return getattr(user, "uen", None)
+
+
+def clear_cached_identity(user, db, *, commit: bool = True) -> None:
+    """Drop the account's cached identity **and its provenance**.
+
+    Use when the account's company/website changes or a resolution fails — leaving
+    `legal_name_hint` behind while clearing `legal_name` produces a row that looks
+    like it has trustworthy provenance for a value that no longer exists.
+    """
+    user.legal_name = None
+    user.uen = None
+    user.legal_name_hint = None
+    user.website_hint = None
+    if commit:
+        db.commit()
+
+
+def record_verified_identity(
+    user,
+    db,
+    *,
+    uen: Optional[str] = None,
+    legal_name: Optional[str] = None,
+    company_hint: Optional[str] = None,
+    website_hint: Optional[str] = None,
+) -> bool:
+    """The **only** sanctioned way to persist `User.uen` / `User.legal_name`.
+
+    Nothing outside this module may assign those columns directly (there is a
+    regression test asserting exactly that). A direct write is how a Vendor Proof
+    run for one company stamped another company's ACRA registration onto the account
+    and then re-confirmed it on every subsequent run.
+
+    Writes only when `_cache_trusted_for_hint` says this subject *is* the account's
+    own entity, and always records the provenance (`legal_name_hint` /
+    `website_hint`) alongside — a write without provenance is what let the previous
+    corruption survive the next trust check.
+
+    Returns True when something was persisted.
+    """
+    if not _subject_is_own_account(user, company_hint, website_hint=website_hint):
+        logger.warning(
+            "record_verified_identity: refused identity write for user %s — subject "
+            "(company_hint=%r, website_hint=%r) is not this account's own entity; "
+            "rejected uen=%r legal_name=%r (cached: company=%r legal_name_hint=%r)",
+            getattr(user, "id", None), company_hint, website_hint, uen, legal_name,
+            getattr(user, "company", None), getattr(user, "legal_name_hint", None),
+        )
+        return False
+
+    updated = False
+    if uen and uen != getattr(user, "uen", None):
+        user.uen = uen
+        updated = True
+    if legal_name and legal_name != getattr(user, "legal_name", None):
+        user.legal_name = legal_name
+        updated = True
+    # Provenance: record what this cache was resolved from so a later purchase with a
+    # different company/website can detect it is stale (see _cache_trusted_for_hint).
+    if (uen or legal_name) and company_hint:
+        if getattr(user, "legal_name_hint", None) != company_hint:
+            user.legal_name_hint = company_hint
+            updated = True
+    if (uen or legal_name) and website_hint:
+        if getattr(user, "website_hint", None) != website_hint:
+            user.website_hint = website_hint
+            updated = True
+
+    if updated:
+        db.commit()
+    return updated
 
 
 async def resolve_legal_name(
@@ -330,6 +505,7 @@ async def resolve_legal_name(
     db,
     company_hint: Optional[str] = None,
     uen: Optional[str] = None,
+    website_hint: Optional[str] = None,
 ) -> str:
     """
     Resolve a user's ACRA-registered legal entity name and persist it to
@@ -345,42 +521,40 @@ async def resolve_legal_name(
     (`user.legal_name` -> `company_hint`/`user.company` -> "Your Organisation")
     if no registry match is found.
     """
-    _uen = uen or getattr(user, "uen", None)
+    # Only use the cached UEN if the cache is trusted for this company/website context
+    trusted = _cache_trusted_for_hint(user, company_hint, website_hint=website_hint)
+    _uen = uen
+    if trusted:
+        _uen = _uen or getattr(user, "uen", None)
     _company = company_hint or getattr(user, "company", None)
 
     registered_name, resolved_uen = await _match_acra(db, _uen, _company)
 
-    # Only persist the resolution back to the account when the hint we resolved
-    # actually corresponds to *this user's own* company. A hint derived from some
+    # Only persist the resolution back to the account when the subject we resolved
+    # actually corresponds to *this user's own* entity. A hint derived from some
     # other entity (e.g. a vendor being verified) must never overwrite the
     # account's cached identity — that is exactly how a stray value like
     # "SPQR Communications" became sticky and contaminated later reports. When the
     # incoming hint diverges from the cached identity we still return the freshly
     # resolved name to the caller, but we do not write it to User.
-    own_company = _norm(getattr(user, "company", None))
-    hint_used = _norm(_company)
-    hint_is_own = (not hint_used) or (not own_company) or (hint_used == own_company)
-
-    updated = False
-    if not hint_is_own:
-        # Cross-entity hint: never write to the account, and never fall back to the
+    #
+    # The trust decision and the write both live in record_verified_identity, the
+    # single sanctioned write path — this function must not assign the columns itself.
+    if not _subject_is_own_account(user, _company, website_hint=website_hint):
+        # Cross-entity subject: never write to the account, and never fall back to the
         # account's cached legal_name — that belongs to a *different* entity and is
         # exactly the leak we are killing. Scope strictly to the resolved-from-hint
         # value, then the raw hint.
         return registered_name or _company or "Your Organisation"
-    if resolved_uen and resolved_uen != getattr(user, "uen", None):
-        user.uen = resolved_uen
-        updated = True
-    if registered_name and registered_name != getattr(user, "legal_name", None):
-        user.legal_name = registered_name
-        updated = True
-    # Record the hint this cache was resolved from so a later purchase with a
-    # different company can detect the cache is stale (see _cache_trusted_for_hint).
-    if registered_name and _company and getattr(user, "legal_name_hint", None) != _company:
-        user.legal_name_hint = _company
-        updated = True
-    if updated:
-        db.commit()
+
+    record_verified_identity(
+        user,
+        db,
+        uen=resolved_uen,
+        legal_name=registered_name,
+        company_hint=_company,
+        website_hint=website_hint,
+    )
 
     return registered_name or getattr(user, "legal_name", None) or _company or "Your Organisation"
 
@@ -419,7 +593,11 @@ def _display_fallback(user, company_hint, trusted: bool) -> str:
 
 
 async def resolve_display_legal_name(
-    user, db=None, timeout: int = ACRA_SYNC_RESOLVE_TIMEOUT, company_hint: str | None = None
+    user,
+    db=None,
+    timeout: int = ACRA_SYNC_RESOLVE_TIMEOUT,
+    company_hint: str | None = None,
+    website_hint: str | None = None,
 ) -> str:
     """Async-context version of `display_legal_name` — use this from any `async
     def`.
@@ -434,12 +612,15 @@ async def resolve_display_legal_name(
     the cache was resolved from, the cached `legal_name` is treated as stale and
     re-resolved fresh (and never written back to the account).
     """
-    trusted = _cache_trusted_for_hint(user, company_hint)
+    trusted = _cache_trusted_for_hint(user, company_hint, website_hint=website_hint)
     if db is not None and (not getattr(user, "legal_name", None) or not trusted):
         try:
             resolved = await asyncio.wait_for(
                 resolve_legal_name(
-                    user, db, company_hint=company_hint or getattr(user, "company", None)
+                    user,
+                    db,
+                    company_hint=company_hint or getattr(user, "company", None),
+                    website_hint=website_hint,
                 ),
                 timeout=timeout,
             )
@@ -515,49 +696,72 @@ async def resolve_report_legal_name(
     return registered_name or subject_name or "Your Organisation"
 
 
+def _run_coro_blocking(coro, timeout: int):
+    """Drive `coro` to completion from synchronous code, with or without a loop
+    already running on this thread.
+
+    `asyncio.run()` raises inside a running loop, and every Celery fulfillment
+    workflow runs under `asyncio.run(...)`. The previous behaviour was to detect
+    that case and skip resolution entirely — which made "skip the ACRA lookup" the
+    *normal* production path, so a correctly-distrusted identity cache silently
+    degraded to the raw hint instead of being re-resolved. That is why a stale
+    cached identity kept surfacing on documents.
+
+    When a loop is already running we hand the coroutine to a short-lived worker
+    thread with its own loop and block on the result. The calling thread is parked
+    for the duration, so the `db` Session is still touched by exactly one thread at
+    a time (Sessions are not concurrency-safe, but sequential hand-off is fine).
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(asyncio.wait_for(coro, timeout=timeout))
+
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            lambda: asyncio.run(asyncio.wait_for(coro, timeout=timeout))
+        )
+        # Slightly beyond the inner deadline so the inner wait_for is what fires,
+        # giving us the proper TimeoutError rather than a bare thread timeout.
+        return future.result(timeout=timeout + 5)
+
+
 def display_legal_name(
-    user, db=None, timeout: int = ACRA_SYNC_RESOLVE_TIMEOUT, company_hint: str | None = None
+    user,
+    db=None,
+    timeout: int = ACRA_SYNC_RESOLVE_TIMEOUT,
+    company_hint: str | None = None,
+    website_hint: str | None = None,
 ) -> str:
     """Sync entry point for rendering a user's entity name.
 
     If legal_name is missing (or stale for `company_hint`) and db is provided,
-    actively resolves the ACRA name via asyncio.run(). Only valid from a
-    genuinely synchronous caller — from an async context use
-    `await resolve_display_legal_name(...)` instead.
+    actively resolves the ACRA name. Safe to call from a sync function whether or
+    not an event loop happens to be running above it (see `_run_coro_blocking`).
+    From an `async def`, prefer `await resolve_display_legal_name(...)` — it does
+    the same work without the worker-thread hop.
 
     Pass `company_hint` to scope the render to a *specific purchase's* company
     rather than the account's cached identity; a divergent hint treats the cache
     as stale and re-resolves fresh (never written back to the account).
     """
-    trusted = _cache_trusted_for_hint(user, company_hint)
+    trusted = _cache_trusted_for_hint(user, company_hint, website_hint=website_hint)
     if db is not None and (not getattr(user, "legal_name", None) or not trusted):
-        # Check for a running loop BEFORE building any coroutine. Constructing
-        # one and letting asyncio.run() reject it leaves two coroutine objects
-        # unawaited, which is where the "coroutine 'wait_for' was never awaited"
-        # RuntimeWarning pair in the worker logs came from.
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            pass  # No loop running — safe to drive one ourselves.
-        else:
-            logger.warning(
-                "display_legal_name called from an async context for user %s — "
-                "use `await resolve_display_legal_name(...)` instead; "
-                "skipping ACRA resolution",
-                getattr(user, "id", None),
-            )
-            return _display_fallback(user, company_hint, trusted)
-
         try:
             # Hard-capped total wait: under a stalled/blackholed network the
             # per-request httpx timeouts don't always bound total wall time
             # (e.g. hung DNS). A Celery task must never hang indefinitely here.
-            resolved = asyncio.run(asyncio.wait_for(
+            resolved = _run_coro_blocking(
                 resolve_legal_name(
-                    user, db, company_hint=company_hint or getattr(user, "company", None)
+                    user,
+                    db,
+                    company_hint=company_hint or getattr(user, "company", None),
+                    website_hint=website_hint,
                 ),
                 timeout=timeout,
-            ))
+            )
             if resolved:
                 return resolved
         except asyncio.TimeoutError:
@@ -722,7 +926,13 @@ async def fetch_pdpc_enforcement(company_name: str, uen: Optional[str] = None) -
 #   • verified=False marks machine-classified rows (vs the human-verified static
 #     seed in pdpc_precedents.PRECEDENTS, which carries verified=True).
 
-PDPC_PRECEDENT_INDEX_CACHE_KEY = "pdpc_precedent_index:v1"
+# Bumped whenever row semantics change, because the index is cached for 14 days
+# and a stale index would otherwise outlive the code fix.
+#   v2 — v1 indexed "No Breach of …" decisions as enforcement (see
+#        _PDPC_NON_ENFORCEMENT_RE).
+#   v3 — rows gained `year_source`; without it a year renders unlabelled, and a
+#        publication year would read as the year the decision was made.
+PDPC_PRECEDENT_INDEX_CACHE_KEY = "pdpc_precedent_index:v3"
 
 # Obligation categories keyed off the standard, formulaic PDPC decision titles.
 # Order does not matter — every matching category is attached (a title may cite
@@ -740,6 +950,18 @@ _PDPC_TITLE_RULES: list[tuple[str, str]] = [
     (r"transfer limitation|transfer obligation|cross-border", "transfer"),
     (r"notification obligation|data breach", "notification"),
 ]
+
+# Decisions whose outcome was NOT an enforcement finding. These titles carry the
+# same obligation words as real breaches, so they must be excluded on outcome
+# before the obligation rules run — a cleared organisation must never appear in
+# the precedent index.
+_PDPC_NON_ENFORCEMENT_RE = re.compile(
+    r"\bno\s+(further\s+action|breach|financial\s+penalty|contravention)"
+    r"|\bnot\s+in\s+breach"
+    r"|\bdid\s+not\s+(breach|contravene)"
+    r"|\bno\s+directions?\s+(issued|given)",
+    re.IGNORECASE,
+)
 
 # Section label shown next to each category when we cite it.
 _CATEGORY_SECTION: dict[str, str] = {
@@ -761,14 +983,37 @@ def classify_pdpc_title(title: str) -> list[str]:
     Title text on the decisions register is formulaic ("Breach of the Protection
     Obligation by X"), so a small regex table classifies reliably. Returns [] for
     titles we cannot confidently place (they are then left out of the index —
-    never guessed into a bucket).
+    never guessed into a bucket), and for decisions whose OUTCOME was not an
+    enforcement finding: "No Breach of the Protection Obligation by X" matches
+    the same obligation regex as "Breach of …", so without the outcome filter a
+    cleared organisation gets indexed and later cited as a precedent against it.
     """
     t = title or ""
+    if _PDPC_NON_ENFORCEMENT_RE.search(t):
+        return []
     cats: list[str] = []
     for pattern, cat in _PDPC_TITLE_RULES:
         if re.search(pattern, t, flags=re.IGNORECASE) and cat not in cats:
             cats.append(cat)
     return cats
+
+
+_VENDOR_NOISE_RE = re.compile(
+    r"\b(pte|private|ltd|limited|llp|inc|corp|corporation|company|co)\b|[^\w\s]",
+    re.IGNORECASE,
+)
+
+
+def precedent_dedupe_key(case: dict) -> tuple:
+    """Identity of a precedent for de-duplication.
+
+    The register publishes some decisions under two URLs (e.g. PPLingo 2024,
+    Tanah Merah Country Club), so de-duping on URL alone double-counts them —
+    which inflates both the case count and the penalty total we quote. The same
+    key also collapses a curated seed case against its scraped twin.
+    """
+    vendor = _VENDOR_NOISE_RE.sub(" ", (case.get("vendor") or "")).lower()
+    return (" ".join(vendor.split()), case.get("fine_sgd"))
 
 
 def _vendor_from_title(title: str) -> Optional[str]:
@@ -789,21 +1034,55 @@ _FINE_RE = re.compile(r"financial penalty of\s*S?\$?\s*([\d,]+)", re.IGNORECASE)
 # page is almost always boilerplate (an address, a section reference, a fine
 # figure) — that produced the impossible "(2000)" year on every case.
 _YEAR_RE = re.compile(r"\[(20\d{2})\]\s*SGPDPC", re.IGNORECASE)
+# Fallback: the decision's own publication date, read from the page banner
+# ("Published on 18 Feb 2022"). Anchored to the "Published on" label so it cannot
+# drift onto a stray 20xx elsewhere on the page — that anchoring is the whole
+# point of the rule above. The neutral citation is still preferred when present,
+# because publication can trail the decision date across a year boundary.
+_PUBLISHED_YEAR_RE = re.compile(
+    r"Published on[\s\"'\\,:\[\]-]*(?:<!--\s*-->)?[\s\"'\\,]*"
+    r"\d{1,2}\s+[A-Za-z]{3,9}\s+(20\d{2})",
+    re.IGNORECASE,
+)
 
 
 def _parse_decision_year(url: str, text: str) -> "int | None":
     """Return the PDPC decision year, or None when it can't be confidently read.
 
-    Only the neutral-citation year (``[YYYY] SGPDPC…``) is trusted, and it must
-    fall in the enforcement era (PDPA came into force in 2013). Anything else
-    yields None — the precedent summary then names the case without a year,
-    which is honest, rather than stamping a fabricated one.
+    Two signals are trusted, in order: the neutral-citation year
+    (``[YYYY] SGPDPC…``), then the page's own "Published on <date>" banner. The
+    citation wins because publication can trail the decision across a year
+    boundary; the banner is the fallback because most register summary pages
+    carry no citation at all (it lives in the linked decision PDF). Both are
+    labelled facts read off the page — an unanchored ``20\\d{2}`` match is still
+    never used, since the first one on a page is usually an address or a section
+    reference. Anything else yields None and the precedent summary names the case
+    without a year, which is honest, rather than stamping a fabricated one.
+
+    The year must fall in the enforcement era (PDPA came into force in 2013).
+    """
+    return _parse_decision_year_with_source(url, text)[0]
+
+
+def _parse_decision_year_with_source(url: str, text: str) -> "tuple[int | None, str | None]":
+    """As _parse_decision_year, plus WHICH signal the year came from.
+
+    Returns ``(year, "decided")`` for a neutral-citation year and
+    ``(year, "published")`` for the register's publication banner. The caller
+    labels the year with this in customer-facing text, so a publication year is
+    never passed off as the year the decision was made.
     """
     m = _YEAR_RE.search(url) or _YEAR_RE.search(text)
+    source = "decided"
     if not m:
-        return None
+        m = _PUBLISHED_YEAR_RE.search(text)
+        source = "published"
+    if not m:
+        return None, None
     year = int(m.group(1))
-    return year if 2013 <= year <= date.today().year + 1 else None
+    if not (2013 <= year <= date.today().year + 1):
+        return None, None
+    return year, source
 
 
 async def _enrich_decision_page(client: "httpx.AsyncClient", url: str) -> dict:
@@ -812,7 +1091,7 @@ async def _enrich_decision_page(client: "httpx.AsyncClient", url: str) -> dict:
     Returns {fine_sgd, year} with None for anything not confidently parsed. Any
     network/parse failure yields both None — we never fabricate a figure.
     """
-    out: dict[str, Any] = {"fine_sgd": None, "year": None}
+    out: dict[str, Any] = {"fine_sgd": None, "year": None, "year_source": None}
     try:
         resp = await client.get(url, headers={"User-Agent": "BooppaBot/1.0"}, follow_redirects=True)
         if resp.status_code != 200:
@@ -824,13 +1103,13 @@ async def _enrich_decision_page(client: "httpx.AsyncClient", url: str) -> dict:
                 out["fine_sgd"] = int(fm.group(1).replace(",", ""))
             except ValueError:
                 pass
-        out["year"] = _parse_decision_year(url, text)
+        out["year"], out["year_source"] = _parse_decision_year_with_source(url, text)
     except Exception:
         pass
     return out
 
 
-async def build_pdpc_precedent_index(max_enrich: int = 60) -> Dict[str, Any]:
+async def build_pdpc_precedent_index(max_enrich: int = 500) -> Dict[str, Any]:
     """Scrape the PDPC decisions list and build a per-obligation precedent index.
 
     Shape written to cache under PDPC_PRECEDENT_INDEX_CACHE_KEY:
@@ -839,9 +1118,20 @@ async def build_pdpc_precedent_index(max_enrich: int = 60) -> Dict[str, Any]:
           "categories": { "<category>": [ {vendor, year, fine_sgd, section,
                                            url, summary, verified}, ... ] },
           "total": <int>,
+          "citable": <int>,
         }
-    `max_enrich` caps how many decision pages we fetch for fine/year (keeps the
-    beat task bounded); the rest are indexed title-only with fine/year=None.
+
+    Every classified decision page is fetched, because `verified` — the flag that
+    decides whether a case may be NAMED in a customer document — is earned from
+    the page, not the title: a row is verified only when we parsed BOTH a
+    financial penalty and a "[YYYY] SGPDPC N" citation year. The penalty is what
+    proves the decision was an enforcement finding at all; a cleared organisation
+    has none, so evidence (not the title blocklist) is the real gate against
+    citing an acquittal. Title-only rows stay in the index with verified=False —
+    useful as context, never citable.
+
+    `max_enrich` is a safety ceiling on pages fetched per run, not a budget to
+    spend: rows beyond it stay unverified rather than being cited unchecked.
     """
     from datetime import datetime, timezone
 
@@ -882,39 +1172,66 @@ async def build_pdpc_precedent_index(max_enrich: int = 60) -> Dict[str, Any]:
             "vendor": _vendor_from_title(title),
         })
 
-    # Best-effort enrichment (bounded).
+    # Evidence pass: read every classified decision page (bounded concurrency so
+    # we stay a polite scraper). A page that fails to fetch or parse simply
+    # leaves fine/year as None — that row is then not citable, never guessed.
     if classified:
+        sem = asyncio.Semaphore(5)
+
+        async def _enrich(row: dict, client) -> None:
+            async with sem:
+                enr = await _enrich_decision_page(client, row["url"])
+            row["fine_sgd"] = enr["fine_sgd"]
+            row["year"] = enr["year"]
+            row["year_source"] = enr.get("year_source")
+
         try:
             async with httpx.AsyncClient(timeout=12) as client:
-                for row in classified[:max_enrich]:
-                    enr = await _enrich_decision_page(client, row["url"])
-                    row["fine_sgd"] = enr["fine_sgd"]
-                    row["year"] = enr["year"]
+                await asyncio.gather(*(
+                    _enrich(row, client) for row in classified[:max_enrich]
+                ))
         except Exception as e:
             logger.warning(f"PDPC precedent index: enrichment pass failed: {e}")
 
     categories: dict[str, list[dict]] = {}
+    seen_per_cat: dict[str, set] = {}
+    seen_global: set = set()
     for row in classified:
+        # Verified == citable by name: penalty proves an enforcement outcome,
+        # citation year proves we read the actual decision.
+        row_verified = bool(row.get("fine_sgd")) and bool(row.get("year"))
+        if row_verified:
+            seen_global.add(precedent_dedupe_key(row))
         for cat in row["categories"]:
+            # Collapse the same decision published under two URLs.
+            if row_verified:
+                key = precedent_dedupe_key(row)
+                if key in seen_per_cat.setdefault(cat, set()):
+                    continue
+                seen_per_cat[cat].add(key)
             categories.setdefault(cat, []).append({
                 "vendor": row.get("vendor"),
                 "year": row.get("year"),
+                # "decided" (neutral citation) or "published" (register banner)
+                "year_source": row.get("year_source"),
                 "fine_sgd": row.get("fine_sgd"),
                 "section": _CATEGORY_SECTION.get(cat, ""),
                 "url": row["url"],
                 "summary": row["title"],
-                "verified": False,
+                "verified": row_verified,
             })
 
     index = {
         "built_at": datetime.now(timezone.utc).isoformat(),
         "categories": categories,
+        "citable": len(seen_global),
         "total": len(classified),
     }
     _cache_set(PDPC_PRECEDENT_INDEX_CACHE_KEY, index, ttl=14 * 86400)  # 14 days
     logger.info(
-        "PDPC precedent index built: %d decisions across %d categories",
-        len(classified), len(categories),
+        "PDPC precedent index built: %d decisions across %d categories "
+        "(%d citable — penalty + citation year read from the decision page)",
+        len(classified), len(categories), len(seen_global),
     )
     return index
 

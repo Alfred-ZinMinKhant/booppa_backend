@@ -293,7 +293,16 @@ def build_pro_report_pdf(
         # purchase-scoped hint to gate the cache with — the account name is the
         # only signal available. Callers rendering for a specific purchase must
         # pass `company` rather than relying on this fallback.
-        company = display_legal_name(user, db, company_hint=company) or "Your Company"
+        company = display_legal_name(
+            user,
+            db,
+            # `company` is None on this branch by construction, so hinting with
+            # it was a no-op that made every cache look trusted. Hint with the
+            # account's own identity instead so an unprovenanced cache is
+            # re-resolved rather than stamped verbatim.
+            company_hint=user.company,
+            website_hint=user.website,
+        ) or "Your Company"
 
     if trust_score is None or compliance_score is None:
         sr = db.query(VendorScore).filter(VendorScore.vendor_id == vendor_id).first()

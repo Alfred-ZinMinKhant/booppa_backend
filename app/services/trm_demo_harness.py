@@ -240,8 +240,11 @@ def seed_and_generate(
             # cover stamps a registered legal name, not a raw domain.
             try:
                 if hasattr(user, "uen") and not user.uen:
-                    user.uen = uen
-                    db.commit()
+                    from app.services.evidence_enricher import record_verified_identity
+
+                    record_verified_identity(
+                        user, db, uen=uen, company_hint=company_name
+                    )
             except Exception:
                 db.rollback()
 

@@ -342,10 +342,10 @@ async def regenerate_cover_sheet(email: str = Form(...)):
                 status_code=400,
                 detail="No existing Compliance Cover Sheet found for this account.",
             )
-        from app.services.evidence_enricher import display_legal_name
+        from app.services.evidence_enricher import resolve_display_legal_name
         # Regenerating an EXISTING sheet: keep it scoped to the entity that sheet
         # was issued to, not the account's current cached company.
-        company_name = (existing.company_name or "").strip() or display_legal_name(
+        company_name = (existing.company_name or "").strip() or await resolve_display_legal_name(
             user, db, company_hint=existing.company_name
         )
     finally:
@@ -446,9 +446,9 @@ async def upload_signed_cover_sheet(
             .order_by(Report.created_at.desc())
             .first()
         )
-        from app.services.evidence_enricher import display_legal_name as _dln
+        from app.services.evidence_enricher import resolve_display_legal_name as _dln
         issued_name = (getattr(issued_sheet, "company_name", "") or "").strip()
-        signed_company = issued_name or _dln(user, db, company_hint=issued_name or None)
+        signed_company = issued_name or await _dln(user, db, company_hint=issued_name or None)
 
         # Persist report row + decrement credit + flip flag atomically
         report = Report(
@@ -579,8 +579,8 @@ async def sign_cover_sheet_electronically(payload: ESignRequest, request: Reques
         # The signature page must name the entity the Cover Sheet was ISSUED to,
         # not whatever company the account currently caches — accounts get reused
         # across companies (the SPQR leak shape).
-        from app.services.evidence_enricher import display_legal_name as _dln
-        cs_company = (unsigned_report.company_name or "").strip() or _dln(
+        from app.services.evidence_enricher import resolve_display_legal_name as _dln
+        cs_company = (unsigned_report.company_name or "").strip() or await _dln(
             user, db, company_hint=unsigned_report.company_name
         )
 

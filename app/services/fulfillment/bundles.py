@@ -3,6 +3,7 @@ from app.core.config import settings
 from app.core.db import SessionLocal
 from app.core.models import Report, User
 from app.services.blockchain import BlockchainService
+from app.services.evidence_enricher import trusted_cached_uen
 from app.services.pdf_service import PDFService
 from app.services.booppa_ai_service import BooppaAIService
 from app.services.storage import S3Service
@@ -421,7 +422,7 @@ async def _fulfill_compliance_evidence_pack(
             # Purchase metadata first: this pack is scoped to the company bought
             # for, and accounts get reused across companies (the SPQR leak shape).
             "uen": (metadata.get("uen") or "").strip()
-            or (getattr(user, "uen", "") or "").strip()
+            or (trusted_cached_uen(user, company_hint=org, website_hint=website) or "").strip()
             or "Not provided",
             "domain": (website or getattr(user, "website", "") or "").replace("https://", "").replace("http://", "").strip("/"),
             "sector": metadata.get("sector") or "Professional Services",

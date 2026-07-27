@@ -128,6 +128,12 @@ SEVERITY_HEX = {
 # tracker firing, privacy policy completeness) carry double weight in the
 # overall score; remaining dimensions carry baseline weight. Any dimension
 # not listed here falls back to weight 1 via dict.get(name, 1).
+def _max_penalty_text() -> str:
+    """Statutory penalty ceiling, from the single source of truth."""
+    from app.services.pdpc_precedents import MAX_PENALTY_TEXT
+    return MAX_PENALTY_TEXT
+
+
 def _finding_key_from(f: dict) -> str | None:
     """Derive a stable finding_key from a finding dict for precedent lookup.
 
@@ -147,7 +153,13 @@ def _finding_key_from(f: dict) -> str | None:
     # the canonical keys used by app.services.finding_keys.
     if "nric" in slug or "fin_number" in slug:
         return "nric:collection"
-    if "breach" in slug or "notification" in slug:
+    # Checked before the generic "breach" rule: a finding about the breach
+    # NOTIFICATION duty (§26A-D) must not be answered with §24 Protection
+    # precedents — the rendered line names the obligation it cites, so a
+    # mis-bucket would read as a claim about the wrong duty.
+    if "notification" in slug or "notify" in slug:
+        return "breach:notification"
+    if "breach" in slug:
         return "breach:pdpc_enforcement"
 
     return f"free:{slug}"
@@ -1379,9 +1391,33 @@ class PDFService:
 
     def _how_to_verify_block(self, report_data: dict) -> list:
         """4-step independent verification instructions (mandatory per legal brief)."""
+        from app.services.tx_utils import is_real_onchain_tx
+
         s = self._s
         audit_hash = report_data.get("audit_hash") or "—"
-        tx_hash = report_data.get("tx_hash") or "—"
+        # Same gate as _blockchain_block (which renders the summary table on this
+        # very PDF): anything that isn't a real on-chain tx collapses to "—", and
+        # Step 4 then tells the reader anchoring is pending instead of sending
+        # them to an explorer with a hash that will never resolve.
+        _tx = report_data.get("tx_hash")
+        tx_hash = _tx if is_real_onchain_tx(_tx) else "—"
+        if tx_hash == "—":
+            step_4 = (
+                "Step 4 — Transaction Hash: pending.",
+                "This document has not yet been anchored on "
+                f"{settings.active_polygon_network_name}, so there is no transaction "
+                "to look up. Steps 1-3 above independently prove the document's "
+                "integrity. Once anchoring completes, a reissued copy of this "
+                "certificate will carry the transaction hash.",
+            )
+        else:
+            step_4 = (
+                f"Step 4 — Confirm the Transaction Hash on {settings.active_polygon_explorer_url}.",
+                f"Search <font face='Courier'>{tx_hash}</font> on "
+                f'<a href="{settings.active_polygon_explorer_url}"><font color="#10b981">{settings.active_polygon_explorer_url}</font></a>. '
+                "The block timestamp proves the earliest possible existence date of this document. "
+                "No login or account required.",
+            )
         steps = [
             (
                 "Step 1 — Obtain the PDF from the assessed organisation.",
@@ -1396,13 +1432,7 @@ class PDFService:
                 "Step 3 — Compare against the Evidence Hash on the certificate.",
                 f"The output must exactly match: <font face='Courier'>{audit_hash}</font>",
             ),
-            (
-                f"Step 4 — Confirm the Transaction Hash on {settings.active_polygon_explorer_url}.",
-                f"Search <font face='Courier'>{tx_hash}</font> on "
-                f'<a href="{settings.active_polygon_explorer_url}"><font color="#10b981">{settings.active_polygon_explorer_url}</font></a>. '
-                "The block timestamp proves the earliest possible existence date of this document. "
-                "No login or account required.",
-            ),
+            step_4,
         ]
         items: list = []
         for title, detail in steps:
@@ -2148,9 +2178,17 @@ class PDFService:
         # ── 3. Blockchain Record ───────────────────────────────────────────────
         items.append(self._section_header("Blockchain Record"))
         items.append(Spacer(1, 6))
-        tx = d.get("tx_hash") or "—"
-        poly_url = d.get("polygonscan_url") or (
-            f"{settings.active_polygon_explorer_url.rstrip('/')}/tx/{tx}" if tx != "—" else "—"
+        from app.services.tx_utils import is_real_onchain_tx
+
+        # Gate as in _blockchain_block / _how_to_verify_block — a demo or PENDING
+        # value must never be printed as a transaction, nor turned into an
+        # explorer URL that cannot resolve.
+        _tx = d.get("tx_hash")
+        tx = _tx if is_real_onchain_tx(_tx) else "—"
+        poly_url = (
+            (d.get("polygonscan_url")
+             or f"{settings.active_polygon_explorer_url.rstrip('/')}/tx/{tx}")
+            if tx != "—" else "—"
         )
         items.append(self._meta_table([
             ("NETWORK", d.get("network") or settings.active_polygon_network_name),
@@ -2231,7 +2269,7 @@ class PDFService:
         rows_src = [
             ("Violation",    f.get("description") or f.get("details") or ""),
             ("Legislation",  f.get("legislation_text") or "; ".join(f.get("legislation_references") or []) or f.get("legislation") or ""),
-            ("Max Penalty",  f.get("max_penalty") or (f.get("penalty") or {}).get("amount") or "Up to S$1,000,000"),
+            ("Max Penalty",  f.get("max_penalty") or (f.get("penalty") or {}).get("amount") or _max_penalty_text()),
             ("Evidence",     f.get("evidence") or "Automated scan detection"),
         ]
         if _precedent_text:

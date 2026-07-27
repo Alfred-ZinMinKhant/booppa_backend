@@ -97,3 +97,46 @@ def test_raw_txn_prefers_snake_case_and_falls_back():
 
     assert _raw_txn(NewStyle()) == b"new-bytes"
     assert _raw_txn(OldStyle()) == b"old-bytes"
+
+
+# ── PDPA report: summary table and "How to Verify" must agree ─────────────────
+# Regression: _blockchain_block gated tx_hash through is_real_onchain_tx (so the
+# summary table showed "—"), but _how_to_verify_block seven lines later did not,
+# so Step 4 of the delivered PDF told the buyer to search a `demo-0x…` hash on
+# Polygonscan. Both must be "—" or both the same real tx, never one of each.
+
+def _flat_text(flowables):
+    """Flatten Paragraph text out of a flowable tree (tables nest their cells)."""
+    out = []
+    for f in flowables:
+        if hasattr(f, "text"):
+            out.append(f.text)
+        for row in getattr(f, "_cellvalues", []) or []:
+            for cell in row:
+                out.extend(_flat_text(cell if isinstance(cell, list) else [cell]))
+    return out
+
+
+def _pdpa_tx_pair(tx):
+    from app.services.pdf_service import PDFService
+
+    svc = PDFService()
+    data = {"tx_hash": tx, "audit_hash": "e3b0c442", "report_id": "r-1"}
+    summary = _flat_text(svc._blockchain_block(data))
+    step4 = " ".join(_flat_text(svc._how_to_verify_block(data)))
+    return summary[summary.index("TRANSACTION HASH") + 1], step4
+
+
+def test_pdpa_verify_steps_gate_demo_tx_like_the_summary_table():
+    for bad in ("demo-0x" + "df" * 32, "PENDING", None, "cs_test_abc123"):
+        summary_tx, step4 = _pdpa_tx_pair(bad)
+        assert summary_tx == "—"
+        assert str(bad) not in step4
+        assert "polygonscan" not in step4.lower()
+        assert "not yet been anchored" in step4
+
+
+def test_pdpa_verify_steps_show_a_real_tx():
+    summary_tx, step4 = _pdpa_tx_pair(_REAL_TX)
+    assert summary_tx == _REAL_TX
+    assert _REAL_TX in step4

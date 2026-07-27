@@ -298,7 +298,16 @@ def build_buyer_procurement_report_pdf(
         from app.services.evidence_enricher import display_legal_name
         # Fallback only — reached when the caller supplied no company, so there
         # is no purchase-scoped hint available to gate the sticky cache with.
-        company = display_legal_name(user, db, company_hint=company) or "Your Organisation"
+        company = display_legal_name(
+            user,
+            db,
+            # `company` is None on this branch by construction, so hinting with
+            # it was a no-op that made every cache look trusted. Hint with the
+            # account's own identity instead so an unprovenanced cache is
+            # re-resolved rather than stamped verbatim.
+            company_hint=user.company,
+            website_hint=user.website,
+        ) or "Your Organisation"
 
     suppliers = get_watched_suppliers_with_status(db, user_id)
     # `sample_data` drives the unmissable SAMPLE-DATA banner on every PDF page.

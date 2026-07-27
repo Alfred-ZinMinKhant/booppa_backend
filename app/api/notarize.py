@@ -593,8 +593,18 @@ async def trigger_bundle_cover_sheet(payload: dict):
                        "If you bought one and your cover sheet has already been generated, check your email.",
             )
         if not company_name:
-            from app.services.evidence_enricher import display_legal_name
-            company_name = display_legal_name(user)
+            from app.services.evidence_enricher import resolve_display_legal_name
+            # Async handler: await the resolver directly. Previously this passed
+            # neither `db` nor a hint, so it could only ever return the account's
+            # cached `legal_name` verbatim — no resolution, no staleness check.
+            # There is no per-purchase company here (the caller may supply one in
+            # the payload), so scope to the account's own company + website.
+            company_name = await resolve_display_legal_name(
+                user,
+                db,
+                company_hint=getattr(user, "company", None),
+                website_hint=getattr(user, "website", None),
+            )
         # Clear flag now so duplicate clicks don't re-fire
         user.pending_cover_sheet = False
         db.commit()

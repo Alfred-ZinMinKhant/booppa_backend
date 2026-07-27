@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.auth import verify_access_token
 from app.core.config import settings
+from app.services.evidence_enricher import record_verified_identity, trusted_cached_uen
 from fastapi.security import OAuth2PasswordBearer
 import os
 import stripe
@@ -418,7 +419,15 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
             # ceased / not-found entities BEFORE charging (the post-payment webhook
             # can only warn). UEN stays optional — buyers without one are unaffected.
             req_uen = (data.get("uen") or "").strip()
-            uen = req_uen or ((getattr(user, "uen", "") or "").strip() if user else "")
+            # Only reuse the account's cached UEN when its provenance matches this
+            # purchase's company/website. A cached UEN from a different subject would
+            # otherwise be written into `data["uen"]` and carried through the whole
+            # fulfillment as if the buyer had supplied it.
+            _cached_uen = (
+                (trusted_cached_uen(user, company_hint=company_name, website_hint=website) or "").strip()
+                if user else ""
+            )
+            uen = req_uen or _cached_uen
             
             if not uen and company_name:
                 from app.services.evidence_enricher import fetch_acra_status
@@ -430,15 +439,20 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
                 await _gate_acra_live(uen)
                 data["uen"] = uen
                 if user and not getattr(user, "uen", None):
-                    user.uen = uen
-                    _db.commit()
+                    record_verified_identity(
+                        user, _db, uen=uen,
+                        company_hint=company_name, website_hint=website,
+                    )
 
             # Resolve + persist the canonical legal name now, while the ACRA
             # lookup is already warm/cached — the Vendor Proof certificate and
             # any later generator reads read this instead of the raw company_name.
             if user:
                 from app.services.evidence_enricher import resolve_legal_name
-                await resolve_legal_name(user, _db, company_hint=company_name, uen=uen or None)
+                await resolve_legal_name(
+                    user, _db, company_hint=company_name, uen=uen or None,
+                    website_hint=website,
+                )
         finally:
             _db.close()
 
@@ -486,7 +500,15 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
             # These bundles include a Vendor Proof component — apply the same
             # optional pre-payment ACRA gate when a UEN is supplied.
             req_uen = (data.get("uen") or "").strip()
-            uen = req_uen or ((getattr(user, "uen", "") or "").strip() if user else "")
+            # Only reuse the account's cached UEN when its provenance matches this
+            # purchase's company/website. A cached UEN from a different subject would
+            # otherwise be written into `data["uen"]` and carried through the whole
+            # fulfillment as if the buyer had supplied it.
+            _cached_uen = (
+                (trusted_cached_uen(user, company_hint=company_name, website_hint=website) or "").strip()
+                if user else ""
+            )
+            uen = req_uen or _cached_uen
             
             if not uen and company_name:
                 from app.services.evidence_enricher import fetch_acra_status
@@ -498,14 +520,19 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
                 await _gate_acra_live(uen)
                 data["uen"] = uen
                 if user and not getattr(user, "uen", None):
-                    user.uen = uen
-                    _db.commit()
+                    record_verified_identity(
+                        user, _db, uen=uen,
+                        company_hint=company_name, website_hint=website,
+                    )
 
             # Same canonical legal_name resolve as the standalone vendor_proof
             # flow above — these bundles include a Vendor Proof component too.
             if user:
                 from app.services.evidence_enricher import resolve_legal_name
-                await resolve_legal_name(user, _db, company_hint=company_name, uen=uen or None)
+                await resolve_legal_name(
+                    user, _db, company_hint=company_name, uen=uen or None,
+                    website_hint=website,
+                )
         finally:
             _db.close()
 
@@ -551,7 +578,15 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
             data["company_name"] = company_name
 
             req_uen = (data.get("uen") or "").strip()
-            uen = req_uen or ((getattr(user, "uen", "") or "").strip() if user else "")
+            # Only reuse the account's cached UEN when its provenance matches this
+            # purchase's company/website. A cached UEN from a different subject would
+            # otherwise be written into `data["uen"]` and carried through the whole
+            # fulfillment as if the buyer had supplied it.
+            _cached_uen = (
+                (trusted_cached_uen(user, company_hint=company_name, website_hint=website) or "").strip()
+                if user else ""
+            )
+            uen = req_uen or _cached_uen
 
             if not uen and company_name:
                 from app.services.evidence_enricher import fetch_acra_status
@@ -563,14 +598,19 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
                 await _gate_acra_live(uen)
                 data["uen"] = uen
                 if user and not getattr(user, "uen", None):
-                    user.uen = uen
-                    _db.commit()
+                    record_verified_identity(
+                        user, _db, uen=uen,
+                        company_hint=company_name, website_hint=website,
+                    )
 
             # Canonical legal name — the baseline PDF must stamp the ACRA
             # registered name, never the raw domain.
             if user:
                 from app.services.evidence_enricher import resolve_legal_name
-                await resolve_legal_name(user, _db, company_hint=company_name, uen=uen or None)
+                await resolve_legal_name(
+                    user, _db, company_hint=company_name, uen=uen or None,
+                    website_hint=website,
+                )
         finally:
             _db.close()
 

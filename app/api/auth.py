@@ -380,19 +380,31 @@ async def update_me(
 
     if body.full_name is not None:
         user.full_name = body.full_name
-    if body.company is not None:
-        user.company = body.company
-        # Company changed — the previously resolved legal_name may no longer
-        # apply. Try a live resolve now; falls back to unresolved (cleared) so
-        # generators fall through to the new `company` value rather than
-        # showing a stale registry name.
+    company_changed = body.company is not None and body.company != user.company
+    website_changed = body.website is not None and body.website != user.website
+
+    if company_changed or website_changed:
+        from app.services.evidence_enricher import clear_cached_identity, resolve_legal_name
+        # Clear the old cached identity and UEN/provenance because they are no longer valid
+        clear_cached_identity(user, db, commit=False)
+        
+        if body.company is not None:
+            user.company = body.company
+        if body.website is not None:
+            user.website = body.website
+            
         try:
-            from app.services.evidence_enricher import resolve_legal_name
-            await resolve_legal_name(user, db, company_hint=body.company)
+            await resolve_legal_name(
+                user, db, company_hint=user.company, website_hint=user.website
+            )
         except Exception:
-            user.legal_name = None
-    if body.website is not None:
-        user.website = body.website
+            # If resolve fails, we've already cleared the cache, so it's clean.
+            pass
+    else:
+        if body.company is not None:
+            user.company = body.company
+        if body.website is not None:
+            user.website = body.website
     if body.industry is not None:
         user.industry = body.industry
     if body.company_description is not None:
