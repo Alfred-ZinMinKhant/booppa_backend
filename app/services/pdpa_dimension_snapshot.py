@@ -20,6 +20,36 @@ from __future__ import annotations
 from typing import Any
 
 
+def tracker_capture_is_usable(trackers: Any) -> bool:
+    """True when the tracker capture actually observed the page's network traffic.
+
+    An empty ``inventory`` is ambiguous, and both readings were previously scored
+    the same (95/Compliant, "No third-party trackers observed"):
+
+      * 180 requests captured, none matched a tracker signature — real evidence.
+      * 0 requests captured because the capture failed — no evidence at all.
+
+    The second is absence of evidence rendered as evidence of compliance, on the
+    very dimension we sell as an *inventory*. ``total_requests_captured``
+    distinguishes them; it was recorded at scan time and read nowhere.
+
+    Rows written before that counter existed return ``True`` — we do not
+    retroactively flip historical reports to "Not Assessed".
+    """
+    if not isinstance(trackers, dict):
+        return False
+    if trackers.get("inventory"):
+        # Trackers were found, so the capture demonstrably worked.
+        return True
+    captured = trackers.get("total_requests_captured")
+    if captured is None:
+        return True
+    try:
+        return int(captured) > 0
+    except (TypeError, ValueError):
+        return True
+
+
 def _classify(score: int) -> str:
     if score >= 85:
         return "Compliant"
@@ -90,8 +120,12 @@ def compute_dimension_snapshots(assessment_data: dict[str, Any] | None) -> list[
         })
 
     # ── Third-Party Tracker Inventory ─────────────────────────────────────
+    # Gated on a usable capture: a scan that observed no traffic must be SKIPPED,
+    # not scored 95/Compliant. Skipping is the honest outcome here — this module
+    # deliberately omits dimensions it lacks evidence for.
     trackers = sd.get("trackers") if isinstance(sd.get("trackers"), dict) else None
-    if trackers:
+    trackers_usable = tracker_capture_is_usable(trackers)
+    if trackers and trackers_usable:
         inventory = trackers.get("inventory") or []
         score = 30 if inventory else 95
         out.append({
@@ -102,18 +136,23 @@ def compute_dimension_snapshots(assessment_data: dict[str, Any] | None) -> list[
 
     # ── Cookie Consent (behaviour-aware when trackers data present) ──────
     consent = sd.get("consent_mechanism") if isinstance(sd.get("consent_mechanism"), dict) else None
-    if consent or trackers:
-        if trackers and (trackers.get("inventory") or []):
+    if consent or (trackers and trackers_usable):
+        if trackers_usable and trackers and (trackers.get("inventory") or []):
             score = 8
         elif consent and consent.get("has_cookie_banner"):
             score = 96
-        else:
+        elif consent:
             score = 25
-        out.append({
-            "dimension_name": "Cookie Consent Mechanism",
-            "status": _classify(score),
-            "score": score,
-        })
+        else:
+            # No consent evidence AND an unusable tracker capture — scoring 25
+            # here would have been a Non-Compliant verdict resting on nothing.
+            score = None
+        if score is not None:
+            out.append({
+                "dimension_name": "Cookie Consent Mechanism",
+                "status": _classify(score),
+                "score": score,
+            })
 
     return out
 

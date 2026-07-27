@@ -23,6 +23,14 @@ from app.services.pdf_layout import (
     make_table,
 )
 from app.services.pdf_styles import get_unified_styles
+from app.services.pdpa_findings import (
+    DIMENSION_FINDING_SPEC as _SHARED_DIMENSION_FINDING_SPEC,
+    FAILING_STATUSES as _SHARED_FAILING_STATUSES,
+    synthesize_dimension_finding as _synthesize_dimension_finding,
+)
+from app.services.pdpa_dimension_snapshot import (
+    tracker_capture_is_usable as _tracker_capture_is_usable,
+)
 
 import base64
 import logging
@@ -913,8 +921,15 @@ class PDFService:
 
     # ── PDPA: Compliance Score by Dimension ────────────────────────────────────
 
-    def _compliance_score_table(self, findings: list, scan_data: dict | None = None) -> Table:
-        """Seven-dimension scored compliance table with overall score row.
+    def _compute_dimension_scores(self, findings: list, scan_data: dict | None = None) -> dict:
+        """Score every PDPA dimension from raw scan evidence.
+
+        Returns ``{"dimensions", "overall", "overall_status", "not_assessed"}``.
+        Split out of `_compliance_score_table` so the *narrative* sections of the
+        report (§3 findings summary, §5 developer tasks, §7 anchoring intro,
+        §9 timeline) can be gated on the same verdict the score table prints.
+        They used to be gated on `findings` alone, which let a report state
+        "found no PDPA violations" directly above a Non-Compliant score table.
 
         Scores are computed from actual scan data when available so that
         different sites produce meaningfully different numbers.  The scoring
@@ -925,7 +940,6 @@ class PDFService:
         This means two sites with the same violation *type* but different
         underlying data will receive different scores.
         """
-        s = self._s
         sd = scan_data or {}  # raw assessment / scan data dict
         _not_assessed_dims = set()
 
@@ -960,7 +974,12 @@ class PDFService:
             cookie_score = 96
             cookie_status = "Compliant"
             provider_list = ", ".join(detected_providers[:3]) if detected_providers else "compliant mechanism"
-            cookie_note = f"Consent mechanism detected ({provider_list}); no pre-consent trackers observed."
+            # "no pre-consent trackers observed" overclaims for the same reason
+            # the inventory note did — see the Tracker Inventory dimension.
+            cookie_note = (
+                f"Consent mechanism detected ({provider_list}); no requests matching "
+                f"known tracker signatures fired before consent."
+            )
         else:
             cookie_score = 15
             if consent_mech.get("has_cookie_banner"):
@@ -1184,7 +1203,7 @@ class PDFService:
             _not_assessed_dims.add("Cross-Border Transfer (§26)")
 
         # ── Third-Party Tracker Inventory ─────────────────────────────────
-        if trackers_data:
+        if trackers_data and _tracker_capture_is_usable(trackers_data):
             inventory = trackers_data.get("inventory") or []
             if inventory:
                 tr_score = 30
@@ -1197,11 +1216,41 @@ class PDFService:
             else:
                 tr_score = 95
                 tr_status = "Compliant"
-                tr_note = "No third-party trackers observed during page load."
+                # Previously: "No third-party trackers observed during page load."
+                # That claimed more than the check establishes — the inventory is
+                # built by matching request URLs against a fixed vendor signature
+                # list, so a tracker outside that list is invisible to it. State
+                # what was actually checked.
+                _sigs = trackers_data.get("signature_count")
+                _reqs = trackers_data.get("total_requests_captured")
+                _scope = (
+                    f" across {_reqs} network request(s) captured"
+                    if isinstance(_reqs, int)
+                    else ""
+                )
+                _against = (
+                    f"{_sigs} known third-party tracker signatures"
+                    if isinstance(_sigs, int)
+                    else "known third-party tracker signatures"
+                )
+                tr_note = (
+                    f"No requests matching {_against} were observed{_scope} during "
+                    f"page load. Trackers outside this signature set are not covered "
+                    f"by this check."
+                )
         else:
             tr_score = 70
             tr_status = "Not Assessed"
-            tr_note = "Tracker inventory check unavailable (rendered scan did not run)."
+            if trackers_data:
+                # The capture ran but recorded no traffic at all. Scoring this
+                # 95/Compliant treated a failed scan as a clean bill of health.
+                tr_note = (
+                    "Tracker inventory could not be assessed — the rendered scan "
+                    "captured no network requests, so no conclusion can be drawn "
+                    "about third-party trackers on this site."
+                )
+            else:
+                tr_note = "Tracker inventory check unavailable (rendered scan did not run)."
             _not_assessed_dims.add("Third-Party Tracker Inventory")
 
         dimensions = [
@@ -1239,18 +1288,95 @@ class PDFService:
         # so the persisted score is guaranteed to equal what this PDF prints.
         if isinstance(scan_data, dict):
             scan_data["computed_overall_compliance_score"] = overall
-        if all(s == "Compliant" for s in statuses):
+        if all(st == "Compliant" for st in statuses):
             overall_status = "Compliant"
-            overall_color = "#065f46"
-            overall_bg = colors.HexColor("#d1fae5")
-        elif any(s == "Non-Compliant" for s in statuses):
+        elif any(st == "Non-Compliant" for st in statuses):
             overall_status = "Non-Compliant"
-            overall_color = "#dc2626"
-            overall_bg = colors.HexColor("#fee2e2")
         else:
             overall_status = "Partial"
-            overall_color = "#92400e"
-            overall_bg = colors.HexColor("#fef3c7")
+
+        return {
+            "dimensions": dimensions,
+            "overall": overall,
+            "overall_status": overall_status,
+            "not_assessed": _not_assessed_dims,
+        }
+
+    # Dimensions whose verdict contradicts a "no violations" narrative.
+    # Both now live in `pdpa_findings` — the Cover Sheet needs the same table,
+    # and a private copy here is how one document can say "no findings" while
+    # its bundle sibling lists three. Aliased so this class reads unchanged.
+    _FAILING_STATUSES = _SHARED_FAILING_STATUSES
+    _DIMENSION_FINDING_SPEC = _SHARED_DIMENSION_FINDING_SPEC
+
+
+    def _derive_findings_from_dimensions(self, findings: list, computed: dict) -> list:
+        """Return synthesized findings for failing dimensions nothing else covers.
+
+        `_detect_violations` (booppa_ai_service) reads only the pre-Tier-1
+        evidence keys — it never looks at `trackers`, `policy_clauses`,
+        `hosting` or `pdpc_enforcement`. The score table WAS upgraded to those
+        keys, so four dimensions can score Non-Compliant with no corresponding
+        finding possible. The `is_clean` gate did not catch that: with one
+        unrelated finding present, §3/§5/§9 rendered an authoritative-looking
+        one-item list above a score table showing several failing dimensions,
+        and the buyer remediated one item believing they were done.
+
+        Deriving straight from the SAME `_compute_dimension_scores` result that
+        renders §4 makes the disagreement structurally impossible — there is one
+        verdict and every consumer reads it. Existing AI-authored findings are
+        preserved and always win; this only fills genuine gaps.
+        """
+        existing = []
+        for f in findings:
+            if isinstance(f, dict):
+                existing.append(" ".join([
+                    (f.get("check_id") or ""),
+                    (f.get("type") or ""),
+                    (f.get("title") or ""),
+                ]).lower())
+
+        derived: list[dict] = []
+        for name, score, status, note in computed.get("dimensions", []):
+            if name in computed.get("not_assessed", set()):
+                continue
+            if status not in self._FAILING_STATUSES:
+                continue
+            spec = self._DIMENSION_FINDING_SPEC.get(name)
+            if not spec:
+                continue
+            keywords = spec[0]
+            if any(k in blob for blob in existing for k in keywords):
+                continue  # a real finding already speaks to this dimension
+
+            # Built by the shared helper so this PDF and the Cover Sheet emit
+            # identical text for the same failing dimension. `note` is the
+            # richer per-dimension sentence only this scorer produces, so it
+            # overrides the helper's generic description when present.
+            synth = _synthesize_dimension_finding(name, score, status, note)
+            if synth:
+                derived.append(synth)
+        return derived
+
+    def _compliance_score_table(
+        self,
+        findings: list,
+        scan_data: dict | None = None,
+        computed: dict | None = None,
+    ) -> Table:
+        """Render the dimension score table. Pass `computed` to reuse an existing
+        `_compute_dimension_scores` result rather than scoring twice."""
+        s = self._s
+        computed = computed or self._compute_dimension_scores(findings, scan_data)
+        dimensions = computed["dimensions"]
+        overall = computed["overall"]
+        overall_status = computed["overall_status"]
+        _not_assessed_dims = computed["not_assessed"]
+
+        overall_color, overall_bg = {
+            "Compliant": ("#065f46", colors.HexColor("#d1fae5")),
+            "Non-Compliant": ("#dc2626", colors.HexColor("#fee2e2")),
+        }.get(overall_status, ("#92400e", colors.HexColor("#fef3c7")))
 
         header = [
             Paragraph("DIMENSION", s["Label"]),
@@ -1443,12 +1569,31 @@ class PDFService:
 
     # ── PDPA: Compliance Strengths (no-violation case) ────────────────────────
 
-    def _compliance_strengths_block(self, report_data: dict) -> list:
-        """Positive evidence statement when no violations are detected."""
+    # Maps each hardcoded ✓ strength to the scored dimension that backs it, so a
+    # strength is never asserted for a dimension that did not score Compliant.
+    _STRENGTH_DIMENSION = {
+        "Cookie Consent Implementation": "Cookie Consent Mechanism",
+        "Privacy Policy Accessibility": "Privacy Policy (PDPA §11/13)",
+        "Transport Security": "Security HTTP Headers",
+        "DNC Registry Alignment": "DNC Registry Reference",
+        "Data Subject Rights Pathway": "Data Subject Rights Mechanism",
+    }
+
+    def _compliance_strengths_block(
+        self, report_data: dict, dimensions: list | None = None
+    ) -> list:
+        """Positive evidence statement when no violations are detected.
+
+        `dimensions` is the `_compute_dimension_scores` output. When supplied,
+        each fixed ✓ strength is emitted only if its backing dimension scored
+        Compliant — these paragraphs are static prose and previously asserted
+        e.g. "compliant cookie consent mechanism" regardless of the score.
+        """
         s = self._s
         company = report_data.get("company_name") or "the assessed entity"
         structured = report_data.get("structured_report") or {}
         exec_sum = structured.get("executive_summary") or ""
+        _dim_status = {d[0]: d[2] for d in (dimensions or [])}
 
         strengths = [
             (
@@ -1481,14 +1626,20 @@ class PDFService:
             ),
         ]
 
-        items: list = [
-            Paragraph(
-                f"The automated assessment of {company} found no PDPA violations across all "
-                f"scanned dimensions. The following compliance strengths were identified:",
-                s["Body"],
-            ),
-            Spacer(1, 8),
+        # Drop any strength whose backing dimension did not score Compliant (or
+        # was never assessed) — these are static prose and previously asserted a
+        # verdict the score table could contradict.
+        strengths = [
+            (title, detail) for title, detail in strengths
+            if not _dim_status
+            or self._STRENGTH_DIMENSION.get(title) is None
+            or _dim_status.get(self._STRENGTH_DIMENSION[title]) == "Compliant"
         ]
+
+        lead = f"The automated assessment of {company} found no PDPA violations across all scanned dimensions."
+        if strengths:
+            lead += " The following compliance strengths were identified:"
+        items: list = [Paragraph(lead, s["Body"]), Spacer(1, 8)]
 
         for title, detail in strengths:
             items.append(Paragraph(
@@ -1762,19 +1913,81 @@ class PDFService:
                     s["Body"],
                 ))
                 story.append(Spacer(1, 4))
-                story.append(Paragraph(
-                    f"The audit was conducted on {scan_date_str} and anchored on the {settings.active_polygon_network_name} blockchain "
-                    f"for evidentiary integrity.",
-                    s["Body"],
-                ))
+                # Only claim the anchor once there is a real on-chain tx. This
+                # asserted "anchored on ... blockchain" unconditionally, while
+                # §7 on the same document read "has not yet been anchored".
+                from app.services.tx_utils import is_real_onchain_tx as _is_real_tx
+                if _is_real_tx(report_data.get("tx_hash")):
+                    _anchor_sentence = (
+                        f"The audit was conducted on {scan_date_str} and anchored on the "
+                        f"{settings.active_polygon_network_name} blockchain for evidentiary integrity."
+                    )
+                else:
+                    _anchor_sentence = (
+                        f"The audit was conducted on {scan_date_str}. Blockchain anchoring on the "
+                        f"{settings.active_polygon_network_name} is pending — see Section 7 for how to "
+                        f"verify this document's integrity in the meantime."
+                    )
+                story.append(Paragraph(_anchor_sentence, s["Body"]))
                 story.append(Spacer(1, 0.15 * inch))
+
+                # ── Dimension scoring (shared by §3, §4, §5, §7 and §9) ───────
+                # Scored ONCE, here, before the narrative sections render. The
+                # narrative used to be gated on `findings` alone while the score
+                # table below was driven by raw scan evidence — so a report whose
+                # AI findings failed to plumb through printed "found no PDPA
+                # violations" above a table reading Non-Compliant. Both now read
+                # the same verdict.
+                _scan_data = report_data.get("scan_data") or report_data
+                _computed = self._compute_dimension_scores(findings, _scan_data)
+                failing_dims = [
+                    d for d in _computed["dimensions"]
+                    if d[0] not in _computed["not_assessed"]
+                    and d[2] in self._FAILING_STATUSES
+                ]
+                # Fill any failing dimension that no finding speaks to, so the
+                # narrative can never under-report what the table shows. Must run
+                # AFTER _compute_dimension_scores (which scores FROM findings) and
+                # BEFORE §3 — the derived entries are inputs to the narrative, not
+                # to the scoring, so this cannot feed back into the table.
+                _derived = self._derive_findings_from_dimensions(findings, _computed)
+                if _derived:
+                    findings = list(findings) + _derived
+                # A "clean" report requires BOTH no AI findings and no dimension
+                # scoring below Compliant. Anything else is not clean.
+                is_clean = not findings and not failing_dims
 
                 # ── Section 3: Audit Findings Summary ─────────────────────────
                 story.append(self._section_header("3. Audit Findings Summary"))
                 story.append(Spacer(1, 6))
-                if not findings:
+                if is_clean:
                     # Change 7: Compliance Strengths when no violations
-                    story.extend(self._compliance_strengths_block(report_data))
+                    story.extend(self._compliance_strengths_block(
+                        report_data, dimensions=_computed["dimensions"]
+                    ))
+                elif not findings:
+                    # Dimensions failed but no narrative findings were produced.
+                    # Report the scored verdict verbatim rather than asserting a
+                    # clean result the score table contradicts.
+                    story.append(Paragraph(
+                        f"The automated assessment of {_pdf_escape(company_name)} scored "
+                        f"{len(failing_dims)} PDPA dimension"
+                        f"{'s' if len(failing_dims) != 1 else ''} below Compliant. "
+                        "No AI-generated finding narrative accompanied this scan, so the "
+                        "scored dimensions below are the authoritative result — remediation "
+                        "is defined by the notes in Section 4.",
+                        s["Body"],
+                    ))
+                    story.append(Spacer(1, 8))
+                    for _dn, _ds, _dstat, _dnote in failing_dims:
+                        _c = "#dc2626" if _dstat == "Non-Compliant" else "#92400e"
+                        story.append(Paragraph(
+                            f'<font color="{_c}"><b>• {_pdf_escape(_dn)} — {_ds}/100 '
+                            f'{_dstat}</b></font>',
+                            s["Body"],
+                        ))
+                        story.append(Paragraph(_pdf_escape(_dnote), s["Body"]))
+                        story.append(Spacer(1, 5))
                 else:
                     has_critical = any(f.get("severity") == "CRITICAL" for f in findings)
                     story.append(Paragraph(
@@ -1803,9 +2016,11 @@ class PDFService:
                     s["Body"],
                 ))
                 story.append(Spacer(1, 8))
-                # Pass raw scan data so scores are computed from actual evidence
-                _scan_data = report_data.get("scan_data") or report_data
-                story.append(self._compliance_score_table(findings, scan_data=_scan_data))
+                # Reuse the scores already computed above so the table and the
+                # narrative can never disagree.
+                story.append(self._compliance_score_table(
+                    findings, scan_data=_scan_data, computed=_computed
+                ))
                 story.append(Spacer(1, 6))
                 # Provenance qualifier. A "Compliant" verdict here is inferred from
                 # what the public site disclosed on the scan date — not from an
@@ -1852,9 +2067,18 @@ class PDFService:
                     for i, f in enumerate(findings, 1):
                         story.extend(keep_together_safe(self._task_block(i, f)))
                         story.append(Spacer(1, 8))
-                else:
+                elif is_clean:
                     story.append(Paragraph(
                         "No remediation tasks required. No violations were detected during this scan.",
+                        s["Body"],
+                    ))
+                else:
+                    story.append(Paragraph(
+                        f"No AI-generated task list accompanied this scan. Remediation is "
+                        f"required for the {len(failing_dims)} dimension"
+                        f"{'s' if len(failing_dims) != 1 else ''} scored below Compliant in "
+                        "Section 4 — each row's note states the specific sub-check that failed "
+                        "and the PDPA obligation it maps to.",
                         s["Body"],
                     ))
                 story.append(Spacer(1, 0.1 * inch))
@@ -1882,10 +2106,18 @@ class PDFService:
                     story.append(Spacer(1, 6))
                     story.append(self._blockchain_anchoring_table(findings))
                     story.append(Spacer(1, 6))
-                else:
+                elif is_clean:
                     story.append(Paragraph(
                         "As no violations were detected, the primary artifact to anchor is this audit report "
                         "itself, providing tamper-evident proof of a clean compliance assessment on the audit date.",
+                        s["Body"],
+                    ))
+                    story.append(Spacer(1, 6))
+                else:
+                    story.append(Paragraph(
+                        "The primary artifact anchored is this audit report itself, providing "
+                        "tamper-evident proof of the scored assessment — including the "
+                        "dimensions found below Compliant — as at the audit date.",
                         s["Body"],
                     ))
                     story.append(Spacer(1, 6))
@@ -1926,9 +2158,17 @@ class PDFService:
                 story.append(Spacer(1, 6))
                 if findings:
                     story.append(self._timeline_summary_table(findings))
-                else:
+                elif is_clean:
                     story.append(Paragraph(
                         "No compliance actions required at this time. Schedule a follow-up audit in 6 months.",
+                        s["Body"],
+                    ))
+                else:
+                    story.append(Paragraph(
+                        f"{len(failing_dims)} dimension"
+                        f"{'s' if len(failing_dims) != 1 else ''} scored below Compliant and "
+                        "require action — see Section 4 for the per-dimension findings. Schedule "
+                        "a re-scan once remediation is complete to confirm the fixes.",
                         s["Body"],
                     ))
                 story.append(Spacer(1, 0.1 * inch))
@@ -2369,12 +2609,23 @@ class PDFService:
              "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr13-"},
             {"title": "PDPA 2012 s.24 — Protection Obligation",
              "url": "https://sso.agc.gov.sg/Act/PDPA2012#pr24-"},
-            {"title": "PDPC Advisory Guidelines on Cookies (2021)",
-             "url": "https://www.pdpc.gov.sg/-/media/Files/PDPC/PDF-Files/Advisory-Guidelines/AG-on-Cookies-2021.pdf"},
-            {"title": "Guide to Enhanced Notice and Choice (2021)",
-             "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/2021/01/guide-to-enhanced-notice-and-choice"},
+            # There is no standalone "PDPC Advisory Guidelines on Cookies" —
+            # cookie guidance lives in the Online Activities chapter of the
+            # Selected Topics AG. The former title/URL cited a document that
+            # does not exist and returned 404.
+            {"title": "PDPC Advisory Guidelines on the PDPA for Selected Topics "
+                      "(rev. May 2024) — Ch. 7, Online Activities (cookies)",
+             "url": "https://www.pdpc.gov.sg/-/media/files/pdpc/pdf-files/advisory-guidelines/"
+                    "ag-on-selected-topics/advisory-guidelines-on-the-pdpa-for-selected-topics-"
+                    "(revised-may-2024).pdf"},
+            # Was "Guide to Enhanced Notice and Choice (2021)" — no PDPC
+            # document of that name has ever existed. The real 2021 guide on
+            # notification obligations is the Guide to Notification.
+            {"title": "PDPC Guide to Notification (2021)",
+             "url": "https://www.pdpc.gov.sg/help-and-resources/2019/09/guide-to-notification"},
             {"title": "PDPC Advisory Guidelines on Key Concepts in the PDPA",
-             "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/2020/03/advisory-guidelines-on-key-concepts-in-the-pdpa"},
+             "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/"
+                    "advisory-guidelines-on-key-concepts-in-the-personal-data-protection-act"},
         ]
 
         # Contextual references — added when relevant findings are present
@@ -2387,14 +2638,18 @@ class PDFService:
         combined = " ".join(types_and_ids)
 
         if "marketing" in combined or "dnc" in combined or "do_not_call" in combined:
-            refs.append({"title": "PDPC DNC Registry Guidelines",
-                         "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/guidelines/dnc-provisions"})
+            refs.append({"title": "PDPC Advisory Guidelines on the Do Not Call Provisions",
+                         "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/"
+                                "regulatory-guidance/advisory-guidelines-on-the-do-not-call-provisions"})
             refs.append({"title": "Spam Control Act (Cap. 311A)",
                          "url": "https://sso.agc.gov.sg/Act/SCA2007"})
 
         if "nric" in combined or "fin" in combined or "identity" in combined:
-            refs.append({"title": "PDPC Advisory Guidelines on NRIC Numbers (2018)",
-                         "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/2018/01/advisory-guidelines-for-nric-numbers"})
+            refs.append({"title": "PDPC Advisory Guidelines on the PDPA for NRIC and Other "
+                                  "National Identification Numbers",
+                         "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/"
+                                "regulatory-guidance/advisory-guidelines-on-the-personal-data-"
+                                "protection-act-for-nric-and-other-national-identification-numbers"})
 
         if "dpo" in combined or "data protection officer" in combined or "organizational" in combined:
             refs.append({"title": "PDPA 2012 s.11(3) — DPO Designation & Public Disclosure",

@@ -44,7 +44,11 @@ from app.services.policy_clause_classifier import (
 )
 from app.services.pdpa_dimension_snapshot import compute_dimension_snapshots
 from app.services.finding_keys import extract_finding_keys
-from app.services.pdpa_findings import resolve_pdpa_findings, resolve_pdpa_score
+from app.services.pdpa_findings import (
+    resolve_pdpa_findings,
+    resolve_pdpa_findings_with_dimensions,
+    resolve_pdpa_score,
+)
 import asyncio
 import hashlib
 import json
@@ -482,6 +486,24 @@ _TRACKER_DOMAINS: tuple[tuple[str, str], ...] = (
 )
 
 
+# Consent-platform / banner substrings searched in page HTML. ONE list: this
+# was duplicated in `_detect_cookie_banner` and the combined-HTML check below,
+# two copies that had to agree with nothing enforcing it. They happened to still
+# match, but the same shape of duplication caused real defects elsewhere in this
+# module (see DIMENSION_FINDING_SPEC, VIOLATION_LEGISLATION).
+COOKIE_BANNER_INDICATORS: tuple[str, ...] = (
+    "cookiebot", "usercentrics", "cookieyes", "onetrust", "osano",
+    "iubenda", "cookie-consent", "cookie-banner", "cookie banner",
+    "cookie notice", "consentmanager", "data-cookieconsent",
+    "booppa-cookie", "booppa_consent",
+    "pdpa compliant", "pdpa-compliant",
+    "optanon", "evidon", "didomi", "trustarc", "quantcast",
+    "accept cookies", "allow cookies", "manage cookies",
+    "we use cookies", "this site uses cookies", "cookie preferences",
+    "cookie settings", "reject cookies",
+)
+
+
 def _classify_tracker(request_url: str) -> str | None:
     """Return the vendor label if the request URL matches a known tracker."""
     url_lower = (request_url or "").lower()
@@ -495,17 +517,7 @@ async def _detect_cookie_banner(url: str | None) -> dict:
     if not url:
         return {}
 
-    indicators = [
-        "cookiebot", "usercentrics", "cookieyes", "onetrust", "osano",
-        "iubenda", "cookie-consent", "cookie-banner", "cookie banner",
-        "cookie notice", "consentmanager", "data-cookieconsent",
-        "booppa-cookie", "booppa_consent",
-        "pdpa compliant", "pdpa-compliant",
-        "optanon", "evidon", "didomi", "trustarc", "quantcast",
-        "accept cookies", "allow cookies", "manage cookies",
-        "we use cookies", "this site uses cookies", "cookie preferences",
-        "cookie settings", "reject cookies",
-    ]
+    indicators = COOKIE_BANNER_INDICATORS
 
     # Try Playwright for dynamic JS-rendered banners
     try:
@@ -571,6 +583,10 @@ async def _detect_cookie_banner(url: str | None) -> dict:
                 "post_consent": [],
                 "inventory": sorted(tracker_hits.keys()),
                 "total_requests_captured": len(captured_requests),
+                # How many vendor signatures the inventory was matched against.
+                # An empty inventory means "nothing matched THESE", not "no
+                # trackers exist" — the rendered note must say which.
+                "signature_count": len(_TRACKER_DOMAINS),
             }
 
             found = [k for k in indicators if k in html]
@@ -884,17 +900,7 @@ async def _scan_site_metadata(url: str | None, company_name: str | None = None, 
         )
 
     # Cookie banner detection from combined HTML
-    cookie_indicators = [
-        "cookiebot", "usercentrics", "cookieyes", "onetrust", "osano",
-        "iubenda", "cookie-consent", "cookie-banner", "cookie banner",
-        "cookie notice", "consentmanager", "data-cookieconsent",
-        "booppa-cookie", "booppa_consent",
-        "pdpa compliant", "pdpa-compliant",
-        "optanon", "evidon", "didomi", "trustarc", "quantcast",
-        "accept cookies", "allow cookies", "manage cookies",
-        "we use cookies", "this site uses cookies", "cookie preferences",
-        "cookie settings", "reject cookies",
-    ]
+    cookie_indicators = COOKIE_BANNER_INDICATORS
     detected_cookies = [k for k in cookie_indicators if k in combined_html]
     policy_mentions_banner = "cookie banner" in combined_html or "accept all" in combined_html or "reject" in combined_html
     if detected_cookies or policy_mentions_banner:
@@ -1845,14 +1851,11 @@ async def process_report_workflow(report_id: str) -> dict:
 
         # Pass raw scan evidence so PDF scores are computed from actual data
         if isinstance(report.assessment_data, dict):
-            for _scan_key in (
-                "security_headers", "consent_mechanism", "privacy_policy",
-                "dpo_compliance", "dnc_mention", "nric_evidence",
-                "http_status", "site_accessible",
-                # Tier 1-5 keys consumed by the upgraded score table:
-                "nric", "policy_clauses", "pdpc_enforcement", "hosting",
-                "trackers", "ssl_grade", "primary_language",
-            ):
+            # Shared with the AI prompt payload, so the model and the score table
+            # reason over exactly the same evidence and cannot drift apart.
+            from app.services.booppa_ai_service import SCAN_EVIDENCE_KEYS
+
+            for _scan_key in SCAN_EVIDENCE_KEYS:
                 if _scan_key in report.assessment_data:
                     pdf_data[_scan_key] = report.assessment_data[_scan_key]
 
@@ -2961,7 +2964,18 @@ def fulfill_cover_sheet_task(
                     pdpa_score = _resolved_score if _resolved_score is not None else "—"
                     # Single source of truth — same resolver the Monitor Report
                     # uses, so the two documents can never disagree on the count.
-                    findings = resolve_pdpa_findings(pdpa_ad)
+                    #
+                    # ...with dimension synthesis. The guard below catches
+                    # "findings present but score clean". It does NOT catch the
+                    # opposite — dimensions scoring Non-Compliant while the AI
+                    # persisted no findings — which is exactly incident
+                    # 22fb2871. In that state this Cover Sheet printed "No PDPA
+                    # findings were attached", derived risk_level "Minimal" from
+                    # all-zero severity counts, and fell back to boilerplate
+                    # recommendations — shipping in the same bundle as a Quick
+                    # Scan PDF that (correctly) listed those dimensions as
+                    # failing. Same scan, two documents, opposite verdicts.
+                    findings = resolve_pdpa_findings_with_dimensions(pdpa_ad)
 
                     sev_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
                     for f in findings:

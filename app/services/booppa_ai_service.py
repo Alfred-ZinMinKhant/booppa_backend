@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.services.ai_provider import DeepSeekProvider
 from app.services.scan_version import scan_version_meta as _scan_version_meta
 from app.services.pdpc_precedents import MAX_PENALTY_TEXT
+from app.services.pdpa_findings import dimension_violations, spec_meta_for_type
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,11 @@ SINGAPORE_LEGISLATION = {
         "nric_2018": {
             "title": "Advisory Guidelines on NRIC Numbers (2018)",
             "summary": "Organizations should not collect NRIC unless required by law",
-            "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/2018/01/advisory-guidelines-for-nric-numbers",
+            "url": (
+                "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/"
+                "advisory-guidelines-on-the-personal-data-protection-act-for-nric-and-other-"
+                "national-identification-numbers"
+            ),
             "key_points": [
                 "NRIC should not be default identifier",
                 "Only collect when required by law",
@@ -105,21 +110,39 @@ SINGAPORE_LEGISLATION = {
                 "Consider alternatives (last 4 digits)",
             ],
         },
+        # Renamed from the non-existent "Guide to Enhanced Notice and Choice
+        # (2021)". Cookie guidance is in the Online Activities chapter of the
+        # Selected Topics AG; note the PDPA trigger is personal-data collection,
+        # not cookie storage, so "no implied consent allowed" was also wrong —
+        # the PDPA does permit deemed consent in defined circumstances.
         "cookies_2021": {
-            "title": "Guide to Enhanced Notice and Choice (2021)",
-            "summary": "Requires active consent, no implied consent allowed",
-            "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/2021/01/guide-to-enhanced-notice-and-choice",
+            "title": (
+                "PDPC Advisory Guidelines on the PDPA for Selected Topics "
+                "(rev. May 2024) — Ch. 7, Online Activities"
+            ),
+            "summary": (
+                "Consent is required before collecting personal data via cookies; "
+                "notification must be clear and choice meaningful"
+            ),
+            "url": (
+                "https://www.pdpc.gov.sg/-/media/files/pdpc/pdf-files/advisory-guidelines/"
+                "ag-on-selected-topics/advisory-guidelines-on-the-pdpa-for-selected-topics-"
+                "(revised-may-2024).pdf"
+            ),
             "key_points": [
-                "Active opt-in required",
+                "Consent required before cookies collect personal data",
                 "No pre-ticked boxes",
                 "Granular consent options",
                 "Clear withdrawal mechanism",
             ],
         },
+        # The guide is titled "...for ICT Systems" and is dated 2019, not 2021.
+        # Its direct PDF URL is currently WAF-blocked (403) and could not be
+        # verified, so this points at the PDPC guidance index, which resolves.
         "accountability_2021": {
-            "title": "Guide to Data Protection by Design (2021)",
+            "title": "PDPC Guide to Data Protection by Design for ICT Systems (2019)",
             "summary": "Privacy must be embedded into systems from the start",
-            "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/2021/01/guide-to-data-protection-by-design",
+            "url": "https://www.pdpc.gov.sg/organisations/resources/guidance-by-topic",
             "key_points": [
                 "Proactive not reactive",
                 "Privacy as default setting",
@@ -195,43 +218,123 @@ MAS_TRM_CITATION = mas_notice_citation("644")
 # ============================================
 
 
+# The raw scan-evidence keys — everything a compliance judgement may rest on,
+# and nothing else. `report.assessment_data` also accumulates derived output:
+# most importantly `booppa_report`, the PREVIOUS run's full structured report
+# including every finding description. Sending that blob to the model verbatim
+# meant paying to feed last month's report back into this month's, growing with
+# every rescan, and giving the model stale conclusions to anchor on.
+#
+# Shared with the PDF scoring path in `tasks.py` so the model and the score
+# table reason over exactly the same evidence.
+SCAN_EVIDENCE_KEYS: tuple[str, ...] = (
+    "security_headers", "consent_mechanism", "privacy_policy",
+    "dpo_compliance", "dnc_mention", "nric_evidence",
+    "http_status", "site_accessible",
+    # Tier 1-5 keys consumed by the upgraded score table:
+    "nric", "policy_clauses", "pdpc_enforcement", "hosting",
+    "trackers", "ssl_grade", "primary_language",
+    # Identity/context the prompt needs to write accurate prose.
+    "url", "resolved_url", "company_name", "scan_date",
+    "collects_nric", "has_legal_justification", "uses_https",
+)
+
+
+# Statutory basis per violation `type` slug. ONE map, keyed by the slugs the
+# detector actually emits — both `get_penalty_for_violation` and
+# `_get_violation_legislation` read it, so a citation can never differ between
+# the "Legislation" line and the "Penalty" block of the same finding.
+#
+# This map was previously duplicated, and the penalty copy was keyed by a stale
+# vocabulary ("nric_collection", "no_consent", "no_https") that matched NO slug
+# the detector produces — so every finding in every report silently rendered
+# "PDPA General / Consult legal counsel" instead of its real section.
+VIOLATION_LEGISLATION: Dict[str, List[str]] = {
+    # ── Hand-written keyword checks in `_detect_violations` ──────────────────
+    "nric_violation": [
+        "PDPA 2012 s.18",
+        "PDPC Advisory Guidelines on the PDPA for NRIC and other National "
+        "Identification Numbers (2018)",
+    ],
+    "cookie_violation": ["PDPA 2012 s.13", "PDPC Guide to Notification (2021)"],
+    "security_violation": [
+        "PDPA 2012 s.24",
+        "Cybersecurity Act 2018",
+        MAS_CYBER_HYGIENE_CITATION,
+    ],
+    "organizational_violation": ["PDPA 2012 s.11", "PDPC Guide to Accountability"],
+    "marketing_violation": ["DNC Registry", "Spam Control Act"],
+    # ── Slugs emitted by `dimension_violations` (DIMENSION_FINDING_SPEC) ─────
+    "cookie_consent_violation": [
+        "PDPA 2012 s.13",
+        "PDPA 2012 s.14",
+        "PDPC Guide to Notification (2021)",
+    ],
+    "tracker_inventory_violation": [
+        "PDPA 2012 s.13",
+        "PDPA 2012 s.14",
+        "PDPC Advisory Guidelines on Key Concepts — Consent",
+    ],
+    "privacy_policy_violation": [
+        "PDPA 2012 s.11",
+        "PDPA 2012 s.13",
+        "PDPC Guide to Accountability",
+    ],
+    "retention_limitation_violation": [
+        "PDPA 2012 s.25",
+        "PDPC Advisory Guidelines on Key Concepts — Retention Limitation",
+    ],
+    "breach_notification_violation": [
+        "PDPA 2012 s.26B-26D",
+        "PDPC Guide to Managing and Notifying Data Breaches",
+    ],
+    "cross_border_transfer_violation": [
+        "PDPA 2012 s.26",
+        "PDPC Advisory Guidelines on Key Concepts — Transfer Limitation",
+    ],
+    "nric_exposure_violation": [
+        "PDPA 2012 s.18",
+        "PDPC Advisory Guidelines on the PDPA for NRIC and other National "
+        "Identification Numbers (2018)",
+    ],
+    "security_headers_violation": ["PDPA 2012 s.24"],
+    "cookie_attributes_violation": ["PDPA 2012 s.24"],
+    "data_subject_rights_violation": ["PDPA 2012 s.21", "PDPA 2012 s.22"],
+    "dnc_registry_violation": ["DNC Registry", "Spam Control Act"],
+}
+
+# Slugs whose penalty ceiling is NOT the PDPA financial cap. Unsolicited
+# marketing is penalised per message under the Spam Control Act, so quoting the
+# S$1M PDPA ceiling there would overstate the customer's exposure.
+_PER_MESSAGE_PENALTY_SLUGS = ("marketing_violation", "dnc_registry_violation")
+
+
 def get_penalty_for_violation(violation_type: str) -> Dict:
-    """Get specific penalty information for violation type"""
-    penalties = {
-        "nric_collection": {
+    """Get specific penalty information for violation type.
+
+    ``legislation``/``reference`` come from ``VIOLATION_LEGISLATION`` so they can
+    never contradict the finding's own "Legislation" line. Unknown slugs still
+    return the honest generic ceiling rather than inventing a section number.
+    """
+    refs = VIOLATION_LEGISLATION.get(violation_type or "")
+    if not refs:
+        return {
             "amount": MAX_PENALTY_TEXT,
-            "legislation": "PDPA 2012 s.18",
-            "reference": "PDPC Advisory Guidelines 2018",
-        },
-        "no_consent": {
-            "amount": MAX_PENALTY_TEXT,
-            "legislation": "PDPA 2012 s.13",
-            "reference": "PDPC Guide to Enhanced Notice 2021",
-        },
-        "data_breach": {
-            "amount": MAX_PENALTY_TEXT,
-            "legislation": "PDPA 2012 s.24",
-            "reference": "Cybersecurity Act 2018",
-        },
-        "dnc_violation": {
-            "amount": "Up to S$10,000 per message",
-            "legislation": "DNC Registry",
-            "reference": "Spam Control Act",
-        },
-        "no_https": {
-            "amount": MAX_PENALTY_TEXT,
-            "legislation": "PDPA 2012 s.24",
-            "reference": "PDPC Guide to Data Protection by Design",
-        },
-    }
-    return penalties.get(
-        violation_type,
-        {
-            "amount": MAX_PENALTY_TEXT,
-            "legislation": "PDPA General",
+            "legislation": "PDPA 2012 (general provisions)",
             "reference": "Consult legal counsel",
-        },
+        }
+
+    amount = (
+        "Up to S$10,000 per message (Spam Control Act)"
+        if violation_type in _PER_MESSAGE_PENALTY_SLUGS
+        else MAX_PENALTY_TEXT
     )
+    # refs[0] is the binding provision; the remainder are the guidance documents.
+    return {
+        "amount": amount,
+        "legislation": refs[0],
+        "reference": "; ".join(refs[1:]) or refs[0],
+    }
 
 
 def get_compliance_deadline(severity: str) -> str:
@@ -343,7 +446,7 @@ VIOLATION_META: Dict = {
             "Policy version and update date visible on the page.",
         ],
         "recommended_tools": [
-            "PDPC DNC Guidelines: https://www.pdpc.gov.sg/guidelines-and-consultation/guidelines/dnc-provisions",
+            "PDPC DNC Guidelines: https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-the-do-not-call-provisions",
             f"Anchor the privacy policy update hash on {settings.active_polygon_network_name} via Booppa.",
         ],
     },
@@ -519,7 +622,7 @@ VERIFICATION:
 
 LEGISLATION VIOLATED:
 • PDPA 2012 s.13 - Consent Obligation
-• PDPC Guide to Enhanced Notice and Choice (2021)
+• PDPC Advisory Guidelines on the PDPA for Selected Topics — Ch. 7, Online Activities
 
 PENALTY: {penalty_amount}
 
@@ -540,7 +643,7 @@ REQUIRED FIXES (within 48 hours):
 COMPLIANCE DEADLINE: {deadline}
 
 REFERENCE DOCUMENTS:
-• PDPC Guide to Enhanced Notice: {cookies_guidelines_url}
+• PDPC AG for Selected Topics, Ch. 7 Online Activities: {cookies_guidelines_url}
 • Guide to Active Consent for Online Activities
 
 BLOCKCHAIN EVIDENCE:
@@ -589,7 +692,7 @@ ADDITIONAL RECOMMENDATIONS:
 COMPLIANCE DEADLINE: {deadline}
 
 REFERENCE DOCUMENTS:
-• PDPC Guide to Data Protection by Design
+• PDPC Guide to Data Protection by Design for ICT Systems (2019)
 • MAS Technology Risk Management Guidelines
 • Singapore Cybersecurity Act 2018
 
@@ -851,6 +954,26 @@ BLOCKCHAIN EVIDENCE:
                 }
             )
 
+        # ── Evidence-scored dimensions with no keyword check above ───────────
+        # Every check above is a hand-written rule over one of seven scan keys.
+        # The scan also produces `trackers`, `policy_clauses`, `hosting` and
+        # `pdpc_enforcement` (Tier 1-5), which the §4 score table grades — but
+        # nothing here read them, so Cookie Consent / Trackers / Retention §25 /
+        # Cross-Border §26 could score Non-Compliant with NO violation able to
+        # exist. That empty list then drove the risk score, the recommendations,
+        # the next steps, and the DeepSeek prompt (which can only describe
+        # violations already present — it cannot add one). Incident 22fb2871
+        # shipped a report saying "no PDPA violations" above a table scoring
+        # Cookie Consent 8/100.
+        #
+        # `dimension_violations` skips any dimension lacking evidence, so it can
+        # only ever raise a gap the score table already shows, and it defers to
+        # the checks above when one already covers the dimension.
+        try:
+            violations.extend(dimension_violations(scan_data, violations))
+        except Exception as e:  # noqa: BLE001 — never fail a paid scan on this
+            logger.error(f"Dimension-derived violation detection failed: {e}")
+
         return violations
 
     async def _generate_violation_detail(
@@ -905,7 +1028,12 @@ BLOCKCHAIN EVIDENCE:
             description = await self._generate_generic_violation(violation, scan_data)
 
         legislation_refs = self._get_violation_legislation(violation_type)
-        meta = VIOLATION_META.get(violation_type, {})
+        # VIOLATION_META covers only the six hand-written keyword checks. For the
+        # dimension-derived slugs it is empty, which rendered a remediation task
+        # with no requirements and no acceptance criteria. Fill from the shared
+        # DIMENSION_FINDING_SPEC — hand-written meta still wins key-by-key.
+        meta = dict(spec_meta_for_type(violation_type or "") or {})
+        meta.update({k: v for k, v in VIOLATION_META.get(violation_type, {}).items() if v})
 
         return {
             "type": violation_type,
@@ -985,8 +1113,12 @@ Note: Consult legal counsel for specific compliance requirements."""
             "[BLOCKCHAIN EVIDENCE]\n[VERIFICATION]."
         )
 
+        # Send only raw evidence — never the derived `booppa_report` from a
+        # previous run. See SCAN_EVIDENCE_KEYS.
         user_payload = {
-            "scan_data": scan_data,
+            "scan_data": {
+                k: scan_data[k] for k in SCAN_EVIDENCE_KEYS if k in scan_data
+            },
             "risk_level": risk_level,
             "violations": violations_for_prompt,
         }
@@ -999,20 +1131,31 @@ Note: Consult legal counsel for specific compliance requirements."""
             },
         ]
 
-        content = await self._call_deepseek(messages)
+        content = await self._call_deepseek(messages, json_mode=True)
         if not content:
             return {"used_deepseek": False}
 
         parsed = self._extract_json(content)
         if not parsed or not isinstance(parsed, dict):
+            # Was silent. The report still generates — from static templates —
+            # and the only trace was `report_metadata.ai_model` flipping to
+            # "Booppa Template Engine". A paid deliverable quietly becoming a
+            # different deliverable must be visible in the logs.
+            logger.warning(
+                "DeepSeek returned unparseable output (%d chars) — falling back "
+                "to the template engine for this report.",
+                len(content),
+            )
             return {"used_deepseek": False}
 
         parsed["used_deepseek"] = True
         return parsed
 
-    async def _call_deepseek(self, messages: List[Dict]) -> Optional[str]:
+    async def _call_deepseek(
+        self, messages: List[Dict], json_mode: bool = False
+    ) -> Optional[str]:
         """Call DeepSeek Chat Completions API."""
-        return await self._deepseek_provider.call_chat(messages)
+        return await self._deepseek_provider.call_chat(messages, json_mode=json_mode)
 
     async def extract_rfp_brief_from_tender_pdf(self, tender_text: str) -> Optional[Dict]:
         """
@@ -1066,7 +1209,7 @@ Note: Consult legal counsel for specific compliance requirements."""
             content = await self._call_deepseek([
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
-            ])
+            ], json_mode=True)
         except Exception as e:
             logger.warning(f"[ExtractTender] DeepSeek call failed: {e}")
             return None
@@ -1291,7 +1434,7 @@ Consult legal counsel for interpretation of regulatory requirements."""
             },
             {
                 "title": "PDPC Advisory Guidelines on Key Concepts in the PDPA",
-                "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/2020/03/advisory-guidelines-on-key-concepts-in-the-pdpa",
+                "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-key-concepts-in-the-personal-data-protection-act",
                 "relevance": "Interpretive guidance on core PDPA obligations",
             },
         ]
@@ -1307,7 +1450,7 @@ Consult legal counsel for interpretation of regulatory requirements."""
         if any("marketing" in vt for vt in violation_types):
             references.append({
                 "title": "PDPC DNC Registry Guidelines",
-                "url": "https://www.pdpc.gov.sg/guidelines-and-consultation/guidelines/dnc-provisions",
+                "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-the-do-not-call-provisions",
                 "relevance": "Do Not Call provisions for marketing communications",
             })
             references.append({
@@ -1357,26 +1500,14 @@ Consult legal counsel for interpretation of regulatory requirements."""
         return steps
 
     def _get_violation_legislation(self, violation_type: str) -> List[str]:
-        """Get legislation references for violation type"""
-        legislation_map = {
-            "nric_violation": ["PDPA 2012 s.18", "PDPC Advisory Guidelines 2018"],
-            "cookie_violation": [
-                "PDPA 2012 s.13",
-                "PDPC Guide to Enhanced Notice 2021",
-            ],
-            "security_violation": [
-                "PDPA 2012 s.24",
-                "Cybersecurity Act 2018",
-                MAS_CYBER_HYGIENE_CITATION,
-            ],
-            "organizational_violation": [
-                "PDPA 2012 s.11",
-                "PDPC Guide to Accountability",
-            ],
-            "marketing_violation": ["DNC Registry", "Spam Control Act"],
-        }
+        """Get legislation references for violation type.
 
-        return legislation_map.get(violation_type, ["PDPA General Provisions"])
+        Reads the module-level VIOLATION_LEGISLATION so the "Legislation" line and
+        the "Penalty" block of the same finding cite the same provision.
+        """
+        return VIOLATION_LEGISLATION.get(
+            violation_type or "", ["PDPA 2012 (general provisions)"]
+        )
 
     def _get_priority_level(self, severity: str) -> str:
         """Get priority level for remediation"""

@@ -1476,7 +1476,15 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
         company_name = await resolve_report_legal_name(report, db) or (
             report.company_name or "Customer"
         )
-        website_url = report.company_website or assessment.get("website", "")
+        # Resolve the URL the same way process_report_task does (tasks.py) so the
+        # "ASSESSED URL" line in the PDF shows the URL that was actually scanned
+        # (post-redirect), not whatever bare domain the buyer typed.
+        website_url = (
+            assessment.get("resolved_url")
+            or assessment.get("url")
+            or report.company_website
+            or assessment.get("website", "")
+        )
 
         # ── Step 0: Already fulfilled? ─────────────────────────────────────
         # The scan→fulfill chain, the webhook branch and a manual re-queue can
@@ -1573,6 +1581,22 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
         pdf_bytes = None
         try:
             pdf_service = PDFService()
+            # The AI's structured report lives nested under `booppa_report`
+            # (process_report_task persists it there). Reading `detailed_findings`
+            # off the top level of assessment_data silently yielded [] on every
+            # run, and generate_pdf's PDPA branch treats an empty finding list as
+            # "no violations" — printing "found no PDPA violations" above a score
+            # table showing Non-Compliant dimensions.
+            #
+            # Resolve via the shared helper rather than a local fallback chain:
+            # a hand-rolled copy here missed `risk_assessment.findings`, the
+            # legacy `violations` key, and the dict->list coercion, so older
+            # reports would still have resolved to [] and reprinted the same
+            # contradiction. One resolver = one answer for every consumer.
+            from app.services.pdpa_findings import resolve_pdpa_findings
+
+            _structured = assessment.get("booppa_report") or {}
+            _findings = resolve_pdpa_findings(assessment)
             pdf_data = {
                 "report_id": report_id,
                 "framework": report.framework or "pdpa_quick_scan",
@@ -1583,7 +1607,11 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
                 # never fire.
                 "assessment_data": assessment,
                 "company_name": company_name,
+                # `company_url` is not a key the PDF reads — the "ASSESSED URL"
+                # row looks at vendor_url/website_url/url. Kept for any other
+                # consumer, but `website_url` is what renders.
                 "company_url": website_url,
+                "website_url": website_url,
                 "created_at": (
                     report.created_at.isoformat()
                     if report.created_at
@@ -1592,17 +1620,30 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
                 "status": "completed",
                 "risk_score": risk_score,
                 "risk_level": assessment.get("risk_level")
+                or (_structured.get("risk_assessment") or {}).get("level")
                 or assessment.get("risk_assessment", {}).get("level", "MEDIUM"),
-                "findings": assessment.get("findings")
-                or assessment.get("detailed_findings", []),
-                "summary": assessment.get("executive_summary", ""),
-                # Pass structured report sections so PDF renders full findings + recommendations
-                "executive_summary": assessment.get("executive_summary", ""),
-                "detailed_findings": assessment.get("detailed_findings")
-                or assessment.get("findings", []),
-                "recommendations": assessment.get("recommendations", []),
-                "legal_references": assessment.get("legal_references", []),
-                "risk_assessment": assessment.get("risk_assessment", {}),
+                "findings": _findings,
+                "summary": _structured.get("executive_summary")
+                or assessment.get("executive_summary", ""),
+                # Pass structured report sections so PDF renders full findings +
+                # recommendations. The PDPA branch of generate_pdf reads ONLY
+                # `structured_report`; the top-level copies below serve the
+                # non-PDPA renderers.
+                "structured_report": _structured,
+                "executive_summary": _structured.get("executive_summary")
+                or assessment.get("executive_summary", ""),
+                "detailed_findings": _findings,
+                "recommendations": _structured.get("recommendations")
+                or assessment.get("recommendations", []),
+                "legal_references": _structured.get("legal_references")
+                or assessment.get("legal_references", []),
+                # Carry the anchor recorded by process_report_task so the rebuilt
+                # PDF keeps it. is_real_onchain_tx still gates display, so a
+                # test-checkout demo hash correctly renders "—".
+                "tx_hash": report.tx_hash,
+                "audit_hash": report.audit_hash,
+                "risk_assessment": _structured.get("risk_assessment")
+                or assessment.get("risk_assessment", {}),
                 # Screenshot — prefer stored base64, fallback to live capture
                 "site_screenshot": assessment.get("site_screenshot")
                 or assessment.get("screenshot"),
