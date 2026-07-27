@@ -122,7 +122,7 @@ async def run_gap_analysis(control: TrmControl, context: str, db: Session) -> Tr
     raw = await provider.call_chat([
         {"role": "system", "content": system},
         {"role": "user", "content": user_prompt},
-    ])
+    ], json_mode=True)
     if not raw:
         raise HTTPException(
             status_code=502,

@@ -486,6 +486,24 @@ _TRACKER_DOMAINS: tuple[tuple[str, str], ...] = (
 )
 
 
+# Consent-platform / banner substrings searched in page HTML. ONE list: this
+# was duplicated in `_detect_cookie_banner` and the combined-HTML check below,
+# two copies that had to agree with nothing enforcing it. They happened to still
+# match, but the same shape of duplication caused real defects elsewhere in this
+# module (see DIMENSION_FINDING_SPEC, VIOLATION_LEGISLATION).
+COOKIE_BANNER_INDICATORS: tuple[str, ...] = (
+    "cookiebot", "usercentrics", "cookieyes", "onetrust", "osano",
+    "iubenda", "cookie-consent", "cookie-banner", "cookie banner",
+    "cookie notice", "consentmanager", "data-cookieconsent",
+    "booppa-cookie", "booppa_consent",
+    "pdpa compliant", "pdpa-compliant",
+    "optanon", "evidon", "didomi", "trustarc", "quantcast",
+    "accept cookies", "allow cookies", "manage cookies",
+    "we use cookies", "this site uses cookies", "cookie preferences",
+    "cookie settings", "reject cookies",
+)
+
+
 def _classify_tracker(request_url: str) -> str | None:
     """Return the vendor label if the request URL matches a known tracker."""
     url_lower = (request_url or "").lower()
@@ -499,17 +517,7 @@ async def _detect_cookie_banner(url: str | None) -> dict:
     if not url:
         return {}
 
-    indicators = [
-        "cookiebot", "usercentrics", "cookieyes", "onetrust", "osano",
-        "iubenda", "cookie-consent", "cookie-banner", "cookie banner",
-        "cookie notice", "consentmanager", "data-cookieconsent",
-        "booppa-cookie", "booppa_consent",
-        "pdpa compliant", "pdpa-compliant",
-        "optanon", "evidon", "didomi", "trustarc", "quantcast",
-        "accept cookies", "allow cookies", "manage cookies",
-        "we use cookies", "this site uses cookies", "cookie preferences",
-        "cookie settings", "reject cookies",
-    ]
+    indicators = COOKIE_BANNER_INDICATORS
 
     # Try Playwright for dynamic JS-rendered banners
     try:
@@ -575,6 +583,10 @@ async def _detect_cookie_banner(url: str | None) -> dict:
                 "post_consent": [],
                 "inventory": sorted(tracker_hits.keys()),
                 "total_requests_captured": len(captured_requests),
+                # How many vendor signatures the inventory was matched against.
+                # An empty inventory means "nothing matched THESE", not "no
+                # trackers exist" — the rendered note must say which.
+                "signature_count": len(_TRACKER_DOMAINS),
             }
 
             found = [k for k in indicators if k in html]
@@ -888,17 +900,7 @@ async def _scan_site_metadata(url: str | None, company_name: str | None = None, 
         )
 
     # Cookie banner detection from combined HTML
-    cookie_indicators = [
-        "cookiebot", "usercentrics", "cookieyes", "onetrust", "osano",
-        "iubenda", "cookie-consent", "cookie-banner", "cookie banner",
-        "cookie notice", "consentmanager", "data-cookieconsent",
-        "booppa-cookie", "booppa_consent",
-        "pdpa compliant", "pdpa-compliant",
-        "optanon", "evidon", "didomi", "trustarc", "quantcast",
-        "accept cookies", "allow cookies", "manage cookies",
-        "we use cookies", "this site uses cookies", "cookie preferences",
-        "cookie settings", "reject cookies",
-    ]
+    cookie_indicators = COOKIE_BANNER_INDICATORS
     detected_cookies = [k for k in cookie_indicators if k in combined_html]
     policy_mentions_banner = "cookie banner" in combined_html or "accept all" in combined_html or "reject" in combined_html
     if detected_cookies or policy_mentions_banner:

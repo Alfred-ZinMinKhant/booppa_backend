@@ -28,6 +28,9 @@ from app.services.pdpa_findings import (
     FAILING_STATUSES as _SHARED_FAILING_STATUSES,
     synthesize_dimension_finding as _synthesize_dimension_finding,
 )
+from app.services.pdpa_dimension_snapshot import (
+    tracker_capture_is_usable as _tracker_capture_is_usable,
+)
 
 import base64
 import logging
@@ -971,7 +974,12 @@ class PDFService:
             cookie_score = 96
             cookie_status = "Compliant"
             provider_list = ", ".join(detected_providers[:3]) if detected_providers else "compliant mechanism"
-            cookie_note = f"Consent mechanism detected ({provider_list}); no pre-consent trackers observed."
+            # "no pre-consent trackers observed" overclaims for the same reason
+            # the inventory note did — see the Tracker Inventory dimension.
+            cookie_note = (
+                f"Consent mechanism detected ({provider_list}); no requests matching "
+                f"known tracker signatures fired before consent."
+            )
         else:
             cookie_score = 15
             if consent_mech.get("has_cookie_banner"):
@@ -1195,7 +1203,7 @@ class PDFService:
             _not_assessed_dims.add("Cross-Border Transfer (§26)")
 
         # ── Third-Party Tracker Inventory ─────────────────────────────────
-        if trackers_data:
+        if trackers_data and _tracker_capture_is_usable(trackers_data):
             inventory = trackers_data.get("inventory") or []
             if inventory:
                 tr_score = 30
@@ -1208,11 +1216,41 @@ class PDFService:
             else:
                 tr_score = 95
                 tr_status = "Compliant"
-                tr_note = "No third-party trackers observed during page load."
+                # Previously: "No third-party trackers observed during page load."
+                # That claimed more than the check establishes — the inventory is
+                # built by matching request URLs against a fixed vendor signature
+                # list, so a tracker outside that list is invisible to it. State
+                # what was actually checked.
+                _sigs = trackers_data.get("signature_count")
+                _reqs = trackers_data.get("total_requests_captured")
+                _scope = (
+                    f" across {_reqs} network request(s) captured"
+                    if isinstance(_reqs, int)
+                    else ""
+                )
+                _against = (
+                    f"{_sigs} known third-party tracker signatures"
+                    if isinstance(_sigs, int)
+                    else "known third-party tracker signatures"
+                )
+                tr_note = (
+                    f"No requests matching {_against} were observed{_scope} during "
+                    f"page load. Trackers outside this signature set are not covered "
+                    f"by this check."
+                )
         else:
             tr_score = 70
             tr_status = "Not Assessed"
-            tr_note = "Tracker inventory check unavailable (rendered scan did not run)."
+            if trackers_data:
+                # The capture ran but recorded no traffic at all. Scoring this
+                # 95/Compliant treated a failed scan as a clean bill of health.
+                tr_note = (
+                    "Tracker inventory could not be assessed — the rendered scan "
+                    "captured no network requests, so no conclusion can be drawn "
+                    "about third-party trackers on this site."
+                )
+            else:
+                tr_note = "Tracker inventory check unavailable (rendered scan did not run)."
             _not_assessed_dims.add("Third-Party Tracker Inventory")
 
         dimensions = [
