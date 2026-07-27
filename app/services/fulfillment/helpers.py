@@ -663,16 +663,34 @@ def _maybe_fire_cover_sheet(customer_email: str | None, user_id: str | None = No
             # single-subject behaviour this function has always had.
             subjects = [(resolve_cover_sheet_subject(db, user, None), None)]
 
-        delivered = {
-            norm_site(r.company_website)
-            for r in db.query(Report)
+        # Which subjects already HAVE a sheet. `company_website` on these rows is
+        # only populated from the subject-scoping change onward, so rows written
+        # before it carry NULL. Matching on domain alone would therefore treat
+        # every historical sheet as "never delivered" and re-send the lot — which
+        # is exactly what happened: four cover-sheet emails in one minute.
+        # Fall back to the company name for those legacy rows, and remember
+        # whether any undomained sheet exists at all.
+        _cs_rows = (
+            db.query(Report)
             .filter(
                 Report.owner_id == user.id,
                 Report.framework == "compliance_evidence_pack",
             )
             .all()
-        }
+        )
+        delivered = {norm_site(r.company_website) for r in _cs_rows}
         delivered.discard("")
+        delivered_names = {
+            (r.company_name or "").strip().lower()
+            for r in _cs_rows
+            if not norm_site(r.company_website) and (r.company_name or "").strip()
+        }
+        # A sheet with neither domain nor usable name — can't be attributed, so
+        # treat an unresolved subject as already served rather than re-sending.
+        has_unattributable_sheet = any(
+            not norm_site(r.company_website) and not (r.company_name or "").strip()
+            for r in _cs_rows
+        )
 
         from app.services.evidence_enricher import display_legal_name
 
@@ -682,6 +700,25 @@ def _maybe_fire_cover_sheet(customer_email: str | None, user_id: str | None = No
         for target_domain, latest_pack in subjects:
             if target_domain and target_domain in delivered:
                 continue  # this subject already has its cover sheet
+            _org = (getattr(latest_pack, "organisation", "") or "").strip().lower()
+            if _org and _org in delivered_names:
+                continue  # legacy sheet (no domain recorded) for this same org
+            if not target_domain and (delivered_names or has_unattributable_sheet):
+                # Unresolved subject on an account that already holds a sheet —
+                # cannot prove this is a *different* subject, so don't re-send.
+                continue
+
+            # At most ONE sheet per invocation. Firing every pending subject in
+            # a single pass sends N emails at once, and the task's content-aware
+            # 24h email guard cannot collapse them: each subject legitimately
+            # has a different anchored-document fingerprint, so each gets its
+            # own dedupe key. (test_simulation runs bypass that guard entirely.)
+            # `still_waiting` keeps the flag set, so the hourly sweep takes the
+            # next subject — by which time this one has written its delivered
+            # row and cannot be picked twice.
+            if to_fire:
+                still_waiting = True
+                break
 
             # Cover-sheet readiness must reflect a *deliverable* PDPA scan,
             # using the same guard the render path applies (forensic finding: an

@@ -198,9 +198,15 @@ def test_foreign_scan_never_backs_a_sheet(test_db, monkeypatch):
     assert test_db.get(User, user.id).pending_cover_sheet is True
 
 
-def test_each_subject_gets_its_own_sheet(test_db, monkeypatch):
-    """RC-2: `pending_cover_sheet` is one boolean, so two live purchases used to
-    share a single slot. Both ready -> both must fire."""
+def test_only_one_sheet_fires_per_invocation(test_db, monkeypatch):
+    """Two ready subjects must NOT both fire in one pass.
+
+    Firing them together sent four cover-sheet emails in a single minute: each
+    subject has a different anchored-document fingerprint, so the task's 24h
+    content-aware email guard gives each its own dedupe key and suppresses
+    nothing (and test_simulation runs skip that guard outright). One per pass;
+    the flag stays set so the hourly sweep takes the next.
+    """
     fired = _install(test_db, monkeypatch)
     user = _user(test_db)
     for site, org in (("netpoleon.com", "Netpoleon"), ("adnovum.com", "Adnovum")):
@@ -210,11 +216,61 @@ def test_each_subject_gets_its_own_sheet(test_db, monkeypatch):
 
     wh._maybe_fire_cover_sheet(user.email)
 
-    assert sorted(k["kwargs"]["target_domain"] for k in fired) == [
-        "adnovum.com", "netpoleon.com",
+    assert len(fired) == 1, "one sheet per invocation — not a burst of emails"
+    test_db.expire_all()
+    assert test_db.get(User, user.id).pending_cover_sheet is True, (
+        "the second subject is still owed a sheet, so the flag must survive"
+    )
+
+
+def test_second_subject_fires_on_the_next_sweep(test_db, monkeypatch):
+    """RC-2 still holds: each subject eventually gets its own sheet, one pass at
+    a time, once the first has recorded its delivery."""
+    fired = _install(test_db, monkeypatch)
+    user = _user(test_db)
+    for site, org in (("netpoleon.com", "Netpoleon"), ("adnovum.com", "Adnovum")):
+        _scan(test_db, user, f"https://{site}", 58)
+        _kit(test_db, user, f"https://{site}")
+        _pack(test_db, user, site, org)
+
+    wh._maybe_fire_cover_sheet(user.email)
+    first = fired[0]["kwargs"]["target_domain"]
+    # The task records delivery by writing a scoped compliance_evidence_pack row.
+    test_db.add(Report(
+        id=uuid.uuid4(), owner_id=user.id, framework="compliance_evidence_pack",
+        company_name=first, company_website=f"https://{first}", status="completed",
+        assessment_data={"bundle_type": "compliance_evidence_pack"},
+    ))
+    test_db.commit()
+
+    wh._maybe_fire_cover_sheet(user.email)
+
+    assert [k["kwargs"]["target_domain"] for k in fired] == [
+        first, "adnovum.com" if first == "netpoleon.com" else "netpoleon.com",
     ]
     test_db.expire_all()
     assert test_db.get(User, user.id).pending_cover_sheet is False
+
+
+def test_legacy_sheet_without_a_domain_is_not_resent(test_db, monkeypatch):
+    """The actual duplicate-email cause: sheets delivered before subject scoping
+    carry NULL company_website. Matching on domain alone made every one of them
+    look undelivered and re-sent the lot. Fall back to the company name."""
+    fired = _install(test_db, monkeypatch)
+    user = _user(test_db)
+    _scan(test_db, user, "https://netpoleon.com", 58)
+    _kit(test_db, user, "https://netpoleon.com")
+    _pack(test_db, user, "netpoleon.com", "Netpoleon")
+    test_db.add(Report(
+        id=uuid.uuid4(), owner_id=user.id, framework="compliance_evidence_pack",
+        company_name="Netpoleon", company_website=None, status="completed",
+        assessment_data={"bundle_type": "compliance_evidence_pack"},
+    ))
+    test_db.commit()
+
+    wh._maybe_fire_cover_sheet(user.email)
+
+    assert fired == []
 
 
 def test_subject_with_a_delivered_sheet_is_not_refired(test_db, monkeypatch):
