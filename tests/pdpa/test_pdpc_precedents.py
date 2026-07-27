@@ -50,16 +50,22 @@ class TestSummary:
     def test_summary_includes_a_seeded_vendor_name(self):
         # Don't pin to a specific vendor name — the compliance team curates
         # the seed list independently. Assert that whichever vendor names
-        # ARE in the seed for this key actually appear in the summary.
+        # are actually selected as top examples appear in the summary.
         s = precedent_summary("breach:pdpc_enforcement")
         assert s is not None
-        seeded_vendors = [
-            c["vendor"] for c in PRECEDENTS["breach:pdpc_enforcement"][:2]
-            if c.get("vendor")
-        ]
-        assert seeded_vendors, "precondition: seed must have at least one named vendor"
-        assert any(v in s for v in seeded_vendors), (
-            f"none of {seeded_vendors} appeared in summary: {s}"
+        from app.services.pdpc_precedents import get_citable_precedents, _ANON_PARTY_RE
+        citable = get_citable_precedents("breach:pdpc_enforcement")
+        def _named(c: dict) -> int:
+            return 0 if _ANON_PARTY_RE.match(c.get("vendor") or "") else 1
+        ranked = sorted(
+            citable,
+            key=lambda c: (_named(c), c.get("year") or 0, c.get("fine_sgd") or 0),
+            reverse=True,
+        )
+        top_vendors = [c["vendor"] for c in ranked[:2] if c.get("vendor")]
+        assert top_vendors, "precondition: must have at least one citable vendor"
+        assert any(v in s for v in top_vendors), (
+            f"none of {top_vendors} appeared in summary: {s}"
         )
 
     def test_summary_uses_singular_for_one_case(self, monkeypatch):
@@ -74,9 +80,9 @@ class TestSummary:
         ])
         s = precedent_summary("test:single")
         assert s is not None
-        assert "1 organisation" in s
-        # Make sure we used "organisation" (singular), not "organisations"
-        assert "organisations" not in s
+        assert "1 decision" in s
+        # Make sure we used "decision" (singular), not "decisions"
+        assert "decisions" not in s
 
     def test_max_items_limits_cases_shown(self):
         # When max_items=0, no case names should appear
