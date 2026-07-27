@@ -1434,6 +1434,165 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         db.close()
 
 
+async def _deliver_unscannable_and_refund(
+    db,
+    report,
+    *,
+    contact_email: str | None,
+    session_id: str | None,
+    company_name: str | None,
+) -> None:
+    """Close out a paid scan that can never produce a score: refund, then tell the buyer.
+
+    Incident 2026-07-27 (point-star.com): the scan hit a WAF 403, correctly
+    refused to invent findings, and generated an honest "site inaccessible" PDF —
+    which fulfillment then threw away. The buyer was charged, received nothing,
+    and got a "one small delay, we'll follow up in a few hours" mail that no
+    automated path could honour, because this branch returns and never retries.
+
+    So: refund the money, send the buyer the document that already exists, and
+    page ops WITHOUT the false reassurance mail.
+
+    Deliberately does NOT write a CertificateLog. There is no score to certify,
+    and writing one would hide the report from /admin/stranded-fulfillments.
+    """
+    import html as _html
+
+    from app.services.refund_service import refund_for_session, refund_summary_for_assessment
+    from app.workers.tasks import _set_assessment_values
+
+    # The reason string and company name are attacker-influenced (they come from
+    # a remote server's response and the buyer's own input) and go into HTML.
+    _html_escape = _html.escape
+
+    assessment = report.assessment_data if isinstance(report.assessment_data, dict) else {}
+    report_id = str(report.id)
+
+    # Once-only: this whole block re-runs on any re-queue of fulfill_pdpa_task.
+    if assessment.get("inaccessible_notice_sent_at"):
+        logger.info(f"[PDPA] {report_id} unscannable notice already sent — skipping")
+        return
+
+    reason_text = (
+        assessment.get("site_inaccessible_reason")
+        or "The scanner could not retrieve analysable content from the website."
+    )
+
+    # ── Refund ────────────────────────────────────────────────────────────────
+    # Sync Stripe call inside async, consistent with the rest of this module
+    # (see the Session.modify call in fulfillment/bundles.py).
+    refund = refund_for_session(
+        session_id,
+        reason=f"PDPA scan could not be completed: {report.status}",
+    )
+    try:
+        _set_assessment_values(report, refund_summary_for_assessment(refund))
+        flag_modified(report, "assessment_data")
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[PDPA] Could not persist refund state for {report_id}: {e}")
+
+    # ── Tell the buyer, and give them the document we did produce ─────────────
+    download_url = f"https://api.booppa.io/api/v1/reports/{report_id}/download"
+
+    if refund.get("refunded"):
+        money_line = (
+            "We've refunded your payment in full — it should appear on your "
+            "statement within 5–10 business days, depending on your bank."
+        )
+    elif refund.get("skipped_reason") == "demo":
+        money_line = "This was an internal test purchase, so no charge was made."
+    else:
+        money_line = (
+            "We're processing a full refund for you. If it hasn't appeared within "
+            "a few business days, just reply to this email and we'll sort it out."
+        )
+
+    sent = False
+    if contact_email:
+        try:
+            sent = await EmailService().send_html_email(
+                to_email=contact_email,
+                subject="We couldn't reach your website — full refund issued",
+                body_html=branded_email_html(
+                    f"""
+                  <h2 style="margin:0 0 12px;font-size:20px;color:#0f172a;">We couldn't complete your PDPA scan</h2>
+                  <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">
+                    Our scanner was unable to reach <strong>{_html_escape(company_name or 'your website')}</strong>,
+                    so we could not assess it. Rather than issue a score we can't stand behind,
+                    we've stopped and refunded you.
+                  </p>
+                  {email_info_box(f"<strong>What happened:</strong> {_html_escape(reason_text)}")}
+                  <p style="margin:16px 0;color:#334155;font-size:15px;line-height:1.6;">
+                    {money_line}
+                  </p>
+                  <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">
+                    We've still prepared a short report explaining exactly what blocked the scan
+                    and how to fix it — most often it's a firewall or CDN rule that needs to allow
+                    our scanner through.
+                  </p>
+                  {email_button(download_url, "Download your report")}
+                  <p style="margin:24px 0 0;color:#334155;font-size:15px;line-height:1.6;">
+                    Once access is sorted, reply to this email and we'll run the scan again at no charge.
+                  </p>
+                  <p style="margin:24px 0 0;color:#64748b;font-size:13px;">
+                    Order reference: <span style="font-family:monospace;">{session_id or 'n/a'}</span>
+                  </p>
+                    """,
+                    title="Scan could not be completed",
+                    preheader="We couldn't reach your site — you've been refunded in full.",
+                ),
+            )
+            # send_html_email returns False on provider rejection; it does not raise.
+            if not sent:
+                logger.error(
+                    f"[PDPA] Unscannable-notice email REJECTED by provider for {report_id} "
+                    f"(to={contact_email})"
+                )
+        except Exception as e:
+            logger.error(f"[PDPA] Unscannable-notice email failed for {report_id}: {e}")
+    else:
+        logger.error(f"[PDPA] No contact email for {report_id} — cannot notify buyer")
+
+    # Only claim the notice as sent if it actually went out, so a retry can
+    # re-attempt delivery rather than the buyer being silently skipped.
+    if sent:
+        try:
+            _set_assessment_values(
+                report,
+                {"inaccessible_notice_sent_at": datetime.now(timezone.utc).isoformat()},
+            )
+            flag_modified(report, "assessment_data")
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[PDPA] Could not record notice timestamp for {report_id}: {e}")
+
+    # ── Page ops, but suppress the misleading customer mail ───────────────────
+    # notify_customer=False: the buyer has just had an accurate email. The
+    # generic "one small delay … we will follow up within a few hours" notice
+    # would contradict it and promise a follow-up that cannot happen.
+    await _alert_payment_fulfillment_issue(
+        reason=(
+            f"PDPA scan ended in terminal state '{report.status}' — no score can be "
+            f"produced. Buyer notified and refund {'issued' if refund.get('refunded') else 'NOT issued'}."
+        ),
+        product_type="pdpa_quick_scan",
+        customer_email=contact_email,
+        session_id=session_id,
+        extra={
+            "report_id": report_id,
+            "report_status": report.status,
+            "refunded": bool(refund.get("refunded")),
+            "refund_id": refund.get("refund_id"),
+            "refund_skipped_reason": refund.get("skipped_reason"),
+            "buyer_notified": bool(sent),
+        },
+        notify_customer=False,
+    )
+
+
 async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: bool = True, raise_if_incomplete: bool = False) -> None:
     """
     PDPA Snapshot fulfillment:
@@ -1519,20 +1678,27 @@ async def _fulfill_pdpa(report_id: str, customer_email: str | None, send_email: 
         if risk_score is None:
             # A scan that ended in one of these states cannot ever produce a
             # score — rescanning a 403 site or a blocked report just burns AI
-            # spend and ends in a silent MaxRetriesExceeded. Fail loudly now.
-            if report.status in ("site_inaccessible", "blocked", "failed"):
+            # spend and ends in a silent MaxRetriesExceeded. Stop, refund, and
+            # deliver what we do have.
+            #
+            # `site_inaccessible` is emphatically NOT "already fulfilled by the
+            # workflow": process_report_task generates and uploads the
+            # inaccessible PDF, then returns before ever sending it (see the
+            # gate in tasks.py). Nothing reaches the buyer unless this branch
+            # sends it.
+            if (
+                report.status in ("site_inaccessible", "blocked", "failed")
+                or assessment.get("site_inaccessible")
+            ):
                 logger.error(
                     f"[PDPA] {report_id} terminal status={report.status}, cannot fulfil"
                 )
-                await _alert_payment_fulfillment_issue(
-                    reason=(
-                        f"PDPA scan ended in terminal state '{report.status}' — "
-                        f"no score can be produced, manual fulfillment required"
-                    ),
-                    product_type="pdpa_quick_scan",
-                    customer_email=contact_email,
+                await _deliver_unscannable_and_refund(
+                    db,
+                    report,
+                    contact_email=contact_email,
                     session_id=session_id,
-                    extra={"report_id": report_id, "report_status": report.status},
+                    company_name=company_name,
                 )
                 return
             # Scan not yet run. Rather than raise and lean on blind exponential

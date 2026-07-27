@@ -30,6 +30,9 @@ from app.services.fulfillment.helpers import (
     _alert_payment_fulfillment_issue as alert_payment_fulfillment_issue,
     _revert_subscription_score_lever as revert_subscription_score_lever,
     _create_stub_report as create_stub_report,
+    norm_site,
+    resolve_cover_sheet_subject,
+    scope_rows_to_subject,
 )
 
 # Constants imported from the new files (since they were duplicated, we can import from any, e.g. helpers)

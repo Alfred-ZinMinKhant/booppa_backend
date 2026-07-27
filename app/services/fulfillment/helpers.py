@@ -113,6 +113,109 @@ BUNDLE_COMPONENTS = {
 _COVER_SHEET_BCEP_GRACE_DAYS = 7
 
 
+# ── Cover-sheet subject scoping ───────────────────────────────────────────────
+# One account can buy Compliance Evidence Packs for *several different subjects*
+# (an admin test harness cycling vendors, a reseller/consultancy buying for
+# clients, or the `User.parent_user_id` multi-subsidiary tenancy). Every input
+# query in the cover-sheet pipeline used to select "latest row by owner_id",
+# which silently mixed subjects: a Netpoleon-branded, blockchain-anchored cover
+# sheet carrying Adnovum's PDPA score and findings.
+#
+# The subject is the **website domain**, matching the trust rule already applied
+# to cached identity in `evidence_enricher._cache_trusted_for_hint` ("a
+# different site is a different subject"). It is resolved ONCE per cycle and
+# threaded through to `fulfill_cover_sheet_task` — never re-derived downstream,
+# because two independent resolutions of the same question are exactly how the
+# sheet ended up with a correct company name above another company's numbers.
+
+
+def norm_site(value) -> str:
+    """Normalise a website/domain for subject comparison (`https://WWW.X.com/a`
+    -> `x.com`). Thin wrapper so callers don't reach into evidence_enricher's
+    private helper."""
+    from app.services.evidence_enricher import _norm_domain
+
+    return _norm_domain(value)
+
+
+def resolve_cover_sheet_subject(db, user, latest_pack=None) -> str:
+    """The normalised domain this cover-sheet cycle is about, or "" if unknown.
+
+    Priority: the EvidencePack intake's own domain (the buyer stated it for
+    *this* purchase), then the newest `rfp_complete` report's website.
+
+    Deliberately does NOT fall back to `User.website`: on a reused account that
+    is the *account holder's* site, not the subject's, and a confidently wrong
+    subject is worse than an unresolved one — `scope_rows_to_subject` degrades
+    safely when the subject is "".
+    """
+    if latest_pack is not None:
+        intake = latest_pack.intake if isinstance(latest_pack.intake, dict) else {}
+        site = norm_site(intake.get("domain"))
+        if site:
+            return site
+
+    if user is not None:
+        rfp = (
+            db.query(Report)
+            .filter(
+                Report.owner_id == user.id,
+                Report.framework == "rfp_complete",
+                Report.company_website.isnot(None),
+            )
+            .order_by(Report.created_at.desc())
+            .first()
+        )
+        if rfp is not None:
+            return norm_site(rfp.company_website)
+    return ""
+
+
+def scope_rows_to_subject(rows, target_domain, *, getter=None, include_unknown=False):
+    """Filter `rows` down to the ones belonging to `target_domain`.
+
+    Fallback rules — these are what make the scoping fix safe to ship rather
+    than a delivery outage:
+
+    * Rows match the subject -> return them. Normal path.
+    * No row carries a domain at all -> return everything unfiltered. These are
+      legacy rows predating `Report.company_website`; there is no scoping
+      information *and* nothing to leak between, so pre-fix behaviour stands.
+    * Rows carry domains but none is the subject's -> return []. The account has
+      artifacts for other subjects only. Callers MUST defer and alert rather
+      than render: a late cover sheet is recoverable, an anchored wrong one is
+      not.
+    * Subject unresolved ("") -> unfiltered while the account is unambiguous
+      (<=1 distinct domain), [] once it is not.
+
+    `include_unknown=True` additionally keeps rows with no domain at all. Use it
+    for *index* lists (e.g. DOCUMENTS ANCHORED) where some frameworks
+    legitimately never recorded a website — dropping those would strip the ROPA
+    and signed cover sheet off the index, which is a worse regression than the
+    residual risk of listing an unattributable legacy row. Do NOT use it for
+    *selection* (picking the one PDPA scan or RFP kit that backs the sheet's
+    headline numbers): there, a wrong pick is the incident itself.
+    """
+    rows = list(rows)
+    getter = getter or (lambda r: getattr(r, "company_website", None))
+    target = norm_site(target_domain)
+
+    present = {norm_site(getter(r)) for r in rows}
+    present.discard("")
+
+    if target:
+        matched = [
+            r for r in rows
+            if norm_site(getter(r)) == target
+            or (include_unknown and not norm_site(getter(r)))
+        ]
+        if matched:
+            return matched
+        return rows if not present else []
+
+    return rows if len(present) <= 1 else []
+
+
 # Subscription tier → VerifyRecord.verification_level mapping.
 # Paid plans elevate the compliance multiplier (BASIC 1.0× → STANDARD 1.1× →
 # PREMIUM 1.3× → GOVERNMENT 1.5×, see scoring.py:92). The mapping is conservative
@@ -481,8 +584,15 @@ def _maybe_fire_cover_sheet(customer_email: str | None, user_id: str | None = No
     `_COVER_SHEET_BCEP_GRACE_DAYS` and the pack still isn't ready, fire the sheet
     anyway (the BCEP-folding block degrades gracefully to PDPA + RFP only).
 
-    Idempotent — clears `pending_cover_sheet` once queued so duplicate calls
-    (any component finishing after another) don't re-fire.
+    One sheet per SUBJECT, not per account. An account can hold packs for
+    several different companies (test harness, reseller, `parent_user_id`
+    subsidiaries); each distinct subject is evaluated independently and gets its
+    own sheet. Subjects that already have a `compliance_evidence_pack` Report
+    are skipped.
+
+    Idempotent — clears `pending_cover_sheet` only once NO subject is still
+    waiting, so duplicate calls (any component finishing after another) don't
+    re-fire while a second subject's inputs are still in flight.
     """
     if not customer_email and not user_id:
         return
@@ -519,111 +629,206 @@ def _maybe_fire_cover_sheet(customer_email: str | None, user_id: str | None = No
             db.commit()
             return
 
-        # Cover-sheet readiness must reflect a *deliverable* PDPA scan, using
-        # the same guard the render path applies (forensic finding: an
-        # empty-score artifact — "Vendor: Test", suite-b.booppa.io, all scores
-        # "—" — was bundled into a paying customer's pack). Take the newest
-        # completed scan that has a real, resolvable score — not the oldest row,
-        # and not a stub / empty-score scan the render path would then reject.
+        # The BCEP 7-document packs are queried FIRST because their intake
+        # carries the subject domain every other lookup must be scoped to. (The
+        # pack used to be queried after the PDPA scan, which is how the scan and
+        # the name hint could come from two different companies.)
+        from app.core.models import EvidencePack
         from app.services.pdpa_findings import resolve_pdpa_score as _resolve_pdpa_score
 
-        _pdpa_candidates = (
-            db.query(Report)
-            .filter(
-                Report.owner_id == user.id,
-                Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
-                Report.status == "completed",
-            )
-            .order_by(Report.created_at.desc())
-            .limit(10)
-            .all()
-        )
-        pdpa_report = None
-        for _cand in _pdpa_candidates:
-            _cad = _cand.assessment_data if isinstance(_cand.assessment_data, dict) else {}
-            if _resolve_pdpa_score(_cad) is None:
-                continue  # empty-score scan — not a deliverable
-            pdpa_report = _cand
-            break
-        pdpa_done = pdpa_report is not None
-        rfp_done = bool(getattr(user, "compliance_evidence_rfp_ready", False))
-        if not (pdpa_done and rfp_done):
-            db.commit()
-            return
-
-        # The BCEP 7-document pack is the third input. It generates only after
-        # the buyer completes the (separate) evidence-pack intake, so it is
-        # usually the last to finish — wait for it unless the grace window has
-        # elapsed (buyer never completed the intake), so nobody is left without
-        # a cover sheet.
-        from app.core.models import EvidencePack
-
-        # Only *wait* when a non-ready pack row actually exists. A buyer with no
-        # pack row at all is not owed a 7-doc pack (nothing is coming), so the
-        # sheet fires immediately — same as before this change.
-        latest_pack = (
+        packs = (
             db.query(EvidencePack)
             .filter(EvidencePack.user_id == user.id)
             .order_by(EvidencePack.created_at.desc())
-            .first()
+            .all()
         )
-        bcep_pending = latest_pack is not None and latest_pack.status != "ready"
-        if bcep_pending:
-            pdpa_age_ok = False
-            if pdpa_report is not None and pdpa_report.created_at is not None:
-                created = pdpa_report.created_at
-                if created.tzinfo is None:
-                    created = created.replace(tzinfo=timezone.utc)
-                pdpa_age_ok = (
-                    datetime.now(timezone.utc) - created
-                ) > timedelta(days=_COVER_SHEET_BCEP_GRACE_DAYS)
-            if not pdpa_age_ok:
-                # Pack still pending and within grace — leave pending_cover_sheet
-                # set so the hourly sweep / the pack's own completion re-checks.
-                db.commit()
-                return
-            logger.info(
-                "[CoverSheet] BCEP pack still not ready after %d-day grace for %s "
-                "— firing cover sheet with PDPA + RFP only",
-                _COVER_SHEET_BCEP_GRACE_DAYS,
-                customer_email,
-            )
 
-        user.pending_cover_sheet = False
-        db.commit()
+        # One cover sheet per SUBJECT, not per account. `pending_cover_sheet` is
+        # a single boolean, so before this it was also a single slot: a second
+        # purchase for a different company either corrupted the first sheet or,
+        # once scoping stopped that, silently never got a sheet of its own.
+        # Enumerate the distinct subjects this account has bought for (newest
+        # first) and skip the ones already delivered.
+        subjects: list[tuple[str, object]] = []
+        _seen: set[str] = set()
+        for _p in packs:
+            _intake = _p.intake if isinstance(_p.intake, dict) else {}
+            _d = norm_site(_intake.get("domain"))
+            if _d in _seen:
+                continue
+            _seen.add(_d)
+            subjects.append((_d, _p))
+        if not subjects:
+            # No pack rows (e.g. a manually-flagged account) — fall back to the
+            # single-subject behaviour this function has always had.
+            subjects = [(resolve_cover_sheet_subject(db, user, None), None)]
+
+        delivered = {
+            norm_site(r.company_website)
+            for r in db.query(Report)
+            .filter(
+                Report.owner_id == user.id,
+                Report.framework == "compliance_evidence_pack",
+            )
+            .all()
+        }
+        delivered.discard("")
+
         from app.services.evidence_enricher import display_legal_name
-        # Hint the resolver with the entity THIS sheet's inputs were issued to.
-        # Without a hint `_cache_trusted_for_hint` returns True and the sticky
-        # legal_name cache is silently trusted, which is how one company's name
-        # lands on another's certified document (the SPQR leak shape).
-        cover_hint = (
-            (getattr(latest_pack, "organisation", "") or "").strip()
-            or (getattr(pdpa_report, "company_name", "") or "").strip()
-            or None
-        )
-        company_name = display_legal_name(user, db, company_hint=cover_hint)
+
+        to_fire: list[dict] = []
+        still_waiting = False
+
+        for target_domain, latest_pack in subjects:
+            if target_domain and target_domain in delivered:
+                continue  # this subject already has its cover sheet
+
+            # Cover-sheet readiness must reflect a *deliverable* PDPA scan,
+            # using the same guard the render path applies (forensic finding: an
+            # empty-score artifact — "Vendor: Test", suite-b.booppa.io, all
+            # scores "—" — was bundled into a paying customer's pack). Take the
+            # newest completed scan that has a real, resolvable score — not the
+            # oldest row, and not a stub the render path would then reject.
+            _pdpa_candidates = (
+                db.query(Report)
+                .filter(
+                    Report.owner_id == user.id,
+                    Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
+                    Report.status == "completed",
+                )
+                .order_by(Report.created_at.desc())
+                .limit(25)
+                .all()
+            )
+            # Scope to THIS subject before picking a winner. Without this, a
+            # later scan for a different company wins the created_at race and
+            # its score lands on this sheet.
+            _scoped_pdpa = scope_rows_to_subject(_pdpa_candidates, target_domain)
+            if _pdpa_candidates and not _scoped_pdpa:
+                # Scans exist, but none for this subject. Not "not ready yet" —
+                # ambiguous. Keep waiting rather than render a mixed sheet.
+                logger.warning(
+                    "[CoverSheet] %s has %d completed scan(s), none for subject %r "
+                    "— deferring rather than rendering another subject's data",
+                    customer_email, len(_pdpa_candidates),
+                    target_domain or "<unresolved>",
+                )
+                still_waiting = True
+                continue
+
+            pdpa_report = None
+            for _cand in _scoped_pdpa:
+                _cad = _cand.assessment_data if isinstance(_cand.assessment_data, dict) else {}
+                if _resolve_pdpa_score(_cad) is None:
+                    continue  # empty-score scan — not a deliverable
+                pdpa_report = _cand
+                break
+
+            # RFP readiness, per subject. `compliance_evidence_rfp_ready` is
+            # another per-account boolean, so it can only be trusted when the
+            # account has a single subject; otherwise require this subject's own
+            # completed kit.
+            _rfp_rows = (
+                db.query(Report)
+                .filter(
+                    Report.owner_id == user.id,
+                    Report.framework == "rfp_complete",
+                    Report.status == "completed",
+                )
+                .order_by(Report.created_at.desc())
+                .all()
+            )
+            rfp_done = bool(scope_rows_to_subject(_rfp_rows, target_domain))
+            if not rfp_done and len(subjects) == 1:
+                rfp_done = bool(getattr(user, "compliance_evidence_rfp_ready", False))
+
+            if not (pdpa_report is not None and rfp_done):
+                still_waiting = True
+                continue
+
+            # The BCEP 7-document pack is the third input. It generates only
+            # after the buyer completes the (separate) evidence-pack intake, so
+            # it is usually the last to finish — wait for it unless the grace
+            # window has elapsed (buyer never completed the intake), so nobody
+            # is left without a cover sheet. Only *wait* when a non-ready pack
+            # row actually exists.
+            if latest_pack is not None and latest_pack.status != "ready":
+                pdpa_age_ok = False
+                if pdpa_report.created_at is not None:
+                    created = pdpa_report.created_at
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=timezone.utc)
+                    pdpa_age_ok = (
+                        datetime.now(timezone.utc) - created
+                    ) > timedelta(days=_COVER_SHEET_BCEP_GRACE_DAYS)
+                if not pdpa_age_ok:
+                    still_waiting = True
+                    continue
+                logger.info(
+                    "[CoverSheet] BCEP pack still not ready after %d-day grace for "
+                    "%s / %s — firing cover sheet with PDPA + RFP only",
+                    _COVER_SHEET_BCEP_GRACE_DAYS, customer_email,
+                    target_domain or "<unresolved>",
+                )
+
+            # Hint the resolver with the entity THIS sheet's inputs were issued
+            # to. Without a hint `_cache_trusted_for_hint` returns True and the
+            # sticky legal_name cache is silently trusted, which is how one
+            # company's name lands on another's certified document (the SPQR
+            # leak shape). The website hint matters independently: trading names
+            # collide, so a matching company string alone is not enough.
+            cover_hint = (
+                (getattr(latest_pack, "organisation", "") or "").strip()
+                or (getattr(pdpa_report, "company_name", "") or "").strip()
+                or None
+            )
+            to_fire.append({
+                "target_domain": target_domain or None,
+                "company_name": display_legal_name(
+                    user, db, company_hint=cover_hint,
+                    website_hint=target_domain or None,
+                ),
+            })
+            if target_domain:
+                delivered.add(target_domain)
+
+        # Only surrender the flag when nothing is left outstanding — otherwise
+        # the hourly sweep must keep re-checking for the subjects still waiting.
+        if not still_waiting:
+            user.pending_cover_sheet = False
+        db.commit()
     finally:
         db.close()
 
-    try:
-        from app.workers.tasks import fulfill_cover_sheet_task
+    for _job in to_fire:
+        try:
+            from app.workers.tasks import fulfill_cover_sheet_task
 
-        fulfill_cover_sheet_task.apply_async(
-            kwargs={
-                "bundle_type": "compliance_evidence_pack",
-                "customer_email": customer_email,
-                "company_name": company_name,
-                # test_simulation flows into the task so its anchor is mocked
-                # (no gas) for admin test-checkout runs.
-                "metadata": {"auto_fired": True, "test_simulation": bool(test_simulation)},
-            },
-            countdown=10,
-        )
-        logger.info(
-            f"[CoverSheet] Auto-fired for {customer_email} (all components ready)"
-        )
-    except Exception as e:
-        logger.warning(f"[CoverSheet] Auto-fire failed for {customer_email}: {e}")
+            fulfill_cover_sheet_task.apply_async(
+                kwargs={
+                    "bundle_type": "compliance_evidence_pack",
+                    "customer_email": customer_email,
+                    "company_name": _job["company_name"],
+                    # The subject is resolved ONCE, here, and threaded through.
+                    # The task must not re-derive it — an independent second
+                    # resolution is how the sheet got a correct company name
+                    # above another company's score.
+                    "target_domain": _job["target_domain"],
+                    # test_simulation flows into the task so its anchor is
+                    # mocked (no gas) for admin test-checkout runs.
+                    "metadata": {"auto_fired": True, "test_simulation": bool(test_simulation)},
+                },
+                countdown=10,
+            )
+            logger.info(
+                "[CoverSheet] Auto-fired for %s / %s (all components ready)",
+                customer_email, _job["target_domain"] or "<unresolved>",
+            )
+        except Exception as e:
+            logger.warning(
+                "[CoverSheet] Auto-fire failed for %s / %s: %s",
+                customer_email, _job["target_domain"], e,
+            )
 
 
 async def _fire_strategy_6(sector: str | None, buyer_rfp_title: str) -> None:

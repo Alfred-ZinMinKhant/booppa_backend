@@ -1038,6 +1038,60 @@ async def _stripe_webhook_impl(
                 finally:
                     _db4.close()
 
+    # ── Refunds issued outside our code ───────────────────────────────────────
+    # `refund_service` records its own refunds directly. This branch exists for
+    # the ones it never sees: a human clicking Refund in the Stripe dashboard.
+    # Without it our DB reports "paid" for money we have already given back.
+    #
+    # A charge carries a payment_intent, not a session, so the session is
+    # recovered by listing sessions for that PI — the only link back to the
+    # Report, which stores nothing but `assessment_data["stripe_session_id"]`.
+    if event["type"] == "charge.refunded":
+        try:
+            raw = json.loads(payload)
+            charge = raw.get("data", {}).get("object", {})
+            pi_id = charge.get("payment_intent")
+            if pi_id:
+                stripe.api_key = settings.STRIPE_SECRET_KEY
+                sessions = stripe.checkout.Session.list(payment_intent=pi_id, limit=1)
+                rows = sessions.get("data") if isinstance(sessions, dict) else getattr(sessions, "data", [])
+                sess_id = rows[0].get("id") if rows else None
+
+                if sess_id:
+                    from app.core.repositories.report_repository import ReportRepository
+                    from app.workers.tasks import _set_assessment_values
+
+                    _rdb = SessionLocal()
+                    try:
+                        reports = ReportRepository.list_by_stripe_session_id(_rdb, sess_id)
+                        for rep in reports:
+                            # Stripe is authoritative on the amount: a partial
+                            # refund must not be recorded as a full one.
+                            _set_assessment_values(rep, {
+                                "refunded": True,
+                                "refund_id": (charge.get("refunds") or {}).get("data", [{}])[0].get("id"),
+                                "refund_amount": charge.get("amount_refunded"),
+                                "refund_currency": charge.get("currency"),
+                                "refund_source": "stripe_dashboard",
+                                "refund_attempted_at": datetime.utcnow().isoformat(),
+                            })
+                            flag_modified(rep, "assessment_data")
+                        _rdb.commit()
+                        logger.info(
+                            f"[Webhook] charge.refunded recorded on {len(reports)} report(s) "
+                            f"for session={sess_id}"
+                        )
+                    finally:
+                        _rdb.close()
+                else:
+                    logger.warning(
+                        f"[Webhook] charge.refunded for pi={pi_id} matched no Checkout Session"
+                    )
+        except Exception as exc:
+            # Never fail the webhook over bookkeeping — Stripe would retry the
+            # whole event, re-running fulfillment branches above.
+            logger.error(f"[Webhook] charge.refunded handling failed: {exc}")
+
     # Record ACTIVE funnel event after all fulfillment (non-blocking)
     try:
         from app.services.funnel_analytics import record_funnel_event

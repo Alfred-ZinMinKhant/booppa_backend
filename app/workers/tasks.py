@@ -692,6 +692,89 @@ def _is_loading_page(html: str) -> bool:
     return False
 
 
+_PLAYWRIGHT_NAV_TIMEOUT_MS = 25_000
+_PLAYWRIGHT_SETTLE_MS = 3_000
+
+
+def _security_headers_from(headers) -> dict:
+    """Build the security-header verdict from any case-insensitive header mapping.
+
+    Shared by the httpx and Playwright paths so a rescued scan reports the
+    headers of the response we ACTUALLY read. Carrying the blocked 403's
+    headers forward would claim HSTS/CSP are absent when they are merely
+    unobserved — an absence-of-evidence error in the report.
+    """
+    def _has(name: str) -> bool:
+        try:
+            return bool(headers.get(name) or headers.get(name.title()))
+        except Exception:
+            return False
+
+    return {
+        "hsts": _has("strict-transport-security"),
+        "csp": _has("content-security-policy"),
+        "x_content_type_options": _has("x-content-type-options"),
+        "x_frame_options": _has("x-frame-options"),
+        "referrer_policy": _has("referrer-policy"),
+        "permissions_policy": _has("permissions-policy"),
+    }
+
+
+async def _render_html_via_playwright(url: str) -> tuple[str | None, int, dict]:
+    """Fetch `url` through real headless Chrome. Returns (html, status, headers).
+
+    Cloudflare/Akamai-class WAFs fingerprint the TLS and HTTP/2 stack, not just
+    the User-Agent string — which is why both httpx attempts in
+    `_scan_site_metadata` get the same 403. A genuine browser frequently passes.
+
+    Worker-only by construction: playwright is deliberately absent from the API
+    image (see the note in requirements.txt) to keep Chromium/Node CVEs out of
+    the Trivy-gated public image. The import therefore stays INSIDE this
+    function, and every failure degrades to (None, 0, {}) so API-process callers
+    (`app/integrations/scan1/adapter.py`) behave exactly as they did before.
+
+    This never decides accessibility on its own — the caller still runs the
+    rendered HTML through `_is_loading_page`, so a bot-challenge page rendered
+    successfully is still an inaccessible site.
+    """
+    browser = None
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        # API image, or worker without the browser bundle. Not an error.
+        return (None, 0, {})
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            page = await browser.new_page(
+                user_agent=_BROWSER_UA_HEADERS["User-Agent"],
+                viewport={"width": 1400, "height": 900},
+                locale="en-SG",
+            )
+            response = await page.goto(
+                url, timeout=_PLAYWRIGHT_NAV_TIMEOUT_MS, wait_until="networkidle"
+            )
+            # Let JS challenges and splash animations resolve before reading.
+            await page.wait_for_timeout(_PLAYWRIGHT_SETTLE_MS)
+            html = await page.content()
+            status = response.status if response else 0
+            headers = dict(response.headers) if response else {}
+            return (html, status, headers)
+    except Exception as e:
+        logger.warning(f"Playwright render failed for {url}: {e}")
+        return (None, 0, {})
+    finally:
+        # A leaked Chromium inside a Celery fork pool compounds fast.
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
+
 async def _scan_site_metadata(url: str | None, company_name: str | None = None, uen: str | None = None) -> dict:
     if not url:
         return {}
@@ -738,18 +821,42 @@ async def _scan_site_metadata(url: str | None, company_name: str | None = None, 
             else:
                 site_accessible = True
 
-            headers_result = {
-                "hsts": bool(resp.headers.get("strict-transport-security")),
-                "csp": bool(resp.headers.get("content-security-policy")),
-                "x_content_type_options": bool(resp.headers.get("x-content-type-options")),
-                "x_frame_options": bool(resp.headers.get("x-frame-options")),
-                "referrer_policy": bool(resp.headers.get("referrer-policy")),
-                "permissions_policy": bool(resp.headers.get("permissions-policy")),
-            }
+            headers_result = _security_headers_from(resp.headers)
             html = resp.text or ""
     except Exception as e:
         page_result["scan_error"] = f"metadata_error:{str(e)[:200]}"
         site_accessible = False
+
+    # ── Headless render fallback ──────────────────────────────────────────────
+    # Runs only when the plain fetch already failed, so a clean 200 never pays
+    # the ~5-25s render cost. A WAF that fingerprints the TLS/HTTP2 stack blocks
+    # httpx under any User-Agent — that was the 2026-07-27 point-star.com
+    # incident, where a paid scan died on a 403 we could have rendered past.
+    #
+    # Deliberately OUTSIDE the try above: some WAFs block by resetting the
+    # connection rather than answering 403, which lands in the except branch,
+    # and that case is just as rescuable as a 403.
+    if not site_accessible:
+        _r_html, _r_status, _r_headers = await _render_html_via_playwright(url)
+        # The rescue counts only if the RENDERED page is genuinely readable. A
+        # challenge page that renders fine is still an inaccessible site —
+        # scoring it would be the same false-compliance failure the
+        # accessibility gate exists to prevent.
+        if _r_html and _r_status < 400 and not _is_loading_page(_r_html):
+            logger.info(
+                f"Playwright rescued {url} "
+                f"(httpx: HTTP {http_status} → render: HTTP {_r_status})"
+            )
+            page_result["httpx_blocked_status"] = http_status
+            page_result["render_method"] = "playwright"
+            html = _r_html
+            http_status = _r_status
+            site_accessible = True
+            # Report the rendered response's headers, not the blocked one's.
+            headers_result = _security_headers_from(_r_headers)
+            # A successful render supersedes a transport-level failure.
+            page_result.pop("scan_error", None)
+            page_result.pop("loading_screen_detected", None)
 
     # Record accessibility status — downstream consumers MUST check this
     page_result["site_accessible"] = site_accessible
@@ -2623,11 +2730,19 @@ def fulfill_cover_sheet_task(
     customer_email: str | None = None,
     company_name: str = "",
     metadata: dict | None = None,
+    target_domain: str | None = None,
 ):
     """
     Compliance Evidence Pack — Cover Sheet fulfillment.
     Runs 300s after bundle components are queued so reports have time to generate.
     Flow: SHA-256 hash → blockchain anchor → generate PDF → email delivery.
+
+    `target_domain` is the subject (website) this sheet is about, resolved once
+    by `_maybe_fire_cover_sheet` and passed in. Every artifact lookup below is
+    scoped to it, because one account can hold packs/scans/kits for several
+    different companies and "latest row by owner_id" silently mixes them.
+    Omitted (older queued tasks, manual triggers) -> re-resolved here, and the
+    scoping helper degrades safely when it cannot be determined.
     """
     import hashlib
     import uuid as _uuid
@@ -2675,6 +2790,32 @@ def fulfill_cover_sheet_task(
                 if customer_email else None
             )
             if user:
+                # ── Subject scoping ────────────────────────────────────────
+                # Resolve (or accept) the one company this sheet is about, and
+                # keep the pack row that defines it — every lookup below is
+                # filtered through `_scope` so a second purchase on the same
+                # account cannot contribute its scan, kit, or anchors here.
+                from app.core.models import EvidencePack as _EvidencePack
+                from app.services.fulfillment.helpers import (
+                    norm_site as _norm_site,
+                    resolve_cover_sheet_subject as _resolve_subject,
+                    scope_rows_to_subject as _scope,
+                )
+
+                _subject_pack = (
+                    db.query(_EvidencePack)
+                    .filter(_EvidencePack.user_id == user.id)
+                    .order_by(_EvidencePack.created_at.desc())
+                    .first()
+                )
+                subject_domain = _norm_site(target_domain) or _resolve_subject(
+                    db, user, _subject_pack
+                )
+                logger.info(
+                    "[CoverSheet] %s scoped to subject %r (passed=%r)",
+                    customer_email, subject_domain or "<unresolved>", target_domain,
+                )
+
                 # ── ROPA Lite generation + anchoring (idempotent) ──────────
                 # Generate + anchor the buyer's ROPA Lite BEFORE the
                 # CYCLE_FRAMEWORKS query below runs, so the new ropa_lite Report
@@ -2683,15 +2824,23 @@ def fulfill_cover_sheet_task(
                 # submitted any ROPA rows, or if a ropa_lite Report already
                 # exists (idempotent across retries).
                 from app.core.models import RopaActivities
-                existing_ropa_report = (
+                # Idempotency is per-subject: a ROPA already generated for a
+                # *different* company on this account must not suppress this
+                # one. Legacy rows (no website) still suppress, preserving the
+                # original no-double-anchor behaviour for single-subject
+                # accounts.
+                existing_ropa_report = next(iter(_scope(
                     db.query(Report)
                     .filter(
                         Report.owner_id == user.id,
                         Report.framework == "ropa_lite",
                         Report.tx_hash.isnot(None),
                     )
-                    .first()
-                )
+                    .order_by(Report.created_at.desc())
+                    .all(),
+                    subject_domain,
+                    include_unknown=True,
+                )), None)
                 if not existing_ropa_report:
                     ropa_rows = (
                         db.query(RopaActivities)
@@ -2722,21 +2871,28 @@ def fulfill_cover_sheet_task(
                             ropa_uen = trusted_cached_uen(
                                 user,
                                 company_hint=company_name or getattr(user, "company", None),
-                                website_hint=getattr(user, "website", None),
+                                # This cycle's subject, not the account's own
+                                # site — on a reused account they differ, and a
+                                # divergent site is what (correctly) breaks
+                                # cache trust.
+                                website_hint=subject_domain or getattr(user, "website", None),
                             ) or "Not provided"
                             # DPO name/email live on the most recent rfp_complete
                             # Report's assessment_data["intake_data"] (collected at
                             # RFP intake), not on the User model. Independent of
                             # ROPA's own intake — ROPA may be submitted before RFP.
-                            rfp_report_for_dpo = (
+                            # Scoped: another subject's RFP intake would stamp
+                            # the wrong DPO name/email onto this ROPA.
+                            rfp_report_for_dpo = next(iter(_scope(
                                 db.query(Report)
                                 .filter(
                                     Report.owner_id == user.id,
                                     Report.framework == "rfp_complete",
                                 )
                                 .order_by(Report.created_at.desc())
-                                .first()
-                            )
+                                .all(),
+                                subject_domain,
+                            )), None)
                             rfp_ad_for_dpo = (
                                 rfp_report_for_dpo.assessment_data
                                 if rfp_report_for_dpo and isinstance(rfp_report_for_dpo.assessment_data, dict)
@@ -2779,6 +2935,10 @@ def fulfill_cover_sheet_task(
                                 owner_id=user.id,
                                 framework="ropa_lite",
                                 company_name=company_name or "Your Organisation",
+                                # Record the subject so later cycles can scope
+                                # this row instead of falling back to
+                                # include_unknown.
+                                company_website=subject_domain or None,
                                 status="completed",
                                 tx_hash=ropa_tx_hash,
                                 audit_hash=ropa_file_hash,
@@ -2834,7 +2994,10 @@ def fulfill_cover_sheet_task(
                     "compliance_evidence_signed_sheet",
                     "ropa_lite",
                 )
-                cycle_rows = (
+                # Subject-scoped: this list is hashed into the cover sheet's own
+                # blockchain anchor below, so a foreign row here would certify
+                # the wrong evidence set — and an anchor cannot be retracted.
+                cycle_rows = _scope(
                     db.query(Report)
                     .filter(
                         Report.owner_id == user.id,
@@ -2842,7 +3005,12 @@ def fulfill_cover_sheet_task(
                         Report.tx_hash.isnot(None),
                     )
                     .order_by(Report.created_at.desc())
-                    .all()
+                    .all(),
+                    subject_domain,
+                    # ropa_lite / signed-sheet rows carry no website of their
+                    # own; excluding them would strip real deliverables off the
+                    # index. See `scope_rows_to_subject`.
+                    include_unknown=True,
                 )
                 # Keep only the most recent of each framework — this is the
                 # current cycle's artifact. Anything older is a prior cycle.
@@ -2875,15 +3043,20 @@ def fulfill_cover_sheet_task(
                     from app.core.models import EvidencePack
                     from app.services.tx_utils import is_real_onchain_tx
 
-                    _pack = (
+                    # Subject-scoped on the pack's own intake domain — the 7 BCEP
+                    # docs are generated per-purchase, so a newer pack for a
+                    # different company must not be indexed here.
+                    _pack = next(iter(_scope(
                         db.query(EvidencePack)
                         .filter(
                             EvidencePack.user_id == user.id,
                             EvidencePack.status == "ready",
                         )
                         .order_by(EvidencePack.created_at.desc())
-                        .first()
-                    )
+                        .all(),
+                        subject_domain,
+                        getter=lambda p: (p.intake or {}).get("domain") if isinstance(p.intake, dict) else None,
+                    )), None)
                     if _pack and isinstance(_pack.anchoring, dict):
                         bcep_pack_id = _pack.pack_id
                         BCEP_LABELS = {
@@ -2930,7 +3103,11 @@ def fulfill_cover_sheet_task(
                 # take the first that qualifies rather than blindly taking the
                 # latest row (which could be a stub or a scan that produced no
                 # dimension scores).
-                _pdpa_candidates = (
+                # STRICT scoping (no include_unknown): this scan supplies the
+                # sheet's headline score, findings and scanned URL. Picking the
+                # wrong one is the incident — a Netpoleon-branded, anchored
+                # sheet carrying Adnovum's 53.
+                _pdpa_candidates = _scope(
                     db.query(Report)
                     .filter(
                         Report.owner_id == user.id,
@@ -2938,8 +3115,9 @@ def fulfill_cover_sheet_task(
                         Report.status == "completed",
                     )
                     .order_by(Report.created_at.desc())
-                    .limit(10)
-                    .all()
+                    .limit(25)
+                    .all(),
+                    subject_domain,
                 )
                 pdpa_report = None
                 for _cand in _pdpa_candidates:
@@ -3082,12 +3260,15 @@ def fulfill_cover_sheet_task(
                         "scanned_at": pdpa_report.completed_at.isoformat() if pdpa_report.completed_at else None,
                         "scan_scope": scan_scope,
                     }
-                rfp_report = (
+                # STRICT scoping — the Q&A, discrepancies and download link
+                # rendered on the sheet must belong to this subject's kit.
+                _rfp_rows = (
                     db.query(Report)
                     .filter(Report.owner_id == user.id, Report.framework == "rfp_complete")
                     .order_by(Report.created_at.desc())
-                    .first()
+                    .all()
                 )
+                rfp_report = next(iter(_scope(_rfp_rows, subject_domain)), None)
                 if rfp_report:
                     rfp_status = rfp_report.status.title() if rfp_report.status else "Pending"
                     rfp_tx_hash = rfp_report.tx_hash
@@ -3107,10 +3288,24 @@ def fulfill_cover_sheet_task(
                         "discrepancies": rfp_ad.get("discrepancies") or [],
                         "executive_summary": rfp_ad.get("executive_summary") or rfp_report.ai_narrative or "",
                     }
+                elif _rfp_rows:
+                    # Rows exist but none for this subject — the kit for THIS
+                    # purchase hasn't landed yet. Do not fall through to the
+                    # CertificateLog backfill: CertificateLog carries no
+                    # website, so it would report another company's kit as this
+                    # sheet's "Completed". Leave rfp_status "Pending" and let
+                    # the readiness gate below defer.
+                    logger.warning(
+                        "[CoverSheet] %s has %d rfp_complete row(s), none for subject %r "
+                        "— deferring instead of using the CertificateLog backfill",
+                        customer_email, len(_rfp_rows), subject_domain or "<unresolved>",
+                    )
                 else:
                     # Backfill: some RFP completions predate the unconditional
                     # Report-row write. CertificateLog is always written, so
-                    # use it as evidence the RFP finished.
+                    # use it as evidence the RFP finished. Only reachable when
+                    # the account has NO rfp_complete rows at all, so there is
+                    # no other subject's kit to confuse this with.
                     try:
                         from app.core.models import CertificateLog
                         cert = (
@@ -3147,7 +3342,16 @@ def fulfill_cover_sheet_task(
                 )
                 if pdpa_report and pdpa_report.created_at:
                     signed_q = signed_q.filter(Report.created_at >= pdpa_report.created_at)
-                signed_report = signed_q.order_by(Report.created_at.desc()).first()
+                # ...and to this subject. The created_at heuristic above was a
+                # weaker stand-in for exactly this scoping; keep both, since a
+                # signed sheet row carries no website of its own
+                # (include_unknown) and the date bound still excludes prior
+                # cycles for the same subject.
+                signed_report = next(iter(_scope(
+                    signed_q.order_by(Report.created_at.desc()).all(),
+                    subject_domain,
+                    include_unknown=True,
+                )), None)
                 if signed_report:
                     signed_cs_tx = signed_report.tx_hash
                     s_ad = signed_report.assessment_data if isinstance(signed_report.assessment_data, dict) else {}
@@ -3298,6 +3502,11 @@ def fulfill_cover_sheet_task(
                     owner_id=user.id,
                     framework="compliance_evidence_pack",
                     company_name=company_name or "Your Organisation",
+                    # Records WHICH subject this sheet covers. `_maybe_fire_cover_sheet`
+                    # reads these rows to decide which subjects still owe a sheet,
+                    # so an account buying for several companies gets one each
+                    # instead of sharing a single per-account slot.
+                    company_website=subject_domain or None,
                     assessment_data={
                         "bundle_type": bundle_type,
                         "s3_key": s3_key,
@@ -9365,8 +9574,14 @@ def fulfill_evidence_pack_task(self, evidence_pack_id: str):
                     scan_evidence["website_scan"] = run_free_scan(domain)
                 except Exception as se:
                     logger.warning("[EvidencePack] website scan failed for %s: %s", domain, se)
-            # Reuse the buyer's most recent completed PDPA scan report if present.
-            prior_pdpa = (
+            # Reuse the buyer's most recent completed PDPA scan report if present
+            # — but ONLY one for this pack's own subject. This assessment_data is
+            # fed to the model as the factual grounding for all seven governance
+            # documents, so an unscoped pick writes another company's PDPA
+            # findings into the body text of this company's DPMP, ROPA and
+            # breach runbook. STRICT scoping: no grounding beats wrong grounding.
+            from app.services.fulfillment.helpers import scope_rows_to_subject as _scope
+            prior_pdpa = next(iter(_scope(
                 db.query(Report)
                 .filter(
                     Report.owner_id == row.user_id,
@@ -9374,8 +9589,9 @@ def fulfill_evidence_pack_task(self, evidence_pack_id: str):
                     Report.status == "completed",
                 )
                 .order_by(Report.created_at.desc())
-                .first()
-            )
+                .all(),
+                domain,
+            )), None)
             if prior_pdpa and isinstance(prior_pdpa.assessment_data, dict):
                 scan_evidence["pdpa_report"] = prior_pdpa.assessment_data
         except Exception as ee:
@@ -9539,11 +9755,25 @@ def fulfill_evidence_pack_task(self, evidence_pack_id: str):
                 for dt, u in download_urls.items()
             )
             network = settings.active_polygon_network_name
+            # State the assessed entity (and its UEN) in the delivery email, so
+            # the buyer can spot a wrong-subject pack before they act on it —
+            # the seven PDFs already carry this in their org block.
+            _pack_uen = (pack.get("uen") or "").strip()
+            if _pack_uen and _pack_uen != "Not provided":
+                _uen_line = f" (UEN {_pack_uen})"
+            else:
+                _uen_line = ""
+                logger.warning(
+                    "[EvidencePack] %s delivered without a UEN for %r — documents "
+                    "will render 'Not provided'",
+                    evidence_pack_id, pack.get("organisation"),
+                )
             from app.services.email_layout import branded_email_html
             body_html = branded_email_html(
                 f"""
                 <h2 style="color:#0f172a;margin:0 0 16px;font-size:20px;">Your PDPA Compliance Evidence Pack is ready</h2>
                 <p style="margin:0 0 12px;color:#334155;font-size:15px;line-height:1.6;">Hello <strong>{pack['organisation']}</strong>,</p>
+                <p style="margin:0 0 16px;color:#334155;font-size:14px;line-height:1.6;">Assessed entity: <strong>{pack['organisation']}</strong>{_uen_line} · Pack ID <code>{pack['pack_id']}</code></p>
                 <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Your Evidence Pack of seven PDPA governance documents has been generated and
                    anchored. Each document is an <strong>AI-generated DRAFT</strong> — your
                    authorised representative must review, correct, and sign it before it carries

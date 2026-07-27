@@ -18,6 +18,12 @@
       "Effect":"Allow",
       "Action":["ses:SendEmail","ses:SendRawEmail"],
       "Resource":"*"
+    },
+    {
+      "Sid":"CloudWatchPutMetrics",
+      "Effect":"Allow",
+      "Action":["cloudwatch:PutMetricData"],
+      "Resource":"*"
     }
   ]
 }

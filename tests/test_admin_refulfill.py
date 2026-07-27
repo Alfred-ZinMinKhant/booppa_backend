@@ -144,3 +144,102 @@ def test_endpoints_require_admin_auth(client):
     assert client.post(
         "/api/admin/refulfill", json={"report_id": "x"}
     ).status_code in (401, 403)
+    assert client.post(
+        "/api/admin/refund", json={"session_id": "cs_x", "reason": "test"}
+    ).status_code in (401, 403)
+
+
+# ── POST /admin/refund ───────────────────────────────────────────────────────
+# The manual lever for purchases the automated terminal-state path skipped.
+
+
+@pytest.fixture
+def refund_stub(mocker):
+    import app.services.refund_service as refunds
+
+    return mocker.patch.object(
+        refunds,
+        "refund_for_session",
+        return_value={
+            "refunded": True,
+            "refund_id": "re_admin",
+            "amount": 4900,
+            "currency": "sgd",
+            "skipped_reason": None,
+        },
+    )
+
+
+def test_refund_by_report_id_resolves_the_session(admin_client, test_db, refund_stub):
+    report = _paid_pdpa_report(test_db, email="refund-by-report@booppa.io")
+
+    resp = admin_client.post(
+        "/api/admin/refund",
+        json={"report_id": str(report.id), "reason": "site unreachable"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["refunded"] is True
+    assert resp.json()["refund_id"] == "re_admin"
+    refund_stub.assert_called_once_with("cs_test_strand", reason="site unreachable")
+
+
+def test_refund_is_recorded_on_the_report(admin_client, test_db, refund_stub):
+    """Otherwise the refund lives only in Stripe and the admin views disagree."""
+    report = _paid_pdpa_report(test_db, email="refund-recorded@booppa.io")
+
+    admin_client.post(
+        "/api/admin/refund", json={"report_id": str(report.id), "reason": "support ticket"}
+    )
+
+    test_db.expire_all()
+    assert report.assessment_data["refunded"] is True
+    assert report.assessment_data["refund_id"] == "re_admin"
+    assert report.assessment_data["refund_amount"] == 4900
+
+
+def test_refund_by_session_id_needs_no_report(admin_client, test_db, refund_stub):
+    """Support tickets often carry only the Stripe session."""
+    resp = admin_client.post(
+        "/api/admin/refund", json={"session_id": "cs_test_direct", "reason": "goodwill"}
+    )
+
+    assert resp.status_code == 200
+    refund_stub.assert_called_once_with("cs_test_direct", reason="goodwill")
+
+
+def test_refund_requires_a_handle(admin_client, test_db, refund_stub):
+    resp = admin_client.post("/api/admin/refund", json={"reason": "nothing to go on"})
+
+    assert resp.status_code == 400
+    refund_stub.assert_not_called()
+
+
+def test_refund_404s_on_unknown_report(admin_client, test_db, refund_stub):
+    import uuid
+
+    resp = admin_client.post(
+        "/api/admin/refund", json={"report_id": str(uuid.uuid4()), "reason": "manual"}
+    )
+
+    assert resp.status_code == 404
+    refund_stub.assert_not_called()
+
+
+def test_a_skipped_refund_is_reported_honestly(admin_client, test_db, refund_stub):
+    """200 with refunded=False — not a silent success. Ops must see the reason."""
+    refund_stub.return_value = {
+        "refunded": False,
+        "refund_id": None,
+        "amount": None,
+        "currency": None,
+        "skipped_reason": "already_claimed",
+    }
+    report = _paid_pdpa_report(test_db, email="refund-skipped@booppa.io")
+
+    body = admin_client.post(
+        "/api/admin/refund", json={"report_id": str(report.id), "reason": "manual"}
+    ).json()
+
+    assert body["refunded"] is False
+    assert body["skipped_reason"] == "already_claimed"

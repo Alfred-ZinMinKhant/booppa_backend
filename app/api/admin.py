@@ -534,6 +534,17 @@ class RefulfillBody(BaseModel):
     report_id: str = Field(..., description="UUID of the paid Report to re-run delivery for")
 
 
+class RefundBody(BaseModel):
+    """Either handle works: a report id (we look the session up) or the session id.
+
+    Support tickets usually arrive with one or the other, rarely both.
+    """
+
+    report_id: Optional[str] = Field(None, description="UUID of the paid Report to refund")
+    session_id: Optional[str] = Field(None, description="Stripe Checkout Session id")
+    reason: str = Field(..., min_length=3, max_length=500, description="Why this is being refunded")
+
+
 # Delivery evidence per framework: what proves the buyer actually RECEIVED the
 # thing they paid for. `status == "completed"` is not that proof — it only means
 # the scan finished. The stranded PDPA Quick Scan that prompted this was
@@ -556,7 +567,20 @@ def _delivery_evidence(db, report) -> tuple[bool, str]:
             )
             .first()
         )
-        return (bool(cert), "CertificateLog(PDPA)" if cert else "no PDPA CertificateLog")
+        if cert:
+            return (True, "CertificateLog(PDPA)")
+        # An unscannable site can never earn a certificate, so "no
+        # CertificateLog" would flag it forever as a silent strand. If the buyer
+        # was told and refunded, the order IS closed out — just not with a
+        # deliverable. Keep it listed (fulfillable stays false) but say so, or
+        # the genuine strands get lost in the noise.
+        if ad.get("inaccessible_notice_sent_at"):
+            refunded = "refunded" if ad.get("refunded") else "REFUND NOT ISSUED"
+            return (
+                False,
+                f"unscannable — buyer notified, {refunded} (no cert possible)",
+            )
+        return (False, "no PDPA CertificateLog")
 
     if report.framework == "compliance_notarization":
         sent = bool(ad.get("notarization_email_sent"))
@@ -783,6 +807,68 @@ def refulfill_report(
         "contact_email": contact_email,
         "note": "Delivery requeued. The buyer will receive their deliverable by email.",
     }
+
+
+@router.post("/refund")
+def refund_purchase(
+    body: RefundBody,
+    _auth: bool = Depends(_admin_auth),
+):
+    """Manually refund a purchase we could not fulfil.
+
+    The automated path (``_deliver_unscannable_and_refund``) already refunds
+    terminal-state scans. This is the lever for everything it skipped: a refund
+    that errored, a support ticket, a scan that technically completed but was
+    worthless to the buyer.
+
+    It goes through the same ``refund_for_session``, so the cache claim and the
+    Stripe ``idempotency_key`` cover this entry point too — clicking twice, or
+    clicking after the worker already refunded, cannot move money twice.
+    """
+    from app.core.models import Report
+    from app.services.refund_service import (
+        refund_for_session,
+        refund_summary_for_assessment,
+    )
+
+    if not body.report_id and not body.session_id:
+        raise HTTPException(status_code=400, detail="report_id or session_id is required")
+
+    db = SessionLocal()
+    report = None
+    try:
+        session_id = body.session_id
+        if body.report_id:
+            report = db.query(Report).filter(Report.id == body.report_id).first()
+            if not report:
+                raise HTTPException(status_code=404, detail="Report not found")
+            ad = report.assessment_data if isinstance(report.assessment_data, dict) else {}
+            session_id = session_id or ad.get("stripe_session_id")
+            if not session_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Report has no stripe_session_id — pass session_id explicitly",
+                )
+
+        result = refund_for_session(session_id, reason=body.reason)
+
+        # Persist onto the report when we have one, so the refund is visible in
+        # /admin/stranded-fulfillments rather than only in Stripe.
+        if report is not None:
+            from sqlalchemy.orm.attributes import flag_modified
+            from app.workers.tasks import _set_assessment_values
+
+            _set_assessment_values(report, refund_summary_for_assessment(result))
+            flag_modified(report, "assessment_data")
+            db.commit()
+    finally:
+        db.close()
+
+    logger.info(
+        f"[admin-refund] session={session_id} refunded={result['refunded']} "
+        f"skipped={result['skipped_reason']} reason={body.reason!r}"
+    )
+    return {"ok": True, "session_id": session_id, **result}
 
 
 @router.post("/grant-credits")

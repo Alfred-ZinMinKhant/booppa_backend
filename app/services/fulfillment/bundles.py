@@ -3,7 +3,7 @@ from app.core.config import settings
 from app.core.db import SessionLocal
 from app.core.models import Report, User
 from app.services.blockchain import BlockchainService
-from app.services.evidence_enricher import trusted_cached_uen
+from app.services.evidence_enricher import trusted_cached_uen, fetch_acra_status
 from app.services.pdf_service import PDFService
 from app.services.booppa_ai_service import BooppaAIService
 from app.services.storage import S3Service
@@ -417,13 +417,36 @@ async def _fulfill_compliance_evidence_pack(
         # Auto-build a usable intake from the buyer profile + test identity so the
         # admin test-checkout produces a full pack without a manual intake step.
         user = db.query(User).filter(User.id == owner_id).first()
+        # Purchase metadata first: this pack is scoped to the company bought
+        # for, and accounts get reused across companies (the SPQR leak shape).
+        pack_uen = (metadata.get("uen") or "").strip() or (
+            trusted_cached_uen(user, company_hint=org, website_hint=website) or ""
+        ).strip()
+        if not pack_uen and org and org != "Your Organisation":
+            # `trusted_cached_uen` correctly refuses the account's cached UEN
+            # once this purchase names a different company/site — but refusing
+            # it left the pack rendering "UEN: Not provided" on all seven
+            # documents, which is what a reused account looks like in practice.
+            # Resolve it fresh by name instead, exactly as the ROPA path already
+            # does. `fetch_acra_status` name matching is fuzzy-gated at 0.90 and
+            # returns nothing on a weak match, so this can't stamp a wrong UEN.
+            try:
+                acra = await fetch_acra_status(company_name=org)
+                if acra.get("found"):
+                    pack_uen = (acra.get("uen") or "").strip()
+                    if pack_uen:
+                        logger.info(
+                            "[Bundle:compliance_evidence_pack] resolved UEN %s for %r via ACRA name lookup",
+                            pack_uen, org,
+                        )
+            except Exception as uen_err:
+                logger.warning(
+                    "[Bundle:compliance_evidence_pack] ACRA UEN lookup failed for %r: %s",
+                    org, uen_err,
+                )
         intake = {
             "org_name": org,
-            # Purchase metadata first: this pack is scoped to the company bought
-            # for, and accounts get reused across companies (the SPQR leak shape).
-            "uen": (metadata.get("uen") or "").strip()
-            or (trusted_cached_uen(user, company_hint=org, website_hint=website) or "").strip()
-            or "Not provided",
+            "uen": pack_uen or "Not provided",
             "domain": (website or getattr(user, "website", "") or "").replace("https://", "").replace("http://", "").strip("/"),
             "sector": metadata.get("sector") or "Professional Services",
             "employee_count": metadata.get("employee_count") or "11-50",

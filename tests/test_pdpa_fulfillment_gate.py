@@ -138,6 +138,137 @@ def test_terminal_status_alerts_and_does_not_retry(pinned_session, mocker):
     assert kwargs["session_id"] == "cs_test_123"
 
 
+def _terminal_report(db):
+    return _make_report(
+        db,
+        status="site_inaccessible",
+        assessment={
+            "payment_confirmed": True,
+            "contact_email": "buyer@booppa.io",
+            "stripe_session_id": "cs_test_unscannable",
+            "site_inaccessible": True,
+            "site_inaccessible_reason": "Website returned HTTP 403 Forbidden.",
+        },
+    )
+
+
+@pytest.fixture
+def unscannable(pinned_session, mocker):
+    """Wire up the terminal-state path with everything external stubbed."""
+    import app.services.fulfillment.single_products as sp
+    import app.services.refund_service as refunds
+
+    report = _terminal_report(pinned_session)
+    refund = mocker.patch.object(
+        refunds,
+        "refund_for_session",
+        return_value={
+            "refunded": True,
+            "refund_id": "re_1",
+            "amount": 4900,
+            "currency": "sgd",
+            "skipped_reason": None,
+        },
+    )
+    send = mocker.patch.object(
+        sp.EmailService, "send_html_email", new=mocker.AsyncMock(return_value=True)
+    )
+    alert = mocker.patch.object(
+        sp, "_alert_payment_fulfillment_issue", new=mocker.AsyncMock()
+    )
+    return mocker.Mock(report=report, refund=refund, send=send, alert=alert, sp=sp)
+
+
+def test_unscannable_site_is_refunded_and_the_buyer_is_told(unscannable, pinned_session):
+    """The incident fix: a paid scan we cannot perform must not silently keep the money."""
+    asyncio.run(
+        unscannable.sp._fulfill_pdpa(
+            str(unscannable.report.id), "buyer@booppa.io", raise_if_incomplete=True
+        )
+    )
+
+    unscannable.refund.assert_called_once()
+    assert unscannable.refund.call_args[0][0] == "cs_test_unscannable"
+
+    unscannable.send.assert_awaited_once()
+    body = unscannable.send.await_args.kwargs["body_html"]
+    assert "refunded your payment in full" in body
+    # The buyer gets the report the scan already produced.
+    assert f"/reports/{unscannable.report.id}/download" in body
+
+
+def test_the_misleading_delay_email_is_suppressed(unscannable):
+    """'We'll follow up within a few hours' is a promise nothing can keep here.
+
+    Ops must still be paged, but with notify_customer=False.
+    """
+    asyncio.run(
+        unscannable.sp._fulfill_pdpa(str(unscannable.report.id), "buyer@booppa.io")
+    )
+
+    unscannable.alert.assert_awaited_once()
+    kwargs = unscannable.alert.await_args.kwargs
+    assert kwargs["notify_customer"] is False
+    assert kwargs["session_id"] == "cs_test_unscannable"
+    assert kwargs["extra"]["refunded"] is True
+
+
+def test_no_certificate_is_issued_for_an_unscannable_site(unscannable, pinned_session):
+    """There is no score to certify — and a cert would hide it from the admin view."""
+    from app.core.models import CertificateLog
+
+    asyncio.run(
+        unscannable.sp._fulfill_pdpa(str(unscannable.report.id), "buyer@booppa.io")
+    )
+
+    pinned_session.expire_all()
+    certs = (
+        pinned_session.query(CertificateLog)
+        .filter(CertificateLog.report_id == unscannable.report.id)
+        .all()
+    )
+    assert certs == []
+
+
+def test_terminal_path_never_refunds_or_emails_twice(unscannable):
+    """fulfill_pdpa_task retries; a second refund would be real money."""
+    for _ in range(3):
+        asyncio.run(
+            unscannable.sp._fulfill_pdpa(str(unscannable.report.id), "buyer@booppa.io")
+        )
+
+    assert unscannable.refund.call_count == 1
+    assert unscannable.send.await_count == 1
+
+
+def test_a_rejected_email_leaves_the_notice_unclaimed(pinned_session, mocker):
+    """send_html_email returns False on rejection without raising.
+
+    If we recorded the notice anyway the buyer would never be told at all.
+    """
+    import app.services.fulfillment.single_products as sp
+    import app.services.refund_service as refunds
+
+    report = _terminal_report(pinned_session)
+    mocker.patch.object(
+        refunds,
+        "refund_for_session",
+        return_value={"refunded": True, "refund_id": "re_1", "skipped_reason": None},
+    )
+    mocker.patch.object(sp, "_alert_payment_fulfillment_issue", new=mocker.AsyncMock())
+    send = mocker.patch.object(
+        sp.EmailService, "send_html_email", new=mocker.AsyncMock(return_value=False)
+    )
+
+    asyncio.run(sp._fulfill_pdpa(str(report.id), "buyer@booppa.io"))
+
+    pinned_session.expire_all()
+    assert not report.assessment_data.get("inaccessible_notice_sent_at")
+    # A retry can therefore still reach the buyer.
+    asyncio.run(sp._fulfill_pdpa(str(report.id), "buyer@booppa.io"))
+    assert send.await_count == 2
+
+
 def test_second_pass_is_a_no_op(pinned_session, mocker):
     """Re-entry must not duplicate the CertificateLog or re-send the email."""
     import app.services.fulfillment.single_products as sp
