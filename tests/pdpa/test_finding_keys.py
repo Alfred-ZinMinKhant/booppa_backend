@@ -115,3 +115,38 @@ class TestLabelForKey:
 
     def test_unknown_falls_back_to_key(self):
         assert label_for_key("zzz:unknown") == "zzz:unknown"
+
+
+# ── Findings resolution must not regress to a partial ladder ─────────────────
+
+_F = [{"type": "cookie_consent_violation", "title": "Trackers before consent"}]
+
+_LEGACY_SHAPES = [
+    ("modern nested", {"booppa_report": {"detailed_findings": _F}}),
+    ("top-level detailed_findings", {"detailed_findings": _F}),
+    ("top-level findings", {"findings": _F}),
+    ("nested findings key", {"booppa_report": {"findings": _F}}),
+    ("nested risk_assessment", {"booppa_report": {"risk_assessment": {"findings": _F}}}),
+    ("top-level risk_assessment", {"risk_assessment": {"findings": _F}}),
+    ("legacy violations", {"violations": _F}),
+]
+
+
+@pytest.mark.parametrize("label,assessment", _LEGACY_SHAPES)
+def test_every_legacy_findings_shape_resolves(label, assessment):
+    """The last four shapes are exactly what `_fulfill_pdpa`'s hand-rolled
+    3-key chain missed — it resolved [] and the PDPA PDF then rendered the
+    report as clean."""
+    from app.services.pdpa_findings import resolve_pdpa_findings
+
+    assert resolve_pdpa_findings(assessment) == _F, f"{label} resolved empty"
+
+
+def test_dict_of_findings_is_coerced_to_a_list():
+    """Some AI paths return {"key": {...}}. The PDF iterates and indexes a list;
+    a raw dict is truthy, so it passes the emptiness gate and then renders
+    wrongly downstream."""
+    from app.services.pdpa_findings import resolve_pdpa_findings
+
+    out = resolve_pdpa_findings({"booppa_report": {"detailed_findings": {"a": _F[0]}}})
+    assert isinstance(out, list) and out == _F

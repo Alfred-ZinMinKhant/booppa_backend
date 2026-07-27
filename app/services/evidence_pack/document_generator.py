@@ -130,7 +130,7 @@ VERIFICATION_NOTES = {
         "Replace all role names with actual named individuals and their contact details",
         "Verify the escalation chain reflects your actual organisational structure",
         "Test the notification workflow at least once before signing",
-        "Confirm the PDPC notification template URL is current: https://www.pdpc.gov.sg/report-a-data-breach",
+        "Confirm the PDPC notification template URL is current: https://www.pdpc.gov.sg/report-data-breach",
     ],
     "training": [
         "CRITICAL: Training log entries must reflect ACTUAL training that occurred",
@@ -201,7 +201,15 @@ def _evidence_context(scan_evidence: dict | None) -> str:
 
     pdpa = scan_evidence.get("pdpa_report") or {}
     if isinstance(pdpa, dict) and pdpa:
-        pf = pdpa.get("findings") or []
+        # `pdpa` is a raw `assessment_data` dict (tasks.py:9366). The AI's
+        # findings are persisted NESTED under `booppa_report`, so reading
+        # `findings` off the top level silently resolved [] on every pack —
+        # the LLM was then told nothing about the gaps and wrote the pack as
+        # if the organisation were clean. Same defect class as report
+        # 22fb2871. Use the canonical resolver, never a local key chain.
+        from app.services.pdpa_findings import resolve_pdpa_findings
+
+        pf = resolve_pdpa_findings(pdpa)
         if pf:
             lines.append("Prior PDPA Snapshot findings:")
             for f in pf[:12]:
@@ -216,12 +224,33 @@ def _evidence_context(scan_evidence: dict | None) -> str:
         # ("NRIC Exposure", "Privacy Policy (PDPA §11/13)", …) and a consistent
         # status classifier from the same assessment_data, rather than guessing
         # from raw dict keys.
+        #
+        # Both directions must be surfaced. Sending only the Compliant rows
+        # was one-sided grounding: it suppressed invented gaps but left the
+        # LLM with no signal about the real ones, so a scan scoring Cookie
+        # Consent 8/100 produced a pack that asserted compliance. The failing
+        # rows are the ones the buyer is paying to have remediated.
         from app.services.pdpa_dimension_snapshot import compute_dimension_snapshots
+        _snaps = compute_dimension_snapshots(pdpa)
         compliant_dimensions = [
             f"{snap['dimension_name']} ({int(snap['score'])}/100)"
-            for snap in compute_dimension_snapshots(pdpa)
+            for snap in _snaps
             if snap.get("status") == "Compliant"
         ]
+        failing_dimensions = [
+            f"{snap['dimension_name']} — {int(snap['score'])}/100 ({snap.get('status')})"
+            for snap in _snaps
+            if snap.get("status") in ("Non-Compliant", "Partial")
+        ]
+
+        if failing_dimensions:
+            lines.append(
+                "Dimensions scored BELOW Compliant by the scan (these are confirmed "
+                "gaps — record each as an open remediation item; do NOT assert "
+                "compliance for any of them):"
+            )
+            for d in failing_dimensions:
+                lines.append(f"  - {d}")
 
         if compliant_dimensions:
             lines.append("Dimensions checked and found COMPLIANT (do NOT list these as gaps):")
@@ -503,7 +532,7 @@ Return JSON with this exact structure:
     "assessment_questions": ["How many individuals affected?", "What type of data?", "Is there evidence of misuse?"]
   }},
   "pdpc_notification_template": {{
-    "submission_url": "https://www.pdpc.gov.sg/report-a-data-breach",
+    "submission_url": "https://www.pdpc.gov.sg/report-data-breach",
     "required_fields": ["organisation_name", "breach_date", "discovery_date", "data_types", "number_affected", "cause", "remediation_steps"],
     "sample_notification": "..."
   }},

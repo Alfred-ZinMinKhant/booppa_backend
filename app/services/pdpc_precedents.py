@@ -235,7 +235,7 @@ _CATEGORY_SUBSTRINGS: list[tuple[str, str]] = [
 # the live index has no classified case for a finding type yet. This is a
 # regulatory *basis*, never labelled a precedent.
 _CATEGORY_BASIS: dict[str, str] = {
-    "consent": "PDPA §13 Consent Obligation; PDPC Advisory Guidelines on Cookies (2021) and the Guide to Enhanced Notice and Choice.",
+    "consent": "PDPA §13 Consent Obligation; PDPC Advisory Guidelines on the PDPA for Selected Topics, Ch. 7 (Online Activities).",
     "openness_dpo": "PDPA §11-12 Openness Obligation; PDPC Advisory Guidelines on Key Concepts (DPO designation and business-contact disclosure).",
     "protection": "PDPA §24 Protection Obligation; PDPC Advisory Guidelines on Key Concepts (reasonable security arrangements).",
     "dnc": "PDPA Part 9 Do Not Call Provisions; PDPC Advisory Guidelines on the Do Not Call Provisions.",

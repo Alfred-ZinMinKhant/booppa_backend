@@ -212,3 +212,56 @@ def test_send_html_email_return_value_is_checked():
                         f"it returns False on provider rejection without raising"
                     )
     assert not problems, "Unchecked send_html_email:\n" + "\n".join(problems)
+
+
+# ── 5. Hand-rolled PDPA findings fallback chains ─────────────────────────────
+#
+# Findings live at `assessment_data["booppa_report"]["detailed_findings"]`, but
+# older paths wrote them at the top level, under `risk_assessment`, or as
+# `violations` — and some AI paths returned a dict instead of a list. Every
+# consumer that hand-rolls its own `a.get(x) or b.get(y) or []` chain gets a
+# *different subset* right. `_fulfill_pdpa` had a 3-key copy missing
+# `risk_assessment.findings`, `violations` and the dict->list coercion, so the
+# PDPA PDF resolved [] and printed "found no PDPA violations" above a score
+# table full of Non-Compliant rows (report 22fb2871, sold at SGD 299).
+#
+# `app/services/pdpa_findings.py::resolve_pdpa_findings` is the single source of
+# truth. Nothing else may reimplement the ladder.
+
+_FINDING_KEYS = {"detailed_findings", "findings", "violations"}
+
+# The resolver itself is the one legitimate implementation.
+_RESOLVER_MODULE = "app/services/pdpa_findings.py"
+
+
+def _findings_get_call(node) -> bool:
+    """True for `<expr>.get("detailed_findings" | "findings" | "violations")`."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and len(node.args) >= 1
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value in _FINDING_KEYS
+    )
+
+
+def test_no_hand_rolled_pdpa_findings_fallback():
+    """No `or`-chain over two or more findings keys outside the resolver."""
+    problems = []
+    for path, tree in _modules():
+        if _rel(path).endswith(_RESOLVER_MODULE):
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.BoolOp) or not isinstance(node.op, ast.Or):
+                continue
+            hits = [v for v in node.values if _findings_get_call(v)]
+            if len(hits) >= 2:
+                problems.append(
+                    f"{_rel(path)}:{node.lineno} hand-rolls a PDPA findings "
+                    f"fallback chain over "
+                    f"{[h.args[0].value for h in hits]} — call "
+                    f"resolve_pdpa_findings(assessment_data) instead; a partial "
+                    f"copy resolves [] on legacy reports and renders them clean"
+                )
+    assert not problems, "Hand-rolled findings chain:\n" + "\n".join(problems)

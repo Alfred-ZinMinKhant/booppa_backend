@@ -44,7 +44,11 @@ from app.services.policy_clause_classifier import (
 )
 from app.services.pdpa_dimension_snapshot import compute_dimension_snapshots
 from app.services.finding_keys import extract_finding_keys
-from app.services.pdpa_findings import resolve_pdpa_findings, resolve_pdpa_score
+from app.services.pdpa_findings import (
+    resolve_pdpa_findings,
+    resolve_pdpa_findings_with_dimensions,
+    resolve_pdpa_score,
+)
 import asyncio
 import hashlib
 import json
@@ -1845,14 +1849,11 @@ async def process_report_workflow(report_id: str) -> dict:
 
         # Pass raw scan evidence so PDF scores are computed from actual data
         if isinstance(report.assessment_data, dict):
-            for _scan_key in (
-                "security_headers", "consent_mechanism", "privacy_policy",
-                "dpo_compliance", "dnc_mention", "nric_evidence",
-                "http_status", "site_accessible",
-                # Tier 1-5 keys consumed by the upgraded score table:
-                "nric", "policy_clauses", "pdpc_enforcement", "hosting",
-                "trackers", "ssl_grade", "primary_language",
-            ):
+            # Shared with the AI prompt payload, so the model and the score table
+            # reason over exactly the same evidence and cannot drift apart.
+            from app.services.booppa_ai_service import SCAN_EVIDENCE_KEYS
+
+            for _scan_key in SCAN_EVIDENCE_KEYS:
                 if _scan_key in report.assessment_data:
                     pdf_data[_scan_key] = report.assessment_data[_scan_key]
 
@@ -2961,7 +2962,18 @@ def fulfill_cover_sheet_task(
                     pdpa_score = _resolved_score if _resolved_score is not None else "—"
                     # Single source of truth — same resolver the Monitor Report
                     # uses, so the two documents can never disagree on the count.
-                    findings = resolve_pdpa_findings(pdpa_ad)
+                    #
+                    # ...with dimension synthesis. The guard below catches
+                    # "findings present but score clean". It does NOT catch the
+                    # opposite — dimensions scoring Non-Compliant while the AI
+                    # persisted no findings — which is exactly incident
+                    # 22fb2871. In that state this Cover Sheet printed "No PDPA
+                    # findings were attached", derived risk_level "Minimal" from
+                    # all-zero severity counts, and fell back to boilerplate
+                    # recommendations — shipping in the same bundle as a Quick
+                    # Scan PDF that (correctly) listed those dimensions as
+                    # failing. Same scan, two documents, opposite verdicts.
+                    findings = resolve_pdpa_findings_with_dimensions(pdpa_ad)
 
                     sev_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
                     for f in findings:

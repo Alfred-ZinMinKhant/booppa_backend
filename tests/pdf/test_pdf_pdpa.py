@@ -233,3 +233,255 @@ def test_positive_verdicts_carry_a_provenance_qualifier():
 
     assert "Basis: automated public-site scan on 2026-05-24" in text
     assert "not an audit of internal controls" in text
+
+
+# ── Narrative must never contradict the score table ──────────────────────────
+
+_CLEAN_PATH_PHRASES = (
+    "no PDPA violations",
+    "No remediation tasks required",
+    "No compliance actions required",
+    "clean compliance assessment",
+)
+
+
+def _flat_text(pdf_bytes):
+    from pypdf import PdfReader
+    raw = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf_bytes)).pages)
+    return " ".join(raw.split())
+
+
+@freeze_time("2026-05-24T12:00:00Z")
+def test_non_compliant_dimensions_never_render_clean_path_narrative():
+    """Sections 3/5/7/9 used to be gated on `structured_report.detailed_findings`
+    alone while section 4 scored from raw scan evidence. When the findings failed
+    to plumb through (the _fulfill_pdpa rebuild read them from the wrong nesting
+    level), the report asserted "found no PDPA violations" directly above a table
+    reading Cookie Consent 8/100 Non-Compliant. The narrative must be gated on
+    the same verdict the table prints."""
+    from app.services.pdf_service import PDFService
+
+    pdf_data = {
+        "framework": "pdpa_quick_scan",
+        "company_name": "Contradiction Test Pte Ltd",
+        "created_at": "2026-05-24T12:00:00Z",
+        "status": "completed",
+        "risk_score": 34,
+        # No structured_report at all — the exact shape that produced the bug.
+        "consent_mechanism": {"has_cookie_banner": False},
+        "trackers": {
+            "inventory": [
+                "Google Analytics", "Google Tag Manager", "LinkedIn Insight Tag",
+                "Meta Pixel", "The Trade Desk",
+            ],
+        },
+    }
+    pdf_bytes = PDFService().generate_pdf(pdf_data)
+    text = _flat_text(pdf_bytes)
+
+    # Precondition: at least one dimension really did score Non-Compliant.
+    assert "Non-Compliant" in text, "fixture no longer produces a failing dimension"
+
+    for phrase in _CLEAN_PATH_PHRASES:
+        assert phrase not in text, (
+            f"clean-path narrative {phrase!r} rendered despite Non-Compliant "
+            f"dimension scores — section 3/5/9 contradicts section 4"
+        )
+    # And the narrative must name what actually failed. Findings are now derived
+    # from the same dimension scores that render §4, so §3/§5/§9 enumerate the
+    # failing dimensions by name instead of printing the older generic
+    # "N dimensions scored below Compliant" fallback paragraph.
+    assert "Cookie Consent Mechanism" in text
+    assert "Third-Party Tracker Inventory" in text
+
+
+@freeze_time("2026-05-24T12:00:00Z")
+def test_fully_compliant_scan_still_renders_strengths_block():
+    """Inverse guard: the contradiction fix must not turn every report negative.
+    A scan with no findings and no failing dimensions keeps the strengths block."""
+    from app.services.pdf_service import PDFService
+
+    pdf_bytes = PDFService().generate_pdf({
+        "framework": "pdpa_quick_scan",
+        "company_name": "Clean Co Pte Ltd",
+        "created_at": "2026-05-24T12:00:00Z",
+        "status": "completed",
+        "risk_score": 5,
+        "findings": [],
+    })
+    text = _flat_text(pdf_bytes)
+
+    assert "no PDPA violations" in text
+    assert "No remediation tasks required" in text
+
+
+# ── Per-dimension coverage invariant ─────────────────────────────────────────
+#
+# `is_clean = not findings and not failing_dims` only catches the *all-or-
+# nothing* contradiction. It does not catch a partial mismatch: with one
+# unrelated finding present, `is_clean` is False, §3/§5/§9 render a confident
+# one-item remediation list, and the other failing dimensions in §4 go
+# unmentioned. That shape is worse than the netpoleons report, which at least
+# looked suspicious. The invariant that actually holds the line is stronger:
+#
+#   every failing, assessed dimension must map to at least one finding.
+
+
+def _uncovered_failing_dimensions(service, findings, computed):
+    """Failing assessed dimensions that no finding in `findings` speaks to.
+
+    Uses the same keyword lists `_compute_dimension_scores` uses to attribute a
+    finding to a dimension, so this cannot drift from the scoring logic.
+    """
+    blobs = [
+        " ".join([
+            (f.get("check_id") or ""), (f.get("type") or ""), (f.get("title") or ""),
+        ]).lower()
+        for f in findings if isinstance(f, dict)
+    ]
+    uncovered = []
+    for name, _score, status, _note in computed["dimensions"]:
+        if name in computed["not_assessed"] or status not in service._FAILING_STATUSES:
+            continue
+        keywords = service._DIMENSION_FINDING_SPEC.get(name, ([], "", []))[0]
+        if not any(k in blob for blob in blobs for k in keywords):
+            uncovered.append(name)
+    return uncovered
+
+
+def test_every_scored_dimension_has_a_finding_spec():
+    """A newly added dimension must not be able to score Non-Compliant with no
+    possible corresponding finding — that is exactly how Cookie Consent /
+    Trackers / Retention §25 / Cross-Border §26 became unreportable when the
+    score table was upgraded to the Tier 1-5 evidence keys and
+    `_detect_violations` was not."""
+    from app.services.pdf_service import PDFService
+
+    service = PDFService()
+    scored = {d[0] for d in service._compute_dimension_scores([], {})["dimensions"]}
+    missing = sorted(scored - set(service._DIMENSION_FINDING_SPEC))
+    assert not missing, (
+        f"dimensions scored in Section 4 with no _DIMENSION_FINDING_SPEC entry: "
+        f"{missing} — these can fail the table with no finding to report them"
+    )
+
+
+# (label, scan evidence, pre-existing findings)
+_COVERAGE_SCENARIOS = [
+    (
+        "no findings at all (netpoleons shape)",
+        {
+            "consent_mechanism": {"has_cookie_banner": False},
+            "trackers": {"inventory": ["Google Analytics", "Meta Pixel", "LinkedIn Insight Tag"]},
+        },
+        [],
+    ),
+    (
+        "one unrelated finding present (partial mismatch)",
+        {
+            "consent_mechanism": {"has_cookie_banner": False},
+            "trackers": {"inventory": ["Google Analytics", "Meta Pixel", "The Trade Desk"]},
+            "policy_clauses": {"found": [], "missing": ["retention", "transfer"]},
+            "hosting": {"country": "US"},
+        },
+        [{"type": "marketing_violation", "title": "No DNC reference", "severity": "MEDIUM"}],
+    ),
+    (
+        "empty scan evidence",
+        {},
+        [],
+    ),
+]
+
+
+@pytest.mark.parametrize("label,scan,findings", _COVERAGE_SCENARIOS)
+def test_no_failing_dimension_is_left_without_a_finding(label, scan, findings):
+    from app.services.pdf_service import PDFService
+
+    service = PDFService()
+    computed = service._compute_dimension_scores(findings, scan)
+    derived = service._derive_findings_from_dimensions(findings, computed)
+    after = list(findings) + derived
+
+    assert not _uncovered_failing_dimensions(service, after, computed), (
+        f"[{label}] Section 4 shows failing dimensions that Sections 3/5/9 never "
+        f"mention: {_uncovered_failing_dimensions(service, after, computed)}"
+    )
+
+
+def test_derivation_does_not_duplicate_an_existing_finding():
+    """Real AI-authored findings must always win — deriving on top of them would
+    print the same remediation task twice."""
+    from app.services.pdf_service import PDFService
+
+    service = PDFService()
+    scan = {"consent_mechanism": {"has_cookie_banner": False}}
+    findings = [{"type": "no_consent_banner", "title": "Trackers fire before consent"}]
+    computed = service._compute_dimension_scores(findings, scan)
+
+    derived = service._derive_findings_from_dimensions(findings, computed)
+    assert "Cookie Consent Mechanism" not in [d["title"] for d in derived]
+
+
+def test_derivation_is_silent_on_a_clean_scan():
+    """The inverse of the coverage invariant: nothing may be synthesized when
+    no assessed dimension is failing."""
+    from app.services.pdf_service import PDFService
+
+    service = PDFService()
+    computed = service._compute_dimension_scores([], {})
+    passing = {
+        "dimensions": [d for d in computed["dimensions"] if d[2] not in PDFService._FAILING_STATUSES],
+        "not_assessed": computed["not_assessed"],
+    }
+    assert service._derive_findings_from_dimensions([], passing) == []
+
+
+@freeze_time("2026-05-24T12:00:00Z")
+def test_partial_mismatch_narrative_names_every_failing_dimension():
+    """End-to-end form of the invariant: render the partial-mismatch shape and
+    confirm the narrative names each dimension the table marks as failing."""
+    from app.services.pdf_service import PDFService
+
+    _, scan, findings = _COVERAGE_SCENARIOS[1]
+    service = PDFService()
+    computed = service._compute_dimension_scores(findings, scan)
+    failing = [
+        d[0] for d in computed["dimensions"]
+        if d[0] not in computed["not_assessed"] and d[2] in service._FAILING_STATUSES
+    ]
+    assert len(failing) > 1, "fixture no longer exercises a multi-dimension failure"
+
+    full = _flat_text(service.generate_pdf({
+        "framework": "pdpa_quick_scan",
+        "company_name": "Partial Mismatch Pte Ltd",
+        "created_at": "2026-05-24T12:00:00Z",
+        "status": "completed",
+        "risk_score": 40,
+        "findings": findings,
+        **scan,
+    }))
+
+    # Scope to Section 5 (the developer remediation list) — asserting against
+    # the whole document is worthless here, because the Section 4 table names
+    # every dimension itself and would satisfy the assertion even while the
+    # narrative stays silent. Section 5 is what the buyer actually works from.
+    start = full.index("5. DEVELOPER IMPLEMENTATION TASKS")
+    tasks = full[start:full.index("6. ASSESSMENT CONDUCTED BY", start)]
+
+    # Every gap the AI did not report must now carry its own task. (Dimensions
+    # an AI finding already covers render under *that* finding's title, not the
+    # dimension name — `test_no_failing_dimension_is_left_without_a_finding`
+    # is what proves those are covered.)
+    for f in service._derive_findings_from_dimensions(findings, computed):
+        # Compare on the plain-language stem — the parenthetical statute refs
+        # ("(PDPA §11/13)") do not survive PDF text extraction reliably.
+        stem = f["title"].split(" (")[0]
+        assert stem in tasks, (
+            f"{f['title']!r} scored failing in Section 4 but generates no task "
+            f"in Section 5"
+        )
+
+    # And the generic "no task list accompanied this scan" fallback must be gone
+    # — that paragraph is what a buyer saw instead of actionable work.
+    assert "No AI-generated task list accompanied this scan" not in tasks
