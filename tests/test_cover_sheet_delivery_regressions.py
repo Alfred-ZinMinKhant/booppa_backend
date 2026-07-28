@@ -178,3 +178,145 @@ def test_pending_flag_survives_a_pass_that_delivers_nothing(test_db, monkeypatch
     assert (
         test_db.query(User).filter(User.id == user.id).first().pending_cover_sheet is True
     ), "flag must be retained so the sweep keeps re-checking"
+
+
+def test_sweep_alerts_on_unresolved_subject_multiple_domains(test_db, monkeypatch):
+    """An account with pending_cover_sheet=True, an unresolved subject (no intake domain,
+    no rfp_complete website), and scans across multiple domains defers every hour.
+    After 3 consecutive sweep passes, _alert_payment_fulfillment_issue fires ONCE with
+    user_id and the conflicting domains."""
+    _install(test_db, monkeypatch)
+    user = User(
+        email="evidence@boopa.io",
+        hashed_password="x",
+        company="Multi-Domain Account",
+        pending_cover_sheet=True,
+    )
+    test_db.add(user)
+    test_db.commit()
+    test_db.refresh(user)
+
+    test_db.add(
+        Report(
+            id=uuid.uuid4(),
+            owner_id=user.id,
+            framework="pdpa_quick_scan",
+            company_name="Domain 1",
+            company_website="https://adnovum.com",
+            status="completed",
+            assessment_data={"overall_risk_score": 50},
+            created_at=datetime.utcnow(),
+        )
+    )
+    test_db.add(
+        Report(
+            id=uuid.uuid4(),
+            owner_id=user.id,
+            framework="pdpa_quick_scan",
+            company_name="Domain 2",
+            company_website="https://netpoleon.com",
+            status="completed",
+            assessment_data={"overall_risk_score": 60},
+            created_at=datetime.utcnow(),
+        )
+    )
+    test_db.commit()
+
+    alerts = []
+    async def _mock_alert(**kwargs):
+        alerts.append(kwargs)
+
+    monkeypatch.setattr(wh, "_alert_payment_fulfillment_issue", _mock_alert)
+
+    # Pass 1
+    tasks_mod.sweep_pending_cover_sheets()
+    assert len(alerts) == 0
+
+    # Pass 2
+    tasks_mod.sweep_pending_cover_sheets()
+    assert len(alerts) == 0
+
+    # Pass 3: triggers alert
+    tasks_mod.sweep_pending_cover_sheets()
+    assert len(alerts) == 1
+    alert = alerts[0]
+    assert alert["customer_email"] == "evidence@boopa.io"
+    assert alert["extra"]["user_id"] == str(user.id)
+    assert alert["extra"]["domains"] == ["adnovum.com", "netpoleon.com"]
+    assert alert["extra"]["consecutive_misses"] == 3
+    assert str(user.id) in alert["reason"]
+    assert "adnovum.com, netpoleon.com" in alert["reason"]
+
+    # Pass 4: alert does NOT re-fire
+    tasks_mod.sweep_pending_cover_sheets()
+    assert len(alerts) == 1
+
+
+def test_miss_counter_resets_once_the_subject_becomes_resolvable(test_db, monkeypatch):
+    """The counter must be CONSECUTIVE misses, not a lifetime tally. An account
+    that resolves (buyer submits the intake, so the pack carries a domain) and
+    later goes ambiguous again must start counting from zero — otherwise a
+    long-lived account accrues misses over months and pages a human for a state
+    it is not actually in."""
+    _install(test_db, monkeypatch)
+    user = User(
+        email=f"cep-reset-{uuid.uuid4().hex[:8]}@test.io",
+        hashed_password="x",
+        company="Multi-Domain Account",
+        pending_cover_sheet=True,
+    )
+    test_db.add(user)
+    test_db.commit()
+    test_db.refresh(user)
+    for site, name in (("https://adnovum.com", "D1"), ("https://netpoleon.com", "D2")):
+        test_db.add(
+            Report(
+                id=uuid.uuid4(),
+                owner_id=user.id,
+                framework="pdpa_quick_scan",
+                company_name=name,
+                company_website=site,
+                status="completed",
+                assessment_data={"overall_risk_score": 50},
+                created_at=datetime.utcnow(),
+            )
+        )
+    test_db.commit()
+
+    alerts = []
+
+    async def _mock_alert(**kwargs):
+        alerts.append(kwargs)
+
+    monkeypatch.setattr(wh, "_alert_payment_fulfillment_issue", _mock_alert)
+
+    # Two ambiguous passes — misses at 2, still below the threshold.
+    tasks_mod.sweep_pending_cover_sheets()
+    tasks_mod.sweep_pending_cover_sheets()
+    assert alerts == []
+
+    # Subject becomes resolvable: the pack now names the domain.
+    pack = EvidencePack(
+        id=uuid.uuid4(),
+        pack_id=f"BCEP-{uuid.uuid4().hex[:8]}",
+        user_id=user.id,
+        status="pending",
+        intake={"domain": "adnovum.com"},
+        created_at=datetime.utcnow(),
+    )
+    test_db.add(pack)
+    test_db.commit()
+    tasks_mod.sweep_pending_cover_sheets()
+    assert alerts == [], "resolvable subject must never alert"
+
+    # Ambiguous again: the counter restarted, so two more passes stay silent and
+    # only the third re-escalates.
+    test_db.delete(pack)
+    test_db.commit()
+    tasks_mod.sweep_pending_cover_sheets()
+    tasks_mod.sweep_pending_cover_sheets()
+    assert alerts == [], "counter did not reset — misses accrued across the resolved pass"
+    tasks_mod.sweep_pending_cover_sheets()
+    assert len(alerts) == 1
+    assert alerts[0]["extra"]["consecutive_misses"] == 3
+
