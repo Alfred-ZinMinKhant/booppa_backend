@@ -7307,6 +7307,24 @@ def cleanup_old_tasks():
 # a genuine stall pages long before the grace window would paper over it.
 _COVER_SHEET_STALL_HOURS = 6
 
+# How many consecutive hourly sweeps may hit "unresolved subject, >1 domain"
+# before a human is paged. The refusal itself is correct and permanent, so this
+# is not a retry budget — it is a debounce, so a mid-purchase account (scan in,
+# intake not yet submitted) doesn't page anyone during the normal window.
+_COVER_SHEET_UNRESOLVED_ALERT_AFTER = 3
+
+
+def _reset_unresolved_subject_misses(user) -> None:
+    """Clear the consecutive-miss counter once a user's subject is resolvable
+    again. Best-effort: a cache failure here only risks a stale count, never a
+    missed delivery."""
+    from app.core.cache import cache as _cache
+
+    try:
+        _cache.delete(_cache.cache_key(f"cs_unresolved_misses:{user.id}"))
+    except Exception as e:
+        logger.debug(f"[CoverSheetSweep] Miss-counter reset failed for {user.id}: {e}")
+
 
 @celery_app.task(name="sweep_pending_cover_sheets")
 def sweep_pending_cover_sheets():
@@ -7380,24 +7398,121 @@ def sweep_pending_cover_sheets():
         # Age is measured from the cycle marker (newest EvidencePack row), not
         # `User.updated_at` — the latter has an `onupdate` hook and is bumped by
         # any unrelated write to the user, so it would keep resetting the clock.
-        from app.core.models import EvidencePack
+        from app.core.cache import cache as _cache
+        from app.core.models import EvidencePack, Report
+        from app.services.fulfillment.helpers import (
+            _alert_payment_fulfillment_issue,
+            norm_site,
+            resolve_cover_sheet_subject,
+        )
 
         stale = []
         _cutoff = datetime.now(timezone.utc) - timedelta(hours=_COVER_SHEET_STALL_HOURS)
         for u in still:
-            _pack = (
-                db.query(EvidencePack)
-                .filter(EvidencePack.user_id == u.id)
-                .order_by(EvidencePack.created_at.desc())
-                .first()
-            )
-            _started = getattr(_pack, "created_at", None)
-            if _started is None:
-                continue  # no cycle marker — can't age it, leave to the inline path
-            if _started.tzinfo is None:
-                _started = _started.replace(tzinfo=timezone.utc)
-            if _started < _cutoff:
-                stale.append(u)
+            # Per-user isolation: one malformed row (e.g. a non-dict
+            # `EvidencePack.intake`) must not abort the accounting for every
+            # remaining user AND the `[CoverSheetStalled]` escalation below —
+            # that would reintroduce the exact silence this block exists to
+            # remove.
+            try:
+                _pack = (
+                    db.query(EvidencePack)
+                    .filter(EvidencePack.user_id == u.id)
+                    .order_by(EvidencePack.created_at.desc())
+                    .first()
+                )
+                _started = getattr(_pack, "created_at", None)
+                if _started is not None:
+                    if _started.tzinfo is None:
+                        _started = _started.replace(tzinfo=timezone.utc)
+                    if _started < _cutoff:
+                        stale.append(u)
+
+                # Silent safe-refusal detector: unresolved subject with more than
+                # one domain present. `scope_rows_to_subject` returns [] in that
+                # state (correctly — a confidently wrong cover sheet is worse than
+                # a late one), so the sweep defers forever and logs the same line
+                # every hour with nobody watching. Count consecutive misses and
+                # escalate ONCE. Do NOT auto-resolve or guess: visibility only.
+                _subj_domain = resolve_cover_sheet_subject(db, u, _pack)
+                if _subj_domain:
+                    _reset_unresolved_subject_misses(u)
+                    continue
+
+                _scans = (
+                    db.query(Report)
+                    .filter(
+                        Report.owner_id == u.id,
+                        Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
+                        Report.status == "completed",
+                    )
+                    .all()
+                )
+                _domains = {norm_site(r.company_website) for r in _scans if norm_site(r.company_website)}
+                _all_packs = db.query(EvidencePack).filter(EvidencePack.user_id == u.id).all()
+                for _p in _all_packs:
+                    if isinstance(_p.intake, dict):
+                        _d = norm_site(_p.intake.get("domain"))
+                        if _d:
+                            _domains.add(_d)
+
+                if len(_domains) <= 1:
+                    # Unresolved but unambiguous — `scope_rows_to_subject` still
+                    # returns rows, so this is not a stall.
+                    _reset_unresolved_subject_misses(u)
+                    continue
+
+                _domain_list = sorted(_domains)
+                _miss_key = _cache.cache_key(f"cs_unresolved_misses:{u.id}")
+                _alert_key = _cache.cache_key(f"cs_unresolved_alert_sent:{u.id}")
+                try:
+                    _current_misses = (_cache.get(_miss_key) or {}).get("count", 0) + 1
+                    _cache.set(_miss_key, {"count": _current_misses}, ttl=86400 * 7)
+                    _already_alerted = bool(_cache.get(_alert_key))
+                except Exception as cache_err:
+                    # Cache down: the counter can never reach the threshold, so the
+                    # alert would never fire and we would be silent again — the one
+                    # outcome this whole block exists to prevent. Say it in the log
+                    # instead, naming the user and the domains a human needs.
+                    logger.warning(
+                        "[CoverSheetSweep] Unresolved subject for user %s across domains %s "
+                        "(cache unavailable, cannot count misses or alert: %s)",
+                        u.id, ", ".join(_domain_list), cache_err,
+                    )
+                    continue
+
+                if _current_misses < _COVER_SHEET_UNRESOLVED_ALERT_AFTER or _already_alerted:
+                    continue
+
+                try:
+                    asyncio.run(
+                        _alert_payment_fulfillment_issue(
+                            reason=(
+                                f"Unresolved cover-sheet subject for user {u.id}: account has rows across "
+                                f"multiple domains ({', '.join(_domain_list)}) and cannot auto-resolve subject. "
+                                f"Hit {_current_misses} consecutive sweep misses — manual resolution required."
+                            ),
+                            product_type="compliance_evidence_pack",
+                            customer_email=u.email,
+                            extra={
+                                "user_id": str(u.id),
+                                "domains": _domain_list,
+                                "consecutive_misses": _current_misses,
+                            },
+                            notify_customer=False,
+                        )
+                    )
+                    _cache.set(_alert_key, {"sent": True}, ttl=86400 * 30)
+                except Exception as alert_err:
+                    logger.error(
+                        f"[CoverSheetSweep] Failed to fire unresolved subject alert for user {u.id}: {alert_err}"
+                    )
+            except Exception as per_user_err:
+                logger.error(
+                    "[CoverSheetSweep] Accounting failed for user %s: %s", u.id, per_user_err
+                )
+                continue
+
         if stale:
             logger.error(
                 "[CoverSheetStalled] %d buyer(s) still owed a cover sheet after >%dh: %s",
