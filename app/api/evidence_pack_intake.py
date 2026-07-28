@@ -25,6 +25,7 @@ from app.core.models import EvidencePack
 
 from app.services.evidence_enricher import (
     _cache_trusted_for_hint as _cache_trusted,
+    account_may_self_subject,
     trusted_cached_uen,
 )
 
@@ -201,17 +202,26 @@ def get_intake(
         "status": row.status,
         "session_id": row.session_id,
         # Prefill hints from the user profile so the form is fast to complete.
-        "prefill": {
-            # Prefill the resolved legal entity, not the raw signup string, so a
-            # buyer who accepts the default doesn't stamp a bare domain on the pack.
-            "org_name": (
-                (getattr(user, "legal_name", None) if _identity_trusted(user) else None)
-                or getattr(user, "company", "")
-                or ""
-            ),
-            "uen": (trusted_cached_uen(user, company_hint=getattr(user, "company", None)) or ""),
-            "domain": getattr(user, "website", "") or "",
-        },
+        # Prefill hints only where the account can be its own subject. Offering a
+        # buyer/CSP their own company as the pack's org is how the wrong entity ends
+        # up certified by a customer who just accepted the default.
+        "prefill": (
+            {
+                # Prefill the resolved legal entity, not the raw signup string, so a
+                # buyer who accepts the default doesn't stamp a bare domain on the pack.
+                "org_name": (
+                    (getattr(user, "legal_name", None) if _identity_trusted(user) else None)
+                    or getattr(user, "company", "")
+                    or ""
+                ),
+                "uen": (
+                    trusted_cached_uen(user, company_hint=getattr(user, "company", None)) or ""
+                ),
+                "domain": getattr(user, "website", "") or "",
+            }
+            if account_may_self_subject(user)
+            else {"org_name": "", "uen": "", "domain": ""}
+        ),
         "download_urls": row.download_urls or {},
     }
 
@@ -242,8 +252,12 @@ def submit_intake(
         raise HTTPException(status_code=409, detail="This evidence pack has already been submitted")
 
     intake = dict(body.get("intake") or body)
-    # Fall back to the profile where the buyer left a field blank.
-    intake.setdefault("org_name", (getattr(user, "company", "") or "").strip())
+    # Fall back to the profile where the buyer left a field blank — but only for an
+    # account that can legitimately be its own subject. For a buyer/CSP account the
+    # pack is about someone else, so a blank org_name must fail the required-field
+    # check below rather than be silently filled with the account's own company.
+    if account_may_self_subject(user):
+        intake.setdefault("org_name", (getattr(user, "company", "") or "").strip())
     intake.setdefault(
         "uen",
         (trusted_cached_uen(

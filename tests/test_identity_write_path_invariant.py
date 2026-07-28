@@ -26,8 +26,12 @@ ALLOWED = {"services/evidence_enricher.py"}
 # `<something>.uen = ...` / `.legal_name = ...` / `.legal_name_hint = ...` /
 # `.website_hint = ...`, but not `==`, and not a keyword argument (`uen=`), which
 # has no leading dot.
+# `verified_hint` is the same provenance column under the two subject carriers
+# (`DiscoveredVendor`, `ManagedEntity`). It is what makes a cached UEN trustworthy,
+# so writing it by hand — or writing a `uen` without it — reintroduces exactly the
+# unprovenanced-cache signature the trust check exists to reject.
 ASSIGN_RE = re.compile(
-    r"\.(uen|legal_name|legal_name_hint|website_hint)\s*=(?!=)"
+    r"\.(uen|legal_name|legal_name_hint|website_hint|verified_hint)\s*=(?!=)"
 )
 
 # Assignments on objects that are demonstrably NOT a User row. These carry their own

@@ -2734,7 +2734,9 @@ def fulfill_cover_sheet_task(
 ):
     """
     Compliance Evidence Pack — Cover Sheet fulfillment.
-    Runs 300s after bundle components are queued so reports have time to generate.
+    Queued by `_maybe_fire_cover_sheet` (countdown=10) once the PDPA Snapshot,
+    the RFP Complete kit and the BCEP pack are all ready — there is no fixed
+    delay; readiness is what gates it.
     Flow: SHA-256 hash → blockchain anchor → generate PDF → email delivery.
 
     `target_domain` is the subject (website) this sheet is about, resolved once
@@ -3580,8 +3582,15 @@ def fulfill_cover_sheet_task(
             # test_simulation (admin test-checkout) always re-sends so iteration
             # isn't blocked by the 24h guard.
             _is_test = bool((metadata or {}).get("test_simulation"))
+            # Scope the key by SUBJECT as well as content. Two subjects on one
+            # account can produce an identical document fingerprint — most easily
+            # when neither has file hashes yet and both collapse to "nodocs" —
+            # and would then share a key, so the second subject's sheet is
+            # silently suppressed as a duplicate of the first. The subject is a
+            # property of the sheet, so it belongs in its identity.
+            _subject_fp = (subject_domain or "").strip().lower() or "unresolved"
             email_dedupe_key = _cache.cache_key(
-                f"cover_sheet_email:{delivery_email}:{email_state}:v{_cs_ver}:{_docs_fp}"
+                f"cover_sheet_email:{delivery_email}:{_subject_fp}:{email_state}:v{_cs_ver}:{_docs_fp}"
             )
             if not _is_test and _cache.get(email_dedupe_key):
                 logger.info(
@@ -7292,6 +7301,13 @@ def cleanup_old_tasks():
         db.close()
 
 
+# How long a buyer may sit owed a cover sheet before the sweep escalates. Sized
+# above the normal wait (PDPA scan + RFP kit complete within minutes; the BCEP
+# pack waits on a buyer-completed intake) but well below the 7-day BCEP grace, so
+# a genuine stall pages long before the grace window would paper over it.
+_COVER_SHEET_STALL_HOURS = 6
+
+
 @celery_app.task(name="sweep_pending_cover_sheets")
 def sweep_pending_cover_sheets():
     """Backstop for Compliance Evidence Pack cover-sheet delivery.
@@ -7320,27 +7336,82 @@ def sweep_pending_cover_sheets():
             .filter(User.pending_cover_sheet == True)  # noqa: E712
             .all()
         )
-        emails = [u.email for u in pending if u.email]
+        # Carry the user id, not just the email. `_maybe_fire_cover_sheet` blanks
+        # any address matching SUPPORT_EMAIL/COMPANY_DPO_EMAIL and re-resolves by
+        # id; with no id to fall back to it returned immediately, so the sweep was
+        # strictly weaker than the inline trigger it exists to back up — it could
+        # not deliver to the very accounts most likely to need it.
+        targets = [(u.email, str(u.id)) for u in pending if u.email]
     except Exception as e:
         logger.error(f"[CoverSheetSweep] Could not list pending users: {e}")
         return
     finally:
         db.close()
 
-    if not emails:
+    if not targets:
         return
 
-    fired = 0
-    for email in emails:
+    cleared = 0
+    failed = 0
+    for email, uid in targets:
         try:
             # Idempotent: fires only when PDPA + RFP are both done, then clears
             # the flag. A no-op otherwise.
-            maybe_fire_cover_sheet(email)
-            fired += 1
+            maybe_fire_cover_sheet(email, user_id=uid)
         except Exception as e:
+            failed += 1
             logger.error(f"[CoverSheetSweep] Re-fire failed for {email}: {e}")
+
+    # Count what actually PROGRESSED, not what was attempted. The old line
+    # reported "Re-checked N" whether or not a single user advanced, so a set of
+    # permanently-stuck buyers read exactly like a healthy sweep — which is why
+    # two separate indefinite stalls ran for hours without anyone noticing.
+    db = SessionLocal()
+    try:
+        still = (
+            db.query(User)
+            .filter(User.pending_cover_sheet == True)  # noqa: E712
+            .all()
+        )
+        still_ids = {str(u.id) for u in still}
+        cleared = sum(1 for _, uid in targets if uid not in still_ids)
+        # A buyer pending across many consecutive sweeps is not "waiting on their
+        # RFP brief" any more — it is a stall. Escalate rather than accrue.
+        # Age is measured from the cycle marker (newest EvidencePack row), not
+        # `User.updated_at` — the latter has an `onupdate` hook and is bumped by
+        # any unrelated write to the user, so it would keep resetting the clock.
+        from app.core.models import EvidencePack
+
+        stale = []
+        _cutoff = datetime.now(timezone.utc) - timedelta(hours=_COVER_SHEET_STALL_HOURS)
+        for u in still:
+            _pack = (
+                db.query(EvidencePack)
+                .filter(EvidencePack.user_id == u.id)
+                .order_by(EvidencePack.created_at.desc())
+                .first()
+            )
+            _started = getattr(_pack, "created_at", None)
+            if _started is None:
+                continue  # no cycle marker — can't age it, leave to the inline path
+            if _started.tzinfo is None:
+                _started = _started.replace(tzinfo=timezone.utc)
+            if _started < _cutoff:
+                stale.append(u)
+        if stale:
+            logger.error(
+                "[CoverSheetStalled] %d buyer(s) still owed a cover sheet after >%dh: %s",
+                len(stale), _COVER_SHEET_STALL_HOURS,
+                ", ".join(u.email or str(u.id) for u in stale[:20]),
+            )
+    except Exception as e:
+        logger.warning(f"[CoverSheetSweep] Post-sweep accounting failed: {e}")
+    finally:
+        db.close()
+
     logger.info(
-        f"[CoverSheetSweep] Re-checked {len(emails)} pending cover-sheet user(s)"
+        "[CoverSheetSweep] %d pending, %d progressed, %d still pending, %d error(s)",
+        len(targets), cleared, len(targets) - cleared - failed, failed,
     )
 
 

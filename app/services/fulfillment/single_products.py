@@ -111,7 +111,7 @@ BUNDLE_COMPONENTS = {
         "pdpa": True,
         "notarization_count": 1,
         "rfp": "rfp_complete",
-        "cover_sheet": True,  # triggers cover sheet generation with 300s delay
+        "cover_sheet": True,  # auto-fires once PDPA + RFP + BCEP pack are all ready
     },
 }
 
@@ -191,10 +191,19 @@ async def _defer_rfp_to_intake(
             )
             return None
         resolved_url = vendor_url or (getattr(user, "website", "") or "") or None
-        # Prefer the company entered for THIS purchase; fall back only to the raw
-        # (non-sticky) user.company, never the cached legal_name — the buyer
-        # confirms/edits this on the intake step anyway.
-        resolved_company = company_name or (getattr(user, "company", "") or "").strip() or None
+        # Prefer the company entered for THIS purchase. The account fallback is only
+        # legitimate for an account that can be its own subject (a vendor
+        # self-assessing) — a buyer or CSP manages many subjects, so their own
+        # company is not a stand-in for an unnamed one. `None` leaves the intake
+        # form blank for the buyer to fill, which is the honest state; it never
+        # falls back to the cached legal_name either.
+        from app.services.evidence_enricher import account_may_self_subject
+
+        resolved_company = company_name or (
+            ((getattr(user, "company", "") or "").strip() or None)
+            if account_may_self_subject(user)
+            else None
+        )
         pending = PendingRfpIntake(
             user_id=user.id,
             session_id=session_id,

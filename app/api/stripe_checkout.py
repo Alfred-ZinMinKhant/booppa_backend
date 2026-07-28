@@ -143,6 +143,201 @@ async def _gate_acra_live(uen: str) -> None:
         )
 
 
+# ── Order subject resolution ──────────────────────────────────────────────────
+#
+# A report's identity is never resolved from "who is logged in." It comes from an
+# explicit reference to "which company is this report about," chosen at order time.
+# `User.uen` / `User.company` are in play for exactly one case: a vendor
+# self-assessing itself.
+#
+# Buyers scan many vendors from one login and CSP/DPO customers manage many client
+# companies from one login, so substituting the account's own company for an
+# unnamed subject is the SPQR-leak mechanism, not a convenience. The helpers below
+# replace four near-identical inline blocks that did exactly that.
+
+# Defined in evidence_enricher so checkout and fulfillment share one answer to
+# "may this account be its own subject?" rather than each keeping a role list.
+from app.services.evidence_enricher import account_may_self_subject as _account_may_self_subject
+
+
+async def _resolve_order_subject(
+    db,
+    user,
+    data: dict,
+    *,
+    missing_company_detail: str,
+    missing_website_detail: str | None = None,
+    gate_acra: bool = True,
+) -> tuple[str, str, bool]:
+    """Resolve WHICH COMPANY this order is about and record its verified identity
+    on the correct row.
+
+    Returns `(company_name, website, is_self)`. Mutates `data` with the canonical
+    `company_name` / `vendor_url` / `uen` the rest of checkout and the webhook read.
+
+    Rules:
+      * An explicitly supplied `company_name` is the subject, full stop. It is never
+        written back onto the account — a vendor's name on a buyer's order line is
+        subject data, not account data, and stamping it poisons every later
+        provenance decision for that account.
+      * With no company supplied, the account's own company is used only when the
+        account may legitimately be its own subject; otherwise this is a 422, never
+        a silent fallback.
+      * Identity write-back targets the account for a self-assessment, the selected
+        `ManagedEntity` when the order names one, and the `DiscoveredVendor` row
+        otherwise — the same trust code path in all three cases.
+    """
+    from app.services.evidence_enricher import (
+        resolve_legal_name,
+        resolve_managed_entity_identity,
+        resolve_subject_identity,
+        subject_is_own_account,
+    )
+
+    # A CSP/DPO names its subject by id, not by typing a name: the entity was
+    # registered and ACRA-verified once, up front. This branch short-circuits
+    # everything below because there is nothing left to guess — we know exactly
+    # which row this report is about, and it is never the account's own.
+    entity_id = (data.get("managed_entity_id") or data.get("managedEntityId") or "").strip()
+    if entity_id:
+        from app.core.models import ManagedEntity
+
+        entity = (
+            db.query(ManagedEntity)
+            .filter(
+                ManagedEntity.id == entity_id,
+                ManagedEntity.owner_user_id == getattr(user, "id", None),
+            )
+            .first()
+        ) if user is not None else None
+        if entity is None or entity.status != "ACTIVE":
+            # 422 rather than falling back to the account: an unknown or archived
+            # entity means we do not know who this report is about.
+            raise HTTPException(
+                status_code=422,
+                detail="Selected company is not in your managed entities.",
+            )
+
+        company_name = (entity.company_name or "").strip()
+        website = (entity.website or "").strip() or (
+            data.get("website") or data.get("vendor_url") or ""
+        ).strip()
+
+        data["company_name"] = company_name
+        data["managed_entity_id"] = str(entity.id)
+        if website:
+            data["vendor_url"] = website
+        if missing_website_detail and not website:
+            raise HTTPException(status_code=422, detail=missing_website_detail)
+
+        resolved = await resolve_managed_entity_identity(entity, db)
+        if resolved.get("uen"):
+            data["uen"] = resolved["uen"]
+        # No `_gate_acra_live` here for the same reason as the vendor branch: a CSP
+        # doing compliance work for a struck-off client is doing exactly the work
+        # that matters. The report states the status.
+        return company_name, website, False
+
+    req_company = (data.get("company_name") or "").strip()
+    req_website = (data.get("website") or data.get("vendor_url") or "").strip()
+
+    if req_company:
+        company_name = req_company
+        # Both gates matter. `_account_may_self_subject` rules out accounts that are
+        # structurally never their own subject, so a buyer whose own company happens
+        # to share a name with a vendor still resolves through the vendor row rather
+        # than claiming the match. `subject_is_own_account` then applies the usual
+        # hint/provenance check.
+        is_self = (
+            user is not None
+            and _account_may_self_subject(user)
+            and subject_is_own_account(user, company_name, website_hint=req_website or None)
+        )
+    else:
+        is_self = _account_may_self_subject(user)
+        company_name = ((getattr(user, "company", "") or "").strip()) if is_self else ""
+        # An account that can self-subject but has no company on file still hasn't
+        # named a subject — fall through to the 422 below rather than guessing.
+        is_self = bool(company_name)
+
+    website = req_website or (
+        ((getattr(user, "website", "") or "").strip()) if is_self else ""
+    )
+
+    if not company_name:
+        raise HTTPException(status_code=422, detail=missing_company_detail)
+    if missing_website_detail and not website:
+        raise HTTPException(status_code=422, detail=missing_website_detail)
+
+    data["company_name"] = company_name
+    if website:
+        data["vendor_url"] = website
+
+    req_uen = (data.get("uen") or "").strip()
+    uen = req_uen
+
+    if is_self:
+        # Back-fill the profile from the order. This is safe *only* here: `is_self`
+        # means the account genuinely is the subject, so the account is recording
+        # its own name, not being stamped with someone else's. The unconditional
+        # version of these two writes is what poisoned buyer accounts.
+        _claimed = False
+        if req_company and not getattr(user, "company", None):
+            user.company = req_company
+            _claimed = True
+        if req_website and not getattr(user, "website", None):
+            user.website = req_website
+            _claimed = True
+        if _claimed:
+            db.commit()
+
+        # Only reuse the account's cached UEN when its provenance matches this
+        # purchase's company/website.
+        uen = uen or (
+            (trusted_cached_uen(user, company_hint=company_name, website_hint=website) or "").strip()
+        )
+        if not uen and company_name:
+            from app.services.evidence_enricher import fetch_acra_status
+
+            acra_res = await fetch_acra_status(company_name=company_name)
+            if acra_res and acra_res.get("found") and acra_res.get("uen"):
+                uen = acra_res.get("uen")
+        if uen:
+            # The ACRA gate blocks a struck-off entity BEFORE the charge, but only
+            # for products that attest the entity itself (Vendor Proof and the
+            # bundles containing it). A PDPA scan of one's own dead entity is still
+            # a scan we can deliver, so its caller opts out.
+            if gate_acra:
+                await _gate_acra_live(uen)
+            data["uen"] = uen
+            if not getattr(user, "uen", None):
+                record_verified_identity(
+                    user, db, uen=uen,
+                    company_hint=company_name, website_hint=website,
+                )
+        # Resolve + persist the canonical legal name now, while the ACRA lookup is
+        # already warm — generators read this instead of the raw company_name.
+        await resolve_legal_name(
+            user, db, company_hint=company_name, uen=uen or None, website_hint=website,
+        )
+    else:
+        # Cross-entity subject: resolve against the DiscoveredVendor row. No match
+        # means the report renders "Not verified" — never the buyer's own identity.
+        resolved = await resolve_subject_identity(
+            db, company_name, website=website, uen=uen or None,
+        )
+        uen = (resolved.get("uen") or "").strip()
+        if uen:
+            data["uen"] = uen
+        # Deliberately NOT `_gate_acra_live`: that gate protects a vendor from
+        # buying a Vendor Proof for its own dead entity. A buyer scanning a
+        # struck-off vendor is a legitimate — arguably the most valuable —
+        # purchase, and blocking it would withhold exactly the finding they paid
+        # for. The report surfaces the status instead.
+
+    return company_name, website, is_self
+
+
 def get_stripe_client():
     secret = os.environ.get("STRIPE_SECRET_KEY")
     if not secret:
@@ -359,29 +554,18 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         try:
             from app.core.repositories.user_repository import UserRepository
             user = UserRepository.get_by_email(_db, prefill_email)
-            req_website = (data.get("website") or data.get("vendor_url") or "").strip()
-            req_company = (data.get("company_name") or "").strip()
-            website = req_website or ((getattr(user, "website", "") or "").strip() if user else "")
-            company_name = req_company or ((getattr(user, "company", "") or "").strip() if user else "")
-            if user:
-                if req_website and not user.website:
-                    user.website = req_website
-                if req_company and not user.company:
-                    user.company = req_company
-                if req_website or req_company:
-                    _db.commit()
-            if not website:
-                raise HTTPException(
-                    status_code=422,
-                    detail="A website URL is required so we can run your PDPA scan. Please provide your website.",
-                )
-            if not company_name:
-                raise HTTPException(
-                    status_code=422,
-                    detail="A company name is required for the PDPA scan certificate. Please provide your company name.",
-                )
-            data["vendor_url"] = website
-            data["company_name"] = company_name
+            await _resolve_order_subject(
+                _db, user, data,
+                missing_company_detail=(
+                    "A company name is required for the PDPA scan certificate. "
+                    "Please provide the company name this scan is for."
+                ),
+                missing_website_detail=(
+                    "A website URL is required so we can run the PDPA scan. "
+                    "Please provide the website this scan is for."
+                ),
+                gate_acra=False,
+            )
         finally:
             _db.close()
 
@@ -395,64 +579,15 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         try:
             from app.core.repositories.user_repository import UserRepository
             user = UserRepository.get_by_email(_db, prefill_email)
-            req_company = (data.get("company_name") or "").strip()
-            req_website = (data.get("website") or data.get("vendor_url") or "").strip()
-            company_name = req_company or ((getattr(user, "company", "") or "").strip() if user else "")
-            website = req_website or ((getattr(user, "website", "") or "").strip() if user else "")
-            if user:
-                if req_company and not user.company:
-                    user.company = req_company
-                if req_website and not user.website:
-                    user.website = req_website
-                if req_company or req_website:
-                    _db.commit()
-            if not company_name:
-                raise HTTPException(
-                    status_code=422,
-                    detail="A company name is required to issue your Vendor Proof. Please provide your company name.",
-                )
-            data["company_name"] = company_name
-            if website:
-                data["vendor_url"] = website
-
-            # Pre-payment ACRA gate: when a UEN is supplied, block struck-off /
-            # ceased / not-found entities BEFORE charging (the post-payment webhook
-            # can only warn). UEN stays optional — buyers without one are unaffected.
-            req_uen = (data.get("uen") or "").strip()
-            # Only reuse the account's cached UEN when its provenance matches this
-            # purchase's company/website. A cached UEN from a different subject would
-            # otherwise be written into `data["uen"]` and carried through the whole
-            # fulfillment as if the buyer had supplied it.
-            _cached_uen = (
-                (trusted_cached_uen(user, company_hint=company_name, website_hint=website) or "").strip()
-                if user else ""
+            # Website is optional here — Vendor Proof verifies the entity, not the
+            # site — so no `missing_website_detail`.
+            await _resolve_order_subject(
+                _db, user, data,
+                missing_company_detail=(
+                    "A company name is required to issue Vendor Proof. "
+                    "Please provide the company name this proof is for."
+                ),
             )
-            uen = req_uen or _cached_uen
-            
-            if not uen and company_name:
-                from app.services.evidence_enricher import fetch_acra_status
-                acra_res = await fetch_acra_status(company_name=company_name)
-                if acra_res and acra_res.get("found") and acra_res.get("uen"):
-                    uen = acra_res.get("uen")
-
-            if uen:
-                await _gate_acra_live(uen)
-                data["uen"] = uen
-                if user and not getattr(user, "uen", None):
-                    record_verified_identity(
-                        user, _db, uen=uen,
-                        company_hint=company_name, website_hint=website,
-                    )
-
-            # Resolve + persist the canonical legal name now, while the ACRA
-            # lookup is already warm/cached — the Vendor Proof certificate and
-            # any later generator reads read this instead of the raw company_name.
-            if user:
-                from app.services.evidence_enricher import resolve_legal_name
-                await resolve_legal_name(
-                    user, _db, company_hint=company_name, uen=uen or None,
-                    website_hint=website,
-                )
         finally:
             _db.close()
 
@@ -471,68 +606,19 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         try:
             from app.core.repositories.user_repository import UserRepository
             user = UserRepository.get_by_email(_db, prefill_email) if prefill_email else None
-            req_website = (data.get("website") or data.get("vendor_url") or "").strip()
-            req_company = (data.get("company_name") or "").strip()
-            website = req_website or ((getattr(user, "website", "") or "").strip() if user else "")
-            company_name = req_company or ((getattr(user, "company", "") or "").strip() if user else "")
-            # Save back to profile so future bundle/scan flows can reuse
-            if user:
-                if req_website and not user.website:
-                    user.website = req_website
-                if req_company and not user.company:
-                    user.company = req_company
-                if req_website or req_company:
-                    _db.commit()
-            if not website:
-                raise HTTPException(
-                    status_code=422,
-                    detail="A website URL is required so we can run the PDPA scan and Vendor Proof check included in this bundle. Please provide your website.",
-                )
-            if not company_name:
-                raise HTTPException(
-                    status_code=422,
-                    detail="A company name is required for this bundle. Please provide your company name.",
-                )
-            # Inject into data so the metadata block below picks them up
-            data["vendor_url"] = website
-            data["company_name"] = company_name
-
-            # These bundles include a Vendor Proof component — apply the same
-            # optional pre-payment ACRA gate when a UEN is supplied.
-            req_uen = (data.get("uen") or "").strip()
-            # Only reuse the account's cached UEN when its provenance matches this
-            # purchase's company/website. A cached UEN from a different subject would
-            # otherwise be written into `data["uen"]` and carried through the whole
-            # fulfillment as if the buyer had supplied it.
-            _cached_uen = (
-                (trusted_cached_uen(user, company_hint=company_name, website_hint=website) or "").strip()
-                if user else ""
+            # These bundles include a Vendor Proof component, so the ACRA gate applies.
+            await _resolve_order_subject(
+                _db, user, data,
+                missing_company_detail=(
+                    "A company name is required for this bundle. "
+                    "Please provide the company name this bundle is for."
+                ),
+                missing_website_detail=(
+                    "A website URL is required so we can run the PDPA scan and Vendor "
+                    "Proof check included in this bundle. Please provide the website "
+                    "this bundle is for."
+                ),
             )
-            uen = req_uen or _cached_uen
-            
-            if not uen and company_name:
-                from app.services.evidence_enricher import fetch_acra_status
-                acra_res = await fetch_acra_status(company_name=company_name)
-                if acra_res and acra_res.get("found") and acra_res.get("uen"):
-                    uen = acra_res.get("uen")
-
-            if uen:
-                await _gate_acra_live(uen)
-                data["uen"] = uen
-                if user and not getattr(user, "uen", None):
-                    record_verified_identity(
-                        user, _db, uen=uen,
-                        company_hint=company_name, website_hint=website,
-                    )
-
-            # Same canonical legal_name resolve as the standalone vendor_proof
-            # flow above — these bundles include a Vendor Proof component too.
-            if user:
-                from app.services.evidence_enricher import resolve_legal_name
-                await resolve_legal_name(
-                    user, _db, company_hint=company_name, uen=uen or None,
-                    website_hint=website,
-                )
         finally:
             _db.close()
 
@@ -552,65 +638,23 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         try:
             from app.core.repositories.user_repository import UserRepository
             user = UserRepository.get_by_email(_db, prefill_email) if prefill_email else None
-            req_website = (data.get("website") or data.get("vendor_url") or "").strip()
-            req_company = (data.get("company_name") or "").strip()
-            website = req_website or ((getattr(user, "website", "") or "").strip() if user else "")
-            company_name = req_company or ((getattr(user, "company", "") or "").strip() if user else "")
-            # Back-fill the profile so the CSP profile form is pre-populated later.
-            if user:
-                if req_website and not user.website:
-                    user.website = req_website
-                if req_company and not user.company:
-                    user.company = req_company
-                if req_website or req_company:
-                    _db.commit()
-            if not company_name:
-                raise HTTPException(
-                    status_code=422,
-                    detail="Your registered company name is required so we can confirm your entity against the ACRA register and issue your CSP Registration Readiness Baseline.",
-                )
-            if not website:
-                raise HTTPException(
-                    status_code=422,
-                    detail="A website URL is required so we can verify your firm and issue your CSP Registration Readiness Baseline.",
-                )
-            data["vendor_url"] = website
-            data["company_name"] = company_name
-
-            req_uen = (data.get("uen") or "").strip()
-            # Only reuse the account's cached UEN when its provenance matches this
-            # purchase's company/website. A cached UEN from a different subject would
-            # otherwise be written into `data["uen"]` and carried through the whole
-            # fulfillment as if the buyer had supplied it.
-            _cached_uen = (
-                (trusted_cached_uen(user, company_hint=company_name, website_hint=website) or "").strip()
-                if user else ""
+            # The CSP pack's baseline is about the CSP firm's OWN registration
+            # readiness, so the account normally is the subject here. When the order
+            # carries a `managed_entity_id` the subject is one of the client
+            # companies the firm manages instead, and `_resolve_order_subject`
+            # resolves against that row rather than the account.
+            await _resolve_order_subject(
+                _db, user, data,
+                missing_company_detail=(
+                    "Your registered company name is required so we can confirm your "
+                    "entity against the ACRA register and issue your CSP Registration "
+                    "Readiness Baseline."
+                ),
+                missing_website_detail=(
+                    "A website URL is required so we can verify your firm and issue "
+                    "your CSP Registration Readiness Baseline."
+                ),
             )
-            uen = req_uen or _cached_uen
-
-            if not uen and company_name:
-                from app.services.evidence_enricher import fetch_acra_status
-                acra_res = await fetch_acra_status(company_name=company_name)
-                if acra_res and acra_res.get("found") and acra_res.get("uen"):
-                    uen = acra_res.get("uen")
-
-            if uen:
-                await _gate_acra_live(uen)
-                data["uen"] = uen
-                if user and not getattr(user, "uen", None):
-                    record_verified_identity(
-                        user, _db, uen=uen,
-                        company_hint=company_name, website_hint=website,
-                    )
-
-            # Canonical legal name — the baseline PDF must stamp the ACRA
-            # registered name, never the raw domain.
-            if user:
-                from app.services.evidence_enricher import resolve_legal_name
-                await resolve_legal_name(
-                    user, _db, company_hint=company_name, uen=uen or None,
-                    website_hint=website,
-                )
         finally:
             _db.close()
 
@@ -715,6 +759,11 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         # webhook so the certificate states the verified registration number.
         if uen:
             metadata["uen"] = uen
+        # The subject entity a CSP/DPO selected at order time. Fulfillment re-reads
+        # the row by this id rather than trusting the company_name string, so the
+        # delivered document names the entity the customer actually picked.
+        if data.get("managed_entity_id"):
+            metadata["managed_entity_id"] = str(data["managed_entity_id"])
         if rfp_description:
             metadata["rfp_description"] = rfp_description
         # Buyer-supplied facts indicator

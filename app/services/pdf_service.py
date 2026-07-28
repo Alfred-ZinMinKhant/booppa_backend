@@ -2345,8 +2345,9 @@ class PDFService:
                 story.append(
                     Paragraph(
                         "This report is provided for informational purposes only and does not constitute "
-                        "legal advice, certification, or regulatory approval. Booppa does not certify "
-                        "vendors, issue regulatory determinations, or publish public vendor scoring. "
+                        "legal advice, certification, or regulatory approval. Any compliance score "
+                        "reflects an automated assessment, not a government or third-party "
+                        "certification. "
                         "Organizations should consult qualified professionals for compliance decisions "
                         "and regulatory engagement.",
                         s["Disclaimer"],

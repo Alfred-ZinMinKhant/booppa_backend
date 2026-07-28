@@ -102,7 +102,7 @@ BUNDLE_COMPONENTS = {
         "pdpa": True,
         "notarization_count": 1,
         "rfp": "rfp_complete",
-        "cover_sheet": True,  # triggers cover sheet generation with 300s delay
+        "cover_sheet": True,  # auto-fires once PDPA + RFP + BCEP pack are all ready
     },
 }
 
@@ -127,6 +127,15 @@ _COVER_SHEET_BCEP_GRACE_DAYS = 7
 # threaded through to `fulfill_cover_sheet_task` — never re-derived downstream,
 # because two independent resolutions of the same question are exactly how the
 # sheet ended up with a correct company name above another company's numbers.
+
+
+def _as_utc(dt):
+    """Treat a naive datetime as UTC. Postgres columns come back naive here, so
+    comparing two of them directly is fine, but comparing a naive column value
+    against an aware `now()` raises — normalise both through this."""
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def norm_site(value) -> str:
@@ -565,6 +574,34 @@ def _create_stub_report(
     return str(stub.id)
 
 
+def _alert_unresolvable_subject(customer_email: str | None, target_domain: str | None, scan_count: int) -> None:
+    """Escalate a cover-sheet subject that can never resolve on its own.
+
+    Emitted at ERROR with a stable prefix so a CloudWatch metric filter can alarm
+    on it. Deliberately NOT routed through `_alert_payment_fulfillment_issue`:
+    that path is async, and `_maybe_fire_cover_sheet` is sync and runs inside a
+    Celery task that is itself already under `asyncio.run()` — bridging back with
+    another `asyncio.run()` there does not raise, it silently does nothing.
+
+    Rate-limited to one alert per (buyer, subject) per day so an unresolvable
+    account escalates once instead of once an hour.
+    """
+    try:
+        from app.core.cache import cache as _c
+
+        key = _c.cache_key(f"cs_unresolvable:{customer_email}:{target_domain or '-'}")
+        if not _c.add(key, {"alerted": True}, ttl=86400):
+            return
+    except Exception:
+        pass  # fail open — better a duplicate alert than a silent stall
+    logger.error(
+        "[CoverSheetStalled] %s cannot resolve a cover-sheet subject (%d completed "
+        "scan(s), none matching %r). The hourly sweep re-runs the same check and "
+        "will keep deferring indefinitely — needs manual subject resolution.",
+        customer_email, scan_count, target_domain or "<unresolved>",
+    )
+
+
 def _maybe_fire_cover_sheet(customer_email: str | None, user_id: str | None = None, test_simulation: bool = False) -> None:
     """
     Auto-fire the Compliance Evidence Pack cover sheet once ALL of its inputs
@@ -607,8 +644,15 @@ def _maybe_fire_cover_sheet(customer_email: str | None, user_id: str | None = No
             customer_email = None
             
         if not customer_email and user_id:
+            # A User resolved by primary key IS a real buyer — trust its address
+            # unconditionally, even when it equals SUPPORT_EMAIL/COMPANY_DPO_EMAIL.
+            # Re-applying the sentinel test here re-rejected the value we had just
+            # re-derived, so any account whose own address happens to be the
+            # support/DPO address could never be delivered to: the guard blanked
+            # the email, looked it up again, saw the same string, and returned.
+            # Deterministic, silent, and immune to the hourly sweep.
             u_temp = db.query(User).filter(User.id == user_id).first()
-            if u_temp and u_temp.email and u_temp.email not in (settings.SUPPORT_EMAIL, COMPANY_DPO_EMAIL):
+            if u_temp and u_temp.email:
                 customer_email = u_temp.email
 
         if not customer_email:
@@ -678,34 +722,78 @@ def _maybe_fire_cover_sheet(customer_email: str | None, user_id: str | None = No
             )
             .all()
         )
-        delivered = {norm_site(r.company_website) for r in _cs_rows}
-        delivered.discard("")
-        delivered_names = {
-            (r.company_name or "").strip().lower()
-            for r in _cs_rows
-            if not norm_site(r.company_website) and (r.company_name or "").strip()
-        }
-        # A sheet with neither domain nor usable name — can't be attributed, so
-        # treat an unresolved subject as already served rather than re-sending.
-        has_unattributable_sheet = any(
-            not norm_site(r.company_website) and not (r.company_name or "").strip()
-            for r in _cs_rows
-        )
+        def _sheets_delivered_since(cycle_start):
+            """The already-delivered sets, restricted to sheets issued on or after
+            `cycle_start`.
+
+            A cover sheet only counts as "already delivered" for the CYCLE being
+            evaluated. The row set above is lifetime, which is correct for the
+            one-time `compliance_evidence_pack` SKU (one purchase, one sheet) but
+            wrong for `compliance_evidence_monthly`, whose entire proposition is a
+            fresh sheet for the SAME subject every month. Unscoped, every cycle
+            from the second onward found its subject already in `delivered`,
+            skipped it, left `still_waiting` False, and cleared
+            `pending_cover_sheet` without ever sending — silently, and beyond the
+            reach of the hourly sweep, for the life of the subscription.
+
+            `cycle_start` is this subject's newest EvidencePack timestamp: the
+            marker for the current cycle. With no pack row there is no cycle to
+            scope to and lifetime behaviour stands, so one-time buyers are
+            unaffected.
+            """
+            if cycle_start is None:
+                rows = _cs_rows
+            else:
+                rows = [
+                    r for r in _cs_rows
+                    if r.created_at is not None and _as_utc(r.created_at) >= _as_utc(cycle_start)
+                ]
+            _dom = {norm_site(r.company_website) for r in rows}
+            _dom.discard("")
+            _names = {
+                (r.company_name or "").strip().lower()
+                for r in rows
+                if not norm_site(r.company_website) and (r.company_name or "").strip()
+            }
+            # A sheet with neither domain nor usable name — can't be attributed, so
+            # treat an unresolved subject as already served rather than re-sending.
+            _unattributable = any(
+                not norm_site(r.company_website) and not (r.company_name or "").strip()
+                for r in rows
+            )
+            return _dom, _names, _unattributable
+
+        # Subjects fired earlier in THIS pass — prevents the same subject being
+        # picked twice before its delivered row exists.
+        fired_this_pass: set[str] = set()
 
         from app.services.evidence_enricher import display_legal_name
 
         to_fire: list[dict] = []
         still_waiting = False
+        # Subjects legitimately accounted for: already delivered for this cycle.
+        # Only these justify surrendering `pending_cover_sheet` — see the guard
+        # at the end of the loop.
+        served_count = 0
 
         for target_domain, latest_pack in subjects:
-            if target_domain and target_domain in delivered:
-                continue  # this subject already has its cover sheet
+            # Scope "already delivered" to THIS subject's current cycle. See
+            # `_sheets_delivered_since` — lifetime scoping silently starved every
+            # `compliance_evidence_monthly` cycle after the first.
+            _cycle_start = getattr(latest_pack, "created_at", None) if latest_pack is not None else None
+            delivered, delivered_names, has_unattributable_sheet = _sheets_delivered_since(_cycle_start)
+
+            if target_domain and (target_domain in delivered or target_domain in fired_this_pass):
+                served_count += 1
+                continue  # this subject already has its cover sheet for this cycle
             _org = (getattr(latest_pack, "organisation", "") or "").strip().lower()
             if _org and _org in delivered_names:
+                served_count += 1
                 continue  # legacy sheet (no domain recorded) for this same org
             if not target_domain and (delivered_names or has_unattributable_sheet):
                 # Unresolved subject on an account that already holds a sheet —
                 # cannot prove this is a *different* subject, so don't re-send.
+                served_count += 1
                 continue
 
             # At most ONE sheet per invocation. Firing every pending subject in
@@ -749,6 +837,14 @@ def _maybe_fire_cover_sheet(customer_email: str | None, user_id: str | None = No
                     "— deferring rather than rendering another subject's data",
                     customer_email, len(_pdpa_candidates),
                     target_domain or "<unresolved>",
+                )
+                # Deferring is correct — an anchored wrong sheet is unrecoverable.
+                # But this condition cannot clear itself: the sweep re-runs the
+                # identical query hourly and gets the identical answer, so without
+                # an escalation it spins forever at WARNING level and nobody is
+                # paged. Alert once per subject per day, then keep deferring.
+                _alert_unresolvable_subject(
+                    customer_email, target_domain, len(_pdpa_candidates),
                 )
                 still_waiting = True
                 continue
@@ -827,12 +923,27 @@ def _maybe_fire_cover_sheet(customer_email: str | None, user_id: str | None = No
                 ),
             })
             if target_domain:
-                delivered.add(target_domain)
+                fired_this_pass.add(target_domain)
 
         # Only surrender the flag when nothing is left outstanding — otherwise
         # the hourly sweep must keep re-checking for the subjects still waiting.
-        if not still_waiting:
+        #
+        # `pending_cover_sheet` must NEVER go False on a pass that neither queued
+        # a sheet nor accounted for every subject as already-served this cycle.
+        # Clearing it removes the buyer from the sweep's query, so a wrong clear
+        # is terminal and silent — this is how the monthly-cycle bug stayed
+        # invisible, and the same shape would hide any future skip added to the
+        # loop. Keeping the flag costs one cheap re-check an hour; dropping it
+        # costs the customer the document they paid for.
+        if not still_waiting and (to_fire or served_count == len(subjects)):
             user.pending_cover_sheet = False
+        elif not still_waiting:
+            logger.error(
+                "[CoverSheetStalled] %s: %d subject(s), %d already served, none "
+                "queued — refusing to clear pending_cover_sheet (would drop the "
+                "buyer from the sweep with no sheet delivered)",
+                customer_email, len(subjects), served_count,
+            )
         db.commit()
     finally:
         db.close()

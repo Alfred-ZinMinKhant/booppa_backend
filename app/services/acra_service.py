@@ -185,6 +185,11 @@ async def _refresh_async(db, dataset_id: str, max_records: Optional[int]) -> int
         if not batch:
             return 0
         stmt = pg_insert(DiscoveredVendor.__table__).values(batch)
+        # `set_` is a deliberate allowlist, not "every column". `verified_hint` /
+        # `verified_at` are written by fulfillment when a scan verifies a subject
+        # (evidence_enricher.VENDOR_CARRIER); listing them here would wipe that
+        # provenance on every registry refresh and make every vendor row look
+        # unprovenanced — i.e. permanently untrusted.
         stmt = stmt.on_conflict_do_update(
             index_elements=["uen"],
             set_={

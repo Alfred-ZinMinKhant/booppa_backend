@@ -1103,6 +1103,47 @@ class CspRiskClassificationAudit(Base):
     )
 
 
+# ── MANAGED ENTITY ────────────────────────────────────────────────────────────
+#
+# The client company a CSP/DPO account buys a report *about*. One account manages
+# many of these, which is exactly why a CSP's own `User.company` / `User.uen` must
+# never stand in for the subject of its orders — see `evidence_enricher`.
+#
+# Deliberately not `CspClient`: that row is an AML/CDD case file hung off
+# `csp_profiles`, with its own lifecycle. And deliberately not `DiscoveredVendor`:
+# that table is a registry mirror bulk-upserted by the ACRA job and keyed on a
+# globally unique `uen`. Customer-owned rows do not belong in either.
+#
+# `verified_hint` / `verified_at` carry the same provenance contract as the other
+# identity carriers: a cached `uen`/`legal_name` is trusted only while the hint it
+# was resolved from still matches what the current order names.
+
+class ManagedEntity(Base):
+    __tablename__ = "managed_entities"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"),
+                           nullable=False, index=True)
+
+    company_name = Column(String(255), nullable=False)   # as the customer named it
+    legal_name   = Column(String(255))                   # as ACRA registered it
+    # Indexed but NOT unique: two CSPs may legitimately manage the same client.
+    uen          = Column(String(50), index=True)
+    website      = Column(String(500))
+    industry     = Column(String(120))
+
+    verified_hint = Column(String(255))
+    verified_at   = Column(DateTime(timezone=True))
+
+    status     = Column(String(20), default="ACTIVE", nullable=False)  # ACTIVE | ARCHIVED
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        Index("ix_managed_entities_owner_status", "owner_user_id", "status"),
+    )
+
+
 # ============================================================
 # Extracted from models_enterprise.py
 # ============================================================
@@ -1578,6 +1619,18 @@ class DiscoveredVendor(Base):
 
     source = Column(String(50), nullable=False)  # acra | gebiz | manual
     source_data = Column(JSON, nullable=True)  # Raw data from source
+
+    # Identity provenance — same contract as `User.legal_name_hint`. A buyer scanning
+    # this vendor resolves its identity here rather than falling back to the buyer's
+    # own account (see evidence_enricher.VENDOR_CARRIER). `verified_hint` records the
+    # company string the cached `uen`/`company_name` was resolved FROM, so a later
+    # scan naming a different subject re-resolves instead of reusing a stale match.
+    # NULL means unknown provenance, which the resolver treats as untrusted.
+    # NOTE: deliberately excluded from the ACRA bulk upsert in
+    # `acra_service._upsert_batch` — including them would wipe fulfillment's writes
+    # on every registry refresh.
+    verified_hint = Column(String(255), nullable=True)
+    verified_at = Column(DateTime, nullable=True)
 
     claimed_by_user_id = Column(
         UUID(as_uuid=True),

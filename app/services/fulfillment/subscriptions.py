@@ -111,7 +111,7 @@ BUNDLE_COMPONENTS = {
         "pdpa": True,
         "notarization_count": 1,
         "rfp": "rfp_complete",
-        "cover_sheet": True,  # triggers cover sheet generation with 300s delay
+        "cover_sheet": True,  # auto-fires once PDPA + RFP + BCEP pack are all ready
     },
 }
 

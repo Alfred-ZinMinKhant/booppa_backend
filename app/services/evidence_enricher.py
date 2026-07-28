@@ -20,8 +20,8 @@ import json
 import logging
 import os
 import re
-from datetime import date
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime
+from typing import Any, Dict, List, NamedTuple, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -265,13 +265,52 @@ async def fetch_acra_status(uen: Optional[str] = None, company_name: Optional[st
     return result
 
 
+def _find_discovered_vendor(db, company: Optional[str], website: Optional[str] = None):
+    """Locate a `DiscoveredVendor` by company name or domain — never by UEN.
+
+    The UEN lookup is an exact key; this is the *subject-naming* lookup a buyer
+    performs when they know who they are scanning but not that vendor's UEN.
+    Returns the row or None; writes nothing.
+    """
+    from sqlalchemy import func
+
+    from app.core.models import DiscoveredVendor
+
+    name = _norm(company)
+    site = _norm_domain(website)
+    try:
+        if name:
+            row = (
+                db.query(DiscoveredVendor)
+                .filter(func.lower(DiscoveredVendor.company_name) == name)
+                .first()
+            )
+            if row:
+                return row
+        if site:
+            for col in (DiscoveredVendor.domain, DiscoveredVendor.website):
+                row = (
+                    db.query(DiscoveredVendor)
+                    .filter(func.lower(col).contains(site))
+                    .first()
+                )
+                if row:
+                    return row
+    except Exception as exc:
+        logger.warning(
+            "_find_discovered_vendor: lookup failed for %r/%r: %s", company, website, exc
+        )
+    return None
+
+
 async def _match_acra(
-    db, uen: Optional[str], company: Optional[str]
+    db, uen: Optional[str], company: Optional[str], website: Optional[str] = None
 ) -> tuple[Optional[str], Optional[str]]:
     """Pure two-step ACRA match — writes nothing.
 
     Returns `(registered_name, resolved_uen)` for the given UEN/company subject:
-    an exact `DiscoveredVendor` UEN lookup first, then a live data.gov.sg fuzzy
+    an exact `DiscoveredVendor` UEN lookup first, then — when no UEN is known — a
+    local `DiscoveredVendor` name/domain lookup, then a live data.gov.sg fuzzy
     match on the company name. `fetch_acra_status` is Redis-cached 24h.
     """
     registered_name: Optional[str] = None
@@ -286,6 +325,16 @@ async def _match_acra(
                 registered_name = dv.company_name
         except Exception as exc:
             logger.warning("_match_acra: DiscoveredVendor lookup failed for %s: %s", uen, exc)
+
+    # No UEN to key on — try the local registry by name/domain before paying for a
+    # network round-trip. This is the path a BUYER takes: they name a vendor they do
+    # not have a UEN for, and the subject must resolve from the registry rather than
+    # falling back to the buyer's own account.
+    if not resolved_uen and (company or website):
+        dv = _find_discovered_vendor(db, company, website)
+        if dv:
+            resolved_uen = dv.uen or resolved_uen
+            registered_name = registered_name or dv.company_name
 
     if not registered_name and (uen or company):
         try:
@@ -319,9 +368,99 @@ def _norm_domain(s) -> str:
     return v.rstrip(".")
 
 
-def _cache_trusted_for_hint(user, company_hint, website_hint=None) -> bool:
+# ── Identity carriers ──────────────────────────────────────────────────────────
+#
+# The trust rules below (hint matching, "unprovenanced data is never trusted",
+# provenance-on-write) are identical no matter WHICH row holds the identity. What
+# differs is only the column names. A carrier describes those names so the same
+# code path serves all three subject kinds:
+#
+#   User            — a vendor self-assessing (account and subject are the same).
+#   DiscoveredVendor— a vendor a buyer is scanning (subject != account).
+#   ManagedEntity   — a CSP/DPO's client company (subject != account).
+#
+# Adding a fourth carrier must never mean reimplementing the trust logic.
+
+class IdentityCarrier(NamedTuple):
+    #: Column holding the verified UEN.
+    uen_field: str
+    #: Column holding the ACRA-registered legal name.
+    legal_name_field: str
+    #: Column holding the row's own (user-entered, non-canonical) name. Used as the
+    #: "is this subject me?" comparison and as a display fallback.
+    own_name_field: str
+    #: Column recording WHICH company hint the cached identity was resolved from.
+    hint_field: str
+    #: Column holding the row's own website, or None if it has none.
+    site_field: Optional[str]
+    #: Column recording which website hint the cache was resolved from, or None.
+    site_hint_field: Optional[str]
+    #: Column stamped with the resolution time, or None if the row has none.
+    verified_at_field: Optional[str] = None
+    #: Whether a hint matching `own_name_field` is, on its own, grounds to trust the
+    #: cached identity.
+    #:
+    #: True for `User`: the account's `company` is independently-entered account data,
+    #: so "this render is about my own company" really is a self-subject signal.
+    #:
+    #: False for subject rows (`DiscoveredVendor`, `ManagedEntity`): those rows are
+    #: *looked up by* their name, so the hint equals `company_name` by construction.
+    #: Treating that as trust would be a tautology, and would wave through a row whose
+    #: cached UEN was resolved from a different company entirely (an import, or a row
+    #: renamed after verification). Only `hint_field` provenance can vouch for those.
+    own_name_implies_self: bool = True
+
+
+USER_CARRIER = IdentityCarrier(
+    uen_field="uen",
+    legal_name_field="legal_name",
+    own_name_field="company",
+    hint_field="legal_name_hint",
+    site_field="website",
+    site_hint_field="website_hint",
+    verified_at_field=None,
+)
+
+# `DiscoveredVendor` is the ACRA/GeBIZ registry mirror. Rows imported by the bulk
+# refresh carry `source='acra'`, but rows can also be created manually or by the
+# scraper, so provenance is checked the same way it is on `User` rather than
+# trusting the table wholesale.
+VENDOR_CARRIER = IdentityCarrier(
+    uen_field="uen",
+    legal_name_field="company_name",
+    own_name_field="company_name",
+    hint_field="verified_hint",
+    site_field="website",
+    site_hint_field=None,
+    verified_at_field="verified_at",
+    own_name_implies_self=False,
+)
+
+MANAGED_ENTITY_CARRIER = IdentityCarrier(
+    uen_field="uen",
+    legal_name_field="legal_name",
+    own_name_field="company_name",
+    hint_field="verified_hint",
+    site_field="website",
+    site_hint_field=None,
+    verified_at_field="verified_at",
+    own_name_implies_self=False,
+)
+
+
+def _carrier_get(row, field: Optional[str]):
+    """Read `field` off `row`, tolerating a carrier that declares no such column."""
+    return getattr(row, field, None) if field else None
+
+
+def _cache_trusted_for_hint(
+    user, company_hint, website_hint=None, carrier: IdentityCarrier = USER_CARRIER
+) -> bool:
     """Whether the cached `User.legal_name`/`User.uen` may be reused for a render
     scoped to `company_hint` (and, when given, `website_hint`).
+
+    `carrier` selects which row's column names to read — see `IdentityCarrier`. The
+    rules are identical for every carrier; only the column names differ.
 
     Company trust: no hint given (an own-account render), the hint is the account's
     own `company`, or the hint matches the provenance recorded in
@@ -338,8 +477,8 @@ def _cache_trusted_for_hint(user, company_hint, website_hint=None) -> bool:
     site = _norm_domain(website_hint)
     if site:
         known_sites = {
-            _norm_domain(getattr(user, "website", None)),
-            _norm_domain(getattr(user, "website_hint", None)),
+            _norm_domain(_carrier_get(user, carrier.site_field)),
+            _norm_domain(_carrier_get(user, carrier.site_hint_field)),
         }
         known_sites.discard("")
         if known_sites and site not in known_sites:
@@ -348,7 +487,7 @@ def _cache_trusted_for_hint(user, company_hint, website_hint=None) -> bool:
     hint = _norm(company_hint)
     if not hint:
         return True
-    if hint == _norm(getattr(user, "legal_name_hint", None)):
+    if hint == _norm(_carrier_get(user, carrier.hint_field)):
         return True
     # A cached identity with NO recorded provenance predates the provenance write and
     # cannot be vouched for — even when the hint equals the account's own `company`.
@@ -357,26 +496,44 @@ def _cache_trusted_for_hint(user, company_hint, website_hint=None) -> bool:
     # company match would wave it through, so provenance is checked first; distrust
     # forces a fresh resolution, which then writes correct provenance and self-heals.
     _has_cache = bool(
-        _norm(getattr(user, "legal_name", None)) or _norm(getattr(user, "uen", None))
+        _norm(_carrier_get(user, carrier.legal_name_field))
+        or _norm(_carrier_get(user, carrier.uen_field))
     )
-    _has_provenance = bool(_norm(getattr(user, "legal_name_hint", None)))
+    _has_provenance = bool(_norm(_carrier_get(user, carrier.hint_field)))
     if _has_cache and not _has_provenance:
         return False
-    if hint == _norm(getattr(user, "company", None)):
+    # Only for `User`: see `own_name_implies_self`. On a subject row the hint equals
+    # the row's own name by construction, so this would trust everything.
+    if carrier.own_name_implies_self and hint == _norm(
+        _carrier_get(user, carrier.own_name_field)
+    ):
         return True
     # Unclaimed account: nothing cached and no company on file, so there is no other
     # entity's identity to leak and the first resolution legitimately claims it. Note
     # a cached `legal_name` with NULL provenance does NOT qualify — that is precisely
     # the pre-fix signature we must distrust.
-    if not any(
-        _norm(getattr(user, f, None))
-        for f in ("company", "legal_name", "legal_name_hint")
-    ):
+    if not _carrier_has_any_identity(user, carrier):
         return True
     return False
 
 
-def _subject_is_own_account(user, company_hint, website_hint=None) -> bool:
+def _carrier_has_any_identity(row, carrier: IdentityCarrier) -> bool:
+    """Whether `row` holds any identity at all — own name, resolved legal name, or
+    recorded provenance. False means there is no other entity's identity to leak, so
+    a first resolution legitimately claims the row."""
+    return any(
+        _norm(_carrier_get(row, f))
+        for f in (
+            carrier.own_name_field,
+            carrier.legal_name_field,
+            carrier.hint_field,
+        )
+    )
+
+
+def _subject_is_own_account(
+    user, company_hint, website_hint=None, carrier: IdentityCarrier = USER_CARRIER
+) -> bool:
     """Whether the subject being resolved *is* this account's own entity — i.e.
     whether a freshly resolved identity may be persisted onto the account.
 
@@ -389,8 +546,8 @@ def _subject_is_own_account(user, company_hint, website_hint=None) -> bool:
     site = _norm_domain(website_hint)
     if site:
         known_sites = {
-            _norm_domain(getattr(user, "website", None)),
-            _norm_domain(getattr(user, "website_hint", None)),
+            _norm_domain(_carrier_get(user, carrier.site_field)),
+            _norm_domain(_carrier_get(user, carrier.site_hint_field)),
         }
         known_sites.discard("")
         if known_sites and site not in known_sites:
@@ -399,18 +556,17 @@ def _subject_is_own_account(user, company_hint, website_hint=None) -> bool:
     hint = _norm(company_hint)
     if not hint:
         return True
-    if hint == _norm(getattr(user, "company", None)):
+    if hint == _norm(_carrier_get(user, carrier.own_name_field)):
         return True
-    if hint == _norm(getattr(user, "legal_name_hint", None)):
+    if hint == _norm(_carrier_get(user, carrier.hint_field)):
         return True
     # Unclaimed account — no company on file and nothing cached to overwrite.
-    return not any(
-        _norm(getattr(user, f, None))
-        for f in ("company", "legal_name", "legal_name_hint")
-    )
+    return not _carrier_has_any_identity(user, carrier)
 
 
-def trusted_cached_uen(user, company_hint=None, website_hint=None) -> Optional[str]:
+def trusted_cached_uen(
+    user, company_hint=None, website_hint=None, carrier: IdentityCarrier = USER_CARRIER
+) -> Optional[str]:
     """The account's cached `User.uen`, but **only** when it may be trusted for this
     subject — otherwise `None`.
 
@@ -419,27 +575,34 @@ def trusted_cached_uen(user, company_hint=None, website_hint=None) -> Optional[s
     directly. Reading the raw column is how a stale UEN (SPQR's `21374700J`) got
     matched against the registry and certified as another company's identity.
     """
-    if not _cache_trusted_for_hint(user, company_hint, website_hint=website_hint):
+    if not _cache_trusted_for_hint(
+        user, company_hint, website_hint=website_hint, carrier=carrier
+    ):
         logger.info(
-            "trusted_cached_uen: refusing cached UEN for user %s (company_hint=%r, "
+            "trusted_cached_uen: refusing cached UEN for row %s (company_hint=%r, "
             "website_hint=%r) — cache provenance does not match this subject",
             getattr(user, "id", None), company_hint, website_hint,
         )
         return None
-    return getattr(user, "uen", None)
+    return _carrier_get(user, carrier.uen_field)
 
 
-def clear_cached_identity(user, db, *, commit: bool = True) -> None:
+def clear_cached_identity(
+    user, db, *, commit: bool = True, carrier: IdentityCarrier = USER_CARRIER
+) -> None:
     """Drop the account's cached identity **and its provenance**.
 
     Use when the account's company/website changes or a resolution fails — leaving
     `legal_name_hint` behind while clearing `legal_name` produces a row that looks
     like it has trustworthy provenance for a value that no longer exists.
     """
-    user.legal_name = None
-    user.uen = None
-    user.legal_name_hint = None
-    user.website_hint = None
+    setattr(user, carrier.legal_name_field, None)
+    setattr(user, carrier.uen_field, None)
+    setattr(user, carrier.hint_field, None)
+    if carrier.site_hint_field:
+        setattr(user, carrier.site_hint_field, None)
+    if carrier.verified_at_field:
+        setattr(user, carrier.verified_at_field, None)
     if commit:
         db.commit()
 
@@ -452,6 +615,7 @@ def record_verified_identity(
     legal_name: Optional[str] = None,
     company_hint: Optional[str] = None,
     website_hint: Optional[str] = None,
+    carrier: IdentityCarrier = USER_CARRIER,
 ) -> bool:
     """The **only** sanctioned way to persist `User.uen` / `User.legal_name`.
 
@@ -465,39 +629,183 @@ def record_verified_identity(
     `website_hint`) alongside — a write without provenance is what let the previous
     corruption survive the next trust check.
 
+    `carrier` selects which row is being written — `USER_CARRIER` (the default) for a
+    vendor's own account, `VENDOR_CARRIER` for a `DiscoveredVendor` row a buyer is
+    scanning, `MANAGED_ENTITY_CARRIER` for a CSP/DPO's client. The trust rule is the
+    same in every case: the write happens only when the subject *is* the entity that
+    row represents.
+
     Returns True when something was persisted.
     """
-    if not _subject_is_own_account(user, company_hint, website_hint=website_hint):
+    if not _subject_is_own_account(
+        user, company_hint, website_hint=website_hint, carrier=carrier
+    ):
         logger.warning(
-            "record_verified_identity: refused identity write for user %s — subject "
-            "(company_hint=%r, website_hint=%r) is not this account's own entity; "
-            "rejected uen=%r legal_name=%r (cached: company=%r legal_name_hint=%r)",
+            "record_verified_identity: refused identity write for row %s — subject "
+            "(company_hint=%r, website_hint=%r) is not this row's own entity; "
+            "rejected uen=%r legal_name=%r (cached: name=%r hint=%r)",
             getattr(user, "id", None), company_hint, website_hint, uen, legal_name,
-            getattr(user, "company", None), getattr(user, "legal_name_hint", None),
+            _carrier_get(user, carrier.own_name_field),
+            _carrier_get(user, carrier.hint_field),
         )
         return False
 
     updated = False
-    if uen and uen != getattr(user, "uen", None):
-        user.uen = uen
+    if uen and uen != _carrier_get(user, carrier.uen_field):
+        setattr(user, carrier.uen_field, uen)
         updated = True
-    if legal_name and legal_name != getattr(user, "legal_name", None):
-        user.legal_name = legal_name
+    if legal_name and legal_name != _carrier_get(user, carrier.legal_name_field):
+        setattr(user, carrier.legal_name_field, legal_name)
         updated = True
     # Provenance: record what this cache was resolved from so a later purchase with a
     # different company/website can detect it is stale (see _cache_trusted_for_hint).
     if (uen or legal_name) and company_hint:
-        if getattr(user, "legal_name_hint", None) != company_hint:
-            user.legal_name_hint = company_hint
+        if _carrier_get(user, carrier.hint_field) != company_hint:
+            setattr(user, carrier.hint_field, company_hint)
             updated = True
-    if (uen or legal_name) and website_hint:
-        if getattr(user, "website_hint", None) != website_hint:
-            user.website_hint = website_hint
+    if (uen or legal_name) and website_hint and carrier.site_hint_field:
+        if _carrier_get(user, carrier.site_hint_field) != website_hint:
+            setattr(user, carrier.site_hint_field, website_hint)
             updated = True
 
     if updated:
+        if carrier.verified_at_field:
+            setattr(user, carrier.verified_at_field, datetime.utcnow())
         db.commit()
     return updated
+
+
+# Roles whose accounts are structurally never the subject of what they buy: a buyer
+# scans vendors, a government user assesses suppliers. Neither is ever assessing
+# itself, so its own `company`/`uen` must never stand in for an unnamed subject.
+BUYER_ROLES = {"PROCUREMENT", "GOVERNMENT"}
+
+
+def account_may_self_subject(user) -> bool:
+    """Whether this account's own identity may stand in for a subject the order or
+    intake did not name.
+
+    True only for a vendor-style account, which is the one case where the account
+    and the report's subject are genuinely the same entity. Every other caller must
+    treat a missing company as an error, not as permission to use whoever is
+    logged in.
+    """
+    if user is None:
+        return False
+    return ((getattr(user, "role", "") or "VENDOR").upper()) not in BUYER_ROLES
+
+
+# Public alias — callers outside this module (checkout, fulfillment) need to ask
+# "is this order about the account itself?" before deciding which row carries the
+# subject's identity. The logic is the same; only the name is exported.
+subject_is_own_account = _subject_is_own_account
+
+
+async def resolve_subject_identity(
+    db,
+    company_name: Optional[str],
+    website: Optional[str] = None,
+    uen: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve the identity of a report subject that is **not** the logged-in account.
+
+    This is the Buyer→Vendor path. The subject's identity lives on the
+    `DiscoveredVendor` row, never on the buyer's `User` row, so a buyer scanning many
+    vendors can never have one vendor's identity leak into another's report — nor
+    their own account's identity substituted for either.
+
+    Resolution order mirrors the account path exactly: trust a cached UEN only when
+    its provenance (`verified_hint`) matches the company we were asked about, else
+    re-resolve through `_match_acra`. On a confirmed match the result is written back
+    through `record_verified_identity(carrier=VENDOR_CARRIER)` — the same single
+    sanctioned write path, just against a different row.
+
+    Returns `{"uen", "legal_name", "verified"}`. `verified=False` means the registry
+    had nothing for this subject; callers must render "Not verified" rather than
+    substituting any other entity's identity.
+    """
+    company_name = (company_name or "").strip() or None
+    website = (website or "").strip() or None
+    uen = (uen or "").strip() or None
+
+    row = _find_discovered_vendor(db, company_name, website)
+
+    if not uen and row is not None:
+        uen = trusted_cached_uen(
+            row, company_hint=company_name, website_hint=website, carrier=VENDOR_CARRIER
+        )
+
+    registered_name, resolved_uen = await _match_acra(db, uen, company_name, website=website)
+
+    if row is not None and (resolved_uen or registered_name):
+        try:
+            record_verified_identity(
+                row,
+                db,
+                uen=resolved_uen,
+                legal_name=registered_name,
+                company_hint=company_name,
+                website_hint=website,
+                carrier=VENDOR_CARRIER,
+            )
+        except Exception as exc:
+            # Provenance write-back is an optimisation for the next scan, not part of
+            # this order's correctness — never fail a purchase on it.
+            logger.warning(
+                "resolve_subject_identity: write-back failed for %r: %s", company_name, exc
+            )
+
+    return {
+        "uen": resolved_uen,
+        "legal_name": registered_name or company_name,
+        "verified": bool(resolved_uen or registered_name),
+    }
+
+
+async def resolve_managed_entity_identity(entity, db) -> Dict[str, Any]:
+    """Resolve the identity of a CSP/DPO's managed client company.
+
+    Same contract and same code path as `resolve_subject_identity` — only the row
+    differs. The subject here is named explicitly by the customer at order time
+    (`managed_entity_id`), so there is no name/domain search step: we already know
+    exactly which row this report is about.
+
+    Returns `{"uen", "legal_name", "verified"}`; `verified=False` means the registry
+    had nothing, and the report must read "Not verified" rather than borrowing the
+    CSP's own identity or another client's.
+    """
+    company = (getattr(entity, "company_name", "") or "").strip() or None
+    website = (getattr(entity, "website", "") or "").strip() or None
+
+    uen = trusted_cached_uen(
+        entity, company_hint=company, website_hint=website, carrier=MANAGED_ENTITY_CARRIER
+    )
+
+    registered_name, resolved_uen = await _match_acra(db, uen, company, website=website)
+
+    if resolved_uen or registered_name:
+        try:
+            record_verified_identity(
+                entity,
+                db,
+                uen=resolved_uen,
+                legal_name=registered_name,
+                company_hint=company,
+                website_hint=website,
+                carrier=MANAGED_ENTITY_CARRIER,
+            )
+        except Exception as exc:
+            # Provenance write-back is an optimisation for the next order, not part of
+            # this one's correctness — never fail a purchase on it.
+            logger.warning(
+                "resolve_managed_entity_identity: write-back failed for %r: %s", company, exc
+            )
+
+    return {
+        "uen": resolved_uen,
+        "legal_name": registered_name or company,
+        "verified": bool(resolved_uen or registered_name),
+    }
 
 
 async def resolve_legal_name(

@@ -220,9 +220,9 @@ def submit_ropa_activities(
             company_hint=getattr(user, "company", None),
             website_hint=getattr(user, "website", None),
         )
-        # NOTE: fulfill_cover_sheet_task's own docstring says it normally
-        # runs ~300s after bundle components are queued, to give PDPA/RFP
-        # generation time to finish. That doesn't apply here — this branch
+        # NOTE: fulfill_cover_sheet_task is normally queued by
+        # `_maybe_fire_cover_sheet` with a short countdown once every component
+        # is ready. Nothing extra to wait for here either — this branch
         # only fires when pdpa_done and rfp_done are BOTH already true, so
         # there's nothing left to wait for except the ROPA PDF this same
         # request just queued. A short countdown (not 0) just avoids a

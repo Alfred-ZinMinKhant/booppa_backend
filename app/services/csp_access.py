@@ -126,6 +126,11 @@ async def deliver_csp_activation(
                     meta.get("vendor_url") or meta.get("website_url") or ""
                 ).strip() or None,
                 "override_uen": (meta.get("uen") or "").strip() or None,
+                # Set when the CSP bought this baseline *about a client company*
+                # rather than about itself. The task re-reads that row, so the
+                # document names the entity the customer selected — never the
+                # firm's own, which is what an account fallback would produce.
+                "managed_entity_id": (meta.get("managed_entity_id") or "").strip() or None,
                 # The admin simulate-purchase harness re-runs the same purchase
                 # for the same user; the 24h once-only send lock would otherwise
                 # swallow every run after the first.

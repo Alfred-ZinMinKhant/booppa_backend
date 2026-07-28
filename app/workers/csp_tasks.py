@@ -784,6 +784,7 @@ def run_csp_baseline_for_user(
     override_company: Optional[str] = None,
     override_website: Optional[str] = None,
     override_uen: Optional[str] = None,
+    managed_entity_id: Optional[str] = None,
     bypass_idempotency: bool = False,
 ):
     """Generate + email the Day-1 CSP Registration Readiness Baseline.
@@ -828,20 +829,57 @@ def run_csp_baseline_for_user(
             "One-time purchase" if billing_type == "one_time" else "Monthly subscription"
         )
 
-        # Assessed entity is the CUSTOMER. Harness override first (so an admin
-        # test checkout never stamps the real account's company onto a customer
-        # document), then the resolved ACRA legal name.
-        company_name = (override_company or "").strip() or display_legal_name(
-            user, db, company_hint=override_company
-        )
-        website = (override_website or "").strip() or (getattr(user, "website", "") or "")
+        # A CSP/DPO manages many client companies, so when the order named one
+        # explicitly that row IS the subject and outranks every other source —
+        # including the account's own company, which here would be the firm
+        # certifying itself under its client's order.
+        entity = None
+        if managed_entity_id:
+            from app.core.models import ManagedEntity
+
+            entity = (
+                db.query(ManagedEntity)
+                .filter(
+                    ManagedEntity.id == managed_entity_id,
+                    ManagedEntity.owner_user_id == user.id,
+                )
+                .first()
+            )
+            if entity is None:
+                # The order named a subject we can no longer resolve. Delivering
+                # the firm's own baseline instead would be the wrong document
+                # under a correct-looking cover — fail loudly and let the
+                # post-payment retry/alert path handle it.
+                logger.error(
+                    "[CSPBaseline] managed_entity_id=%s not found for user=%s",
+                    managed_entity_id, user.email,
+                )
+                raise ValueError(f"managed entity {managed_entity_id} not resolvable")
+
+        # Assessed entity is the CUSTOMER (or the client company they selected).
+        # Harness override next (so an admin test checkout never stamps the real
+        # account's company onto a customer document), then the resolved ACRA
+        # legal name.
+        if entity is not None:
+            company_name = (entity.legal_name or entity.company_name or "").strip()
+            website = (entity.website or "").strip()
+        else:
+            company_name = (override_company or "").strip() or display_legal_name(
+                user, db, company_hint=override_company
+            )
+            website = (override_website or "").strip() or (getattr(user, "website", "") or "")
         # Purchase-scoped UEN wins. If the purchase names a DIFFERENT company than
         # the account, the account UEN belongs to another entity and must not be
         # used at all — feeding it to fetch_acra_status returns a real, correct
         # ACRA record for the wrong company (the SPQR leak shape).
-        uen = (override_uen or "").strip() or None
-        if not uen and not (override_company or "").strip():
-            uen = (getattr(user, "uen", "") or "").strip() or None
+        if entity is not None:
+            # Only the selected entity's own UEN — the account's belongs to the
+            # managing firm, which is a different legal person entirely.
+            uen = (entity.uen or "").strip() or None
+        else:
+            uen = (override_uen or "").strip() or None
+            if not uen and not (override_company or "").strip():
+                uen = (getattr(user, "uen", "") or "").strip() or None
 
         acra = {}
         try:

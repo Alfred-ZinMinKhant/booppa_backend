@@ -75,6 +75,10 @@ router.include_router(ropa_intake_router, prefix="/ropa", tags=["ropa"])
 router.include_router(pdpa_declaration_intake_router, prefix="/pdpa-declaration", tags=["pdpa-declaration"])
 from .evidence_pack_intake import router as evidence_pack_intake_router
 router.include_router(evidence_pack_intake_router, prefix="/evidence-pack-intake", tags=["evidence-pack-intake"])
+# Client companies a CSP/DPO manages — the report subject for their orders, so the
+# account's own company never has to stand in for one.
+from .managed_entities import router as managed_entities_router
+router.include_router(managed_entities_router, prefix="/managed-entities", tags=["managed-entities"])
 # CSP Compliance Pack (router self-prefixes "/csp"; dual-mount yields /api/v1/csp and /api/csp)
 from .csp import router as csp_router
 router.include_router(csp_router, tags=["CSP Compliance Pack"])
