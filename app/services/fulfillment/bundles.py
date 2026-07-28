@@ -513,6 +513,68 @@ async def _fulfill_compliance_evidence_pack(
     return row
 
 
+# How recent a completed RFP kit must be to count as "the buyer already confirmed
+# their facts for this cycle". Sized to the monthly intake nudge's lead time
+# (send_monthly_intake_refresh_task fires ~6 days before the anniversary), with a
+# day of slack, so a kit produced from that nudge is recognised as this cycle's.
+_RFP_CYCLE_CONFIRMED_DAYS = 7
+
+
+def _prior_rfp_brief(db, owner_id, website) -> tuple[str, dict] | None:
+    """Last cycle's confirmed RFP brief, for renewal regeneration.
+
+    Returns `(rfp_description, intake_data)` or None. None means "do not
+    regenerate", for either of two reasons:
+
+    * The buyer already confirmed this cycle (a completed kit newer than
+      `_RFP_CYCLE_CONFIRMED_DAYS`) — regenerating would overwrite fresh,
+      re-attested facts with older ones.
+    * There is no prior brief at all (first cycle) — the buyer has to supply it,
+      so the caller falls through to the intake request.
+
+    Scoped to the subject, not just the account: one account can subscribe for
+    several companies and the newest kit by date may belong to another of them.
+    """
+    from app.services.fulfillment.helpers import scope_rows_to_subject, norm_site
+
+    rows = (
+        db.query(Report)
+        .filter(
+            Report.owner_id == owner_id,
+            Report.framework == "rfp_complete",
+            Report.status == "completed",
+        )
+        .order_by(Report.created_at.desc())
+        .limit(25)
+        .all()
+    )
+    scoped = scope_rows_to_subject(rows, norm_site(website))
+    if not scoped:
+        return None
+
+    newest = scoped[0]
+    created = newest.created_at
+    if created is not None:
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - created < timedelta(days=_RFP_CYCLE_CONFIRMED_DAYS):
+            return None  # buyer already confirmed this cycle — leave it alone
+
+    data = newest.assessment_data if isinstance(newest.assessment_data, dict) else {}
+    desc = (data.get("intake_rfp_description") or "").strip()
+    if not desc:
+        return None  # nothing reusable; fall through to a brief request
+
+    intake = data.get("intake_data")
+    intake = dict(intake) if isinstance(intake, dict) else {}
+    # Mark provenance so downstream artifacts (and the cover sheet's Q&A
+    # coverage) can distinguish re-attested facts from carried-over ones. A
+    # regenerated kit must never read as freshly confirmed.
+    intake["_facts_confirmed_this_cycle"] = False
+    intake["_carried_from_report_id"] = str(newest.id)
+    return desc, intake
+
+
 async def _fulfill_bundle(
     product_type: str,
     report_id: str | None,
@@ -646,22 +708,65 @@ async def _fulfill_bundle(
                 f"[Bundle:{product_type}] test_simulation — fulfilling {rfp_product} "
                 f"directly (no intake) for {customer_email}"
             )
-        elif rfp_product and owner_id:
-            pending = PendingRfpIntake(
-                user_id=owner_id,
-                session_id=session_id,
-                rfp_product_type=rfp_product,
-                bundle_source=product_type,
-                vendor_url=website or None,
-                company_name=company_name or None,
-                status="pending",
-            )
-            db.add(pending)
-            db.flush()
-            pending_intake_id = str(pending.id)
+        elif rfp_product and owner_id and metadata.get("subscription_cycle") and (
+            _prior := _prior_rfp_brief(db, owner_id, website)
+        ):
+            # ── Subscription renewal ────────────────────────────────────────
+            # Mirrors the BCEP pack's cycle behaviour: regenerate against last
+            # cycle's confirmed facts so the subscriber receives every promised
+            # document on renewal day instead of only after re-filling a brief
+            # they already completed. Without this the RFP was the one component
+            # with no cycle path — it minted a fresh PendingRfpIntake every month
+            # (a *second* one, since send_monthly_intake_refresh_task already
+            # created a pre-filled row 6 days earlier), and the cover sheet then
+            # anchored over the PRIOR month's kit anyway.
+            #
+            # `_prior_rfp_brief` returns None when the buyer already confirmed
+            # this cycle via that nudge — their fresh kit stands and we must not
+            # regenerate over it. So confirmed facts win when the buyer engages;
+            # prior-cycle facts deliver the document when they don't, flagged as
+            # unconfirmed so the sheet never presents them as re-attested.
+            _desc, _intake = _prior
+            tasks_to_queue.append(("rfp", (rfp_product, _desc, _intake)))
             logger.info(
-                f"[Bundle:{product_type}] Created PendingRfpIntake {pending_intake_id} for {customer_email}"
+                f"[Bundle:{product_type}] subscription cycle — regenerating {rfp_product} "
+                f"from last cycle's brief for {customer_email} (facts not re-confirmed)"
             )
+        elif rfp_product and owner_id:
+            # Reuse an outstanding brief request rather than stacking another —
+            # the monthly nudge may already have created one for this cycle.
+            pending = (
+                db.query(PendingRfpIntake)
+                .filter(
+                    PendingRfpIntake.user_id == owner_id,
+                    PendingRfpIntake.status == "pending",
+                    PendingRfpIntake.rfp_product_type == rfp_product,
+                )
+                .order_by(PendingRfpIntake.created_at.desc())
+                .first()
+            )
+            if pending is not None:
+                pending_intake_id = str(pending.id)
+                logger.info(
+                    f"[Bundle:{product_type}] Reusing outstanding PendingRfpIntake "
+                    f"{pending_intake_id} for {customer_email} (no duplicate brief)"
+                )
+            else:
+                pending = PendingRfpIntake(
+                    user_id=owner_id,
+                    session_id=session_id,
+                    rfp_product_type=rfp_product,
+                    bundle_source=product_type,
+                    vendor_url=website or None,
+                    company_name=company_name or None,
+                    status="pending",
+                )
+                db.add(pending)
+                db.flush()
+                pending_intake_id = str(pending.id)
+                logger.info(
+                    f"[Bundle:{product_type}] Created PendingRfpIntake {pending_intake_id} for {customer_email}"
+                )
         elif rfp_product:
             logger.warning(
                 f"[Bundle:{product_type}] RFP component skipped — no user resolved "
@@ -735,11 +840,24 @@ async def _fulfill_bundle(
                 fulfill_pdpa_task.delay(payload, customer_email)
                 logger.info(f"[Bundle:{product_type}] Queued pdpa for report {payload}")
             elif task_type == "rfp":
-                # Only reached for admin test checkouts — real purchases defer to
-                # /rfp-intake via the PendingRfpIntake row created above.
+                # Two callers: the admin test checkout (2-tuple, canned brief),
+                # and a subscription renewal regenerating from last cycle's
+                # confirmed brief (3-tuple, carries that cycle's intake_data).
+                # Real first purchases still defer to /rfp-intake via the
+                # PendingRfpIntake row created above.
                 from app.workers.tasks import fulfill_rfp_task
 
-                rfp_product, rfp_desc = payload
+                if len(payload) == 3:
+                    rfp_product, rfp_desc, rfp_intake = payload
+                    # Renewal: the prior cycle's brief already cleared the
+                    # placeholder gate, so don't waive it here — a kit that can
+                    # no longer be completed from those facts must route the
+                    # buyer back to the intake rather than ship with holes.
+                    _allow_incomplete = False
+                else:
+                    rfp_product, rfp_desc = payload
+                    rfp_intake = None
+                    _allow_incomplete = True  # test checkout: never block the e2e run
                 fulfill_rfp_task.delay(
                     product_type=rfp_product,
                     vendor_id=str(owner_id),
@@ -748,15 +866,13 @@ async def _fulfill_bundle(
                     company_name=company_name or "Booppa QA",
                     rfp_description=rfp_desc,
                     session_id=session_id,
-                    intake_data=None,
-                    # This branch is admin test checkout only — ship a kit even
-                    # when the canned brief is thin/empty (don't block on
-                    # residual placeholders), so the e2e test yields an RFP.
-                    allow_incomplete=True,
+                    intake_data=rfp_intake,
+                    allow_incomplete=_allow_incomplete,
                 )
                 logger.info(
                     f"[Bundle:{product_type}] Queued fulfill_rfp_task ({rfp_product}) "
-                    f"for {customer_email} (test_simulation)"
+                    f"for {customer_email} "
+                    f"({'subscription cycle' if rfp_intake else 'test_simulation'})"
                 )
 
         # ── Single consolidated bundle email ────────────────────────────────
