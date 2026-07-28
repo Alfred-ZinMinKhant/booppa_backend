@@ -1063,6 +1063,18 @@ class SimulatePurchaseRequest(BaseModel):
         description="Optional Singapore UEN — exercises the offline "
         "DiscoveredVendor registry match + live ACRA lookup on the certificate.",
     )
+    managed_entity_id: Optional[str] = Field(
+        default=None,
+        description="Subject entity id for a CSP/DPO order. When set, the report's "
+        "identity is resolved from that row and the account's own company/website "
+        "are left untouched — the same precedence a real checkout applies.",
+    )
+    managed_entity_name: Optional[str] = Field(
+        default=None,
+        description="QA convenience: name a managed entity instead of pasting an id. "
+        "Reuses the test account's existing entity of that name, or registers one, "
+        "then verifies it against ACRA through the production code path.",
+    )
     rfp_description: Optional[str] = Field(default=None)
     force_resend: bool = Field(
         default=False,
@@ -1130,6 +1142,14 @@ async def simulate_purchase(
     vendor_url = (body.vendor_url or "").strip()
     company_name = (body.company_name or "").strip()
     uen = (body.uen or "").strip()
+    entity_id = (body.managed_entity_id or "").strip()
+    entity_name = (body.managed_entity_name or "").strip()
+    # A named subject means this order is about a client company, not about the QA
+    # account. Everything downstream keys off this flag: the account's own
+    # company/website are never written, and identity comes from the entity row.
+    subject_is_entity = bool(entity_id or entity_name)
+    resolved_entity_id: Optional[str] = None
+    entity_identity: Optional[dict] = None
     rfp_description = (body.rfp_description or "").strip() or DEFAULT_QA_RFP_BRIEF
     sim_id = f"admin-sim-{_uuid.uuid4()}"
     # The simulated *subscription* id is deterministic per (email, SKU), unlike
@@ -1158,8 +1178,12 @@ async def simulate_purchase(
                 hashed_password=get_password_hash(_uuid.uuid4().hex),
                 full_name="Booppa QA",
                 role="VENDOR",
-                company=company_name or "Booppa QA",
-                website=vendor_url or "https://booppa.io",
+                # A new QA account created for an entity-subject run gets neutral
+                # placeholders: the typed company belongs to the client entity, and
+                # seeding it onto the account would recreate the exact "account
+                # identity stands in for the subject" confusion this run is testing.
+                company="Booppa QA" if subject_is_entity else (company_name or "Booppa QA"),
+                website="https://booppa.io" if subject_is_entity else (vendor_url or "https://booppa.io"),
                 is_active=True,
             )
             db.add(user)
@@ -1171,13 +1195,80 @@ async def simulate_purchase(
             # reused QA account is carrying (a prior run's identity must not mask
             # what we're testing now). Empty form fields leave the existing value
             # untouched. Mirrors the report-scoped resolution fix.
+            #
+            # Skipped entirely for an entity-subject run: the company and website
+            # on that run describe the client company, not the firm placing the
+            # order, and stamping them onto the account is the write this whole
+            # architecture change exists to stop.
             updated = False
-            if vendor_url and user.website != vendor_url:
-                user.website = vendor_url; updated = True
-            if company_name and user.company != company_name:
-                user.company = company_name; updated = True
+            if not subject_is_entity:
+                if vendor_url and user.website != vendor_url:
+                    user.website = vendor_url; updated = True
+                if company_name and user.company != company_name:
+                    user.company = company_name; updated = True
             if updated:
                 db.commit()
+
+        # Resolve the subject entity, if this run names one. Done here, inside the
+        # session that just guaranteed the user exists, because a ManagedEntity is
+        # owned by an account and cannot be looked up before one is there.
+        if subject_is_entity:
+            from app.core.models import ManagedEntity
+            from app.services.evidence_enricher import resolve_managed_entity_identity
+
+            q = db.query(ManagedEntity).filter(
+                ManagedEntity.owner_user_id == user.id,
+                ManagedEntity.status == "ACTIVE",
+            )
+            entity = (
+                q.filter(ManagedEntity.id == entity_id).first()
+                if entity_id
+                else q.filter(ManagedEntity.company_name == entity_name).first()
+            )
+            if entity is None and entity_id:
+                # An id that resolves to nothing is a real 422 in checkout too. Never
+                # invent a row for it — that would hide the failure we are testing.
+                raise HTTPException(
+                    status_code=422,
+                    detail="managed_entity_id is not an active entity for this test account.",
+                )
+            if entity is None:
+                # Name-only: register it, so QA can exercise the entity path without
+                # first walking the CSP UI. Verification below is the real one.
+                entity = ManagedEntity(
+                    owner_user_id=user.id,
+                    company_name=entity_name,
+                    website=vendor_url or None,
+                    status="ACTIVE",
+                )
+                db.add(entity)
+                db.commit()
+                db.refresh(entity)
+                logger.info(
+                    "[simulate-purchase] Registered managed entity %s for %s",
+                    entity_name, customer_email,
+                )
+
+            # Same helper the live checkout calls — ACRA match plus provenance
+            # write-back through record_verified_identity, on the entity row.
+            resolved = await resolve_managed_entity_identity(entity, db)
+            db.refresh(entity)
+
+            resolved_entity_id = str(entity.id)
+            # The entity, not the form, now defines the subject of this order.
+            company_name = (entity.company_name or "").strip() or company_name
+            vendor_url = (entity.website or "").strip() or vendor_url
+            if resolved.get("uen"):
+                uen = resolved["uen"]
+            entity_identity = {
+                "managed_entity_id": resolved_entity_id,
+                "company_name": entity.company_name,
+                "legal_name": resolved.get("legal_name"),
+                "uen": resolved.get("uen"),
+                # False here is the honest outcome, not an error: the report will
+                # read "Not verified" rather than borrow the QA account's identity.
+                "verified": bool(resolved.get("verified")),
+            }
     finally:
         db.close()
 
@@ -1192,6 +1283,11 @@ async def simulate_purchase(
         # Vendor Proof fulfillment exercises the offline DiscoveredVendor
         # registry match + live ACRA status, exactly like a real purchase.
         metadata["uen"] = uen
+    if resolved_entity_id:
+        # Fulfillment re-reads the entity by id rather than trusting the company
+        # name string, so the test deliverable names the row we just verified —
+        # exactly what a real CSP order carries in its Stripe metadata.
+        metadata["managed_entity_id"] = resolved_entity_id
     if rfp_description:
         metadata["rfp_description"] = rfp_description
 
@@ -1367,6 +1463,10 @@ async def simulate_purchase(
         "product_type": product_type,
         "dispatch": dispatch,
         "details": details,
+        # Present only for entity-subject runs. Lets the test-checkout page show
+        # which company the deliverable is actually about and whether ACRA
+        # confirmed it — the two facts a QA run of this path exists to check.
+        "subject_identity": entity_identity,
     }
 
 
