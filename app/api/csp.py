@@ -60,6 +60,7 @@ from app.core.db import get_db, get_current_user as _booppa_get_current_user
 from app.services.csp_access import find_or_create_csp_org
 from app.services.csp_compliance_scorer import compute_overall_compliance
 from app.services.csp_sanctions import screen_individual, screen_entity
+from app.services.managed_entity_service import resolve_or_create_managed_entity
 
 try:
     from dateutil.relativedelta import relativedelta
@@ -458,13 +459,50 @@ def get_dashboard(current_user: dict = Depends(get_current_user), db=Depends(get
 
 @router.post("/clients", status_code=status.HTTP_201_CREATED,
              summary="Register a new client — CDD required before providing services")
-def create_client(
+async def create_client(
     payload:      CspClientCreate,
     current_user: dict = Depends(get_current_user),
     db            = Depends(get_db),
 ):
     profile = _get_profile(db, current_user)
     client  = CspClient(csp_id=profile.id, **payload.model_dump())
+
+    # Link the AML case file to the verified identity store. `uen_or_reg_no` stays
+    # an AML field and is never read to identify a report's subject — it is passed
+    # here only as a *claim* to check against ACRA.
+    #
+    # `strict=False`: a CSP must always be able to open a CDD file, including for a
+    # client whose UEN was mistyped or whose company predates the registry. A
+    # contradicted or unmatched claim yields an UNVERIFIED entity, which every
+    # downstream reader renders "Not verified" — never a guess.
+    entity_warning = None
+    entity_verified = False
+    if payload.client_type != "individual":
+        # A natural person has no company identity to verify; creating an entity row
+        # for one would put a human's name into the company registry path.
+        try:
+            result = await resolve_or_create_managed_entity(
+                db,
+                owner_user_id=uuid.UUID(current_user["id"]),
+                company_name=payload.legal_name,
+                claimed_uen=payload.uen_or_reg_no,
+                strict=False,
+                commit=False,
+            )
+            client.managed_entity_id = result.entity.id
+            entity_warning = result.mismatch
+            # Verified means ACRA confirmed it, not merely that a row was linked.
+            entity_verified = bool(
+                result.entity.uen and result.entity.verified_at
+            )
+        except Exception as exc:
+            # Identity linking must never block AML onboarding — the regulator's
+            # deadline is the CDD record, not our registry match.
+            logger.warning(
+                "[CSP] managed-entity link failed for client %r: %s",
+                payload.legal_name, exc,
+            )
+
     db.add(client)
     db.commit()
     db.refresh(client)
@@ -473,6 +511,8 @@ def create_client(
         "status":              "registered",
         "cdd_required":        True,
         "video_call_required": payload.is_remote_onboarding,
+        "identity_verified":   entity_verified,
+        "identity_warning":    entity_warning,
         "message": (
             "Client registered. Complete CDD before providing any service. "
             + ("Video-call verification is mandatory for remote onboarding (CSP Regulations 2025 s.20)."
@@ -689,6 +729,7 @@ async def bulk_import_clients(
         csp_id=str(profile.id),
         db=db,
         auto_screen=auto_screen,
+        owner_user_id=current_user["id"],
     )
 
     return {
@@ -698,12 +739,24 @@ async def bulk_import_clients(
             "invalid_skipped": result.invalid_rows,
             "errors":          result.errors,
             "warnings":        result.warnings,
+            # Per-row identity outcome. Unverified rows are fully valid AML
+            # records; they simply cannot carry a certified company identity
+            # onto a report until the company is confirmed against ACRA.
+            "identity_verified":   result.identity_verified_count,
+            "identity_unverified": result.identity_unverified_count,
+            "identity_individuals": result.identity_individual_count,
         },
         "created_client_ids": result.created_ids,
         "message": (
             f"Successfully imported {result.imported_count} of {result.total_rows} clients. "
             + (f"{result.invalid_rows} rows skipped due to validation errors. "
                if result.invalid_rows else "")
+            + (f"{result.identity_verified_count} verified against ACRA"
+               + (f", {result.identity_unverified_count} could not be verified "
+                  "and will show as 'Not verified' on reports until confirmed. "
+                  if result.identity_unverified_count else ". ")
+               if (result.identity_verified_count or result.identity_unverified_count)
+               else "")
             + ("CDD is mandatory for all clients before providing services."
                if result.imported_count > 0 else "")
         ),
@@ -1644,9 +1697,24 @@ def _serialize_profile(p: CspProfile) -> dict:
 
 
 def _serialize_client(c: CspClient) -> dict:
+    # Identity is reported separately from the AML fields on purpose.
+    # `uen_or_reg_no` is what the CSP typed or imported — an AML case-file field,
+    # never checked against the registry. `identity_*` is what ACRA confirmed.
+    # Showing them as one field is what lets an unverified value read as verified.
+    entity = c.managed_entity
+    verified = bool(entity and entity.uen and entity.verified_at)
     return {
         "id": str(c.id), "client_type": c.client_type,
         "legal_name": c.legal_name, "uen_or_reg_no": c.uen_or_reg_no,
+        "managed_entity_id": str(c.managed_entity_id) if c.managed_entity_id else None,
+        "identity_verified": verified,
+        # Only populated when verified — a NULL here is the signal the UI renders
+        # as "Not verified", and must never be backfilled from `uen_or_reg_no`.
+        "identity_legal_name": entity.legal_name if verified else None,
+        "identity_uen": entity.uen if verified else None,
+        "identity_verified_at": (
+            entity.verified_at.isoformat() if verified and entity.verified_at else None
+        ),
         "country_of_inc": c.country_of_inc, "contact_name": c.contact_name,
         "contact_email": c.contact_email,
         "risk_rating": str(c.risk_rating), "cdd_status": str(c.cdd_status),

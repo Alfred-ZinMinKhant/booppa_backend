@@ -33,6 +33,12 @@ ALLOWED_CDD_STATUSES = {"not_started", "in_progress", "completed", "expired", "f
 # Maximum rows per import
 MAX_ROWS = 500
 
+# Distinct company names verified against ACRA within one import. Each is a
+# network round-trip inside the request, so a 500-row file of unique companies
+# would otherwise sit well past any sane HTTP timeout. Rows beyond the budget
+# still import — they land unverified with a warning naming the remedy.
+MAX_IDENTITY_LOOKUPS = 100
+
 
 # ── RESULT TYPES ────────────────────────────────────────────────────────────
 
@@ -58,6 +64,12 @@ class ImportResult:
     created_ids:     List[str]    = field(default_factory=list)
     import_id:       str          = ""
     completed_at:    str          = ""
+    #: Rows whose company was confirmed against ACRA and can carry a certified
+    #: identity later. Everything else imports fine but reads "Not verified".
+    identity_verified_count:   int = 0
+    identity_unverified_count: int = 0
+    #: Rows skipped for identity because they are natural persons.
+    identity_individual_count: int = 0
 
 
 # ── CSV TEMPLATE ──────────────────────────────────────────────────────────────
@@ -352,24 +364,37 @@ async def execute_import(
     csp_id:     str,
     db,
     auto_screen: bool = False,
+    owner_user_id: Optional[str] = None,
 ) -> ImportResult:
     """
     Insert validated rows into the database.
     Optionally run sanctions screening on each client.
 
     Args:
-        rows:         Validated ImportRow list from parse_csv/parse_excel
-        csp_id:       UUID of the CspProfile
-        db:           SQLAlchemy session
-        auto_screen:  If True, run sanctions screening on each client name
+        rows:          Validated ImportRow list from parse_csv/parse_excel
+        csp_id:        UUID of the CspProfile
+        db:            SQLAlchemy session
+        auto_screen:   If True, run sanctions screening on each client name
+        owner_user_id: UUID of the importing user. When supplied, each company
+                       row is resolved against ACRA and linked to a
+                       `ManagedEntity`; without it, rows import with no identity
+                       at all (never with the CSV's unchecked UEN).
     """
     import uuid as uuid_mod
     from app.core.models import CspClient
+    from app.services.managed_entity_service import resolve_or_create_managed_entity
 
     valid_rows = [r for r in rows if r.is_valid]
     created_ids = []
     errors      = []
     warnings    = []
+
+    verified_count   = 0
+    unverified_count = 0
+    individual_count = 0
+    # Distinct companies looked up so far. Repeats cost nothing (an existing
+    # ACTIVE entity is reused), so only distinct names count against the budget.
+    looked_up: set = set()
 
     for row in valid_rows:
         try:
@@ -379,6 +404,71 @@ async def execute_import(
                 csp_id=uuid_mod.UUID(csp_id),
                 **{k: v for k, v in parsed.items() if hasattr(CspClient, k)},
             )
+
+            # ── Identity: verify at entry, never trust the CSV's UEN ──────────
+            # `uen_or_reg_no` from a spreadsheet is free text. A wrong-but-real
+            # UEN resolves to a genuine registry record for the wrong company,
+            # so it is passed only as a *claim* to be checked, never persisted
+            # as identity. `strict=False`: a bad cell must not abort an import
+            # of 500 AML case files.
+            if owner_user_id and parsed.get("client_type") != "individual":
+                name = parsed.get("legal_name", "")
+                over_budget = (
+                    name.upper() not in looked_up
+                    and len(looked_up) >= MAX_IDENTITY_LOOKUPS
+                )
+                if over_budget:
+                    unverified_count += 1
+                    warnings.append({
+                        "row":     row.row_number,
+                        "client":  name,
+                        "message": (
+                            f"Import exceeded {MAX_IDENTITY_LOOKUPS} distinct company "
+                            "lookups; this client was imported without identity "
+                            "verification. Verify it from the client page before "
+                            "ordering a report."
+                        ),
+                    })
+                else:
+                    looked_up.add(name.upper())
+                    try:
+                        res = await resolve_or_create_managed_entity(
+                            db,
+                            owner_user_id=uuid_mod.UUID(owner_user_id),
+                            company_name=name,
+                            claimed_uen=parsed.get("uen_or_reg_no"),
+                            strict=False,
+                            commit=False,
+                        )
+                        client.managed_entity_id = res.entity.id
+                        if res.entity.uen and res.entity.verified_at:
+                            verified_count += 1
+                        else:
+                            unverified_count += 1
+                        if res.mismatch:
+                            warnings.append({
+                                "row":     row.row_number,
+                                "client":  name,
+                                "message": res.mismatch,
+                            })
+                    except Exception as exc:
+                        # Identity is a property of the client, not a
+                        # precondition for recording one. Import, flag, move on.
+                        logger.warning(
+                            "Import row %d: identity link failed for %r: %s",
+                            row.row_number, name, exc,
+                        )
+                        unverified_count += 1
+                        warnings.append({
+                            "row":     row.row_number,
+                            "client":  name,
+                            "message": (
+                                "Could not verify this company against ACRA during "
+                                "import; imported as unverified."
+                            ),
+                        })
+            elif parsed.get("client_type") == "individual":
+                individual_count += 1
 
             # Sanctions screening
             if auto_screen and parsed.get("legal_name"):
@@ -439,4 +529,7 @@ async def execute_import(
         warnings       = warnings,
         created_ids    = created_ids,
         completed_at   = datetime.now(timezone.utc).isoformat(),
+        identity_verified_count   = verified_count,
+        identity_unverified_count = unverified_count,
+        identity_individual_count = individual_count,
     )

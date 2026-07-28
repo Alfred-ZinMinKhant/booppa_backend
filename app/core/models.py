@@ -511,7 +511,17 @@ class CspClient(Base):
     csp_id      = Column(UUID(as_uuid=True), ForeignKey("csp_profiles.id"), nullable=False, index=True)
     client_type = Column(String(30), nullable=False)
     legal_name  = Column(String(255), nullable=False)
+    # AML/CDD field ONLY — free text, may be a foreign registration number, and is
+    # never read by an identity resolver. The subject's verifiable identity lives on
+    # the linked `ManagedEntity`, which carries `verified_hint`/`verified_at`
+    # provenance. Reading this column to identify a report's subject would reinstate
+    # exactly the unverified-UEN path this link was added to close.
     uen_or_reg_no      = Column(String(50))
+    # The verified identity of the company this case file is about. Nullable:
+    # pre-existing rows are linked by backfill, and a client whose company cannot be
+    # matched to the registry still needs a CDD record.
+    managed_entity_id  = Column(UUID(as_uuid=True), ForeignKey("managed_entities.id", ondelete="SET NULL"),
+                                nullable=True, index=True)
     country_of_inc     = Column(String(100))
     registered_address = Column(Text())
     contact_name       = Column(String(255))
@@ -549,6 +559,10 @@ class CspClient(Base):
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     csp               = relationship("CspProfile",      back_populates="clients")
+    # Read-only view of the linked identity. No cascade and no back_populates: the
+    # entity outlives the case file (past orders name it as their subject) and is
+    # owned by the account, not by this row.
+    managed_entity    = relationship("ManagedEntity",   viewonly=True)
     cdd_records       = relationship("CspCddRecord",    back_populates="client", cascade="all, delete-orphan")
     edd_records       = relationship("CspEddRecord",    back_populates="client", cascade="all, delete-orphan")
     beneficial_owners = relationship("CspBeneficialOwner", back_populates="client", cascade="all, delete-orphan")

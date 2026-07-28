@@ -25,10 +25,10 @@ from sqlalchemy.orm import Session
 from app.core.auth import verify_access_token
 from app.core.db import get_db
 from app.core.models import ManagedEntity, User
-from app.services.evidence_enricher import (
-    MANAGED_ENTITY_CARRIER,
-    fetch_acra_status,
-    record_verified_identity,
+from app.services.managed_entity_service import (
+    UenMismatch,
+    find_active_entity,
+    resolve_or_create_managed_entity,
 )
 
 logger = logging.getLogger(__name__)
@@ -128,70 +128,28 @@ async def create_entity(
     if not company_name:
         raise HTTPException(status_code=422, detail="company_name is required")
 
-    website = (payload.website or "").strip() or None
-    claimed_uen = (payload.uen or "").strip() or None
-
-    existing = (
-        db.query(ManagedEntity)
-        .filter(
-            ManagedEntity.owner_user_id == user.id,
-            ManagedEntity.company_name == company_name,
-            ManagedEntity.status == "ACTIVE",
-        )
-        .first()
-    )
-    if existing:
+    if find_active_entity(db, user.id, company_name) is not None:
         raise HTTPException(
             status_code=409, detail=f"'{company_name}' is already in your managed entities"
         )
 
     try:
-        acra = await fetch_acra_status(company_name=company_name, uen=claimed_uen)
-    except Exception as exc:
-        # A registry outage must not block the customer from setting up their
-        # account. The row is created unverified and re-resolves at order time.
-        logger.warning("create_entity: ACRA lookup failed for %r: %s", company_name, exc)
-        acra = None
-
-    matched = bool(acra and acra.get("found"))
-    resolved_uen = (acra or {}).get("uen") if matched else None
-    registered_name = (acra or {}).get("registered_name") if matched else None
-
-    if claimed_uen and matched and resolved_uen and claimed_uen.upper() != str(resolved_uen).upper():
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"UEN {claimed_uen} does not match ACRA's record for '{company_name}' "
-                f"({resolved_uen}). Check which is correct before adding this entity."
-            ),
-        )
-
-    row = ManagedEntity(
-        owner_user_id=user.id,
-        company_name=company_name,
-        website=website,
-        industry=(payload.industry or "").strip() or None,
-        status="ACTIVE",
-    )
-    db.add(row)
-    db.flush()
-
-    if matched and (resolved_uen or registered_name):
-        # Only a confirmed match writes identity. An unmatched entity keeps NULL
-        # uen/legal_name, which every downstream reader renders "Not verified".
-        record_verified_identity(
-            row,
+        result = await resolve_or_create_managed_entity(
             db,
-            uen=resolved_uen,
-            legal_name=registered_name,
-            company_hint=company_name,
-            website_hint=website,
-            carrier=MANAGED_ENTITY_CARRIER,
+            owner_user_id=user.id,
+            company_name=company_name,
+            website=payload.website,
+            industry=payload.industry,
+            claimed_uen=payload.uen,
+            # Direct entity registration is the one surface where the customer is
+            # looking at the form: a contradicted UEN is a correction to make now,
+            # not a row to accept unverified.
+            strict=True,
         )
+    except UenMismatch as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
-    db.commit()
-    db.refresh(row)
-    return {"entity": _serialize(row)}
+    return {"entity": _serialize(result.entity)}
 
 
 @router.get("/{entity_id}")
