@@ -183,6 +183,10 @@ async def _resolve_order_subject(
       * With no company supplied, the account's own company is used only when the
         account may legitimately be its own subject; otherwise this is a 422, never
         a silent fallback.
+      * Whenever the order names a company or a website, that name is resolved
+        against ACRA **fresh**. A cached UEN is a shortcut for the unattended case
+        only; it never stands in for a lookup on a name the customer just typed,
+        and the registry's answer supersedes it on disagreement.
       * Identity write-back targets the account for a self-assessment, the selected
         `ManagedEntity` when the order names one, and the `DiscoveredVendor` row
         otherwise — the same trust code path in all three cases.
@@ -291,17 +295,37 @@ async def _resolve_order_subject(
         if _claimed:
             db.commit()
 
-        # Only reuse the account's cached UEN when its provenance matches this
-        # purchase's company/website.
-        uen = uen or (
-            (trusted_cached_uen(user, company_hint=company_name, website_hint=website) or "").strip()
-        )
-        if not uen and company_name:
+        # What the customer typed on THIS order outranks anything on the account.
+        # When they name a company or a website, that is the subject — so resolve it
+        # against ACRA fresh rather than serving a cached UEN that merely passed the
+        # provenance check. The cache is a shortcut for the unattended case, never a
+        # substitute for a name the customer just gave us.
+        named_subject = bool(req_company or req_website)
+
+        if not uen and not named_subject:
+            # Unattended: nothing named this order's subject, so reuse the account's
+            # cached UEN only while its provenance matches this purchase.
+            uen = (
+                trusted_cached_uen(
+                    user, company_hint=company_name, website_hint=website
+                ) or ""
+            ).strip()
+
+        if company_name and (named_subject or not uen):
             from app.services.evidence_enricher import fetch_acra_status
 
             acra_res = await fetch_acra_status(company_name=company_name)
             if acra_res and acra_res.get("found") and acra_res.get("uen"):
-                uen = acra_res.get("uen")
+                fresh_uen = acra_res.get("uen")
+                if uen and fresh_uen != uen:
+                    # The registry disagrees with the UEN we were carrying for the
+                    # name the customer typed. The registry wins: a document must
+                    # not pair one company's name with another's registration.
+                    logger.warning(
+                        "[Checkout] UEN %s superseded by ACRA %s for %r",
+                        uen, fresh_uen, company_name,
+                    )
+                uen = fresh_uen
         if uen:
             # The ACRA gate blocks a struck-off entity BEFORE the charge, but only
             # for products that attest the entity itself (Vendor Proof and the
@@ -310,7 +334,12 @@ async def _resolve_order_subject(
             if gate_acra:
                 await _gate_acra_live(uen)
             data["uen"] = uen
-            if not getattr(user, "uen", None):
+            # Write back whenever the account has nothing yet, and also when this
+            # order named its subject explicitly — otherwise a stale UEN already on
+            # the account would survive every later purchase that just corrected it.
+            # `record_verified_identity` still applies the write gate, so this can
+            # only ever overwrite the account's own entity, never another's.
+            if named_subject or not getattr(user, "uen", None):
                 record_verified_identity(
                     user, db, uen=uen,
                     company_hint=company_name, website_hint=website,

@@ -8442,7 +8442,7 @@ def fulfill_pdpa_declaration_task(user_id: str, customer_email: str | None = Non
         keys = ["processing_purpose", "lawful_basis", "data_categories", "data_subjects",
                 "recipients", "retention_period", "safeguards"]
         dicts = [{k: getattr(r, k) for k in keys} for r in rows]
-        from app.services.evidence_enricher import display_legal_name
+        from app.services.evidence_enricher import display_legal_name, trusted_cached_uen
         company_name = display_legal_name(
             user,
             db,
@@ -8453,7 +8453,15 @@ def fulfill_pdpa_declaration_task(user_id: str, customer_email: str | None = Non
             company_hint=getattr(user, "company", None),
             website_hint=getattr(user, "website", None),
         ) or "Your Organisation"
-        uen = getattr(user, "uen", None) or "Not provided"
+        # Same gate as the name above. Reading `user.uen` raw here would stamp a
+        # cached UEN that `display_legal_name` had just refused to trust — a
+        # declaration carrying a re-resolved company name beside the previous
+        # subject's registration number. "Not provided" is the honest output.
+        uen = trusted_cached_uen(
+            user,
+            company_hint=getattr(user, "company", None),
+            website_hint=getattr(user, "website", None),
+        ) or "Not provided"
 
         pdf_bytes = generate_pdpa_declaration_pdf(
             company_name=company_name, uen=uen, rows=dicts,

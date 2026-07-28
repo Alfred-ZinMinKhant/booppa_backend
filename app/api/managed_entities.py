@@ -1,4 +1,3 @@
-from app.core.route_classes import RetryAPIRoute
 """Managed client entities for CSP / DPO accounts.
 
 A CSP or DPO manages compliance for many client companies from one login, so the
@@ -15,6 +14,7 @@ Identity is written only through `record_verified_identity(carrier=
 MANAGED_ENTITY_CARRIER)` — the same single sanctioned write path every other
 carrier row uses.
 """
+from app.core.route_classes import RetryAPIRoute
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Security

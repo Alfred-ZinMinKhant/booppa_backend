@@ -20,7 +20,7 @@ import json
 import logging
 import os
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, NamedTuple, Optional
 from urllib.parse import urlparse
 
@@ -289,12 +289,19 @@ def _find_discovered_vendor(db, company: Optional[str], website: Optional[str] =
                 return row
         if site:
             for col in (DiscoveredVendor.domain, DiscoveredVendor.website):
+                # Exact domain match, not substring — `.contains("a.com")` would
+                # also match "nota.com".  The column may store a full URL, so
+                # normalise with the same `_norm_domain` that was applied to the
+                # search term.
                 row = (
                     db.query(DiscoveredVendor)
-                    .filter(func.lower(col).contains(site))
+                    .filter(func.lower(col) != None)  # noqa: E711 — SQLAlchemy
+                    .filter(
+                        func.lower(col).like(f"%{site}%")
+                    )
                     .first()
                 )
-                if row:
+                if row and _norm_domain(getattr(row, col.key, "")) == site:
                     return row
     except Exception as exc:
         logger.warning(
@@ -670,7 +677,7 @@ def record_verified_identity(
 
     if updated:
         if carrier.verified_at_field:
-            setattr(user, carrier.verified_at_field, datetime.utcnow())
+            setattr(user, carrier.verified_at_field, datetime.now(timezone.utc))
         db.commit()
     return updated
 
