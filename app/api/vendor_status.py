@@ -484,11 +484,43 @@ async def update_profile(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
         
-    if body.company is not None:
+    # A rename invalidates the cached identity: `uen` and `legal_name` were confirmed
+    # for the OLD company and belong to a different legal person now. Leaving them
+    # behind is not a dormant staleness — `_cache_trusted_for_hint` treats a hint
+    # equal to the account's own `company` as a self-render, so the new name would
+    # vouch for the old company's UEN and hand it to the registry, which returns a
+    # real, correct record for the wrong entity. Same clear-then-re-resolve the
+    # profile endpoint in `auth.py` performs.
+    company_changed = body.company is not None and body.company != user.company
+
+    if company_changed:
+        from app.services.evidence_enricher import clear_cached_identity, resolve_legal_name
+
+        clear_cached_identity(user, db, commit=False)
         user.company = body.company
-    if body.industry is not None:
-        user.industry = body.industry
-    db.commit()
+        if body.industry is not None:
+            user.industry = body.industry
+        db.commit()
+        try:
+            await resolve_legal_name(
+                user, db,
+                company_hint=user.company,
+                website_hint=getattr(user, "website", None),
+            )
+        except Exception:
+            # The cache is already cleared, so the account is in the honest
+            # "unresolved" state rather than the stale one. The next deliverable
+            # re-resolves from the name.
+            logger.warning(
+                "[vendor/profile] legal-name re-resolve failed after rename for %s",
+                user.email, exc_info=True,
+            )
+    else:
+        if body.company is not None:
+            user.company = body.company
+        if body.industry is not None:
+            user.industry = body.industry
+        db.commit()
 
     # Propagate industry to MarketplaceVendor if linked
     if body.industry is not None:

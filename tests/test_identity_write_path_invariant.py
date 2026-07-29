@@ -83,3 +83,84 @@ def test_the_sanctioned_write_path_exists():
     assert callable(evidence_enricher.record_verified_identity)
     assert callable(evidence_enricher.trusted_cached_uen)
     assert callable(evidence_enricher._cache_trusted_for_hint)
+
+
+# ---------------------------------------------------------------------------
+# Renaming an account is the OTHER half of the same invariant.
+# ---------------------------------------------------------------------------
+#
+# The test above guards writes to `User.uen` / `User.legal_name`. It says nothing
+# about `User.company`, which is not itself an identity value — and that is exactly
+# how `PATCH /vendor/profile` shipped a rename that left `uen` and `legal_name_hint`
+# behind from the previous company.
+#
+# That residue is not dormant. `_cache_trusted_for_hint` treats a `company_hint`
+# equal to the account's own `company` as a self-render (`own_name_implies_self`),
+# so after a rename the NEW name vouches for the OLD company's UEN, and the registry
+# confirms it as a real entity. The read-side gate cannot catch this; it has to be
+# enforced where the rename happens.
+#
+# The rule: a module that can rename an account must also know how to invalidate
+# what the old name vouched for.
+
+# Writes to the two fields whose change invalidates a cached identity. Both matter:
+# `website_hint` is checked independently of the company string, because trading
+# names collide and several deliverables render the domain as the assessed subject.
+RENAME_RE = re.compile(r"\buser\.(company|website)\s*=(?!=)")
+
+# Sites that assign these fields but cannot rename, so they have nothing to clear.
+# Each is fill-when-empty (`if not user.website`, `if body.company and not
+# existing.company`) or a test/demo harness operating on a throwaway account.
+#
+# Adding a file here is a claim that it can never overwrite a NON-EMPTY company or
+# website. If that stops being true, it belongs in the clearing set instead.
+RENAME_EXEMPT = {
+    "api/stripe_checkout.py",   # fill-only, and gated on `is_self`
+    "api/vendor_features.py",   # fill-only, subsidiary invite
+    "api/admin.py",             # test-checkout harness
+    "services/pro_suite_demo_harness.py",
+    "services/csp_demo_harness.py",
+}
+
+
+def test_account_rename_paths_invalidate_the_cached_identity():
+    offenders: list[str] = []
+    for path in sorted(APP_ROOT.rglob("*.py")):
+        rel = path.relative_to(APP_ROOT).as_posix()
+        if rel in RENAME_EXEMPT:
+            continue
+        source = path.read_text()
+        renames = [
+            (n, line.strip())
+            for n, line in enumerate(source.splitlines(), start=1)
+            if RENAME_RE.search(line) and not line.strip().startswith("#")
+        ]
+        if not renames:
+            continue
+        # Presence of the call is a coarse check — it cannot prove the clear happens
+        # on the right branch. Its job is to stop a NEW rename path from being added
+        # with no awareness of the invariant at all, which is how this shipped twice.
+        if "clear_cached_identity" in source:
+            continue
+        for lineno, line in renames:
+            offenders.append(f"app/{rel}:{lineno}: {line}")
+
+    assert not offenders, (
+        "A module writes `user.company`/`user.website` but never calls "
+        "clear_cached_identity. A rename invalidates the account's cached `uen` and "
+        "`legal_name` — they were confirmed for the previous company and belong to a "
+        "different legal person now. Leaving them behind does not merely go stale: "
+        "the account's new name vouches for the old company's UEN via "
+        "`own_name_implies_self`, and ACRA returns a real, correct record for the "
+        "wrong entity.\n\n"
+        "Clear then re-resolve (see app/api/auth.py and app/api/vendor_status.py). "
+        "If this site can only fill an EMPTY field and never overwrite one, add it to "
+        "RENAME_EXEMPT in this test with a note saying which guard makes that true."
+        "\n\n" + "\n".join(offenders)
+    )
+
+
+def test_the_rename_exemptions_still_exist():
+    """An exemption for a deleted or renamed file silently widens the guard."""
+    missing = [rel for rel in RENAME_EXEMPT if not (APP_ROOT / rel).exists()]
+    assert not missing, f"RENAME_EXEMPT names files that no longer exist: {missing}"
