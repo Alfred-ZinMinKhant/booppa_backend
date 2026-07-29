@@ -381,41 +381,30 @@ def get_competitor_pulse(db, vendor_id: str) -> dict | None:
         return None
 
 
-def get_pdpa_drift(db, vendor_id: str) -> dict | None:
+def get_pdpa_drift(db, user) -> dict | None:
     """PDPA posture + drift from the vendor's two most recent completed scans.
 
     Returns {current_score, previous_score, dimension_changes, scanned_url}
     suitable for `generate_pdpa_monitor_report_pdf`. None when no PDPA scans.
+
+    Takes the ``User`` rather than an id: report selection is scoped by
+    ``User.website``, and this must return the same "current" report the Pro
+    report's headline quotes. It used to run its own query with its own key
+    ladder, which is how one PDF printed 56 in the headline and 61 in this
+    section — see :func:`pdpa_findings.latest_vendor_pdpa_reports`.
     """
     try:
-        from app.core.models import Report
         from app.services.pdpa_dimension_snapshot import compute_dimension_snapshots, diff_snapshots
+        from app.services.pdpa_findings import latest_vendor_pdpa_reports, resolve_pdpa_score
 
-        reports = (
-            db.query(Report)
-            .filter(
-                Report.owner_id == vendor_id,
-                Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
-                Report.status == "completed",
-            )
-            .order_by(Report.created_at.desc())
-            .limit(2)
-            .all()
-        )
+        reports = latest_vendor_pdpa_reports(db, user, limit=2)
         if not reports:
             return None
         cur = reports[0]
         prev = reports[1] if len(reports) > 1 else None
 
         def _score(r):
-            ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
-            for k in ("overall_score", "compliance_score", "score"):
-                if ad.get(k) is not None:
-                    try:
-                        return int(round(float(ad[k])))
-                    except (TypeError, ValueError):
-                        pass
-            return None
+            return resolve_pdpa_score(r.assessment_data)
 
         dimension_changes = []
         if prev:
@@ -434,5 +423,5 @@ def get_pdpa_drift(db, vendor_id: str) -> dict | None:
             "scanned_url": getattr(cur, "company_website", None),
         }
     except Exception as e:  # pragma: no cover
-        logger.warning("[VendorInsights] pdpa_drift failed for %s: %s", vendor_id, e)
+        logger.warning("[VendorInsights] pdpa_drift failed for %s: %s", getattr(user, "id", user), e)
         return None

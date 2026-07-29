@@ -371,6 +371,6 @@ def build_pro_report_pdf(
         "sector_benchmark": get_sector_benchmark(db, vendor_id),
         "tender_matches": get_tender_matches(db, vendor_id, limit=10, with_win_probability=True),
         "competitor_pulse": get_competitor_pulse(db, vendor_id),
-        "pdpa_drift": get_pdpa_drift(db, vendor_id),
+        "pdpa_drift": get_pdpa_drift(db, user),
         "score_basis": build_score_basis(db, vendor_id),
     })

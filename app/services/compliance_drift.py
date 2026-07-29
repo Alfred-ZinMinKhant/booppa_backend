@@ -22,14 +22,19 @@ DRIFT_THRESHOLD_PCT = 10.0  # at least a 10% relative jump in risk to flag
 
 
 def _extract_risk_score(report) -> Optional[float]:
+    """Raw 0-100 risk score for a report, or None.
+
+    Delegates to the canonical resolver. This used to read only top-level
+    ``risk_score`` / ``risk_assessment.score`` — neither of which
+    ``process_report_task`` ever writes, since it persists the AI score nested
+    under ``booppa_report.risk_assessment.score``. So it returned None on
+    precisely the reports drift analysis exists to compare.
+    """
+    from app.services.pdpa_findings import resolve_pdpa_risk_score
+
     data = report.assessment_data if isinstance(report.assessment_data, dict) else {}
-    score = data.get("risk_score")
-    if score is None and isinstance(data.get("risk_assessment"), dict):
-        score = data["risk_assessment"].get("score")
-    try:
-        return float(score) if score is not None else None
-    except (TypeError, ValueError):
-        return None
+    risk = resolve_pdpa_risk_score(data)
+    return None if risk is None else float(risk)
 
 
 def _classify_severity(delta_pct: float) -> str:

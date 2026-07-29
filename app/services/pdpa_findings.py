@@ -467,42 +467,66 @@ def latest_pdpa_score(
     if db is None or user_id is None:
         return None
     try:
-        from app.core.models import Report
-
-        # Prefer COMPLETED reports: a scan queued concurrently with the RFP kit
-        # may still be 'pending' (no score persisted yet). Grabbing the newest
-        # row regardless of status returned None even when an older completed
-        # scan (e.g. 61/100) existed — that was the D4 "not available" bug.
-        # Scan the recent history and return the first report that yields a
-        # score, so a fresh-but-unfinished scan can't shadow a finished one.
-        reports = (
-            db.query(Report)
-            .filter(
-                Report.owner_id == user_id,
-                Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
-                Report.status == "completed",
-            )
-            .order_by(Report.created_at.desc())
-            # Unscoped keeps the original 5-row window. Scoped looks further
-            # back: the filter is what narrows the result, so a small window
-            # would let five scans of *other* companies hide this subject's
-            # own report and return None.
-            .limit(25 if domain else 5)
-            .all()
+        reports = _scored_pdpa_reports(
+            db, user_id, domain=domain, allow_unattributed=allow_unattributed, limit=1
         )
-        want_host = _normalise_host(domain)
-        for report in reports:
-            if want_host:
-                got_host = _normalise_host(report.company_website)
-                if got_host != want_host and not (got_host is None and allow_unattributed):
-                    continue
-            score = resolve_pdpa_score(report.assessment_data)
-            if score is not None:
-                return score
-        return None
+        return resolve_pdpa_score(reports[0].assessment_data) if reports else None
     except Exception as exc:  # noqa: BLE001 — never block declaration on this
         logger.warning("latest_pdpa_score lookup failed for %s: %s", user_id, exc)
         return None
+
+
+def _scored_pdpa_reports(
+    db: Any,
+    user_id: Any,
+    domain: Optional[str] = None,
+    allow_unattributed: bool = False,
+    limit: int = 1,
+) -> list:
+    """The user's most recent completed PDPA reports that actually carry a score.
+
+    Ordering is ``coalesce(completed_at, created_at) desc``. Both columns were in
+    use — ``latest_pdpa_score`` ordered by ``created_at``, the Monitor Report by
+    ``completed_at`` — and those disagree whenever a scan finishes out of creation
+    order, so each consumer's "latest report" was a different row. Coalescing also
+    keeps legacy rows with a NULL ``completed_at`` in their right place.
+
+    Reports that yield no score are skipped rather than returned: a scan queued
+    concurrently may be 'completed' with nothing persisted yet, and letting it
+    shadow a finished one is the D4 "not available" bug. Skipping here is also
+    what guarantees ``resolve_pdpa_score(result[0]) == latest_pdpa_score(...)``.
+    """
+    from sqlalchemy import func
+
+    from app.core.models import Report
+
+    rows = (
+        db.query(Report)
+        .filter(
+            Report.owner_id == user_id,
+            Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
+            Report.status == "completed",
+        )
+        .order_by(func.coalesce(Report.completed_at, Report.created_at).desc())
+        # Unscoped keeps the original 5-row window. Scoped looks further back:
+        # the filter is what narrows the result, so a small window would let
+        # five scans of *other* companies hide this subject's own report.
+        .limit(25 if domain else 5)
+        .all()
+    )
+    want_host = _normalise_host(domain)
+    out = []
+    for report in rows:
+        if want_host:
+            got_host = _normalise_host(report.company_website)
+            if got_host != want_host and not (got_host is None and allow_unattributed):
+                continue
+        if resolve_pdpa_score(report.assessment_data) is None:
+            continue
+        out.append(report)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def vendor_pdpa_score(db: Any, user: Any) -> Optional[int]:
@@ -524,8 +548,45 @@ def vendor_pdpa_score(db: Any, user: Any) -> Optional[int]:
     """
     if user is None:
         return None
-    site = getattr(user, "website", None) or getattr(user, "website_hint", None)
-    user_id = getattr(user, "id", None)
-    if not site:
-        return latest_pdpa_score(db, user_id)
-    return latest_pdpa_score(db, user_id, domain=site, allow_unattributed=True)
+    reports = latest_vendor_pdpa_reports(db, user, limit=1)
+    return resolve_pdpa_score(reports[0].assessment_data) if reports else None
+
+
+def latest_vendor_pdpa_reports(db: Any, user: Any, limit: int = 2) -> list:
+    """The reports behind :func:`vendor_pdpa_score`, newest first.
+
+    Every Vendor Active/Pro deliverable must quote the same figure, but each used
+    to run its own query: the status snapshot and Pro report headline via
+    ``vendor_pdpa_score``, the Pro report's drift paragraph via
+    ``vendor_active_insights.get_pdpa_drift``, the Monitor Report and quarterly
+    snapshot via their own local closures. They disagreed on ordering, on whether
+    to scope by company, and on how to read the score out — one live Vendor Pro
+    activation shipped 56, 61 and 58 across three documents, two of those inside
+    the same PDF. Route every consumer through here so "the latest report" is one
+    row, resolved one way.
+
+    ``limit=2`` gives the current/previous pair the drift and Monitor renderers
+    need; ``result[0]`` is by construction the report ``vendor_pdpa_score``
+    quotes. Empty when the vendor has no scoreable scan — callers must treat that
+    as "not assessed" rather than substituting an unscoped lookup.
+    """
+    if db is None or user is None:
+        return []
+    try:
+        site = getattr(user, "website", None) or getattr(user, "website_hint", None)
+        user_id = getattr(user, "id", None)
+        if user_id is None:
+            return []
+        # No website means nothing to scope by, so the legacy account-wide
+        # lookup stands — no worse than before, and still empty when there is
+        # no scan at all.
+        return _scored_pdpa_reports(
+            db,
+            user_id,
+            domain=site or None,
+            allow_unattributed=bool(site),
+            limit=limit,
+        )
+    except Exception as exc:  # noqa: BLE001 — never block a deliverable on this
+        logger.warning("latest_vendor_pdpa_reports lookup failed for %s: %s", user, exc)
+        return []

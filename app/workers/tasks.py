@@ -3944,7 +3944,7 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
             except Exception as exc:
                 logger.warning("[VendorPro] tender matches unavailable for vendor %s: %s", vendor_id, exc)
             competitor_pulse = get_competitor_pulse(db, vendor_id)
-            pdpa_drift = get_pdpa_drift(db, vendor_id)
+            pdpa_drift = get_pdpa_drift(db, user)
 
         def _esc(s) -> str:
             return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -5914,7 +5914,7 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
     leaves it None and uses the stored profile company.
     """
     from app.core.models import Report, User
-    from app.services.compliance_drift import _extract_risk_score, _per_dimension_flips
+    from app.services.compliance_drift import _per_dimension_flips
     from app.services.pdpa_monitor_delta_generator import generate_pdpa_monitor_report_pdf
     from app.services.storage import S3Service
 
@@ -5940,37 +5940,22 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
         ) or "Your Organisation"
         framework = "pdpa_quick_scan"
 
+        # One shared selection for every vendor deliverable — same ordering, same
+        # website scoping, same score ladder as the status snapshot and Pro
+        # report headline. Rolling a local query here is how this report quoted
+        # 58 while the snapshot in the same activation quoted 56.
+        from app.services.pdpa_findings import latest_vendor_pdpa_reports
         if report_id:
             current = db.query(Report).get(report_id)
             if not current or current.status != "completed":
                 logger.info("[MonitorReport] scan %s not completed yet, retrying...", report_id)
                 raise self.retry(countdown=30)
-            
-            reports = (
-                db.query(Report)
-                .filter(
-                    Report.owner_id == user.id,
-                    Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
-                    Report.status == "completed",
-                    Report.id != current.id
-                )
-                .order_by(Report.completed_at.desc().nullslast())
-                .limit(1)
-                .all()
-            )
-            previous = reports[0] if reports else None
+            # `current` is pinned to the scan that triggered us; take the newest
+            # scoped report that isn't it as the comparison baseline.
+            prior = [r for r in latest_vendor_pdpa_reports(db, user, limit=3) if r.id != current.id]
+            previous = prior[0] if prior else None
         else:
-            reports = (
-                db.query(Report)
-                .filter(
-                    Report.owner_id == user.id,
-                    Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
-                    Report.status == "completed",
-                )
-                .order_by(Report.completed_at.desc().nullslast())
-                .limit(2)
-                .all()
-            )
+            reports = latest_vendor_pdpa_reports(db, user, limit=2)
             if not reports:
                 logger.info("[MonitorReport] no completed PDPA report yet for %s — skipping", email)
                 return
@@ -5978,14 +5963,7 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
             previous = reports[1] if len(reports) > 1 else None
 
         def _compliance(r) -> int | None:
-            ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
-            # Prefer the canonical persisted score (single source of truth, C2);
-            # fall back to 100 - risk_score.
-            cs = ad.get("compliance_score")
-            if isinstance(cs, (int, float)):
-                return int(round(cs))
-            risk = _extract_risk_score(r)
-            return None if risk is None else max(0, min(100, 100 - int(round(risk))))
+            return resolve_pdpa_score(r.assessment_data)
 
         cur_ad = current.assessment_data if isinstance(current.assessment_data, dict) else {}
         # Single source of truth — the Quick Scan nests findings under
@@ -6170,17 +6148,10 @@ def run_vendor_pro_pdpa_snapshot_for_user(self, vendor_id: str, vendor_email: st
         ) or "Your Organisation"
         framework = "pdpa_quick_scan"
 
-        reports = (
-            db.query(Report)
-            .filter(
-                Report.owner_id == user.id,
-                Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
-                Report.status == "completed",
-            )
-            .order_by(Report.completed_at.desc().nullslast())
-            .limit(2)
-            .all()
-        )
+        # Shared selection — see the Monitor Report above. Every Vendor Pro
+        # deliverable must resolve "the latest scan" to the same row.
+        from app.services.pdpa_findings import latest_vendor_pdpa_reports
+        reports = latest_vendor_pdpa_reports(db, user, limit=2)
         if not reports:
             logger.info("[VendorProSnapshot] no completed PDPA report yet for %s — skipping", email)
             return
@@ -6188,12 +6159,7 @@ def run_vendor_pro_pdpa_snapshot_for_user(self, vendor_id: str, vendor_email: st
         previous = reports[1] if len(reports) > 1 else None
 
         def _compliance(r) -> int | None:
-            ad = r.assessment_data if isinstance(r.assessment_data, dict) else {}
-            cs = ad.get("compliance_score")
-            if isinstance(cs, (int, float)):
-                return int(round(cs))
-            risk = _extract_risk_score(r)
-            return None if risk is None else max(0, min(100, 100 - int(round(risk))))
+            return resolve_pdpa_score(r.assessment_data)
 
         cur_ad = current.assessment_data if isinstance(current.assessment_data, dict) else {}
         # Single source of truth — the Quick Scan nests findings under
