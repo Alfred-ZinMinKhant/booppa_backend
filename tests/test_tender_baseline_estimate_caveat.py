@@ -23,6 +23,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.services.tender_service import compute_tender_win_probability
+from app.workers.tasks import resolve_tender_base_rate
 
 
 # --------------------------------------------------------------------------
@@ -280,3 +281,62 @@ def test_model_default_is_calibrated(test_db):
     test_db.commit()
     test_db.refresh(t)
     assert t.base_rate_calibrated is True
+
+
+# --------------------------------------------------------------------------
+# Layer 4 — calibration clears the flag again (it must not be one-way)
+# --------------------------------------------------------------------------
+# `refresh_gebiz_base_rates` used to rewrite `base_rate` from real GeBIZ award
+# data without ever touching `base_rate_calibrated`. Combined with the two
+# auto-create paths that write False, the flag could only ever travel one way:
+# every newly-synced tender entered uncalibrated and stayed uncalibrated even
+# after it was calibrated. The customer-visible symptom is the footnote
+# asserting "limited award history for this category" about a tender calibrated
+# from real award records — and, as the caveat spreads to every row, an asterisk
+# that carries no information at all.
+def test_agency_rate_marks_tender_calibrated():
+    rate, calibrated = resolve_tender_base_rate(
+        "GovTech", "ICT", {"GOVTECH": 0.42}, {"ICT": 0.31}, 0.20
+    )
+    assert (rate, calibrated) == (0.42, True)
+
+
+def test_sector_rate_marks_tender_calibrated():
+    """No agency match — the sector rate is still a real calibration."""
+    rate, calibrated = resolve_tender_base_rate(
+        "MOH", "ICT", {"GOVTECH": 0.42}, {"ICT": 0.31}, 0.20
+    )
+    assert (rate, calibrated) == (0.31, True)
+
+
+def test_default_fallback_is_not_a_calibration():
+    """The placeholder must never be reported as calibrated."""
+    rate, calibrated = resolve_tender_base_rate("MOH", "Healthcare", {}, {}, 0.20)
+    assert (rate, calibrated) == (0.20, False)
+
+
+def test_calibration_flag_is_not_one_way():
+    """A previously-uncalibrated tender flips to True once a rate is available.
+
+    This is the regression the extraction exists to guard: assert on the
+    provenance decision itself, so removing the flag write in the refresh loop
+    fails here rather than surfacing months later in a footnote.
+    """
+    sector_rates = {"ICT": 0.31}
+    _, before = resolve_tender_base_rate("GovTech", "ICT", {}, {}, 0.20)
+    _, after = resolve_tender_base_rate("GovTech", "ICT", {}, sector_rates, 0.20)
+    assert before is False
+    assert after is True
+
+
+def test_losing_award_data_reverts_flag_to_uncalibrated():
+    """Honesty runs both directions: no data means no calibration claim."""
+    _, calibrated = resolve_tender_base_rate("GovTech", "ICT", {}, {}, 0.20)
+    assert calibrated is False
+
+
+def test_falsy_rate_is_still_a_calibration():
+    """A computed rate at the clamp floor is truthy-adjacent but must not be
+    mistaken for "no rate" — the original `or`-chain would have skipped 0.0."""
+    rate, calibrated = resolve_tender_base_rate("X", "Y", {"X": 0.0}, {}, 0.20)
+    assert (rate, calibrated) == (0.0, True)

@@ -6693,6 +6693,31 @@ def run_compliance_evidence_monthly_refresh():
         db.close()
 
 
+def resolve_tender_base_rate(
+    agency: str | None,
+    sector: str | None,
+    agency_rates: dict,
+    sector_rates: dict,
+    default_rate: float,
+) -> tuple[float, bool]:
+    """Pick a tender's base rate and say whether it is a real calibration.
+
+    Returns ``(rate, calibrated)``. Prefers the agency-specific award rate, then
+    the sector rate; falling back to ``default_rate`` is NOT a calibration and
+    reports ``False`` so the customer-facing "baseline estimate" caveat keeps
+    telling the truth.
+
+    Extracted from `refresh_gebiz_base_rates` so the provenance rule is directly
+    testable without standing up the data.gov.sg fetch.
+    """
+    computed = agency_rates.get((agency or "").upper().strip())
+    if computed is None:
+        computed = sector_rates.get((sector or "OTHER").upper().strip())
+    if computed is None:
+        return default_rate, False
+    return computed, True
+
+
 @celery_app.task(name="refresh_gebiz_base_rates")
 def refresh_gebiz_base_rates():
     """
@@ -6938,22 +6963,33 @@ def refresh_gebiz_base_rates():
             # ── 3. Update TenderShortlist.base_rate ─────────────────────────────
             tenders = db.query(TenderShortlist).all()
             updated = 0
+            recalibrated = 0
             for tender in tenders:
-                # Prefer agency-specific rate; fall back to sector rate; then default
-                agency_key = (tender.agency or "").upper().strip()
-                sector_key = (tender.sector or "OTHER").upper().strip()
-                new_rate = (
-                    agency_rates.get(agency_key)
-                    or sector_rates.get(sector_key)
-                    or DEFAULT_BASE_RATE
+                new_rate, is_calibrated = resolve_tender_base_rate(
+                    tender.agency, tender.sector,
+                    agency_rates, sector_rates, DEFAULT_BASE_RATE,
                 )
+
                 if abs(new_rate - tender.base_rate) > 0.005:
                     tender.base_rate = round(new_rate, 4)
                     updated += 1
 
+                # The flag must track the *provenance* of the rate, independently
+                # of whether the number moved. Without this the flag was one-way:
+                # the auto-create paths write False and nothing ever wrote True, so
+                # a tender calibrated from real award data kept claiming "limited
+                # award history for this category" in the customer-facing footnote
+                # (vendor_snapshot_generator / vendor_pro_report_generator) forever.
+                # Falling back to DEFAULT_BASE_RATE is not a calibration, so that
+                # case reverts to False rather than sticking at True.
+                if tender.base_rate_calibrated != is_calibrated:
+                    tender.base_rate_calibrated = is_calibrated
+                    recalibrated += 1
+
             db.commit()
             logger.info(
                 f"[GeBIZ] base_rate refresh complete: {updated}/{len(tenders)} tenders updated "
+                f"({recalibrated} calibration-flag changes) "
                 f"from {sum(sector_tenders.values())} award records"
             )
 

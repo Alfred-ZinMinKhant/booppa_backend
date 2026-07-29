@@ -1315,6 +1315,23 @@ async def simulate_purchase(
                 _cache.delete(_cache.cache_key(f"sub_activated:{sim_sub_id}"))
             except Exception as exc:
                 logger.warning("[simulate-purchase] force_resend cache clear failed: %s", exc)
+        # Peek at the guard BEFORE activating so the response can say whether
+        # side effects actually fired. Without this the endpoint returns a
+        # cheerful 200 for a run that sent no email and queued no work, and the
+        # only trace is a worker log line — which reads to the tester as
+        # "fulfillment is broken" rather than "this was deduped". Safe to peek:
+        # this is the single-caller QA tool, and `activate_subscription` still
+        # does the atomic SET NX claim, so a race can only make this optimistic.
+        suppressed = False
+        if not body.force_resend:
+            try:
+                from app.core.cache import cache as _cache
+                suppressed = _cache.get(
+                    _cache.cache_key(f"sub_activated:{sim_sub_id}")
+                ) is not None
+            except Exception as exc:
+                logger.warning("[simulate-purchase] guard peek failed: %s", exc)
+
         await activate_subscription(
             product_type=product_type,
             customer_email=customer_email,
@@ -1337,7 +1354,17 @@ async def simulate_purchase(
                 "subscription_id": str(sub.id) if sub else None,
                 "stripe_subscription_id": sim_sub_id,
                 "force_resend": body.force_resend,
+                # The entitlement grant is idempotent and always applies; this
+                # flag is specifically about the activation email + first-cycle
+                # deliverable fan-out, which is what a tester is waiting for.
+                "side_effects_fired": not suppressed,
             }
+            if suppressed:
+                details["warning"] = (
+                    f"{customer_email} already activated {product_type} within the last "
+                    "24h, so NO email was sent and NO deliverables were queued. The plan "
+                    "entitlement is still applied. Re-send with \"force_resend\": true."
+                )
         finally:
             db.close()
 
