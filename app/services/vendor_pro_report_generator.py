@@ -74,7 +74,8 @@ def generate_vendor_pro_report_pdf(data: Dict[str, Any]) -> bytes:
                     verification/documentation composite (scoring.py).
       trend: {total_delta, compliance_delta, sector_percentile},
       sector_benchmark: {sector, percentile},
-      tender_matches: [{title, agency, closing_date, bid_label, win_probability}],
+      tender_matches: [{title, agency, closing_date, bid_label, win_probability,
+                        win_probability_is_baseline}],  # baseline → render "~N%*"
       competitor_pulse: {top_suppliers, win_rate_by_size, sector_trend, sector, total_awards},
       pdpa_drift: {current_score, previous_score, dimension_changes},
     """
@@ -156,15 +157,30 @@ def generate_vendor_pro_report_pdf(data: Dict[str, Any]) -> bytes:
             cd = m.get("closing_date")
             close = cd.strftime("%d %b %Y") if hasattr(cd, "strftime") else (str(cd) if cd else "—")
             wp = m.get("win_probability")
+            if not isinstance(wp, (int, float)):
+                wp_txt = "—"
+            elif m.get("win_probability_is_baseline"):
+                # No calibrated base rate for this tender's category, so the
+                # figure is a category baseline, not a tender-specific estimate.
+                # The tilde signals that; the footnote below says why.
+                wp_txt = f"~{wp:.0f}%*"
+            else:
+                wp_txt = f"{wp:.0f}%"
             rows.append([
                 Paragraph(_xml_escape((m.get("title") or "")[:60]), s["cell"]),
                 Paragraph(_xml_escape((m.get("agency") or "")[:24]), s["cell"]),
                 Paragraph(close, s["cell"]),
                 Paragraph(_xml_escape(m.get("bid_label") or "—"), s["cell"]),
-                Paragraph(f"{wp}%" if wp is not None else "—", s["cell"]),
+                Paragraph(wp_txt, s["cell"]),
             ])
         story.append(_table(rows, [2.5 * inch, 1.3 * inch, 0.9 * inch, 0.8 * inch, 0.7 * inch]))
         story.append(Spacer(1, 4))
+        if any(m.get("win_probability_is_baseline") for m in matches[:10]):
+            story.append(Paragraph(
+                "* Baseline estimate &mdash; limited award history for this category. "
+                "Figures marked with ~ reflect a category baseline adjusted for your "
+                "profile, not this tender's own award record.", s["small"]))
+            story.append(Spacer(1, 4))
         story.append(Paragraph("Win % is an estimate from your verification depth, evidence, and "
                                "sector standing. Guidance, not a guarantee.", s["small"]))
     else:

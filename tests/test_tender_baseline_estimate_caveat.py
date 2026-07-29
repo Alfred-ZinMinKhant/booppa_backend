@@ -174,6 +174,71 @@ def test_snapshot_handles_missing_probability(monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# Layer 2b — the Vendor Pro monthly report renders the same caveat
+#
+# Confirmed on a second product after the snapshot fix shipped: eight tenders
+# across six unrelated agencies (Singapore Polytechnic, NLB, HSA, STB, MOE x2)
+# all quoted "30.2%". Same placeholder base rate, a separate template that
+# received `win_probability_is_baseline` from `get_tender_matches` and dropped
+# it at render. Both generators must stay in step.
+# --------------------------------------------------------------------------
+def _pro_report_texts(monkeypatch, matches):
+    from app.services import vendor_pro_report_generator as gen
+
+    texts = _capture_paragraphs(monkeypatch, gen)
+    pdf = gen.generate_vendor_pro_report_pdf({
+        "company_name": "Baseline Pte Ltd",
+        "plan_label": "Vendor Pro",
+        "tender_matches": matches,
+    })
+    assert pdf.startswith(b"%PDF")
+    return texts
+
+
+def test_pro_report_marks_uncalibrated_matches_and_explains_why(monkeypatch):
+    """The reported shape: eight tenders, one placeholder rate, six agencies."""
+    matches = [_match(f"Tender {i}", 30.2, True) for i in range(8)]
+    texts = _pro_report_texts(monkeypatch, matches)
+
+    cells = [t for t in texts if "%" in t and "30" in t]
+    assert cells, "no win-probability cells rendered"
+    assert all(t == "~30%*" for t in cells), cells
+    assert not any("30.2" in t for t in texts)
+
+    assert any(FOOTNOTE_MARKER in t for t in texts), "caveat footnote missing"
+
+
+def test_pro_report_leaves_calibrated_matches_uncaveated(monkeypatch):
+    texts = _pro_report_texts(monkeypatch, [_match("Calibrated tender", 42.0, False)])
+
+    assert any(t == "42%" for t in texts), [t for t in texts if "%" in t]
+    assert not any("~" in t and "%" in t for t in texts)
+    assert not any(FOOTNOTE_MARKER in t for t in texts)
+
+
+def test_pro_report_footnote_appears_when_any_match_is_baseline(monkeypatch):
+    texts = _pro_report_texts(monkeypatch, [
+        _match("Calibrated", 42.0, False),
+        _match("Placeholder", 30.2, True),
+    ])
+
+    assert any(t == "42%" for t in texts)
+    assert any(t == "~30%*" for t in texts)
+    assert any(FOOTNOTE_MARKER in t for t in texts)
+
+
+def test_pro_report_handles_missing_probability(monkeypatch):
+    """A None probability must render an em dash, never "~None%"."""
+    texts = _pro_report_texts(monkeypatch, [
+        _match("Scored", 42.0, False),
+        _match("Unscored", None, True),
+    ])
+
+    assert any(t == "—" for t in texts)
+    assert not any("None" in t for t in texts)
+
+
+# --------------------------------------------------------------------------
 # Layer 3 — the auto-create paths write the flag
 # --------------------------------------------------------------------------
 def test_auto_created_tender_is_marked_uncalibrated(test_db):

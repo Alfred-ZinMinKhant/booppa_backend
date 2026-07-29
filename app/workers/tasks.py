@@ -5690,7 +5690,13 @@ def _pdpa_monitor_briefing_bullets(company, sector, findings, current_score, pre
     # mismatch: the PDF renders the finding's own legislation, so the email must
     # cite from the same source, not invent section numbers).
     def _sections(text):
-        return {m.upper() for m in _re.findall(r"(?:§|s\.?)\s*(\d+[A-Z]?)", str(text or ""))}
+        s = str(text or "")
+        found = {m.upper() for m in _re.findall(r"(?:§|s\.?)\s*(\d+[A-Z]?)", s)}
+        # The Do Not Call obligations are cited by Part, not by section, in every
+        # verified reference we hold. Without this the DNC dimension contributed
+        # nothing to the allow-list and its bullet had no citation to carry.
+        found |= {f"PART {m}" for m in _re.findall(r"\bPart\s+(\d+)\b", s, _re.IGNORECASE)}
+        return found
 
     flist = findings if isinstance(findings, list) else []
     if not flist:
@@ -5706,6 +5712,19 @@ def _pdpa_monitor_briefing_bullets(company, sector, findings, current_score, pre
         dim = f.get("dimension") or f.get("type") or f.get("category") or "finding"
         desc = f.get("title") or f.get("description") or ""
         leg = f.get("legislation") or f.get("legislation_violated") or ""
+        if not str(leg).strip():
+            # A finding with no legislation of its own contributed nothing to the
+            # allow-list, and three such findings emptied it entirely — which is
+            # how the literal prompt fallback "(none provided)" ended up quoted
+            # back to the customer in all three briefing bullets. Backfill from
+            # the curated slug map (the same source the PDF prints), never from
+            # the model.
+            try:
+                from app.services.booppa_ai_service import VIOLATION_LEGISLATION
+                slug = f.get("type") or f.get("violation_type") or ""
+                leg = "; ".join(VIOLATION_LEGISLATION.get(slug) or [])
+            except Exception:
+                leg = ""
         leg_str = f" (Legislation: {leg})" if leg else ""
         lines.append(f"- [{sev}] {dim}: {desc}{leg_str}".strip())
         allowed_sections |= _sections(leg)
@@ -5734,7 +5753,28 @@ def _pdpa_monitor_briefing_bullets(company, sector, findings, current_score, pre
     else:
         delta = ""
 
-    allow_str = ", ".join(f"§{s}" for s in sorted(allowed_sections)) or "(none provided)"
+    # "PART 9" is a Part reference, not a section — rendering it as "§PART 9"
+    # would put a malformed citation in front of the model (and, via the
+    # deterministic bullets, the customer).
+    def _cite(tok):
+        return f"PDPA {tok.title()}" if tok.startswith("PART ") else f"§{tok}"
+
+    if not allowed_sections:
+        # No finding yielded a citable section, so the prompt's allow-list would read
+        # "(none provided)" — and the model quotes that phrase straight back, which is
+        # how "referencing PDPA section (none provided)" reached a customer's inbox.
+        # _validate() cannot catch it: _sections("(none provided)") is empty, so the
+        # bullet counts as advisory and is kept. The only safe move is not to ask.
+        logger.warning(
+            "[MonitorReport] no citable PDPA section across %d findings for %s "
+            "— skipping model briefing", len(flist), company,
+        )
+        # A finding can still name an Act with no parseable section ("Spam Control
+        # Act"); those deterministic bullets are finding-grounded and beat the
+        # generic list, which hard-codes §26D regardless of the org's findings.
+        return deterministic[:3] if deterministic else _GENERIC_MONITOR_BRIEFING
+
+    allow_str = ", ".join(_cite(s) for s in sorted(allowed_sections))
     try:
         import json as _json
 
@@ -5878,7 +5918,11 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
         # assessment_data["booppa_report"]["detailed_findings"]. Reading only the
         # top-level keys here is what produced the "0 vs 2 open findings"
         # contradiction between the Monitor Report and the Quick Scan.
-        findings = resolve_pdpa_findings(cur_ad)
+        # ...and a scan can score dimensions Non-Compliant while persisting zero
+        # AI findings (incident 22fb2871), which left the Monitor Report with an
+        # empty list to brief from. The dimension-aware resolver fills only the
+        # genuine gaps; AI-authored findings still win.
+        findings = resolve_pdpa_findings_with_dimensions(cur_ad)
         dimension_changes = (
             _per_dimension_flips(db, str(user.id), framework, current.id, previous.id)
             if previous else []
@@ -6082,7 +6126,9 @@ def run_vendor_pro_pdpa_snapshot_for_user(self, vendor_id: str, vendor_email: st
         # assessment_data["booppa_report"]["detailed_findings"]. Reading only the
         # top-level keys here is what produced the "0 vs 2 open findings"
         # contradiction between the Monitor Report and the Quick Scan.
-        findings = resolve_pdpa_findings(cur_ad)
+        # ...and see the Monitor Report above: a Non-Compliant dimension with no
+        # AI finding must not read as clean here either (incident 22fb2871).
+        findings = resolve_pdpa_findings_with_dimensions(cur_ad)
         dimension_flips = (
             _per_dimension_flips(db, str(user.id), framework, current.id, previous.id)
             if previous else []

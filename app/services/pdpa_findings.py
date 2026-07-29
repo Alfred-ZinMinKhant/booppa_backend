@@ -177,6 +177,20 @@ def synthesize_dimension_finding(
         return None
     _keywords, type_slug, requirements = spec
     severity = "HIGH" if status == "Non-Compliant" else "MEDIUM"
+
+    # Every consumer that cites law reads `legislation`. A synthesized finding
+    # omitting it is not merely unadorned: the PDPA Monitor briefing builds its
+    # allow-list of citable sections from this key, so an empty one left the
+    # customer-facing bullets reading "referencing PDPA section (none provided)".
+    # Sourced from the curated VIOLATION_LEGISLATION map (imported lazily —
+    # booppa_ai_service imports this module) so the wording can never diverge
+    # from what the PDF prints for the same slug.
+    try:
+        from app.services.booppa_ai_service import VIOLATION_LEGISLATION
+        legislation = "; ".join(VIOLATION_LEGISLATION.get(type_slug) or [])
+    except Exception:  # pragma: no cover - import guard only
+        legislation = ""
+
     return {
         "type": type_slug,
         "title": name,
@@ -189,6 +203,7 @@ def synthesize_dimension_finding(
             f"({status}) — see Section 4."
         ),
         "requirements": requirements,
+        "legislation": legislation,
         "acceptance_criteria": [
             f"A re-scan scores {name} at 85/100 or above (Compliant).",
         ],

@@ -300,7 +300,15 @@ VIOLATION_LEGISLATION: Dict[str, List[str]] = {
     "security_headers_violation": ["PDPA 2012 s.24"],
     "cookie_attributes_violation": ["PDPA 2012 s.24"],
     "data_subject_rights_violation": ["PDPA 2012 s.21", "PDPA 2012 s.22"],
-    "dnc_registry_violation": ["DNC Registry", "Spam Control Act"],
+    # The statutory locus is quoted verbatim from `pdpc_precedents.LEGISLATION`
+    # so the DNC entry carries a citable reference like every other slug — an
+    # entry naming only the registry and the Act gave the Monitor briefing
+    # nothing to cite for this dimension.
+    "dnc_registry_violation": [
+        "PDPA Part 9 Do Not Call Provisions",
+        "DNC Registry",
+        "Spam Control Act",
+    ],
 }
 
 # Slugs whose penalty ceiling is NOT the PDPA financial cap. Unsolicited
