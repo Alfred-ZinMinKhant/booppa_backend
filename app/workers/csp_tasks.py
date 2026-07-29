@@ -803,7 +803,11 @@ def run_csp_baseline_for_user(
     from app.services.csp_baseline_generator import generate_csp_baseline_pdf
     from app.services.email_service import EmailService
     from app.services.email_layout import branded_email_html, email_button
-    from app.services.evidence_enricher import display_legal_name, fetch_acra_status
+    from app.services.evidence_enricher import (
+        display_legal_name,
+        fetch_acra_status,
+        trusted_cached_uen,
+    )
     from app.services.storage import S3Service
 
     # Atomic once-only guard on the SEND, claimed just before the email rather
@@ -878,8 +882,16 @@ def run_csp_baseline_for_user(
             uen = (entity.uen or "").strip() or None
         else:
             uen = (override_uen or "").strip() or None
-            if not uen and not (override_company or "").strip():
-                uen = (getattr(user, "uen", "") or "").strip() or None
+            if not uen:
+                # The CSP firm's own baseline: the account genuinely IS the subject
+                # here, so its cached UEN is usable — but only through the trust
+                # gate. Reading `user.uen` raw is how a stale value survives an
+                # account's company change and gets matched against the registry as
+                # another company's identity. `None` means "no UEN supplied", and
+                # `fetch_acra_status` falls through to a name-only lookup.
+                uen = trusted_cached_uen(
+                    user, company_hint=company_name, website_hint=website
+                )
 
         acra = {}
         try:
