@@ -1343,6 +1343,12 @@ async def simulate_purchase(
             # PDPA Monitor report) without mutating the real user profile.
             override_company=company_name or None,
             override_website=vendor_url or None,
+            # Releasing the subscription claim above is necessary but NOT
+            # sufficient: the PDPA rescan has its own same-day lock and 24h DB
+            # check, and the Monitor Report, drift check and quarterly snapshot
+            # are all queued from inside it. Without this a same-day re-test
+            # delivered the digest alone.
+            force_rescan=body.force_resend,
         )
         db = SessionLocal()
         try:

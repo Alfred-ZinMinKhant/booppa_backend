@@ -3756,7 +3756,7 @@ def fulfill_cover_sheet_task(
 
 
 @celery_app.task(bind=True, max_retries=2, name="vendor_active_health_check_task")
-def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, override_company: str | None = None, is_first_cycle: bool = False):
+def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, override_company: str | None = None, is_first_cycle: bool = False, dedupe_key: str | None = None):
     """
     Single consolidated digest for Vendor Active / Vendor Pro subscribers.
 
@@ -3774,11 +3774,35 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
     `is_first_cycle=True` (set by the activation wrappers) switches the framing
     from "monthly digest" to "welcome". `override_company` is test-harness-only
     (admin Test Identity) and never mutates the stored profile.
+
+    `dedupe_key` is a per-activation token used only by the Vendor Pro first
+    cycle, which dispatches this task from several mutually-exclusive places (see
+    `run_vendor_pro_activation_for_user`). Exactly one of those may send. It is
+    deliberately NOT the monthly guard below: that one is keyed on the calendar
+    month and is skipped for first cycles so a QA re-activation still delivers.
     """
     db = SessionLocal()
     try:
         from datetime import datetime, timezone, timedelta
-        
+
+        # Per-activation once-only claim. The Vendor Pro first cycle races a
+        # chained dispatch (after the PDPA scan lands) against a delayed safety
+        # net (in case the scan task dropped); whichever arrives first sends and
+        # the other must fall out. Keyed on a token minted per activation, so a
+        # later re-activation — including an admin force_resend re-test — mints a
+        # fresh key and is never blocked by this.
+        if dedupe_key:
+            redis_client = celery_app.backend.client
+            if redis_client is not None:
+                if not redis_client.set(
+                    f"vendor_active_digest_once:{dedupe_key}", "1", nx=True, ex=86400
+                ):
+                    logger.info(
+                        f"[VendorActive] Digest already dispatched for activation "
+                        f"{dedupe_key} ({vendor_id}), skipping duplicate."
+                    )
+                    return
+
         # M3: Idempotency guard for monthly digests. Both the invoice webhook
         # and the beat cron can trigger this in the same month.
         if not is_first_cycle:
@@ -5534,11 +5558,19 @@ def pdpa_monitor_monthly_alert_task(self, vendor_id: str, vendor_email: str):
 
 
 @celery_app.task(bind=True, max_retries=2, name="pdpa_monitor_monthly_rescan_task")
-def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, website_url: str, override_company: str | None = None, source: str = "pdpa_monitor_monthly", test_simulation: bool = False):
+def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, website_url: str, override_company: str | None = None, source: str = "pdpa_monitor_monthly", test_simulation: bool = False, then_health_check: str | None = None, force_rescan: bool = False):
     """
     Monthly PDPA re-scan for PDPA Monitor subscribers.
     Creates a new PDPA report and queues fulfill_pdpa_task.
     Schedules a delayed drift check after the scan has had time to complete.
+
+    `then_health_check` (a dedupe token, Vendor Pro activation only) chains
+    `vendor_active_health_check_task` to run *after* this scan has landed. The
+    status snapshot and Pro report read `vendor_pdpa_score` at render time, so
+    firing them concurrently with this task made a first-ever activation ship a
+    snapshot saying "N/A — NO PDPA SCAN" alongside a Monitor Report quoting a
+    real score, minutes apart. Every exit path below must still dispatch it:
+    a dropped digest is worse than an inconsistent one.
 
     `override_company` is test-harness-only (admin Test Identity); production
     monthly runs leave it None and use the stored profile company.
@@ -5575,19 +5607,52 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
         # second scan on the same day, so exempting test runs bought no on-demand
         # rescan ability while leaving the race open. Degrades to the DB check
         # below when Redis is unavailable.
+        def _dispatch_chained_digest(reason: str):
+            """Release the chained Vendor Pro welcome digest.
+
+            Called on every exit path. On the drop paths the scan is not ours to
+            wait for, so the digest goes out now rather than never — it may still
+            render "no scan yet", but the buyer gets their activation email, and
+            the safety net in the wrapper is not the only thing standing between
+            them and silence.
+            """
+            if not then_health_check:
+                return
+            try:
+                vendor_active_health_check_task.delay(
+                    str(vendor_id), vendor_email, override_company,
+                    is_first_cycle=True, dedupe_key=then_health_check,
+                )
+                logger.info(f"[PdpaMonitor] Chained Vendor Pro digest dispatched ({reason}) for {vendor_id}")
+            except Exception as dispatch_err:  # noqa: BLE001 — never strand the digest
+                logger.error(f"[PdpaMonitor] Chained digest dispatch failed for {vendor_id}: {dispatch_err}")
+
         from app.core.cache import cache as _cache
         _day = datetime.now(timezone.utc).strftime("%Y%m%d")
-        _lock_key = f"pdpa_rescan_lock:{vendor_id}:{_day}:{source}"
+        # `force_rescan` (admin force_resend only) gives this run its own lock key
+        # rather than skipping the claim. The race this lock closes — two callers
+        # scanning the same vendor concurrently — stays closed for every other
+        # caller, and two forced runs still can't collide with each other because
+        # each carries a distinct nonce.
+        if force_rescan:
+            _lock_key = f"pdpa_rescan_lock:{vendor_id}:{_day}:{source}:force:{_uuid.uuid4().hex[:8]}"
+        else:
+            _lock_key = f"pdpa_rescan_lock:{vendor_id}:{_day}:{source}"
         if not _cache.add(_lock_key, {"queued": True}, ttl=86400):
             logger.info(f"[PdpaMonitor] Atomic drop: rescan already reserved today for {vendor_id} source={source}")
+            _dispatch_chained_digest("atomic drop")
             return
 
         # Idempotency lock: drop if a scan is already pending or recently run (24h).
         # Do NOT re-import datetime/timezone/timedelta here — they are module-level,
         # and a local import makes them local for the whole function body, which
         # made the `datetime.now()` call above raise UnboundLocalError on every run.
+        # The second of the two blocks a same-day QA re-test hits. Clearing the
+        # subscription claim alone left this one standing, so the rescan dropped
+        # and took the Monitor Report, drift check and quarterly snapshot with it
+        # — the tester saw the digest arrive alone and read it as broken delivery.
         recent_threshold = datetime.now(timezone.utc) - timedelta(hours=24)
-        recent_scan = (
+        recent_scan = None if force_rescan else (
             db.query(Report)
             .filter(
                 Report.owner_id == _uuid.UUID(vendor_id),
@@ -5600,6 +5665,9 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
         if recent_scan and isinstance(recent_scan.assessment_data, dict):
             if recent_scan.assessment_data.get("triggered_by") == source:
                 logger.info(f"[PdpaMonitor] Idempotency drop: scan already exists for {vendor_id} within 24h source={source}")
+                # A scan from the last 24h already exists, so the digest will
+                # render a real score — dispatch immediately, nothing to wait for.
+                _dispatch_chained_digest("idempotency drop")
                 return
 
         stub = Report(
@@ -5627,6 +5695,12 @@ def pdpa_monitor_monthly_rescan_task(self, vendor_id: str, vendor_email: str, we
         # separate raw Quick-Scan email.
         asyncio.run(fulfill_pdpa(report_id=str(stub.id), customer_email=vendor_email, send_email=False))
         logger.info(f"PDPA Monitor monthly re-scan complete for vendor {vendor_id}")
+
+        # The scan above is synchronous, so the report is committed and scored by
+        # this line. Releasing the Vendor Pro welcome digest here is what makes
+        # the status snapshot, Pro report and Monitor Report all quote the SAME
+        # compliance figure on a first activation.
+        _dispatch_chained_digest("scan complete")
 
         # Deliver the month-over-month Monitor Report PDF — the actual Monitor
         # deliverable (distinct from the one-off Quick Scan). Short countdown so
@@ -9313,7 +9387,7 @@ def run_vendor_active_check_for_user(self, user_id: str, override_company: str |
 
 
 @celery_app.task(bind=True, max_retries=2, name="run_pdpa_monitor_cycle_for_user")
-def run_pdpa_monitor_cycle_for_user(self, user_id: str, override_website: str | None = None, override_company: str | None = None, test_simulation: bool = False):
+def run_pdpa_monitor_cycle_for_user(self, user_id: str, override_website: str | None = None, override_company: str | None = None, test_simulation: bool = False, force_rescan: bool = False):
     """Per-user wrapper: queue PDPA Monitor's monthly rescan.
 
     `override_website` / `override_company` are test-harness-only (admin Test
@@ -9332,14 +9406,14 @@ def run_pdpa_monitor_cycle_for_user(self, user_id: str, override_website: str | 
                 user.email,
             )
             return
-        pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website, override_company, test_simulation=test_simulation)
+        pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website, override_company, test_simulation=test_simulation, force_rescan=force_rescan)
     finally:
         if db:
             db.close()
 
 
 @celery_app.task(bind=True, max_retries=2, name="run_vendor_pro_activation_for_user")
-def run_vendor_pro_activation_for_user(self, user_id: str, override_website: str | None = None, override_company: str | None = None, test_simulation: bool = False):
+def run_vendor_pro_activation_for_user(self, user_id: str, override_website: str | None = None, override_company: str | None = None, test_simulation: bool = False, force_rescan: bool = False):
     """Per-user wrapper: Vendor Pro inherits Vendor Active's monthly health
     check + an immediate first PDPA rescan (Vendor Pro's quarterly cycle
     normally fires Jan/Apr/Jul/Oct; on activation we kick the first one now).
@@ -9352,13 +9426,35 @@ def run_vendor_pro_activation_for_user(self, user_id: str, override_website: str
         if not user or not user.email:
             logger.warning("[VendorProFirstCycle] no user/email for id=%s", user_id)
             return
-        # Health check (same as Vendor Active) — consolidated welcome digest
-        vendor_active_health_check_task.delay(str(user.id), user.email, override_company, is_first_cycle=True)
-        # First PDPA rescan if a website is configured
         website = (override_website or "").strip() or (getattr(user, "website", "") or "").strip()
         if website:
-            pdpa_monitor_monthly_rescan_task.delay(str(user.id), user.email, website, override_company, source="vendor_pro", test_simulation=test_simulation)
+            # Order matters. The digest renders the status snapshot and Pro
+            # report, both of which read `vendor_pdpa_score` at render time, so
+            # firing it concurrently with the scan made a first-ever activation
+            # ship "N/A — NO PDPA SCAN" next to a Monitor Report quoting a real
+            # score. Chain it behind the scan instead; the scan task releases it.
+            import uuid as _uuid
+            digest_token = f"vendorpro:{user.id}:{_uuid.uuid4().hex[:12]}"
+            pdpa_monitor_monthly_rescan_task.delay(
+                str(user.id), user.email, website, override_company,
+                source="vendor_pro", test_simulation=test_simulation,
+                then_health_check=digest_token, force_rescan=force_rescan,
+            )
+            # Safety net: if the scan task dies outright (broker loss, exhausted
+            # retries) the chained dispatch never happens and the buyer gets NO
+            # activation email at all — worse than an inconsistent one. This
+            # fires regardless; the shared token means whichever lands first
+            # sends and the other is dropped. The delay is generous enough that
+            # a healthy scan wins the race and the figures agree.
+            vendor_active_health_check_task.apply_async(
+                args=[str(user.id), user.email, override_company],
+                kwargs={"is_first_cycle": True, "dedupe_key": digest_token},
+                countdown=900,
+            )
         else:
+            # No website: no scan will ever run, so there is nothing to wait for
+            # and the snapshot's "not assessed" figure is the honest final answer.
+            vendor_active_health_check_task.delay(str(user.id), user.email, override_company, is_first_cycle=True)
             logger.warning(
                 "[VendorProFirstCycle] %s has no website — PDPA scan skipped; will fire after profile update",
                 user.email,

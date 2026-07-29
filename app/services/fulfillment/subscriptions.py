@@ -189,6 +189,7 @@ async def _activate_subscription(
     override_company: str | None = None,
     override_website: str | None = None,
     demo: bool = False,
+    force_rescan: bool = False,
 ) -> None:
     """
     Persist subscription state when a new Stripe subscription is created or renewed.
@@ -205,6 +206,15 @@ async def _activate_subscription(
     real user profile (the harness email can be a real account). They are passed
     through to the per-user first-cycle wrappers; production renewals leave them
     None and fall back to the stored profile as before.
+
+    `force_rescan` is set ONLY by the admin harness's `force_resend`. Releasing
+    the once-per-subscription claim is not enough to re-deliver a Vendor Pro test
+    run: the PDPA rescan has its own same-day Redis lock AND a 24h DB check, and
+    every deliverable queued from inside it (Monitor Report, drift check,
+    quarterly snapshot) dies with it. A same-day re-test therefore delivered the
+    digest alone and looked like broken fulfillment. This flag bypasses those two
+    scan-level guards for that one run; it must stay false on every production
+    path, where the guards close a real duplicate-scan race.
 
     `demo` is set True ONLY when the originating Stripe event's `livemode` is
     explicitly False (test-mode checkout). It routes buyer activations to the
@@ -370,6 +380,7 @@ async def _activate_subscription(
                     override_website=override_website,
                     override_company=override_company,
                     test_simulation=test_simulation,
+                    force_rescan=force_rescan,
                 )
             elif new_plan == "compliance_evidence":
                 _wtasks.run_compliance_evidence_cycle_for_user.delay(
@@ -387,6 +398,7 @@ async def _activate_subscription(
                     override_website=override_website,
                     override_company=override_company,
                     test_simulation=test_simulation,
+                    force_rescan=force_rescan,
                 )
             elif new_plan in ("buyer_starter", "buyer_pro", "buyer_enterprise"):
                 if demo:
