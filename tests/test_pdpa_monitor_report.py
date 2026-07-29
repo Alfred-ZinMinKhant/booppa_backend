@@ -89,3 +89,65 @@ def test_task_builds_delta_from_two_reports(test_db, mocker):
     # The report compares the two scans (61 current vs 54 previous).
     txt = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(captured["pdf"])).pages)
     assert "61" in txt and "54" in txt
+
+
+def test_briefing_bullets_and_their_citations_reach_the_pdf():
+    """The PDF is the artifact a customer forwards to a regulator.
+
+    `_pdpa_monitor_briefing_bullets` — the function carrying the finding-grounded
+    PDPA section citations — fed `briefing_html` in the email body and nothing
+    else. The generator's data contract had no field for it, so a Monitor PDF
+    contained zero §-references no matter what the findings said. A reviewer
+    checking the deliverable for "a real §-number instead of (none provided)"
+    found no citation at all, which is indistinguishable from the bug.
+    """
+    from app.services.pdpa_monitor_delta_generator import generate_pdpa_monitor_report_pdf
+
+    pdf = generate_pdpa_monitor_report_pdf({
+        "company_name": "Netpoleon",
+        "current_score": 58,
+        "previous_score": 58,
+        "findings_count": 7,
+        # A no-change month: no dimension moved, so this is exactly the edition
+        # that previously rendered without a single section reference.
+        "dimension_changes": [],
+        "briefing_bullets": [
+            "Publish a retention schedule (PDPA &sect;25) — 2 weeks.",
+            "Document cross-border transfer safeguards (PDPA &sect;26) — 3 weeks.",
+        ],
+    })
+    txt = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf)).pages)
+
+    assert "Regulatory Priorities" in txt
+    assert "retention schedule" in txt
+    # The citations themselves are the point of the check.
+    assert "§25" in txt and "§26" in txt
+
+
+def test_pdf_omits_the_briefing_section_when_there_are_no_bullets():
+    """No heading over an empty space — and the caller may legitimately pass
+    nothing (older editions, a generator failure upstream)."""
+    from app.services.pdpa_monitor_delta_generator import generate_pdpa_monitor_report_pdf
+
+    pdf = generate_pdpa_monitor_report_pdf({
+        "company_name": "Netpoleon", "current_score": 58, "previous_score": 58,
+    })
+    txt = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf)).pages)
+    assert "Regulatory Priorities" not in txt
+
+
+def test_bullets_are_not_double_escaped(test_db, mocker):
+    """Every return path of `_pdpa_monitor_briefing_bullets` already runs `_xe`.
+
+    Escaping again in the generator would print a literal "&amp;" to the
+    customer — the "Q&A; Coverage" glitch, one layer further down.
+    """
+    from app.services.pdpa_monitor_delta_generator import generate_pdpa_monitor_report_pdf
+
+    pdf = generate_pdpa_monitor_report_pdf({
+        "company_name": "Netpoleon", "current_score": 58, "previous_score": 58,
+        "briefing_bullets": ["Review Q&amp;A retention under &sect;25."],
+    })
+    txt = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf)).pages)
+    assert "Q&A retention" in txt
+    assert "&amp;" not in txt

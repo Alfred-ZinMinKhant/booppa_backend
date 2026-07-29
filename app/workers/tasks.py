@@ -6057,6 +6057,11 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
             "scanned_url": scanned_url,
             "findings_count": len(findings) if isinstance(findings, list) else None,
             "dimension_changes": dimension_changes,
+            # Same bullets as the email body. They used to go to the email only,
+            # so the PDF — the artifact a customer forwards to a regulator —
+            # carried no PDPA section citations at all, and a reviewer checking
+            # the deliverable for a real §-number correctly found none.
+            "briefing_bullets": briefing_bullets,
             "full_report_url": f"https://api.booppa.io/api/v1/reports/{current.id}/download",
             "urgent_findings": urgent_findings,
             "score_history": score_history,
@@ -6743,6 +6748,7 @@ def resolve_tender_base_rate(
     agency_rates: dict,
     sector_rates: dict,
     default_rate: float,
+    clamp_max: float | None = None,
 ) -> tuple[float, bool]:
     """Pick a tender's base rate and say whether it is a real calibration.
 
@@ -6750,6 +6756,16 @@ def resolve_tender_base_rate(
     the sector rate; falling back to ``default_rate`` is NOT a calibration and
     reports ``False`` so the customer-facing "baseline estimate" caveat keeps
     telling the truth.
+
+    A rate sitting exactly on ``clamp_max`` is likewise NOT a calibration. The
+    upstream ratio is ``unique vendors awarded / total tenders``, which for most
+    sectors approaches 1.0 — it measures how often a tender gets awarded to
+    *anyone*, not how often a given bidder wins — so it saturates the ceiling and
+    the clamp, not the award data, decides the number. 515 of 523 production
+    tenders sat at exactly 0.60 and every one of them claimed to be calibrated,
+    which suppressed the "~N%*" baseline caveat on figures that had not been
+    calibrated in any meaningful sense. Saturation is a clamp artifact; treating
+    it as provenance is what let an uncalibrated number be quoted bare.
 
     Extracted from `refresh_gebiz_base_rates` so the provenance rule is directly
     testable without standing up the data.gov.sg fetch.
@@ -6759,6 +6775,8 @@ def resolve_tender_base_rate(
         computed = sector_rates.get((sector or "OTHER").upper().strip())
     if computed is None:
         return default_rate, False
+    if clamp_max is not None and computed >= clamp_max:
+        return computed, False
     return computed, True
 
 
@@ -7012,6 +7030,7 @@ def refresh_gebiz_base_rates():
                 new_rate, is_calibrated = resolve_tender_base_rate(
                     tender.agency, tender.sector,
                     agency_rates, sector_rates, DEFAULT_BASE_RATE,
+                    clamp_max=CLAMP_MAX,
                 )
 
                 if abs(new_rate - tender.base_rate) > 0.005:

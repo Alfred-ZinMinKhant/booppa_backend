@@ -86,6 +86,11 @@ def generate_pdpa_monitor_report_pdf(data: Dict[str, Any]) -> bytes:
       scanned_url: str|None
       findings_count: int|None
       dimension_changes: list of {dimension_name, previous_status, current_status}
+      briefing_bullets: list[str] — the personalised regulatory briefing, the
+                       same bullets the Monitor email carries. Already
+                       XML-escaped by `tasks._pdpa_monitor_briefing_bullets`
+                       (every return path runs `_xe`), so do NOT escape again
+                       here or an ampersand renders as a literal "&amp;".
       full_report_url: str|None
       urgent_findings: list of {label, days_open, severity} — HIGH findings open
                        >14 days (rendered as a red alert box at the top)
@@ -224,6 +229,20 @@ def generate_pdpa_monitor_report_pdf(data: Dict[str, Any]) -> bytes:
             else "Dimension-level change tracking begins from your next scan.",
             s["body"]))
     story.append(Spacer(1, 14))
+
+    # ── Regulatory priorities ────────────────────────────────────────────────
+    # These bullets carry the PDPA section citations. They previously went to the
+    # email body only, which meant a no-change month produced a PDF with zero
+    # §-references — the deliverable said nothing about which obligation was at
+    # stake, even with open findings. The citation set is finding-grounded and
+    # allow-listed upstream, so it cannot drift from the full report.
+    briefing: List[str] = [b for b in (data.get("briefing_bullets") or []) if str(b).strip()]
+    if briefing:
+        story.append(Paragraph("Regulatory Priorities", s["h2"]))
+        for b in briefing:
+            story.append(Paragraph(f"&bull;&nbsp;{b}", s["body"]))
+            story.append(Spacer(1, 4))
+        story.append(Spacer(1, 10))
 
     # ── Compliance trend (6b) — line chart from month 2 onward ───────────────
     story.append(Paragraph("Compliance Trend", s["h2"]))

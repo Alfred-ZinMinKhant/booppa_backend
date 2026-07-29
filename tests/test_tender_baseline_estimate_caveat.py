@@ -340,3 +340,59 @@ def test_falsy_rate_is_still_a_calibration():
     mistaken for "no rate" — the original `or`-chain would have skipped 0.0."""
     rate, calibrated = resolve_tender_base_rate("X", "Y", {"X": 0.0}, {}, 0.20)
     assert (rate, calibrated) == (0.0, True)
+
+
+# --------------------------------------------------------------------------
+# Clamp saturation is not a calibration
+# --------------------------------------------------------------------------
+# Live evidence: 515 of 523 production tenders sat at exactly base_rate 0.60 —
+# CLAMP_MAX — and every one reported base_rate_calibrated=True, so the Vendor Pro
+# report rendered ten different tenders at an identical bare "56%" with no "~"
+# and no footnote. The underlying ratio is `unique vendors awarded / total
+# tenders`, which measures whether a tender was awarded to anyone at all, not
+# whether this bidder wins; it runs near 1.0 and pins at the ceiling. When the
+# clamp decides the number, the award data did not.
+
+def test_rate_at_clamp_ceiling_is_not_a_calibration():
+    rate, calibrated = resolve_tender_base_rate(
+        "GovTech", "ICT", {"GOVTECH": 0.60}, {}, 0.20, clamp_max=0.60
+    )
+    assert rate == 0.60, "the rate itself is still used; only the claim changes"
+    assert calibrated is False
+
+
+def test_rate_below_the_ceiling_remains_a_calibration():
+    """The fix must not blanket-suppress the flag — a genuinely calibrated rate
+    still gets quoted without the baseline caveat."""
+    _, calibrated = resolve_tender_base_rate(
+        "GovTech", "ICT", {"GOVTECH": 0.42}, {}, 0.20, clamp_max=0.60
+    )
+    assert calibrated is True
+
+
+def test_saturation_rule_applies_to_sector_rates_too():
+    """Agency and sector rates come off the same saturating ratio, so the sector
+    fallback cannot be the loophole that keeps claiming calibration."""
+    _, calibrated = resolve_tender_base_rate(
+        "MOH", "ICT", {}, {"ICT": 0.60}, 0.20, clamp_max=0.60
+    )
+    assert calibrated is False
+
+
+def test_omitting_clamp_max_preserves_legacy_behaviour():
+    """`clamp_max` is optional; callers that don't know the ceiling (tests, the
+    auto-create path) must not silently start reporting False for real rates."""
+    _, calibrated = resolve_tender_base_rate("GovTech", "ICT", {"GOVTECH": 0.60}, {}, 0.20)
+    assert calibrated is True
+
+
+def test_a_saturated_tender_renders_the_baseline_caveat_end_to_end():
+    """The point of the flag: the service layer must now emit the caveat for a
+    tender whose rate was clamp-decided, which is what puts "~N%*" and the
+    footnote back into the Vendor Pro report."""
+    _, calibrated = resolve_tender_base_rate(
+        "GovTech", "ICT", {"GOVTECH": 0.60}, {}, 0.20, clamp_max=0.60
+    )
+    db = _db_with_tender(calibrated, base_rate=0.60)
+    res = compute_tender_win_probability(db, "TENDER-1", None)
+    assert res["baselineEstimate"] is True
