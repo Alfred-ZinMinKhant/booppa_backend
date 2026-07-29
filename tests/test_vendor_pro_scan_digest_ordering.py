@@ -34,6 +34,20 @@ def vendor(test_db):
     return user
 
 
+def _patch_backend_client(mocker, tasks, redis):
+    """Swap the Celery result backend's Redis client for `redis`.
+
+    `backend.client` is a *cached property*: the first access stores the real
+    client in the instance ``__dict__``, which then shadows the class attribute.
+    Patching the class therefore silently does nothing whenever some earlier test
+    in the session has already touched Redis — which is exactly what happened in
+    CI (green locally, failing there, purely on test-execution order). Patching
+    the instance dict hits the same slot the cached property populates, so it
+    works whether or not the value has been cached yet.
+    """
+    mocker.patch.dict(tasks.celery_app.backend.__dict__, {"client": redis})
+
+
 # ── The wrapper: chain, don't fan out concurrently ──────────────────────────
 
 def test_digest_is_not_dispatched_concurrently_with_the_scan(vendor, mocker):
@@ -130,7 +144,7 @@ def test_dedupe_key_claims_before_doing_any_work(vendor, mocker):
 
     redis = mocker.MagicMock()
     redis.set.return_value = False  # someone else already claimed this activation
-    mocker.patch.object(type(tasks.celery_app.backend), "client", redis)
+    _patch_backend_client(mocker, tasks, redis)
     engine = mocker.patch("app.services.scoring.VendorScoreEngine")
 
     tasks.vendor_active_health_check_task(
@@ -220,7 +234,7 @@ def test_absent_dedupe_key_does_not_gate_the_monthly_path(vendor, mocker):
 
     redis = mocker.MagicMock()
     redis.set.return_value = False
-    mocker.patch.object(type(tasks.celery_app.backend), "client", redis)
+    _patch_backend_client(mocker, tasks, redis)
     engine = mocker.patch("app.services.scoring.VendorScoreEngine")
     engine.update_vendor_score.side_effect = RuntimeError("reached the body")
 
