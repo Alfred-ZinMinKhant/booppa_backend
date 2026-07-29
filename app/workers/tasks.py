@@ -3831,6 +3831,17 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
         # Search-impression count (trailing 30d) → "appeared in N searches".
         search_impressions_30d = get_search_impressions_30d(db, vendor_id)
 
+        # Canonical PDPA compliance score. Hoisted above the snapshot try-block
+        # so the digest email renders the SAME figure as the snapshot PDF and the
+        # Vendor Proof certificate. Stays None when the vendor has never been
+        # scanned — callers must render that as "not assessed", never substitute
+        # VendorScore.compliance_score (a different, activity-driven metric).
+        # Scoped to the vendor's own website — this account may also have
+        # scanned clients or prospects, and the digest/snapshot print the
+        # figure under the vendor's own company name.
+        from app.services.pdpa_findings import vendor_pdpa_score
+        real_compliance = vendor_pdpa_score(db, user)
+
         # 2b. Render a one-page status snapshot PDF so the monthly email links a
         # real, fileable/forwardable artifact instead of being email-only.
         plan = (getattr(user, "plan", "") or "")
@@ -3865,11 +3876,6 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
                     "[VendorSnapshot] notarization count failed for %s: %s",
                     vendor_id, _notal_err,
                 )
-
-            from app.services.pdpa_findings import latest_pdpa_score
-            real_compliance = latest_pdpa_score(db, vendor_id)
-            if real_compliance is None:
-                real_compliance = getattr(score_record, "compliance_score", None)
 
             snapshot_pdf = generate_vendor_snapshot_pdf({
                 "company_name": company,
@@ -3939,7 +3945,15 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
                     label = t.get("bid_label")
                     badge = bid_label_to_html_badge(label) if label else ""
                     wp = t.get("win_probability")
-                    wp_td = (f'<td style="padding:7px 8px;border-bottom:1px solid #eef2f7;white-space:nowrap;text-align:right;font-size:12px;color:#0f172a;font-weight:bold;">{wp}%</td>'
+                    if not isinstance(wp, (int, float)):
+                        wp_txt = "—"
+                    elif t.get("win_probability_is_baseline"):
+                        # No calibrated base rate for this tender — quoting
+                        # "30.2%" implies a precision the input doesn't have.
+                        wp_txt = f"~{wp:.0f}%*"
+                    else:
+                        wp_txt = f"{wp:.0f}%"
+                    wp_td = (f'<td style="padding:7px 8px;border-bottom:1px solid #eef2f7;white-space:nowrap;text-align:right;font-size:12px;color:#0f172a;font-weight:bold;">{wp_txt}</td>'
                              if show_wp else "")
                     rows += (
                         f'<tr><td style="padding:7px 8px;border-bottom:1px solid #eef2f7;font-size:13px;">{cell}</td>'
@@ -3950,12 +3964,21 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
                          if show_wp else "")
                 heading = ("Tender matches — should you bid?" if any(t.get("bid_label") for t in tender_matches)
                            else "GeBIZ tender alerts — closing soon")
+                baseline_note = (
+                    '<p style="font-size:12px;color:#64748b;margin:6px 0 0;">'
+                    '* Baseline estimate — limited award history for this category. '
+                    'Figures marked with ~ reflect a category baseline adjusted for '
+                    "your profile, not this tender's own award record.</p>"
+                    if show_wp and any(t.get("win_probability_is_baseline") for t in tender_matches)
+                    else ""
+                )
                 gebiz_section = f"""
                 <h3 style="color:#0f172a;font-size:15px;margin:24px 0 8px;">{heading}</h3>
                 <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #eef2f7;border-radius:8px;overflow:hidden;">
                   <tr style="background:#f8fafc;"><th style="text-align:left;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Tender</th><th style="text-align:left;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Closes</th><th style="text-align:right;padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b;">Signal</th>{wp_th}</tr>
                   {rows}
                 </table>
+                {baseline_note}
                 <p style="font-size:12px;color:#64748b;margin:6px 0 0;">
                   Signals are data-driven guidance from real GeBIZ history, not guarantees.
                   <a href="https://www.booppa.io/vendor/dashboard" style="color:#0ea5e9;">See all tender alerts →</a>
@@ -4059,7 +4082,7 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
                     rep = build_pro_report_pdf(
                         db, vendor_id, company=company, plan_label=plan_label,
                         trust_score=getattr(score_record, "total_score", None),
-                        compliance_score=getattr(score_record, "compliance_score", None),
+                        compliance_score=real_compliance,  # canonical PDPA score, not the composite
                         profile_views_30d=profile_views,
                     )
                     if rep:
@@ -4118,10 +4141,21 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
             f'— ahead of {benchmark["percentile"]}% of peers.</p>'
             if benchmark else ""
         )
+        # Two distinct metrics, two distinct labels. "Compliance Score" is the
+        # PDPA scan result (same figure as the snapshot PDF headline and the
+        # Vendor Proof certificate); VendorScore.compliance_score is the
+        # verification/documentation composite and must not borrow that name.
+        pdpa_line = (
+            f'<p style="margin:4px 0;"><strong>Compliance Score (PDPA):</strong> {real_compliance}/100</p>'
+            if real_compliance is not None else
+            '<p style="margin:4px 0;"><strong>Compliance Score (PDPA):</strong> '
+            '<span style="color:#64748b;">Not assessed — no PDPA scan on file</span></p>'
+        )
         scores_box = f"""
                 <div style="background:#f8fafc;border-radius:8px;padding:20px;margin:20px 0;">
                   <p style="margin:4px 0;"><strong>Trust Score:</strong> {score_record.total_score}/100{trust_delta}</p>
-                  <p style="margin:4px 0;"><strong>Compliance Score:</strong> {score_record.compliance_score}/100{comp_delta}</p>
+                  {pdpa_line}
+                  <p style="margin:4px 0;"><strong>Verification &amp; Documentation:</strong> {score_record.compliance_score}/100{comp_delta}</p>
                   <p style="margin:4px 0;"><strong>Profile Views (30d):</strong> {profile_views}</p>
                   {benchmark_line}
                 </div>"""
@@ -7160,7 +7194,9 @@ def _bridge_gebiz_to_shortlist(db) -> None:
                 description=gt.title,
                 agency=gt.agency or "Government Agency",
                 sector=sector,
+                # Placeholder rate, not a calibration — see TenderShortlist.
                 base_rate=0.20,
+                base_rate_calibrated=False,
             ))
             bridged += 1
 

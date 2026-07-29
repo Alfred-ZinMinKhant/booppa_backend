@@ -50,7 +50,12 @@ def generate_vendor_snapshot_pdf(data: Dict[str, Any]) -> bytes:
       plan_label:   str   (e.g. "Vendor Pro")
       generated_at: ISO/display str (optional)
       trust_score:  int|None
-      compliance_score: int|None
+      compliance_score: int|None  — the canonical PDPA score from
+                    pdpa_findings.latest_pdpa_score() ONLY. Never pass
+                    VendorScore.compliance_score here (that is the
+                    verification/documentation composite; see
+                    _TRUST_DIMENSIONS in vendor_active_insights.py).
+                    None renders as "N/A — NO PDPA SCAN".
       profile_views_30d: int|None
       verification_level: str|None
       extra_rows:   list of (label, value) appended to the details table (optional)
@@ -83,9 +88,20 @@ def generate_vendor_snapshot_pdf(data: Dict[str, Any]) -> bytes:
     story.append(Spacer(1, 16))
 
     # Headline metric cards
+    # `compliance_score` is the canonical PDPA score (latest_pdpa_score). When the
+    # vendor has never been scanned it is None, and the card must say so rather
+    # than borrow VendorScore.compliance_score — a platform-activity composite
+    # rendered under a "COMPLIANCE" label reads as a compliance claim we cannot
+    # support. "—" is reserved for genuinely missing data, so spell it out.
+    _comp = data.get("compliance_score")
+    _comp_card = (
+        _metric_card(s, "N/A", "COMPLIANCE &mdash; NO PDPA SCAN")
+        if _comp is None
+        else _metric_card(s, str(_comp), "COMPLIANCE SCORE / 100")
+    )
     cards = [[
         _metric_card(s, f"{_num(data.get('trust_score'))}", "TRUST SCORE / 100"),
-        _metric_card(s, f"{_num(data.get('compliance_score'))}", "COMPLIANCE SCORE / 100"),
+        _comp_card,
         _metric_card(s, f"{_num(data.get('profile_views_30d'))}", "PROFILE VIEWS (30D)"),
     ]]
     card_table = Table(cards, colWidths=[2.2 * inch, 2.2 * inch, 2.0 * inch])
@@ -116,7 +132,11 @@ def generate_vendor_snapshot_pdf(data: Dict[str, Any]) -> bytes:
     trend_bits = [
         t for t in (
             _delta_txt(trend.get("total_delta"), "Trust"),
-            _delta_txt(trend.get("compliance_delta"), "Compliance"),
+            # compliance_delta tracks ScoreSnapshot.breakdown["compliance"],
+            # which is VendorScore.compliance_score (the platform-activity
+            # composite) — NOT the PDPA score in the headline card. Label must
+            # match the Trust Score Breakdown row, not the headline.
+            _delta_txt(trend.get("compliance_delta"), "Verification & Documentation"),
         ) if t
     ]
     if bench.get("percentile") is not None and bench.get("sector"):
@@ -234,7 +254,15 @@ def generate_vendor_snapshot_pdf(data: Dict[str, Any]) -> bytes:
             ]
             if show_wp:
                 wp = m.get("win_probability")
-                wp_txt = f"{wp:.0f}%" if isinstance(wp, (int, float)) else "—"
+                if not isinstance(wp, (int, float)):
+                    wp_txt = "—"
+                elif m.get("win_probability_is_baseline"):
+                    # This tender has no calibrated base rate, so the figure is
+                    # a category baseline, not a tender-specific estimate. The
+                    # tilde signals that; the footnote below says why.
+                    wp_txt = f"~{wp:.0f}%*"
+                else:
+                    wp_txt = f"{wp:.0f}%"
                 row.append(Paragraph(wp_txt, s["body"]))
             m_rows.append(row)
         col_widths = ([3.4 * inch, 1.3 * inch, 0.9 * inch, 0.8 * inch]
@@ -254,6 +282,12 @@ def generate_vendor_snapshot_pdf(data: Dict[str, Any]) -> bytes:
         ]))
         story.append(m_tbl)
         story.append(Spacer(1, 8))
+        if show_wp and any(m.get("win_probability_is_baseline") for m in matches[:5]):
+            story.append(Paragraph(
+                "* Baseline estimate &mdash; limited award history for this category. "
+                "Figures marked with ~ reflect a category baseline adjusted for your "
+                "profile, not this tender's own award record.", s["small"]))
+            story.append(Spacer(1, 4))
         story.append(Paragraph(
             "Signals are data-driven guidance from real GeBIZ history, not guarantees.", s["small"]))
         story.append(Spacer(1, 14))

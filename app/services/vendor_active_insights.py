@@ -50,6 +50,11 @@ def get_score_trend(db, vendor_id: str) -> dict | None:
             except (TypeError, ValueError):
                 return None
 
+        # A delta across a scoring-formula change would read as movement the
+        # vendor caused. Suppress it — every consumer renders None as nothing.
+        if prev is not None and cur.score_version != prev.score_version:
+            prev = None
+
         cur_comp, prev_comp = _comp(cur), (_comp(prev) if prev else None)
         return {
             "total": cur.final_score,
@@ -99,8 +104,17 @@ def get_sector_benchmark(db, vendor_id: str) -> dict | None:
 # automatically and has no clear user action). Each entry: the VendorScore
 # column, the human label, and the single recommended action that lifts it.
 _TRUST_DIMENSIONS = [
-    ("compliance_score", "COMPLIANCE", "Compliance",
-     "Complete a PDPA Snapshot scan to raise your verified compliance score"),
+    # NOTE: VendorScore.compliance_score is NOT the PDPA compliance score. It is
+    # a platform-activity composite (scoring.py:calculate_compliance_score):
+    # verification-level-weighted VerifyRecord score + up to +60 for notarized
+    # proofs. It carries no PDPA signal at all — a bonus that used to leak one
+    # in was removed, so the two figures are now independent measurements
+    # rather than one number that looks like the other gone stale.
+    # The canonical PDPA figure is pdpa_findings.vendor_pdpa_score().
+    # Both used to render as "Compliance" in the same snapshot PDF, 18 points
+    # apart. Do not rename this label back to "Compliance".
+    ("compliance_score", "COMPLIANCE", "Verification & Documentation",
+     "Notarize a proof document or raise your verification level to lift this score"),
     ("visibility_score", "VISIBILITY", "Visibility",
      "Add your company logo and description, and share your verify link"),
     ("engagement_score", "ENGAGEMENT", "Engagement",
@@ -331,6 +345,7 @@ def get_tender_matches(db, vendor_id: str, limit: int = 5,
                     if isinstance(wp, dict) and "currentProbability" in wp:
                         m["win_probability"] = wp["currentProbability"]
                         m["win_likelihood_tier"] = wp.get("winLikelihoodTier")
+                        m["win_probability_is_baseline"] = bool(wp.get("baselineEstimate"))
                 except Exception as we:
                     logger.warning("[VendorInsights] win-prob failed for %s: %s", m.get("tender_no"), we)
         return result

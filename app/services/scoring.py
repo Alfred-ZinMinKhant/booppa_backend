@@ -130,8 +130,21 @@ class VendorScoreEngine:
 
     @classmethod
     def calculate_compliance_score(cls, db: Session, vendor_id: str) -> int:
-        from app.core.models import Report
+        """Verification & documentation activity, 0-100.
 
+        Despite the name (kept because it is bound to the ``VendorScore
+        .compliance_score`` column), this is **not** a compliance measurement
+        and is never rendered as "Compliance" — the UI label is "Verification &
+        Documentation". The canonical compliance figure is the PDPA scan score,
+        ``pdpa_findings.vendor_pdpa_score``.
+
+        It measures exactly two things: verification level and how much
+        notarized proof the vendor has filed. A PDPA bonus used to be added
+        here too; it was removed because it made the dimension non-monotonic in
+        what it claims to measure and left it partially correlated with the
+        PDPA score, so the two numbers read as the same figure gone stale
+        rather than as different measurements. Do not reintroduce it.
+        """
         verifications = db.query(VerifyRecord).filter(
             VerifyRecord.vendor_id == vendor_id,
             VerifyRecord.lifecycle_status == LifecycleStatus.ACTIVE
@@ -164,30 +177,7 @@ class VendorScoreEngine:
         except Exception as e:
             logger.warning(f"Proof bonus calculation failed for vendor {vendor_id}: {e}")
 
-        # PDPA Snapshot bonus: +8 to +25 pts based on risk score
-        # Only the most recent completed PDPA report counts.
-        pdpa_bonus = 0
-        try:
-            pdpa_report = (
-                db.query(Report)
-                .filter(
-                    Report.owner_id == vendor_id,
-                    Report.framework.in_(["pdpa_quick_scan", "pdpa_snapshot"]),
-                    Report.status == "completed",
-                )
-                .order_by(Report.completed_at.desc())
-                .first()
-            )
-            if pdpa_report:
-                ad = pdpa_report.assessment_data or {}
-                from app.services.pdpa_findings import resolve_pdpa_score
-                compliance = resolve_pdpa_score(ad)
-                if compliance is not None:
-                    pdpa_bonus = round(8 + (compliance / 100) * 17)  # 8–25 pts
-        except Exception as e:
-            logger.warning(f"PDPA bonus calculation failed for vendor {vendor_id}: {e}")
-
-        return min(base_score + proof_bonus + pdpa_bonus, 100)
+        return min(base_score + proof_bonus, 100)
 
     @classmethod
     def calculate_visibility_score(cls, db: Session, vendor_id: str) -> int:

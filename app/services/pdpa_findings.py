@@ -422,7 +422,12 @@ def _normalise_host(url: Optional[str]) -> Optional[str]:
     return host or None
 
 
-def latest_pdpa_score(db: Any, user_id: Any, domain: Optional[str] = None) -> Optional[int]:
+def latest_pdpa_score(
+    db: Any,
+    user_id: Any,
+    domain: Optional[str] = None,
+    allow_unattributed: bool = False,
+) -> Optional[int]:
     """Resolve the compliance score from a user's most recent PDPA report.
 
     Mirrors exactly what the Compliance Evidence Cover Sheet reads, so the RFP
@@ -435,6 +440,14 @@ def latest_pdpa_score(db: Any, user_id: Any, domain: Optional[str] = None) -> Op
     account-cache contamination as the SPQR UEN leak. Callers rendering a
     report-scoped document should always pass it; omitting it keeps the legacy
     account-wide behaviour for genuinely account-scoped products.
+
+    ``allow_unattributed`` additionally accepts reports that recorded no
+    ``company_website`` at all. ``ReportRequest.website`` is optional, so such
+    rows exist and are not evidence of a *different* subject the way a
+    contradicting hostname is — rejecting them would strand a vendor whose only
+    scan happens to predate/omit the field. Use it for account-scoped vendor
+    deliverables (see :func:`vendor_pdpa_score`); leave it off for certified
+    per-report documents, where an unattributable score must not be claimed.
     """
     if db is None or user_id is None:
         return None
@@ -455,13 +468,19 @@ def latest_pdpa_score(db: Any, user_id: Any, domain: Optional[str] = None) -> Op
                 Report.status == "completed",
             )
             .order_by(Report.created_at.desc())
-            .limit(5)
+            # Unscoped keeps the original 5-row window. Scoped looks further
+            # back: the filter is what narrows the result, so a small window
+            # would let five scans of *other* companies hide this subject's
+            # own report and return None.
+            .limit(25 if domain else 5)
             .all()
         )
         want_host = _normalise_host(domain)
         for report in reports:
-            if want_host and _normalise_host(report.company_website) != want_host:
-                continue
+            if want_host:
+                got_host = _normalise_host(report.company_website)
+                if got_host != want_host and not (got_host is None and allow_unattributed):
+                    continue
             score = resolve_pdpa_score(report.assessment_data)
             if score is not None:
                 return score
@@ -469,3 +488,29 @@ def latest_pdpa_score(db: Any, user_id: Any, domain: Optional[str] = None) -> Op
     except Exception as exc:  # noqa: BLE001 — never block declaration on this
         logger.warning("latest_pdpa_score lookup failed for %s: %s", user_id, exc)
         return None
+
+
+def vendor_pdpa_score(db: Any, user: Any) -> Optional[int]:
+    """The PDPA score for a vendor's *own* company, for vendor-account products.
+
+    Vendor Active/Pro deliverables (status snapshot, monthly digest, Pro report,
+    proof certificate) are about the vendor's own business, but they used to read
+    the account-wide latest score. A vendor account that also scans clients or
+    prospects would render another company's number under its own letterhead —
+    the account-cache contamination ``latest_pdpa_score`` warns about, on the
+    exact products that print a company name beside the figure.
+
+    Scoping is by ``User.website``. A report whose recorded website *contradicts*
+    it is a different subject and is rejected; one with no recorded website is
+    merely unattributed and is still accepted, so vendors whose scan omitted the
+    optional website field keep their score. With no ``User.website`` there is
+    nothing to scope by and the legacy account-wide lookup stands — no worse than
+    today, and still ``None`` (→ "not assessed") when there is no scan at all.
+    """
+    if user is None:
+        return None
+    site = getattr(user, "website", None) or getattr(user, "website_hint", None)
+    user_id = getattr(user, "id", None)
+    if not site:
+        return latest_pdpa_score(db, user_id)
+    return latest_pdpa_score(db, user_id, domain=site, allow_unattributed=True)

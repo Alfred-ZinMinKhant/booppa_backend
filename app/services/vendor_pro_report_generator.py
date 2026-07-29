@@ -65,7 +65,13 @@ def _table(rows: list, col_widths: list, header: bool = True) -> Table:
 def generate_vendor_pro_report_pdf(data: Dict[str, Any]) -> bytes:
     """Render the consolidated report. `data` keys (all optional except company_name):
       company_name, plan_label, generated_at,
-      trust_score, compliance_score, profile_views_30d,
+      trust_score, profile_views_30d,
+      compliance_score: the canonical PDPA score (latest_pdpa_score) ONLY —
+                    never VendorScore.compliance_score. It must agree with the
+                    "Current PDPA compliance score" line in the drift section
+                    below; they used to contradict each other in one PDF.
+      verification_doc_score: VendorScore.compliance_score, the
+                    verification/documentation composite (scoring.py).
       trend: {total_delta, compliance_delta, sector_percentile},
       sector_benchmark: {sector, percentile},
       tender_matches: [{title, agency, closing_date, bid_label, win_probability}],
@@ -97,7 +103,9 @@ def generate_vendor_pro_report_pdf(data: Dict[str, Any]) -> bytes:
     # ── 1. Scores + trend + benchmark ──────────────────────────────────────────
     cards = [[
         [Paragraph(_num(data.get("trust_score")), s["metric"]), Paragraph("TRUST SCORE / 100", s["metric_lbl"])],
-        [Paragraph(_num(data.get("compliance_score")), s["metric"]), Paragraph("COMPLIANCE / 100", s["metric_lbl"])],
+        ([Paragraph("N/A", s["metric"]), Paragraph("COMPLIANCE &mdash; NO PDPA SCAN", s["metric_lbl"])]
+         if data.get("compliance_score") is None else
+         [Paragraph(_num(data.get("compliance_score")), s["metric"]), Paragraph("COMPLIANCE / 100", s["metric_lbl"])]),
         [Paragraph(_num(data.get("profile_views_30d")), s["metric"]), Paragraph("PROFILE VIEWS (30D)", s["metric_lbl"])],
     ]]
     ct = Table(cards, colWidths=[2.2 * inch, 2.2 * inch, 2.0 * inch])
@@ -124,8 +132,14 @@ def generate_vendor_pro_report_pdf(data: Dict[str, Any]) -> bytes:
             return f'<font color="#dc2626">▼ {abs(d)}</font> {label}'
         return f'{label}: no change'
 
+    # compliance_delta tracks VendorScore.compliance_score (the verification /
+    # documentation composite), not the PDPA score in the card above.
     bits = [t for t in (_delta_txt(trend.get("total_delta"), "Trust"),
-                        _delta_txt(trend.get("compliance_delta"), "Compliance")) if t]
+                        _delta_txt(trend.get("compliance_delta"),
+                                   "Verification &amp; Documentation")) if t]
+    _vd = data.get("verification_doc_score")
+    if _vd is not None:
+        bits.append(f'Verification &amp; Documentation: <b>{_vd}/100</b>')
     if bench.get("percentile") is not None and bench.get("sector"):
         pct = int(bench["percentile"])
         bits.append(f'Sector standing: <b>top {max(1, 100 - pct)}%</b> in {_xml_escape(bench["sector"])} '
@@ -304,12 +318,17 @@ def build_pro_report_pdf(
             website_hint=user.website,
         ) or "Your Company"
 
-    if trust_score is None or compliance_score is None:
-        sr = db.query(VendorScore).filter(VendorScore.vendor_id == vendor_id).first()
-        if trust_score is None:
-            trust_score = getattr(sr, "total_score", None)
-        if compliance_score is None:
-            compliance_score = getattr(sr, "compliance_score", None)
+    # `compliance_score` is the canonical PDPA figure. It is resolved from the
+    # PDPA reports, never from VendorScore.compliance_score — that column is the
+    # verification/documentation composite and is surfaced separately below.
+    # Stays None when the vendor has never been scanned so the card can say so.
+    sr = db.query(VendorScore).filter(VendorScore.vendor_id == vendor_id).first()
+    if trust_score is None:
+        trust_score = getattr(sr, "total_score", None)
+    if compliance_score is None:
+        from app.services.pdpa_findings import vendor_pdpa_score
+        compliance_score = vendor_pdpa_score(db, user)
+    verification_doc_score = getattr(sr, "compliance_score", None)
 
     if profile_views_30d is None:
         try:
@@ -330,6 +349,7 @@ def build_pro_report_pdf(
         "plan_label": plan_label,
         "trust_score": trust_score,
         "compliance_score": compliance_score,
+        "verification_doc_score": verification_doc_score,
         "profile_views_30d": profile_views_30d,
         "trend": get_score_trend(db, vendor_id),
         "sector_benchmark": get_sector_benchmark(db, vendor_id),

@@ -1802,6 +1802,15 @@ class TenderShortlist(Base):
     # Baseline win rate calibrated per sector/agency (0.0–1.0)
     base_rate = Column(Float, nullable=False, default=0.20)
 
+    # False when base_rate is the 0.20 placeholder written by the GeBIZ
+    # auto-create paths rather than a real sector/agency calibration. Win
+    # probabilities derived from an uncalibrated base rate are quoted as a
+    # baseline estimate, not as a tender-specific figure — see
+    # tender_service.compute_tender_win_probability.
+    base_rate_calibrated = Column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

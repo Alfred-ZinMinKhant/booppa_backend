@@ -37,9 +37,13 @@ def test_get_trust_breakdown_math(test_db):
     assert bd is not None
     dims = {d["label"]: d for d in bd["dimensions"]}
     assert len(dims) == 4
-    # weight * (100 - score): Compliance 0.30*0=0, Visibility 0.20*50=10,
-    # Engagement 0.20*100=20, Procurement 0.15*100=15.
-    assert dims["Compliance"]["potential_points"] == 0
+    # weight * (100 - score): Verification & Documentation 0.30*0=0,
+    # Visibility 0.20*50=10, Engagement 0.20*100=20, Procurement 0.15*100=15.
+    # The COMPLIANCE-weighted row is deliberately NOT labelled "Compliance" —
+    # it is VendorScore.compliance_score (verification + notarized-proof
+    # composite), not the PDPA score. See _TRUST_DIMENSIONS.
+    assert "Compliance" not in dims
+    assert dims["Verification & Documentation"]["potential_points"] == 0
     assert dims["Visibility"]["potential_points"] == 10
     assert dims["Engagement"]["potential_points"] == 20
     assert dims["Procurement"]["potential_points"] == 15

@@ -1,0 +1,217 @@
+"""Regression: an uncalibrated win probability must be quoted as a baseline.
+
+Incident: a Vendor Active digest listed five unrelated tenders (ICT, facilities,
+logistics, consultancy, construction) all at exactly "30.2%". The computation is
+correct given its inputs — every one of those tenders was auto-created from the
+GeBIZ feed with the placeholder ``base_rate = 0.20``, and the vendor's profile
+multipliers are per-vendor, not per-tender, so an unchanged profile produces the
+same product every time.
+
+The defect is presentation, not arithmetic: a repeated constant rendered to one
+decimal place reads as a tender-specific estimate. ``TenderShortlist`` now
+carries ``base_rate_calibrated``; probabilities derived from the placeholder are
+rendered "~30%*" with a footnote instead of "30.2%".
+
+Assertions run against the reportlab flowables rather than
+``pypdf.extract_text()`` — the matches table paginates, and extracted text
+silently drops cells that land across a page break.
+"""
+import uuid
+from datetime import date, datetime, timezone
+from unittest.mock import MagicMock
+
+import pytest
+
+from app.services.tender_service import compute_tender_win_probability
+
+
+# --------------------------------------------------------------------------
+# Layer 1 — the service flags the placeholder
+# --------------------------------------------------------------------------
+def _db_with_tender(calibrated: bool, base_rate: float = 0.20):
+    """Mock Session answering TenderShortlist with a tender of known calibration."""
+    tender = MagicMock()
+    tender.tender_no = "ITQ202500001"
+    tender.sector = "ICT"
+    tender.agency = "GovTech"
+    tender.description = "Mock tender"
+    tender.base_rate = base_rate
+    tender.base_rate_calibrated = calibrated
+
+    snap = MagicMock()
+    snap.verification_depth = "STANDARD"
+    snap.risk_adjusted_pct = 55.0
+    snap.evidence_count = 3
+    snap.risk_signal = "CLEAN"
+    snap.updated_at = datetime.now(timezone.utc)
+
+    db = MagicMock()
+
+    def _side_effect(model):
+        m = str(model)
+        result = (tender if "TenderShortlist" in m
+                  else snap if "VendorStatusSnapshot" in m else None)
+        q = MagicMock()
+        q.filter.return_value.first.return_value = result
+        q.filter.return_value.count.return_value = 0
+        return q
+
+    db.query.side_effect = _side_effect
+    return db
+
+
+def test_placeholder_base_rate_is_reported_as_baseline_estimate():
+    res = compute_tender_win_probability(
+        _db_with_tender(calibrated=False), "ITQ202500001", vendor_id="v1")
+    assert res["baselineEstimate"] is True
+
+
+def test_calibrated_base_rate_is_not_a_baseline_estimate():
+    res = compute_tender_win_probability(
+        _db_with_tender(calibrated=True, base_rate=0.31), "ITQ202500001", vendor_id="v1")
+    assert res["baselineEstimate"] is False
+
+
+def test_flag_does_not_change_the_computed_probability():
+    """The caveat is a label. Silently moving the number would be a worse bug."""
+    a = compute_tender_win_probability(
+        _db_with_tender(calibrated=False), "ITQ202500001", vendor_id="v1")
+    b = compute_tender_win_probability(
+        _db_with_tender(calibrated=True), "ITQ202500001", vendor_id="v1")
+    assert a["currentProbability"] == b["currentProbability"]
+
+
+# --------------------------------------------------------------------------
+# Layer 2 — the snapshot PDF renders the caveat
+# --------------------------------------------------------------------------
+def _capture_paragraphs(monkeypatch, module):
+    from reportlab.platypus import Paragraph as _RealParagraph
+
+    seen = []
+
+    class _Recording(_RealParagraph):
+        def __init__(self, text, *a, **kw):
+            seen.append(text)
+            super().__init__(text, *a, **kw)
+
+    monkeypatch.setattr(module, "Paragraph", _Recording)
+    return seen
+
+
+def _snapshot_texts(monkeypatch, matches):
+    from app.services import vendor_snapshot_generator as gen
+
+    texts = _capture_paragraphs(monkeypatch, gen)
+    pdf = gen.generate_vendor_snapshot_pdf({
+        "company_name": "Baseline Pte Ltd",
+        "plan_label": "Vendor Active",
+        "trust_score": 55,
+        "compliance_score": 58,
+        "tender_matches": matches,
+    })
+    assert pdf.startswith(b"%PDF")
+    return texts
+
+
+def _match(title, wp, baseline):
+    return {
+        "title": title,
+        "closing_date": date(2026, 9, 1),
+        "bid_label": "BID",
+        "win_probability": wp,
+        "win_probability_is_baseline": baseline,
+    }
+
+
+FOOTNOTE_MARKER = "Baseline estimate"
+
+
+def test_snapshot_marks_uncalibrated_matches_and_explains_why(monkeypatch):
+    """The exact shape from the bug report: five tenders, one placeholder rate."""
+    matches = [_match(f"Tender {i}", 30.2, True) for i in range(5)]
+    texts = _snapshot_texts(monkeypatch, matches)
+
+    # Every cell carries the tilde, and none quotes a decimal place the input
+    # cannot support.
+    cells = [t for t in texts if "%" in t and "30" in t]
+    assert cells, "no win-probability cells rendered"
+    assert all(t == "~30%*" for t in cells), cells
+    assert not any("30.2" in t for t in texts)
+
+    assert any(FOOTNOTE_MARKER in t for t in texts), "caveat footnote missing"
+
+
+def test_snapshot_leaves_calibrated_matches_uncaveated(monkeypatch):
+    """A tender with real award history must not be hedged — that dilutes the signal."""
+    texts = _snapshot_texts(monkeypatch, [_match("Calibrated tender", 42.0, False)])
+
+    assert any(t == "42%" for t in texts), [t for t in texts if "%" in t]
+    assert not any("~" in t and "%" in t for t in texts)
+    assert not any(FOOTNOTE_MARKER in t for t in texts)
+
+
+def test_snapshot_footnote_appears_when_any_match_is_baseline(monkeypatch):
+    """Mixed table: the footnote is table-scoped, so one uncalibrated row shows it."""
+    texts = _snapshot_texts(monkeypatch, [
+        _match("Calibrated", 42.0, False),
+        _match("Placeholder", 30.2, True),
+    ])
+
+    assert any(t == "42%" for t in texts)
+    assert any(t == "~30%*" for t in texts)
+    assert any(FOOTNOTE_MARKER in t for t in texts)
+
+
+def test_snapshot_handles_missing_probability(monkeypatch):
+    """A None probability must render an em dash, never "~None%"."""
+    texts = _snapshot_texts(monkeypatch, [
+        _match("Scored", 42.0, False),
+        _match("Unscored", None, True),
+    ])
+
+    assert any(t == "—" for t in texts)
+    assert not any("None" in t for t in texts)
+
+
+# --------------------------------------------------------------------------
+# Layer 3 — the auto-create paths write the flag
+# --------------------------------------------------------------------------
+def test_auto_created_tender_is_marked_uncalibrated(test_db):
+    """The GeBIZ stub path is where every placeholder rate in production came from.
+
+    If this default ever flips back to calibrated, the caveat silently stops
+    rendering and the incident returns with no test failing.
+    """
+    from app.core.models import GebizTender
+
+    # Unique per run: the test_db fixture shares one database across the suite
+    # and this path commits, so a fixed tender_no collides on the second run.
+    tender_no = f"ITQ-AUTOCREATE-{uuid.uuid4().hex[:8]}"
+    test_db.add(GebizTender(
+        tender_no=tender_no,
+        title="Supply of widgets",
+        agency="GovTech",
+        raw_data={"category": "ICT"},
+    ))
+    test_db.commit()
+
+    res = compute_tender_win_probability(test_db, tender_no, vendor_id=None)
+    assert res.get("error") != "tender_not_found"
+    assert res["baselineEstimate"] is True
+
+
+def test_model_default_is_calibrated(test_db):
+    """Admin-imported tenders supply a real base_rate and must not be caveated."""
+    from app.core.models import TenderShortlist
+
+    t = TenderShortlist(
+        tender_no=f"ITQ-ADMIN-{uuid.uuid4().hex[:8]}",
+        description="Hand-imported tender",
+        agency="MOH",
+        sector="Healthcare",
+        base_rate=0.31,
+    )
+    test_db.add(t)
+    test_db.commit()
+    test_db.refresh(t)
+    assert t.base_rate_calibrated is True

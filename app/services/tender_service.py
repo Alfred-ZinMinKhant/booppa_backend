@@ -304,7 +304,11 @@ def compute_tender_win_probability(
                     description=gebiz.title,
                     agency=gebiz.agency or "Government Agency",
                     sector=sector,
+                    # Placeholder rate — nothing about this tender has been
+                    # calibrated yet, so probabilities off it are flagged as a
+                    # baseline estimate rather than quoted to a decimal place.
                     base_rate=0.20,
+                    base_rate_calibrated=False,
                 )
                 db.add(tender)
                 db.commit()
@@ -409,8 +413,14 @@ def compute_tender_win_probability(
     # ── PDPA / Compliance signal ──────────────────────────────────────────────
     pdpa_score = None
     if vendor_id:
-        from app.services.pdpa_findings import latest_pdpa_score
-        pdpa_score = latest_pdpa_score(db, vendor_id)
+        from app.core.models import User
+        from app.services.pdpa_findings import vendor_pdpa_score
+
+        # The multiplier is meant to reward *this bidder's* own compliance
+        # posture. An account-wide lookup let a scan of some other company
+        # move the vendor's win probability.
+        _vendor = db.query(User).filter(User.id == vendor_id).first()
+        pdpa_score = vendor_pdpa_score(db, _vendor)
 
     # ── Current probability ───────────────────────────────────────────────────
     current_prob = _compute_raw_probability(
@@ -504,6 +514,12 @@ def compute_tender_win_probability(
         "agency":            tender.agency,
         "currentProbability": round(current_prob * 100, 1),
         "winLikelihoodTier": _win_likelihood_tier(round(current_prob * 100, 1)),
+        # True when this tender's base_rate is the 0.20 placeholder rather than
+        # a sector/agency calibration. The multiplier chain still differentiates
+        # vendors, but across tenders that share the placeholder a vendor with an
+        # unchanged profile gets the same number every time — which reads as a
+        # tender-specific estimate unless it is labelled as a baseline.
+        "baselineEstimate": not getattr(tender, "base_rate_calibrated", True),
         "vendorProfile": {
             "verificationDepth": verification_depth,
             "evidenceCount":     evidence_count,

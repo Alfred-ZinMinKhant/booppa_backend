@@ -217,7 +217,9 @@ async def dashboard(
         .limit(2)
         .all()
     )
-    if len(snapshots) >= 2:
+    # Skipped across a scoring-formula change (see vendor_status.SCORE_VERSION):
+    # the movement is ours, not the vendor's, so it must not render as a delta.
+    if len(snapshots) >= 2 and snapshots[0].score_version == snapshots[1].score_version:
         trust_score_delta = int(snapshots[0].final_score) - int(snapshots[1].final_score)
 
     # ── 5. Score breakdown — show users which lever each purchase pulls ──────

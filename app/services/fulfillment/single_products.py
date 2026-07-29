@@ -1010,8 +1010,14 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
         # value (vp_confidence) is the single source for VerifyRecord, the
         # snapshot, and VendorScore below — no more hardcoded 30s.
         from app.services.pdpa_findings import latest_pdpa_score
-        
-        _pdpa_compliance = latest_pdpa_score(db, vendor_id)
+
+        # Report-scoped: this certificate names one subject, so only a scan of
+        # that subject's website may set its standing. No allow_unattributed —
+        # a certified figure must be attributable. A report with no recorded
+        # website leaves the lookup account-wide, i.e. unchanged from before.
+        _pdpa_compliance = latest_pdpa_score(
+            db, vendor_id, domain=getattr(report, "company_website", None)
+        )
 
         if _pdpa_compliance is None:
             vp_readiness = "CONDITIONAL"

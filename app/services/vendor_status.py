@@ -21,6 +21,18 @@ write results to VendorStatusSnapshot for procurement query performance.
 
 import hashlib
 import logging
+
+# Scoring formula version, stamped onto every ScoreSnapshot.
+#
+# Bump this whenever a change to VendorScoreEngine shifts scores for reasons
+# that are not the vendor's own doing. Consumers compare it across consecutive
+# snapshots and suppress the "vs last cycle" delta when it changes, so a
+# formula change is never rendered to a vendor as a decline they caused.
+#
+#   1.0 — original.
+#   1.1 — (2026-07-29) PDPA bonus removed from calculate_compliance_score;
+#         see tests/test_verification_dimension_carries_no_pdpa_signal.py.
+SCORE_VERSION = "1.1"
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from sqlalchemy.orm import Session
@@ -431,8 +443,7 @@ def record_score_snapshot(
             total = max(len(sector_ids), 1)
             pct = round((lower / total) * 100, 1)
 
-    score_version = "1.0"
-    raw = f"{vendor_id}:{score_version}:{json.dumps(breakdown, sort_keys=True)}:{pct}"
+    raw = f"{vendor_id}:{SCORE_VERSION}:{json.dumps(breakdown, sort_keys=True)}:{pct}"
     score_hash = hashlib.sha256(raw.encode()).hexdigest()
 
     ss = ScoreSnapshot(
@@ -442,7 +453,7 @@ def record_score_snapshot(
         final_score      = vendor_score.total_score,
         breakdown        = breakdown,
         sector_percentile= pct,
-        score_version    = score_version,
+        score_version    = SCORE_VERSION,
         score_hash       = score_hash,
         quarter          = quarter,
         snapshot_at      = now,

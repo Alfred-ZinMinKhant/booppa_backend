@@ -72,8 +72,11 @@ def build_badge_certificate(db: Session, user: User, company_override: str | Non
     # compliance score — otherwise the badge prints "0/100" while Trust/
     # Compliance scores elsewhere show the true value. Treat non-positive as
     # missing.
-    from app.services.pdpa_findings import latest_pdpa_score
-    real_compliance = latest_pdpa_score(db, user.id)
+    # Scoped to the vendor's own website: this badge prints the figure beside
+    # the vendor's company name, so a client scan run from the same account
+    # must not supply it.
+    from app.services.pdpa_findings import vendor_pdpa_score
+    real_compliance = vendor_pdpa_score(db, user)
     
     confidence = getattr(snap, "confidence_score", None)
     if real_compliance is not None:
