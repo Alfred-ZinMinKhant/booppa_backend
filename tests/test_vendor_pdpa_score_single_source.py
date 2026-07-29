@@ -202,3 +202,46 @@ def test_scoreless_report_does_not_shadow_a_finished_one(test_db):
     _scan(test_db, u, None, created_days_ago=1, assessment_data={})
 
     assert set(_all_three(test_db, u).values()) == {66}
+
+
+def test_a_scan_landing_after_the_trigger_is_not_the_baseline(test_db):
+    """The 19:29-vs-19:31 defect: a *newer* scan labelled "previous".
+
+    The Monitor Report is woken by a `report_id`. That branch used to pin
+    `current` to the triggering scan and take "the newest scoped report that
+    isn't it" as the baseline — but when a second scan lands in the same
+    activation it is newer than the trigger, so a future scan became the
+    baseline. Live output: the Pro Report rendered at 19:29 said "▲ 2 vs last
+    scan" (previous 56) while the Monitor rendered at 19:31 said "previous 58,
+    no change", off the same history.
+
+    `report_id` is now only a readiness gate; `current`/`previous` come from the
+    shared ordering, so `previous` is always strictly older than `current`.
+    """
+    u = _vendor(test_db, "v+single10@booppa.io")
+    _scan(test_db, u, 56, created_days_ago=30, completed_days_ago=30)
+    trigger = _scan(test_db, u, 58, created_days_ago=2, completed_days_ago=2)
+    # Lands after the scan that woke the Monitor.
+    _scan(test_db, u, 62, created_days_ago=1, completed_days_ago=1)
+
+    reports = latest_vendor_pdpa_reports(test_db, u, limit=2)
+    current, previous = reports[0], reports[1]
+
+    # The heart of check 1: the Monitor must quote whatever the snapshot and the
+    # Pro headline quote. Pinning `current` to the trigger made it quote 58 while
+    # they quoted 62 — the same activation, three documents, two numbers.
+    assert current.id != trigger.id, "a newer scan must win over the trigger"
+    assert resolve_pdpa_score(current.assessment_data) == vendor_pdpa_score(test_db, u) == 62
+
+    # The baseline must precede the report being quoted, never follow it. The old
+    # "newest report that isn't current" rule picked the 62 scan as the baseline
+    # *for* the 58 trigger, i.e. a delta against the future.
+    assert (previous.completed_at or previous.created_at) < (
+        current.completed_at or current.created_at
+    )
+    assert resolve_pdpa_score(previous.assessment_data) == 58
+
+    # ...and the Pro Report's drift line must tell the same story.
+    drift = get_pdpa_drift(test_db, u)
+    assert drift["current_score"] == 62
+    assert drift["previous_score"] == 58

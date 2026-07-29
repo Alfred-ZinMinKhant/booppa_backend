@@ -5946,21 +5946,25 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
         # 58 while the snapshot in the same activation quoted 56.
         from app.services.pdpa_findings import latest_vendor_pdpa_reports
         if report_id:
-            current = db.query(Report).get(report_id)
-            if not current or current.status != "completed":
+            # `report_id` is a readiness gate, not a selection: it says which scan
+            # woke us, so we wait for it rather than rendering a stale edition.
+            # `current` itself still comes from the shared list below, so this
+            # report quotes the same row as the snapshot and the Pro report.
+            trigger = db.query(Report).get(report_id)
+            if not trigger or trigger.status != "completed":
                 logger.info("[MonitorReport] scan %s not completed yet, retrying...", report_id)
                 raise self.retry(countdown=30)
-            # `current` is pinned to the scan that triggered us; take the newest
-            # scoped report that isn't it as the comparison baseline.
-            prior = [r for r in latest_vendor_pdpa_reports(db, user, limit=3) if r.id != current.id]
-            previous = prior[0] if prior else None
-        else:
-            reports = latest_vendor_pdpa_reports(db, user, limit=2)
-            if not reports:
-                logger.info("[MonitorReport] no completed PDPA report yet for %s — skipping", email)
-                return
-            current = reports[0]
-            previous = reports[1] if len(reports) > 1 else None
+        # Selecting `previous` as "the newest report that isn't current" was wrong:
+        # when a second scan lands in the same activation it is *newer* than the
+        # trigger, so a future scan got labelled the baseline — the 19:31 Monitor
+        # printed "previous 58, no change" while the 19:29 Pro report printed
+        # "▲ 2 vs last scan" off the same history. Ordered selection can't do that.
+        reports = latest_vendor_pdpa_reports(db, user, limit=2)
+        if not reports:
+            logger.info("[MonitorReport] no completed PDPA report yet for %s — skipping", email)
+            return
+        current = reports[0]
+        previous = reports[1] if len(reports) > 1 else None
 
         def _compliance(r) -> int | None:
             return resolve_pdpa_score(r.assessment_data)
