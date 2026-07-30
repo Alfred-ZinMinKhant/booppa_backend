@@ -16,6 +16,7 @@ redis==5.0.1
 # Async Tasks
 celery==5.3.4
 kombu==5.3.4
+msgpack>=1.2.1              # transitive (celery/kombu); pinned to clear GHSA-6v7p-g79w-8964 (OOB read on Unpacker reuse)
 
 # AWS Services
 boto3==1.40.0
