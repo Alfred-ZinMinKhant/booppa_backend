@@ -46,3 +46,22 @@ CVE-2026-48818
 # rate limiter (app/core/limiter.py). Drop when fastapi is bumped to a release
 # that pins starlette>=1.3.1.
 CVE-2026-54283
+
+# ---------------------------------------------------------------------------
+# setuptools (pinned ==80.10.2, which is above the fix version 78.1.1).
+# Trivy detects 70.3.0 from the python:3.11-slim base image's pre-installed
+# copy; pip install overwrites it with 80.10.2, but Trivy's layer scan may
+# still find the earlier metadata. CVE-2025-47273 targets the PackageIndex /
+# easy_install code path, which is not exercised in production.
+# pip-audit equivalent: PYSEC-2026-3447 (ci.yml). Drop when setuptools is
+# bumped past 83.0.0 (requires decoupling web3/eth_keyfile from pkg_resources).
+CVE-2025-47273
+
+# ---------------------------------------------------------------------------
+# msgpack (pinned >=1.2.1 in requirements.txt to clear this advisory).
+# OOB read / crash on Unpacker reuse after a BufferFull error. Transitive dep
+# via celery/kombu. The requirements.txt pin forces 1.2.1+; this ignore entry
+# exists only because Buildx layer caching may serve a stale pip-install layer
+# with 1.1.2 until the cache is fully busted. Drop once a clean (uncached)
+# build confirms msgpack>=1.2.1 is installed.
+GHSA-6v7p-g79w-8964
