@@ -151,3 +151,37 @@ def test_bullets_are_not_double_escaped(test_db, mocker):
     txt = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf)).pages)
     assert "Q&A retention" in txt
     assert "&amp;" not in txt
+
+
+def test_urgent_findings_regulatory_text_30_plus_days():
+    """Verify urgent box text cites Section 48J(6) of the PDPA for 30+ day open findings."""
+    from app.services.pdpa_monitor_delta_generator import generate_pdpa_monitor_report_pdf
+
+    pdf_30 = generate_pdpa_monitor_report_pdf({
+        "company_name": "Netpoleon",
+        "current_score": 58,
+        "previous_score": 58,
+        "urgent_findings": [
+            {"label": "Security HTTP Headers", "days_open": 35, "severity": "HIGH"},
+        ],
+    })
+    txt_30_clean = " ".join(("\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf_30)).pages)).split())
+
+    assert "URGENT — UNRESOLVED HIGH-RISK FINDINGS" in txt_30_clean
+    assert "Security HTTP Headers" in txt_30_clean
+    assert "35 days" in txt_30_clean
+    assert "Section 48J(6) of the PDPA requires PDPC to consider the duration of non-compliance" in txt_30_clean
+    assert "typically begin with a review" not in txt_30_clean
+
+    pdf_20 = generate_pdpa_monitor_report_pdf({
+        "company_name": "Netpoleon",
+        "current_score": 58,
+        "previous_score": 58,
+        "urgent_findings": [
+            {"label": "Security HTTP Headers", "days_open": 20, "severity": "HIGH"},
+        ],
+    })
+    txt_20_clean = " ".join(("\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf_20)).pages)).split())
+    assert "20 days" in txt_20_clean
+    assert "Section 48J(6)" not in txt_20_clean
+

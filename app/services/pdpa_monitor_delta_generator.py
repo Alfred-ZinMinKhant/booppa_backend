@@ -129,10 +129,12 @@ def generate_pdpa_monitor_report_pdf(data: Dict[str, Any]) -> bytes:
         for u in urgent[:6]:
             days = int(u.get("days_open") or 0)
             label = _xml_escape(u.get("label") or "Finding")
-            esc = ("After 30+ days, PDPC inspections typically begin with a review of "
-                   "findings reported in prior scans.") if days >= 30 else ""
+            esc = (" Section 48J(6) of the PDPA requires PDPC to consider the duration "
+                   "of non-compliance and the timeliness of remedial action when setting "
+                   "a financial penalty — unresolved findings do not become less "
+                   "relevant over time.") if days >= 30 else ""
             alert_lines.append(
-                f'<b>{label}</b> — open for <b>{days} days</b> — action overdue. {esc}'
+                f'<b>{label}</b> — open for <b>{days} days</b> — action overdue.{esc}'
             )
         alert_html = "<br/>".join(alert_lines)
         alert_tbl = Table(
