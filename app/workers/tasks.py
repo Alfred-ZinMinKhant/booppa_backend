@@ -8535,6 +8535,20 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                     for r in db.query(VendorSector).filter(VendorSector.vendor_id == sub.id).all()
                     if (r.sector or "").strip()
                 ]
+                if not _sub_sectors:
+                    # Fall back to user.industry if set, auto-provisioning VendorSector so it persists
+                    _user_ind = (getattr(sub, "industry", "") or "").strip()
+                    if _user_ind:
+                        try:
+                            from app.services.tender_service import sync_vendor_sector
+                            _sec_name = sync_vendor_sector(db, sub.id, _user_ind)
+                            if _sec_name:
+                                _sub_sectors = [_sec_name]
+                        except Exception as _sec_err:
+                            logger.warning(
+                                "[TenderIntelDigest] Failed to sync VendorSector from industry %r for user %s: %s",
+                                _user_ind, sub.id, _sec_err,
+                            )
                 _sub_sector = (_sub_sectors[0].upper() if _sub_sectors else "IT")
 
                 # Sector-scoped benchmarking digest for this subscriber.

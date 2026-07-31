@@ -702,7 +702,7 @@ def generate_cover_sheet(data: Dict[str, Any]) -> bytes:
     mono = ParagraphStyle("mono", fontSize=7.5, leading=10, textColor=colors.HexColor("#334155"), fontName="Courier")
 
     def _anchor_row(label: str, tx: str | None) -> tuple[str, Any]:
-        if not tx or tx == "—":
+        if not tx or tx == "—" or not is_real_onchain_tx(tx):
             return (label, Paragraph("Pending anchor", _STYLES["caption"]))
         short = (tx[:10] + "…" + tx[-8:]) if len(tx) > 24 else tx
         url = f"{explorer}/tx/{tx}"

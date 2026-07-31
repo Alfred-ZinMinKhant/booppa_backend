@@ -7,6 +7,7 @@ from app.services.blockchain import BlockchainService
 from app.services.pdf_service import PDFService
 from app.services.booppa_ai_service import BooppaAIService
 from app.services.storage import S3Service
+from app.services.tx_utils import is_real_onchain_tx
 
 from app.services.fulfillment.helpers import (
     _create_stub_report,
@@ -376,7 +377,7 @@ async def _fulfill_notarization(report_id: str, customer_email: str | None) -> N
         verify_url = f"{settings.VERIFY_BASE_URL.rstrip('/')}/verify/{file_hash}"
         polygonscan_url = (
             f"{settings.active_polygon_explorer_url.rstrip('/')}/tx/{tx_hash}"
-            if tx_hash
+            if is_real_onchain_tx(tx_hash)
             else None
         )
 
@@ -1188,7 +1189,13 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
             db.add(verify)
         db.flush()
 
-        # Step 1b: Seed VendorSector from report metadata or assessment data
+        # Step 1b: Seed VendorSector from report metadata or assessment data.
+        #
+        # `business_sector` is kept as a trailing fallback but is currently dead:
+        # nothing in the codebase writes that key. It was assumed to be an
+        # ACRA-derived value, but the open ACRA dataset carries no SSIC/activity
+        # field, so it never had a source. `sector` / `industry` (seeded from the
+        # order and the account at checkout) are what actually populate this.
         sector = (
             (report.assessment_data or {}).get("sector")
             or (report.assessment_data or {}).get("industry")

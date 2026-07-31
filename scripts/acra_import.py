@@ -14,8 +14,11 @@ Usage:
     python scripts/acra_import.py --dataset <ID>         # override dataset ID
 
 Dataset IDs (data.gov.sg):
-    d_82ce0e3a0ce059e0a7b36c43e4cd5c96    (current d_ format)
+    d_3f960c10fed6145404ca7b821f263b87    (current, matches settings.ACRA_DATASET_ID)
     5ab68aac-91f6-4f39-9b21-698610bdf3f7  (legacy CKAN UUID)
+
+Note: this dataset carries no SSIC / activity field, so `industry` is inferred
+from the entity name and `shortDescription` is left empty.
 
 Dependencies:
     pip install requests
@@ -43,8 +46,11 @@ KNOWN_DATASET_IDS = [
     # Configured live dataset (matches settings.ACRA_DATASET_ID). Fields:
     # uen, entity_name, entity_type_desc, uen_status_desc, uen_issue_date.
     "d_3f960c10fed6145404ca7b821f263b87",
-    "d_82ce0e3a0ce059e0a7b36c43e4cd5c96",
+    # Legacy CKAN UUID — still served, same 8-field schema.
     "5ab68aac-91f6-4f39-9b21-698610bdf3f7",
+    # d_82ce0e3a0ce059e0a7b36c43e4cd5c96 was removed: data.gov.sg returns a
+    # hard 404 ("Resource not found") for it, so probing it only added a failed
+    # round-trip to every lookup that fell through to the fallback list.
 ]
 
 # Accepted entity types across dataset schemas. The configured dataset uses
@@ -145,17 +151,22 @@ def normalize_row(rec: dict[str, Any]) -> dict[str, str] | None:
     if status and status not in ("LIVE", "REGISTERED", "ACTIVE"):
         return None
 
-    primary_activity = _first(rec, "primary_ssic_description")
     reg_date = _first(rec, "uen_issue_date", "incorporation_date")
 
+    # No SSIC / activity description is available: the open ACRA dataset
+    # publishes only uen, issuance_agency_desc, uen_status_desc, entity_name,
+    # entity_type_desc, uen_issue_date, reg_street_name, reg_postal_code.
+    # SSIC lives in the paid BizFile business profile. Sector is therefore
+    # inferred from the entity name alone and will often land on "Other" —
+    # acceptable for a marketplace seed, but it is a guess, not registry data.
     return {
         "companyName":      name,
         "domain":           "",
         "website":          "",
-        "industry":         infer_sector(f"{name} {primary_activity}"),
+        "industry":         infer_sector(name),
         "country":          "Singapore",
         "city":             "Singapore",
-        "shortDescription": primary_activity[:255],
+        "shortDescription": "",
         "uen":              uen,
         "entityType":       entity_type.title(),
         "registrationDate": reg_date,

@@ -372,7 +372,17 @@ async def _activate_subscription(
             if not first_activation:
                 pass
             elif new_plan == "tender_intelligence":
-                # Sector digest — not company/website-specific, no override needed.
+                # Sector digest — sync sector from metadata/user if available
+                sector_input = (metadata.get("sector") or metadata.get("industry") or getattr(user, "industry", None)) if metadata else getattr(user, "industry", None)
+                if sector_input:
+                    if not getattr(user, "industry", None):
+                        user.industry = sector_input
+                        db.commit()
+                    try:
+                        from app.services.tender_service import sync_vendor_sector
+                        sync_vendor_sector(db, user.id, sector_input)
+                    except Exception as _sec_err:
+                        logger.warning("[Subscription] Failed to sync VendorSector for %s: %s", getattr(user, "email", "?"), _sec_err)
                 _wtasks.send_tender_intelligence_digest_for_user.delay(str(user.id))
             elif new_plan == "pdpa_monitor":
                 _wtasks.run_pdpa_monitor_cycle_for_user.delay(

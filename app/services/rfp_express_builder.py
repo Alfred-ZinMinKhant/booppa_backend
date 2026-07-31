@@ -23,6 +23,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
+from app.services.tx_utils import is_real_onchain_tx
+
 logger = logging.getLogger(__name__)
 
 
@@ -490,8 +492,8 @@ class RFPExpressBuilder:
             "appendix_d_url": appendix_d_url,
             "qa_answers":     qa_display,
             "qa_answers_count": len(qa_display),
-            "tx_hash":        tx_hash,
-            "polygonscan_url": f"{explorer_base}/tx/{tx_hash}" if tx_hash else None,
+            "tx_hash":        tx_hash if is_real_onchain_tx(tx_hash) else None,
+            "polygonscan_url": f"{explorer_base}/tx/{tx_hash}" if is_real_onchain_tx(tx_hash) else None,
             "network":        settings.active_polygon_network_name,
             "testnet_notice": settings.blockchain_notice,
             "upsell_available": not is_complete,

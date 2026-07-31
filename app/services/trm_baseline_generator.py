@@ -24,6 +24,7 @@ from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 from app.services import pdf_layout as _pl
 from app.services.pdf_layout import build_doc, render, xml_escape
 from app.services.pdf_styles import get_unified_styles
+from app.services.tx_utils import is_real_onchain_tx
 from app.core.company import COMPANY_NAME
 
 _xml_escape = xml_escape
@@ -352,7 +353,7 @@ def generate_trm_baseline_pdf(data: Dict[str, Any]) -> bytes:
                         f'<font color="{_EVIDENCE_DOCUMENTED_COLOR}">Documented</font>', s["cell"])
                 fingerprint = _xml_escape(e.get("hash_value") or "—")
                 tx = e.get("tx_hash")
-                if tx:
+                if tx and is_real_onchain_tx(tx):
                     fingerprint += f'<br/><font color="#475569" size="7">anchor: {_xml_escape(tx[:18])}…</font>'
                 name_cell = _xml_escape(e.get("file_name") or "—")
                 attest = (e.get("attestation") or "").strip()

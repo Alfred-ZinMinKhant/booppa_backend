@@ -9,6 +9,7 @@ from app.core.auth import verify_access_token
 from app.core.config import settings
 from app.services.evidence_enricher import record_verified_identity, trusted_cached_uen
 from fastapi.security import OAuth2PasswordBearer
+from typing import Any
 import os
 import stripe
 import logging
@@ -367,6 +368,50 @@ async def _resolve_order_subject(
     return company_name, website, is_self
 
 
+TENDER_INTEL_TYPES = {"tender_intelligence_monthly", "tender_intelligence_annual"}
+
+
+def _resolve_tender_sector(user: Any, data: dict) -> str:
+    """Resolve the Tender Intelligence subscriber's sector, or 422.
+
+    The digest is sold on "sector trend reports" and scopes its aggregation to
+    the subscriber's `VendorSector` rows. That table was historically written in
+    only one place — Vendor Active/Pro fulfillment, from report metadata — so a
+    subscriber who buys Tender Intelligence standalone never got a row and
+    received the "all sectors" market overview permanently, not just for a
+    first cycle.
+
+    Note the sector cannot be recovered from the UEN/ACRA lookup: the open ACRA
+    dataset publishes no SSIC or activity field (SSIC is in the paid BizFile
+    profile). The account's own `industry` is the best signal we have.
+
+    Registration and profile-update now seed `VendorSector` from `User.industry`,
+    and the digest falls back to industry at send time, so this gate fires only
+    for the genuinely unresolvable case: no sector on the order and no industry
+    on the account. Raising 422 (rather than silently selling a broad digest)
+    triggers the frontend sector prompt, matching the company/website gates.
+
+    Writes the resolved value to ``data["sector"]`` so it reaches Stripe metadata
+    and, from there, subscription activation.
+    """
+    order_sector = (data.get("sector") or data.get("industry") or "").strip()
+    profile_industry = (getattr(user, "industry", "") or "").strip()
+    if not order_sector and not profile_industry:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "We need your sector to scope your tender intelligence digest. "
+                "Please provide the sector your business operates in "
+                "(e.g. IT, Construction, Healthcare)."
+            ),
+        )
+    # An order-supplied sector wins: it is what the buyer just typed, whereas the
+    # profile industry may predate the subscription.
+    resolved = order_sector or profile_industry
+    data["sector"] = resolved
+    return resolved
+
+
 def get_stripe_client():
     secret = os.environ.get("STRIPE_SECRET_KEY")
     if not secret:
@@ -651,6 +696,29 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         finally:
             _db.close()
 
+    # Tender Intelligence: capture the subscriber's sector before the charge.
+    # The digest is sold on "sector trend reports" and scopes its aggregation to
+    # the subscriber's VendorSector rows. That table was historically written in
+    # only one place — Vendor Active/Pro fulfillment, from report metadata — so
+    # a standalone subscriber who never buys a Vendor product gets the "all
+    # sectors" market overview forever, not just for the first cycle. The UEN
+    # lookup cannot fill the gap: the open ACRA dataset carries no SSIC field.
+    # Registration and profile-update now seed it from
+    # User.industry, and the digest falls back to industry at send time, so this
+    # gate only fires for the genuinely unresolvable case: no sector on the
+    # order and no industry on file. 422 here rather than a silent broad digest,
+    # matching the company/website prompts above.
+    if product_type in TENDER_INTEL_TYPES:
+        from app.core.db import SessionLocal
+
+        _db = SessionLocal()
+        try:
+            from app.core.repositories.user_repository import UserRepository
+            _ti_user = UserRepository.get_by_email(_db, prefill_email) if prefill_email else None
+            _resolve_tender_sector(_ti_user, data)
+        finally:
+            _db.close()
+
     # CSP Compliance Pack: same entity capture as the bundles above. The Day-1
     # Registration Readiness Baseline (csp.run_baseline) is built from an ACRA
     # lookup, so without a company + website the buyer pays SGD 3,999 and gets an
@@ -771,6 +839,12 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         company_name = data.get("company_name", "")
         rfp_description = data.get("rfp_description", "")
         uen = (data.get("uen") or "").strip()
+        # Subscriber sector for Tender Intelligence. Without it the digest falls
+        # back to an "all sectors" market overview, which for a standalone
+        # subscriber (no Vendor Active/Pro purchase to seed VendorSector from an
+        # ACRA lookup) is permanent, not a first-cycle warm-up. Accepted under
+        # either key; `subscriptions.py` reads both when it activates the plan.
+        sector = (data.get("sector") or data.get("industry") or "").strip()
         intake_data = data.get("intake_data") or {}  # dict of buyer-supplied facts
 
         metadata = {"product_type": product_type or "", "client_ip": client_ip}
@@ -788,6 +862,8 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         # webhook so the certificate states the verified registration number.
         if uen:
             metadata["uen"] = uen
+        if sector:
+            metadata["sector"] = sector
         # The subject entity a CSP/DPO selected at order time. Fulfillment re-reads
         # the row by this id rather than trusting the company_name string, so the
         # delivered document names the entity the customer actually picked.

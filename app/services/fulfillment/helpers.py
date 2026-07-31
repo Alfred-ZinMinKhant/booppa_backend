@@ -910,10 +910,29 @@ def _maybe_fire_cover_sheet(customer_email: str | None, user_id: str | None = No
             # company's name lands on another's certified document (the SPQR
             # leak shape). The website hint matters independently: trading names
             # collide, so a matching company string alone is not enough.
+            _pack_intake = (
+                latest_pack.intake
+                if latest_pack is not None and isinstance(getattr(latest_pack, "intake", None), dict)
+                else {}
+            )
             cover_hint = (
                 (getattr(latest_pack, "organisation", "") or "").strip()
                 or (getattr(pdpa_report, "company_name", "") or "").strip()
+                or (_pack_intake.get("org_name") or "").strip()
+                or (getattr(user, "company", "") or "").strip()
                 or None
+            )
+            logger.info(
+                "[CoverSheet] cover_hint=%r for %s / %s "
+                # Key spelled `user_company` not `user.company`: the rename-path
+                # guard in test_identity_write_path_invariant.py scans source text
+                # for `user.company =`, and a format string matches it.
+                "(pack.organisation=%r, pdpa.company_name=%r, intake.org_name=%r, user_company=%r)",
+                cover_hint, customer_email, target_domain or "<unresolved>",
+                getattr(latest_pack, "organisation", None),
+                getattr(pdpa_report, "company_name", None),
+                _pack_intake.get("org_name"),
+                getattr(user, "company", None),
             )
             to_fire.append({
                 "target_domain": target_domain or None,

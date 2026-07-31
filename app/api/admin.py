@@ -1075,6 +1075,8 @@ class SimulatePurchaseRequest(BaseModel):
         "Reuses the test account's existing entity of that name, or registers one, "
         "then verifies it against ACRA through the production code path.",
     )
+    industry: Optional[str] = Field(default=None, description="Optional industry for sector scoping")
+    sector: Optional[str] = Field(default=None, description="Optional sector for Tender Intelligence scoping")
     rfp_description: Optional[str] = Field(default=None)
     force_resend: bool = Field(
         default=False,
@@ -1206,8 +1208,30 @@ async def simulate_purchase(
                     user.website = vendor_url; updated = True
                 if company_name and user.company != company_name:
                     user.company = company_name; updated = True
+                # If cached identity conflicts with company_name, clear it so test checkout
+                # never serves a stale legal_name from an earlier run.
+                from app.services.evidence_enricher import _norm
+                if company_name and (
+                    (user.legal_name_hint and _norm(user.legal_name_hint) != _norm(company_name))
+                    or (user.legal_name and _norm(user.legal_name) != _norm(company_name))
+                ):
+                    updated = True
+                sim_industry = (body.industry or body.sector or "").strip()
+                if sim_industry and user.industry != sim_industry:
+                    user.industry = sim_industry; updated = True
             if updated:
+                from app.services.evidence_enricher import clear_cached_identity
+
+                clear_cached_identity(user, db, commit=False)
                 db.commit()
+
+        sim_sector = (body.industry or body.sector or getattr(user, "industry", None) or "").strip()
+        if sim_sector:
+            try:
+                from app.services.tender_service import sync_vendor_sector
+                sync_vendor_sector(db, user.id, sim_sector)
+            except Exception as _sec_err:
+                logger.warning("[simulate-purchase] Failed to sync VendorSector: %s", _sec_err)
 
         # Resolve the subject entity, if this run names one. Done here, inside the
         # session that just guaranteed the user exists, because a ManagedEntity is

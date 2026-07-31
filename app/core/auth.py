@@ -204,6 +204,13 @@ def register_user(
     db.commit()
     db.refresh(user)
 
+    if industry:
+        try:
+            from app.services.tender_service import sync_vendor_sector
+            sync_vendor_sector(db, user.id, industry)
+        except Exception as _sec_err:
+            logger.warning("[auth] Failed to sync VendorSector on registration: %s", _sec_err)
+
     # Auto-claim or auto-create a MarketplaceVendor entry for vendor accounts
     if role == "VENDOR" and company:
         try:

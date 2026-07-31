@@ -62,9 +62,11 @@ def _domain(vendor_url: str) -> str:
 def _acra_dataset_ids() -> list[str]:
     from app.core.config import settings
     primary = getattr(settings, "ACRA_DATASET_ID", "d_3f960c10fed6145404ca7b821f263b87")
+    # d_82ce0e3a0ce059e0a7b36c43e4cd5c96 is deliberately absent: data.gov.sg
+    # returns a hard 404 for it, so probing it only cost a wasted round-trip on
+    # every lookup that missed in the primary dataset.
     legacy = [
         "d_3f960c10fed6145404ca7b821f263b87",
-        "d_82ce0e3a0ce059e0a7b36c43e4cd5c96",
         "5ab68aac-91f6-4f39-9b21-698610bdf3f7",
     ]
     # de-dup while preserving order, primary first
@@ -514,6 +516,11 @@ def _cache_trusted_for_hint(
     if carrier.own_name_implies_self and hint == _norm(
         _carrier_get(user, carrier.own_name_field)
     ):
+        # If recorded provenance exists and points to a DIFFERENT company/hint,
+        # the cached legal_name belongs to that other entity — do NOT trust it.
+        recorded_hint = _norm(_carrier_get(user, carrier.hint_field))
+        if recorded_hint and recorded_hint != hint:
+            return False
         return True
     # Unclaimed account: nothing cached and no company on file, so there is no other
     # entity's identity to leak and the first resolution legitimately claims it. Note

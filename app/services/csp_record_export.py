@@ -24,6 +24,8 @@ import logging
 from datetime import datetime
 from typing import Any, Optional, Tuple
 
+from app.services.tx_utils import is_real_onchain_tx
+
 logger = logging.getLogger(__name__)
 
 # Bump when the visible structure of an exported record changes.
@@ -63,7 +65,7 @@ def _anchor_section(evidence: Optional[Any], fallback_tx: Any = None,
     """
     tx = getattr(evidence, "tx_hash", None) or fallback_tx
     url = getattr(evidence, "polygonscan_url", None) or fallback_url
-    if not tx:
+    if not tx or not is_real_onchain_tx(tx):
         return (
             "## Blockchain Anchor\n"
             "\n"

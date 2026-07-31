@@ -48,6 +48,47 @@ _CATEGORY_TO_SECTOR: dict[str, str] = {
 
 logger = logging.getLogger(__name__)
 
+
+def sync_vendor_sector(db: Session, vendor_id: Any, sector_or_industry: Optional[str]) -> Optional[str]:
+    """Ensure `vendor_id` has a `VendorSector` entry for `sector_or_industry`.
+
+    Normalises input using `_CATEGORY_TO_SECTOR` if applicable. Auto-provisions
+    a `VendorSector` row if one does not already exist for this vendor and sector.
+    Returns the resolved sector name string.
+    """
+    if not vendor_id or not sector_or_industry:
+        return None
+    raw = sector_or_industry.strip()
+    if not raw:
+        return None
+
+    # Map if known category/industry, otherwise preserve normalised title-cased string
+    sector_name = _CATEGORY_TO_SECTOR.get(raw) or raw
+
+    from app.core.models import VendorSector
+    from sqlalchemy import func
+
+    existing = (
+        db.query(VendorSector)
+        .filter(
+            VendorSector.vendor_id == vendor_id,
+            func.lower(VendorSector.sector) == sector_name.lower(),
+        )
+        .first()
+    )
+    if not existing:
+        try:
+            vs = VendorSector(vendor_id=vendor_id, sector=sector_name)
+            db.add(vs)
+            db.commit()
+            logger.info("[VendorSector] Auto-provisioned sector %r for vendor %s", sector_name, vendor_id)
+        except Exception as e:
+            db.rollback()
+            logger.warning("[VendorSector] Failed to provision sector %r for vendor %s: %s", sector_name, vendor_id, e)
+
+    return sector_name
+
+
 SNAPSHOT_STALE_DAYS = 7
 
 # ── Probability cap ────────────────────────────────────────────────────────────

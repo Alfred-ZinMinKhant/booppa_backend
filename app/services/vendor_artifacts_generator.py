@@ -25,6 +25,7 @@ from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 from app.services.pdf_styles import get_unified_styles
 from app.services.pdf_logo import draw_logo_header
+from app.services.tx_utils import is_real_onchain_tx
 from app.core.company import COMPANY_NAME
 from app.services import pdf_layout as _pl
 from app.services.pdf_layout import build_doc, render, xml_escape
@@ -73,7 +74,7 @@ def _data_table(s, header: List[str], rows: List[List[str]], widths: List[float]
 
 
 def _anchor_note(s, anchor_tx: Optional[str]) -> List:
-    if not anchor_tx:
+    if not anchor_tx or not is_real_onchain_tx(anchor_tx):
         return []
     return [
         Spacer(1, 8),

@@ -622,6 +622,24 @@ def _primary_sector(db: Session, vendor_id) -> str:
         for r in db.query(VendorSector).filter(VendorSector.vendor_id == vendor_id).all()
         if (r.sector or "").strip()
     ]
+    if not rows:
+        # Same industry fallback the digest applies, including the write-back, so
+        # a standalone subscriber who never bought a Vendor product doesn't see
+        # a default-'IT' page next to a sector-scoped email (or vice versa).
+        from app.core.models import User as _User
+        _user = db.query(_User).filter(_User.id == vendor_id).first()
+        _industry = (getattr(_user, "industry", "") or "").strip()
+        if _industry:
+            try:
+                from app.services.tender_service import sync_vendor_sector
+                _resolved = sync_vendor_sector(db, vendor_id, _industry)
+                if _resolved:
+                    rows = [_resolved]
+            except Exception as _sec_err:
+                logger.warning(
+                    "[TenderIntel] Failed to sync VendorSector from industry %r for %s: %s",
+                    _industry, vendor_id, _sec_err,
+                )
     return rows[0].upper() if rows else "IT"
 
 

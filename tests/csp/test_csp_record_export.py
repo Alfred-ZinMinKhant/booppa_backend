@@ -200,15 +200,30 @@ def test_nominee_record_says_anchoring_is_pending_when_it_is():
 
 
 def test_nominee_record_renders_the_anchor_when_notarized():
+    # Must be a shape-valid tx (0x + 64 hex): the export gates on
+    # is_real_onchain_tx so a truncated stub renders as "not yet anchored".
+    tx = "0x" + "ab" * 32
     evidence = SimpleNamespace(
-        tx_hash="0xabc123", document_hash="d" * 64, network="polygon-amoy",
+        tx_hash=tx, document_hash="d" * 64, network="polygon-amoy",
         block_number=987654, blockchain_timestamp=NOW,
-        polygonscan_url="https://amoy.polygonscan.com/tx/0xabc123",
+        polygonscan_url=f"https://amoy.polygonscan.com/tx/{tx}",
     )
     _, body = build_nominee_assessment_record(_nominee(), _profile(), evidence=evidence)
-    assert "0xabc123" in body
+    assert tx in body
     assert "amoy.polygonscan.com" in body
     assert "Not yet anchored" not in body
+
+
+def test_nominee_record_rejects_a_non_onchain_tx_value():
+    """A simulated/sentinel value must never render as a blockchain anchor."""
+    evidence = SimpleNamespace(
+        tx_hash="demo-0xabc123", document_hash="d" * 64, network="polygon-amoy",
+        block_number=987654, blockchain_timestamp=NOW,
+        polygonscan_url="https://amoy.polygonscan.com/tx/demo-0xabc123",
+    )
+    _, body = build_nominee_assessment_record(_nominee(), _profile(), evidence=evidence)
+    assert "demo-0xabc123" not in body
+    assert "Not yet anchored" in body
 
 
 # ── RENDERED STR RECORD ───────────────────────────────────────────────────────
