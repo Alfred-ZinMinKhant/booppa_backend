@@ -284,12 +284,25 @@ def build_certificate_data(
         if vuid:
             data["resolved"] = True
             data.update(_supplier_status(db, vuid))
+        elif sample_data or (vendor_ref and vendor_ref.startswith("demo-")):
+            from app.services.buyer_demo_samples import demo_supplier
+            v_ref_lower = (vendor_ref or "").lower()
+            if "meridian" in v_ref_lower or "critical" in v_ref_lower:
+                ds = demo_supplier("critical")
+            elif "harborline" in v_ref_lower or "flagged" in v_ref_lower:
+                ds = demo_supplier("flagged")
+            else:
+                ds = demo_supplier("healthy")
+            if vendor_name:
+                ds["vendor_name"] = vendor_name
+            data.update(ds)
+            data["resolved"] = True
     except Exception as e:  # pragma: no cover
         logger.warning("[DueDiligence] status lookup failed for ref=%s: %s", vendor_ref, e)
     # Only banner as SAMPLE when a demo fire drew a fictional supplier that did not
     # resolve to real DB state. A demo fire against the buyer's own real watched
     # supplier carries genuine data and must not be mislabelled.
-    data["sample_data"] = bool(sample_data) and not data["resolved"]
+    data["sample_data"] = bool(sample_data) and (not vuid)
     return data
 
 

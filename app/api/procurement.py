@@ -21,6 +21,7 @@ GET /api/procurement/export/pdf                  → PDF export of vendor audit 
 
 import csv
 import io
+import logging
 import math
 import hashlib
 import json
@@ -28,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -71,6 +73,8 @@ ORDERING_POLICY = {
 
 from app.billing.enforcement import PROCUREMENT_PLAN_KEYS
 from app.billing.scan_credits import consume_scan, scan_usage
+
+logger = logging.getLogger(__name__)
 
 
 def _require_procurement(current_user):
@@ -352,30 +356,252 @@ async def procurement_vendors(
     return {"vendors": enriched, "page": page, "limit": limit, "totalCount": total_count, "orderBy": order_by}
 
 
+def _sanctions_copy(lists_checked) -> str:
+    """Title-case coverage label for the readiness summary line."""
+    from app.services.csp_sanctions import sanctions_coverage_label
+
+    label = sanctions_coverage_label(lists_checked or [])
+    return label[0].upper() + label[1:]
+
+
+def _cached_quick_scan(dv) -> Optional[dict]:
+    """Return a still-fresh stored Quick Scan payload for `dv`, or None.
+
+    Any malformed / unparseable timestamp is treated as a miss — a cache we
+    cannot date is a cache we cannot vouch for.
+    """
+    src = dv.source_data if isinstance(getattr(dv, "source_data", None), dict) else None
+    if not src:
+        return None
+    payload = src.get("quick_scan")
+    scanned_at = src.get("scanned_at")
+    if not isinstance(payload, dict) or not scanned_at:
+        return None
+    try:
+        ts = datetime.fromisoformat(scanned_at)
+    except (TypeError, ValueError):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) - ts > timedelta(days=QUICK_SCAN_CACHE_DAYS):
+        return None
+    return {**payload, "cached": True, "scannedAt": scanned_at}
+
+
+# A Quick Scan result is reusable for this long before the external calls re-fire.
+# Deliberately shorter than the monthly quota window: a buyer re-opening a vendor
+# mid-month must not be shown a four-week-old sanctions screen presented as current.
+QUICK_SCAN_CACHE_DAYS = 7
+
+
+async def perform_unclaimed_vendor_quick_scan(
+    db: Session, vendor_query: str, website: Optional[str] = None, refresh: bool = False
+) -> dict:
+    """Perform a live Quick Scan for an unclaimed vendor.
+
+    Composition of:
+    1. ACRA Live Registry lookup (fetch_acra_status)
+    2. Sanctions screening (screen_entity) — OFAC/UN/EU, plus MAS prohibition
+       orders when World-Check is configured
+    3. Live PDPA web/header scan (run_free_scan) if website/domain is present
+
+    Results are cached on the DiscoveredVendor row for QUICK_SCAN_CACHE_DAYS so a
+    re-check inside the buyer's monthly quota does not re-run the external calls.
+    Pass refresh=True to force a live re-scan. Cached payloads always carry
+    `cached: True` and the original `scannedAt` — never presented as fresh.
+    """
+    import re
+    from app.services.evidence_enricher import fetch_acra_status
+    from app.services.csp_sanctions import screen_entity, MAS_LIST_LABEL
+    from app.services.pdpa_free_scan_service import run_free_scan
+    from app.core.models import DiscoveredVendor
+
+    query_str = vendor_query.strip()
+    is_uen = bool(
+        re.match(r"^[0-9]{8,9}[A-Z]$", query_str, re.IGNORECASE)
+        or re.match(r"^[TSR][0-9]{2}[A-Z0-9]{5,6}[A-Z]$", query_str, re.IGNORECASE)
+    )
+
+    uen = query_str.upper() if is_uen else None
+    company_name = query_str if not is_uen else None
+
+    # Check cached DiscoveredVendor
+    dv = None
+    if uen:
+        dv = db.query(DiscoveredVendor).filter(DiscoveredVendor.uen == uen).first()
+    if not dv and company_name:
+        dv = db.query(DiscoveredVendor).filter(DiscoveredVendor.company_name.ilike(company_name)).first()
+
+    # ── Cache hit: serve the stored payload without re-running the externals ──
+    if dv is not None and not refresh:
+        cached = _cached_quick_scan(dv)
+        if cached is not None:
+            return cached
+
+    target_site = website or (dv.website if dv else None) or (query_str if ("." in query_str and not is_uen) else None)
+
+    # 1. ACRA lookup
+    acra_res = await fetch_acra_status(uen=uen or (dv.uen if dv else None), company_name=company_name or (dv.company_name if dv else None))
+
+    resolved_name = acra_res.get("registered_name") or (dv.company_name if dv else company_name) or query_str
+    resolved_uen = acra_res.get("uen") or (dv.uen if dv else uen)
+    entity_type = acra_res.get("entity_type") or (dv.entity_type if dv else "PRIVATE COMPANY")
+    acra_live = acra_res.get("live", False)
+    acra_status = acra_res.get("entity_status") or ("REGISTERED" if acra_res.get("found") else "UNRESOLVED")
+
+    # 2. Sanctions / MAS Prohibition Orders
+    # A screening that did not run is NOT a clear screening — it reports UNSCREENED.
+    sanction_res = None
+    try:
+        sanction_res = await run_in_threadpool(screen_entity, resolved_name)
+    except Exception as _e:
+        logger.warning("[QuickScan] Sanctions screening failed for %s: %s", resolved_name, _e)
+
+    if sanction_res is None:
+        sanctions_clear = None
+        sanctions_status = "UNSCREENED"
+        lists_checked = []
+    else:
+        sanctions_clear = bool(getattr(sanction_res, "is_clear", False))
+        sanctions_status = "CLEAN" if sanctions_clear else "FLAGGED"
+        lists_checked = getattr(sanction_res, "lists_checked", [])
+
+    # 3. PDPA live web scan.
+    # run_free_scan is synchronous and does blocking HTTP — it must be bridged
+    # through the threadpool, never awaited directly.
+    pdpa_res = None
+    if target_site:
+        scan_url = target_site if target_site.startswith("http") else f"https://{target_site}"
+        try:
+            pdpa_res = await run_in_threadpool(run_free_scan, scan_url)
+        except Exception as _e:
+            logger.warning("[QuickScan] PDPA scan failed for site %s: %s", scan_url, _e)
+
+    # run_free_scan returns a RISK score under "score": higher = worse
+    # (>=60 High Risk, >=30 Medium). Do not read it as a compliance score.
+    pdpa_risk_score = pdpa_res.get("score") if pdpa_res else None
+    if not isinstance(pdpa_risk_score, (int, float)) or isinstance(pdpa_risk_score, bool):
+        # An unusable score is an unrun check, not a clean one.
+        pdpa_risk_score = None
+    if pdpa_risk_score is None:
+        pdpa_flag = "UNCHECKED"
+    elif pdpa_risk_score >= 30:
+        pdpa_flag = "NEEDS_ATTENTION"
+    else:
+        pdpa_flag = "CLEAN"
+    pdpa_risk_level = pdpa_res.get("risk_level") if pdpa_res else None
+    pdpa_findings_count = pdpa_res.get("total_findings") if pdpa_res else None
+
+    scanned_at = datetime.now(timezone.utc).isoformat()
+
+    result = {
+        "slug": vendor_query,
+        "company": resolved_name,
+        "uen": resolved_uen,
+        "website": target_site,
+        "claimed": False,
+        "acraStatus": acra_status,
+        "acraLive": acra_live,
+        "entityType": entity_type,
+        "registrationDate": acra_res.get("registration_date"),
+        "sanctionsScreening": {
+            "isClear": sanctions_clear,
+            "status": sanctions_status,
+            "listsChecked": lists_checked,
+            # MAS prohibition-order coverage only runs when World-Check is
+            # configured (see csp_sanctions.screen_individual). Report what the
+            # screen actually covered — never assert MAS was checked on faith.
+            "masProhibitionOrdersChecked": MAS_LIST_LABEL in lists_checked,
+            "coverage": _sanctions_copy(lists_checked),
+        },
+        "pdpaFlag": pdpa_flag,
+        "pdpaRiskScore": pdpa_risk_score,
+        "pdpaRiskLevel": pdpa_risk_level,
+        "pdpaFindingsCount": pdpa_findings_count,
+        "verificationDepth": "BASIC_SCAN",
+        "monitoringActivity": "UNCLAIMED",
+        "riskSignal": (
+            "UNKNOWN" if sanctions_clear is None
+            else "CLEAN" if sanctions_clear else "HIGH_RISK"
+        ),
+        "procurementReadiness": "UNCLAIMED_PROFILE_SCANNED",
+        "readinessSummary": {
+            "status": "UNCLAIMED_PROFILE_SCANNED",
+            "title": f"Quick Scan Completed — {resolved_name}",
+            "description": (
+                f"ACRA: {acra_status} · {_sanctions_copy(lists_checked)}: "
+                f"{sanctions_status} · PDPA: {pdpa_flag}"
+            ),
+        },
+        "cached": False,
+        "scannedAt": scanned_at,
+    }
+
+    # Persist into DiscoveredVendor, carrying the rendered payload as the cache
+    # entry so a re-check inside the quota window skips the external calls.
+    cache_blob = {
+        "acra": acra_res,
+        "sanctions": sanction_res.to_dict() if hasattr(sanction_res, "to_dict") else None,
+        "pdpa": pdpa_res,
+        "quick_scan": result,
+        "scanned_at": scanned_at,
+    }
+    try:
+        if not dv:
+            dv = DiscoveredVendor(
+                company_name=resolved_name,
+                uen=resolved_uen,
+                website=target_site,
+                entity_type=entity_type,
+                country="Singapore",
+                source="acra_quick_scan",
+                source_data=cache_blob,
+            )
+            db.add(dv)
+        else:
+            dv.source_data = cache_blob
+            if target_site and not dv.website:
+                dv.website = target_site
+        db.commit()
+    except Exception as _e:
+        db.rollback()
+        logger.warning("[QuickScan] Failed to persist DiscoveredVendor for %s: %s", resolved_name, _e)
+
+    return result
+
+
 @router.get("/vendor/{vendor_slug}/status")
 async def procurement_vendor_status(
     vendor_slug: str,
-    db: Session  = Depends(get_db),
+    website: Optional[str] = Query(None),
+    refresh: bool = Query(False, description="Force a live re-scan instead of serving a cached result."),
+    db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
     """Full VendorStatusProfile for a vendor identified by slug/email prefix.
 
+    For claimed vendors: returns full score, verification depth, monitoring history.
+    For unclaimed vendors: runs a live Quick Scan (ACRA registry lookup + MAS Prohibition Orders/sanctions screening + PDPA web scan).
     Consumes one QUICK scan credit per unique vendor per month (re-views free).
     """
     _require_procurement(current_user)
     user = db.query(User).filter(User.email.like(f"{vendor_slug}@%")).first()
     if not user:
-        user = db.query(User).filter(User.company == vendor_slug).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="Vendor not found.")
+        user = db.query(User).filter(User.company.ilike(vendor_slug)).first()
 
     # Enforce quota BEFORE returning data — admins skip the meter.
     if getattr(current_user, "role", "") != "ADMIN":
         plan = (getattr(current_user, "plan", "free") or "free").lower().strip()
-        consume_scan(db, current_user.id, plan, user.id, "QUICK")
+        vendor_meter_id = str(user.id) if user else vendor_slug
+        consume_scan(db, current_user.id, plan, vendor_meter_id, "QUICK")
         db.commit()
 
-    return get_vendor_status(db, str(user.id))
+    if user:
+        return get_vendor_status(db, str(user.id))
+
+    return await perform_unclaimed_vendor_quick_scan(
+        db, vendor_slug, website=website, refresh=refresh
+    )
 
 
 @router.get("/sector/{sector}")

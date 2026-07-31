@@ -5424,9 +5424,11 @@ def buyer_demo_fireall_task(
             logger.warning("[DemoFireAll] snapshot arm failed: %s", e)
 
         try:
+            tier_key, _ = _buyer_tier_from_product(product_type)
+            wants_cert_flag = tier_key in ("pro", "enterprise")
             buyer_supplier_snapshot_task.delay(
                 buyer_user_id, buyer_email, cert_ref, cert_name,
-                None, product_type, is_certificate=True, demo=True,
+                None, product_type, is_certificate=wants_cert_flag, demo=True,
             )
             fired += 1
         except Exception as e:  # pragma: no cover
@@ -8497,6 +8499,13 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                 target_user_id or "anniversary-cron",
             )
             return
+
+        # Backfill VendorSector for any subscriber with User.industry set but no VendorSector row
+        try:
+            from app.services.tender_service import backfill_vendor_sectors
+            backfill_vendor_sectors(db)
+        except Exception as _bf_err:
+            logger.warning("[TenderIntelDigest] Backfill check failed: %s", _bf_err)
 
         email_svc = EmailService()
         period = period_label

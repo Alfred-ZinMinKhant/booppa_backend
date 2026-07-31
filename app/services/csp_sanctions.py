@@ -567,7 +567,11 @@ class WorldCheckScreener:
             return []
 
 
-# ── MAS WATCHLIST (Singapore-specific) ───────────────────────────────────────
+# ── MAS PROHIBITION ORDERS (Singapore-specific) ──────────────────────────────
+# The one canonical spelling of this list. Customer-facing copy and the API
+# both key off it, so they cannot drift apart.
+MAS_LIST_LABEL = "MAS Prohibition Orders & Sanctions"
+
 
 class MasWatchlistScreener:
     """
@@ -658,8 +662,8 @@ def screen_individual(
             mas_hits = MasWatchlistScreener.screen(screen_name)
             if mas_hits:
                 all_hits.extend(mas_hits)
-            if "MAS Watchlist" not in lists_checked:
-                lists_checked.append("MAS Watchlist")
+            if MAS_LIST_LABEL not in lists_checked:
+                lists_checked.append(MAS_LIST_LABEL)
 
     result = ScreeningResult(
         is_clear      = len(all_hits) == 0,
@@ -681,6 +685,26 @@ def screen_individual(
         )
 
     return result
+
+
+def sanctions_coverage_label(lists_checked: Optional[List[str]] = None) -> str:
+    """Customer-facing description of what a sanctions screen actually covers.
+
+    MAS prohibition-order coverage reaches us only through World-Check (see
+    screen_individual). Naming MAS when World-Check is unconfigured would be a
+    claim we cannot defend, so the label degrades to the lists we really hit.
+
+    Pass `lists_checked` from a completed ScreeningResult to describe that
+    specific screen; omit it for forward-looking copy, which falls back to the
+    current provider configuration.
+    """
+    if lists_checked is not None:
+        covered = MAS_LIST_LABEL in lists_checked
+    else:
+        covered = WorldCheckScreener.is_configured()
+    if covered:
+        return "MAS Prohibition Orders and international sanctions lists"
+    return "international sanctions lists (OFAC, UN and EU consolidated)"
 
 
 def screen_entity(name: str, also_screen: Optional[List[str]] = None) -> ScreeningResult:

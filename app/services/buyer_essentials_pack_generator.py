@@ -332,16 +332,21 @@ def generate_buyer_essentials_pack(data: Dict[str, Any]) -> bytes:
     # ── Section 2: What's included ────────────────────────────────────────────
     story += _section("What's included")
     cap_no = 1
+    # Name only the lists we actually screen against — MAS prohibition-order
+    # coverage depends on provider configuration (see csp_sanctions).
+    from app.services.csp_sanctions import sanctions_coverage_label
+    _sanctions_label = sanctions_coverage_label()
+
     quick_bullets = [
         f"{scan_quota} Quick Scans / month (re-viewing a vendor you already scanned this month is free)",
         "ACRA registration + entity status",
-        "MAS watchlist screening",
+        f"Screening against {_sanctions_label}",
         "PDPA compliance flag",
     ]
     story.append(_capability_block(
         cap_no, "Vendor Scans",
         f"Run a Quick Scan on {quick_vendors_phrase} every month. Each scan checks "
-        "the vendor against the ACRA company registry, the MAS watchlist, and raises a "
+        f"the vendor against the ACRA company registry and {_sanctions_label}, and raises a "
         "PDPA compliance flag.",
         quick_bullets,
     ))
@@ -430,7 +435,7 @@ def generate_buyer_essentials_pack(data: Dict[str, Any]) -> bytes:
     if spec["has_evidence"]:
         scan_rows.append(("Evidence Scan quota", f"{_fmt_count(spec['evidence'])} per month"))
     scan_rows += [
-        ("What a Quick Scan covers", "ACRA registry · MAS watchlist · PDPA flag"),
+        ("What a Quick Scan covers", f"ACRA registry · {_sanctions_label} · PDPA flag"),
         ("Where", "Buyer dashboard → search a vendor → run a scan"),
         ("Quota reset", "1st of each calendar month"),
     ]

@@ -787,7 +787,9 @@ async def _activate_subscription(
                     </td></tr>"""
 
                 feats = []
-                scan_line = f"Quick Scan on {quick} vendors/month (ACRA + MAS watchlist + PDPA flag)"
+                from app.services.csp_sanctions import sanctions_coverage_label
+                scan_line = (f"Quick Scan on {quick} vendors/month "
+                             f"(ACRA + {sanctions_coverage_label()} + PDPA flag)")
                 if deep:
                     scan_line = (f"{quick} Quick Scans + {deep} Deep Scans/month "
                                  "(11-dimension PDPA assessment + certifications "

@@ -89,6 +89,27 @@ def sync_vendor_sector(db: Session, vendor_id: Any, sector_or_industry: Optional
     return sector_name
 
 
+def backfill_vendor_sectors(db: Session) -> int:
+    """Backfill VendorSector from User.industry for any user missing a sector row."""
+    from app.core.models import User, VendorSector
+
+    users = (
+        db.query(User)
+        .filter(User.industry != None, User.industry != "")  # noqa: E711
+        .all()
+    )
+    count = 0
+    for u in users:
+        existing = db.query(VendorSector).filter(VendorSector.vendor_id == u.id).first()
+        if not existing:
+            sec = sync_vendor_sector(db, u.id, u.industry)
+            if sec:
+                count += 1
+    if count > 0:
+        logger.info("[VendorSector] Backfilled sector for %d users", count)
+    return count
+
+
 SNAPSHOT_STALE_DAYS = 7
 
 # ── Probability cap ────────────────────────────────────────────────────────────

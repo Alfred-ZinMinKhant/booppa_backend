@@ -428,7 +428,7 @@ class TestSanctionsScreening:
         assert isinstance(result.lists_checked, list)
         # EU is screened live; MAS is only reported when World-Check is configured.
         assert "EU Consolidated" in result.lists_checked
-        assert "MAS Watchlist" not in result.lists_checked
+        assert "MAS Prohibition Orders & Sanctions" not in result.lists_checked
 
     def test_screen_returns_hit_when_name_matches(self):
         from app.services.csp_sanctions import screen_individual
