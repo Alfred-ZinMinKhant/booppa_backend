@@ -114,8 +114,11 @@ BUNDLES: list[ProductCase] = [
 ]
 
 SUBSCRIPTIONS: list[ProductCase] = [
-    ProductCase(p, "subscription", "subscription", "_activate_subscription",
-                expects_email=True, email_subject_keywords=("subscription",))
+    ProductCase(
+        p, "subscription", "subscription", "_activate_subscription",
+        expects_email=True, email_subject_keywords=("subscription",),
+        required_metadata={"sector": "IT"} if p in ("tender_intelligence_monthly", "tender_intelligence_annual") else {},
+    )
     for p in [
         "vendor_active_monthly", "vendor_active_annual",
         "pdpa_monitor_monthly", "pdpa_monitor_annual",
