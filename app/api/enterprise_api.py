@@ -103,6 +103,7 @@ class WatchlistCommentCreate(BaseModel):
 
 from app.billing.enforcement import (
     SUITE_PLAN_KEYS, PRO_SUITE_PLAN_KEYS, COLLABORATION_PLAN_KEYS,
+    ENTERPRISE_PLAN_KEYS, BUYER_WHITE_LABEL_PLAN_KEYS,
 )
 
 
@@ -125,20 +126,31 @@ def _org_owner_plan(org: Organisation, db: Session) -> str:
     return (getattr(owner, "plan", "") or "").lower().strip()
 
 
-def _require_suite_plan(org_id: str, user: User, db: Session, *, pro_only: bool = False) -> Organisation:
-    """Gate: org membership AND owner has an active Standard/Pro Suite (or legacy) plan.
+def _require_suite_plan(
+    org_id: str,
+    user: User,
+    db: Session,
+    *,
+    pro_only: bool = False,
+    allowed: set[str] | None = None,
+    tier_label: str | None = None,
+) -> Organisation:
+    """Gate: org membership AND owner holds a plan in the required key set.
 
-    `pro_only=True` restricts to Pro Suite + legacy Enterprise Pro (for SSO,
-    white-label, multi-subsidiary). Otherwise either Standard or Pro is accepted.
+    `pro_only=True` restricts to Pro Suite + legacy Enterprise Pro (SSO). Without
+    it, either Standard or Pro Suite is accepted. `allowed` overrides both with an
+    explicit key set — used by features whose entitlement isn't Suite-shaped
+    (multi-subsidiary, buyer white-label); `tier_label` names that tier in the 402.
     """
     org = _get_org(org_id, user, db)
     plan = _org_owner_plan(org, db)
-    allowed = PRO_SUITE_PLAN_KEYS if pro_only else SUITE_PLAN_KEYS
+    if allowed is None:
+        allowed = PRO_SUITE_PLAN_KEYS if pro_only else SUITE_PLAN_KEYS
+        tier_label = tier_label or ("Pro Suite" if pro_only else "Standard Suite or Pro Suite")
     if plan not in allowed:
-        tier_label = "Pro Suite" if pro_only else "Standard Suite or Pro Suite"
         raise HTTPException(
             status_code=402,
-            detail=f"{tier_label} subscription required for this feature.",
+            detail=f"{tier_label or 'A paid'} subscription required for this feature.",
         )
     return org
 
@@ -223,7 +235,11 @@ def update_organisation(org_id: str, body: OrgUpdate, db: Session = Depends(get_
 
 @router.post("/organisations/{org_id}/subsidiaries", status_code=201)
 def add_subsidiary(org_id: str, body: SubsidiaryCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _require_suite_plan(org_id, current_user, db, pro_only=True)
+    # Suite-wide entitlement, NOT Pro-only — see the PRO_SUITE_PLAN_KEYS comment
+    # in app/billing/enforcement.py. The vendor-side route already resolves this
+    # off `tier == ENTERPRISE`; this endpoint was the outlier.
+    _require_suite_plan(org_id, current_user, db, allowed=ENTERPRISE_PLAN_KEYS,
+                        tier_label="An Enterprise, Suite, or Buyer Professional/Enterprise")
     sub = Subsidiary(id=uuid.uuid4(), organisation_id=org_id, **body.model_dump())
     db.add(sub)
     db.commit()
@@ -232,7 +248,9 @@ def add_subsidiary(org_id: str, body: SubsidiaryCreate, db: Session = Depends(ge
 
 @router.get("/organisations/{org_id}/subsidiaries")
 def list_subsidiaries(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _require_suite_plan(org_id, current_user, db, pro_only=True)
+    # Same Suite-wide entitlement as add_subsidiary — keep the two gates identical.
+    _require_suite_plan(org_id, current_user, db, allowed=ENTERPRISE_PLAN_KEYS,
+                        tier_label="An Enterprise, Suite, or Buyer Professional/Enterprise")
     subs = db.query(Subsidiary).filter(Subsidiary.organisation_id == org_id).all()
     return [{"id": str(s.id), "name": s.name, "uen": s.uen, "country": s.country} for s in subs]
 
@@ -328,7 +346,11 @@ def list_retention_policies(org_id: str, db: Session = Depends(get_db), current_
 
 @router.put("/organisations/{org_id}/white-label")
 def upsert_white_label(org_id: str, body: WhiteLabelUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _require_suite_plan(org_id, current_user, db, pro_only=True)
+    # Buyer Enterprise gets a scoped white-label (its own Procurement Report +
+    # Welcome Pack); Pro Suite additionally gets it on the MAS TRM board report.
+    # Both write the same WhiteLabelConfig — the scope split lives in the readers.
+    _require_suite_plan(org_id, current_user, db, allowed=BUYER_WHITE_LABEL_PLAN_KEYS,
+                        tier_label="A Buyer Enterprise or Pro Suite")
     cfg = db.query(WhiteLabelConfig).filter(WhiteLabelConfig.organisation_id == org_id).first()
     if not cfg:
         cfg = WhiteLabelConfig(id=uuid.uuid4(), organisation_id=org_id)

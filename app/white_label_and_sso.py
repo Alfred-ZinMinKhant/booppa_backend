@@ -33,6 +33,70 @@ def get_branding(organisation_id: str, db: Session) -> Optional[Dict[str, Any]]:
     }
 
 
+def resolve_branding_for_owner(
+    user_id, db, *, plan_keys, fallback_header: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """Return a ``build_doc(branding=...)``-ready dict for a user's own org, or None.
+
+    Single source of truth for "does this customer's PDF carry their brand?", shared
+    by the Pro Suite TRM documents and the Buyer Enterprise deliverables — the two
+    differ only in the `plan_keys` set they pass, which is what keeps the buyer
+    white-label deliberately narrower than Pro Suite's (see BUYER_WHITE_LABEL_PLAN_KEYS
+    in app/billing/enforcement.py).
+
+    Returns None when the plan isn't entitled or no config exists, so a lapsed or
+    downgraded customer's next cycle silently reverts to Booppa branding.
+
+    Colour mapping is deliberate and matches what pdf_layout.draw_page expects: the
+    customer's `primary_color` becomes the header *band* (dict `secondary_color`) and
+    their `secondary_color` becomes the accent rule (dict `primary_color`).
+    """
+    from app.core.models import Organisation, User, WhiteLabelConfig
+
+    org = (
+        db.query(Organisation)
+        .filter(Organisation.owner_user_id == user_id)
+        .order_by(Organisation.created_at.asc())
+        .first()
+    )
+    if not org:
+        return None
+
+    owner = db.query(User).filter(User.id == org.owner_user_id).first()
+    plan = (getattr(owner, "plan", "") or "").lower().strip()
+    if plan not in plan_keys:
+        return None
+
+    cfg = (
+        db.query(WhiteLabelConfig)
+        .filter(WhiteLabelConfig.organisation_id == org.id)
+        .first()
+    )
+    if not cfg:
+        return None
+
+    # A logo problem must never break document generation — fall back to Booppa's
+    # wordmark, which pdf_layout._resolve_logo already does when logo_bytes is None.
+    logo_bytes = None
+    if cfg.logo_s3_key:
+        try:
+            from app.services.storage import S3Service
+            _s3 = S3Service()
+            logo_bytes = _s3.s3_client.get_object(
+                Bucket=_s3.bucket, Key=cfg.logo_s3_key
+            )["Body"].read()
+        except Exception as wl_err:
+            logger.warning("[WhiteLabel] logo fetch failed for org %s: %s", org.id, wl_err)
+
+    return {
+        "primary_color": cfg.secondary_color or "#0f172a",
+        "secondary_color": cfg.primary_color or "#10b981",
+        "footer_text": cfg.footer_text,
+        "report_header_text": cfg.report_header_text or fallback_header or org.name,
+        "logo_bytes": logo_bytes,
+    }
+
+
 # ── SSO ────────────────────────────────────────────────────────────────────────
 
 def get_sso_config(organisation_id: str, db: Session) -> Optional[SsoConfig]:

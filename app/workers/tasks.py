@@ -4411,12 +4411,19 @@ def buyer_procurement_digest_task(
         if is_first_cycle:
             try:
                 from app.services.buyer_essentials_pack_generator import generate_buyer_essentials_pack
+                from app.billing.enforcement import BUYER_WHITE_LABEL_PLAN_KEYS
+                from app.white_label_and_sso import resolve_branding_for_owner
                 welcome_pdf = generate_buyer_essentials_pack({
                     "company": company,
                     "buyer_email": user_email,
                     "plan_label": plan_label,
                     "product_type": product_type,
                     "tier": tier,
+                    # Buyer Enterprise white-label — None for every other tier.
+                    "white_label": resolve_branding_for_owner(
+                        user_id, db, plan_keys=BUYER_WHITE_LABEL_PLAN_KEYS,
+                        fallback_header=company,
+                    ),
                 })
                 if welcome_pdf:
                     digest_attachments.append((f"BOOPPA-Welcome-Pack-{_safe_co}.pdf", welcome_pdf))
@@ -9672,22 +9679,11 @@ def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | 
             ]
 
             if _wl_cfg:
-                logo_bytes = None
-                if _wl_cfg.logo_s3_key:
-                    try:
-                        _s3 = S3Service()
-                        logo_bytes = _s3.s3_client.get_object(
-                            Bucket=_s3.bucket, Key=_wl_cfg.logo_s3_key
-                        )["Body"].read()
-                    except Exception as wl_err:
-                        logger.warning("[TRMBaseline] white-label logo fetch failed for %s: %s", user.email, wl_err)
-                white_label = {
-                    "primary_color": _wl_cfg.secondary_color or "#0f172a",
-                    "secondary_color": _wl_cfg.primary_color or "#10b981",
-                    "footer_text": _wl_cfg.footer_text,
-                    "report_header_text": _wl_cfg.report_header_text or company_name,
-                    "logo_bytes": logo_bytes,
-                }
+                from app.billing.enforcement import PRO_SUITE_PLAN_KEYS
+                from app.white_label_and_sso import resolve_branding_for_owner
+                white_label = resolve_branding_for_owner(
+                    user.id, db, plan_keys=PRO_SUITE_PLAN_KEYS, fallback_header=company_name,
+                )
 
         pdf_bytes = generate_trm_baseline_pdf({
             "company_name": company_name,
@@ -9831,24 +9827,11 @@ def run_trm_board_report_for_user(self, user_id: str, override_company: str | No
         # Pro white-label config (colours/header/footer + optional logo bytes).
         white_label = None
         if is_pro and org:
-            wl = db.query(WhiteLabelConfig).filter(WhiteLabelConfig.organisation_id == org.id).first()
-            if wl:
-                logo_bytes = None
-                if wl.logo_s3_key:
-                    try:
-                        _s3 = S3Service()
-                        logo_bytes = _s3.s3_client.get_object(
-                            Bucket=_s3.bucket, Key=wl.logo_s3_key
-                        )["Body"].read()
-                    except Exception:
-                        logo_bytes = None
-                white_label = {
-                    "primary_color": wl.secondary_color or "#0f172a",
-                    "secondary_color": wl.primary_color or "#10b981",
-                    "footer_text": wl.footer_text,
-                    "report_header_text": wl.report_header_text or company_name,
-                    "logo_bytes": logo_bytes,
-                }
+            from app.billing.enforcement import PRO_SUITE_PLAN_KEYS
+            from app.white_label_and_sso import resolve_branding_for_owner
+            white_label = resolve_branding_for_owner(
+                user.id, db, plan_keys=PRO_SUITE_PLAN_KEYS, fallback_header=company_name,
+            )
 
         pdf_bytes = generate_trm_board_report_pdf({
             "company_name": company_name,

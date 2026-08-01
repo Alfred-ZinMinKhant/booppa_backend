@@ -6,7 +6,9 @@ Three gates covered:
      full enterprise set PLUS Buyer Starter; reject VENDOR-role users; reject
      free-tier procurement accounts.
   2. Suite endpoints (enterprise_api.py) — TRM/webhooks/retention require
-     Standard or Pro Suite; SSO/white-label/subsidiaries require Pro Suite.
+     Standard or Pro Suite; SSO requires Pro Suite; white-label additionally
+     admits Buyer Enterprise (scoped to buyer deliverables); multi-subsidiary is
+     a Suite-wide ENTERPRISE_PLAN_KEYS entitlement.
   3. Collaboration endpoints (watchlist, invites) — require Buyer Pro+ or any
      Suite/Enterprise plan. Buyer Starter is intentionally excluded.
 
@@ -96,12 +98,18 @@ def test_trm_controls_require_suite_plan(client, test_db, plan, expected):
         ("standard_suite_monthly", 402),   # Standard CAN'T reach Pro features
         ("pro_suite_monthly", 200),
         ("enterprise_pro_monthly", 200),   # legacy GOVERNMENT-tier
-        ("buyer_enterprise_monthly", 402),
+        # Buyer Enterprise (SGD 799/mo) sells a SCOPED white-label — logo +
+        # brand colours on its own Procurement Report and Welcome Pack. Its
+        # activation email advertises it with a live CTA, so the gate must let
+        # it through. The Pro Suite board report stays out of reach; that split
+        # lives in the readers, not here.
+        ("buyer_enterprise_monthly", 200),
+        ("buyer_pro_monthly", 402),        # white-label starts at Enterprise
         ("free", 402),
     ],
 )
-def test_white_label_requires_pro_suite(client, test_db, plan, expected):
-    """White-label config is gated to Pro Suite only."""
+def test_white_label_requires_buyer_enterprise_or_pro_suite(client, test_db, plan, expected):
+    """White-label config: Buyer Enterprise (scoped) or Pro Suite (full)."""
     owner = make_user(test_db, plan=plan, role="PROCUREMENT")
     org = make_org(test_db, owner=owner)
     resp = client.put(
@@ -110,6 +118,53 @@ def test_white_label_requires_pro_suite(client, test_db, plan, expected):
         json={"primary_color": "#10b981"},
     )
     assert resp.status_code == expected, f"plan={plan} got {resp.status_code}"
+
+
+@pytest.mark.parametrize(
+    "plan,expected_post,expected_get",
+    [
+        # The enforcement.py comment above PRO_SUITE_PLAN_KEYS records this as a
+        # deliberate Suite-wide entitlement; the endpoint used to contradict it
+        # with pro_only=True, which 402'd the Buyer Enterprise activation email's
+        # own "Manage subsidiaries" CTA.
+        ("buyer_enterprise_monthly", 201, 200),
+        ("standard_suite_monthly", 201, 200),   # the entitlement the comment protects
+        ("pro_suite_monthly", 201, 200),
+        ("buyer_starter_monthly", 402, 402),    # Starter has no upgrade path yet
+        ("free", 402, 402),
+    ],
+)
+def test_subsidiaries_open_to_enterprise_plan_keys(client, test_db, plan, expected_post, expected_get):
+    """Multi-subsidiary follows ENTERPRISE_PLAN_KEYS, not PRO_SUITE_PLAN_KEYS."""
+    owner = make_user(test_db, plan=plan, role="PROCUREMENT")
+    org = make_org(test_db, owner=owner)
+    post = client.post(
+        f"/api/v1/enterprise/organisations/{org.id}/subsidiaries",
+        headers=auth_headers(owner),
+        json={"name": "Subsidiary A"},
+    )
+    assert post.status_code == expected_post, f"plan={plan} POST got {post.status_code}: {post.text[:200]}"
+    get = client.get(
+        f"/api/v1/enterprise/organisations/{org.id}/subsidiaries",
+        headers=auth_headers(owner),
+    )
+    assert get.status_code == expected_get, f"plan={plan} GET got {get.status_code}"
+
+
+def test_sso_stays_pro_suite_only_for_buyer_enterprise(client, test_db):
+    """Scope boundary: opening white-label/subsidiaries must NOT open SSO.
+
+    Buyer Enterprise's activation email promises multi-subsidiary, white-label
+    and API+webhooks — not SSO. SSO stays a Pro Suite differentiator.
+    """
+    owner = make_user(test_db, plan="buyer_enterprise_monthly", role="PROCUREMENT")
+    org = make_org(test_db, owner=owner)
+    resp = client.put(
+        f"/api/v1/enterprise/organisations/{org.id}/sso",
+        headers=auth_headers(owner),
+        json={"protocol": "saml", "idp_entity_id": "x", "idp_sso_url": "https://idp/sso"},
+    )
+    assert resp.status_code == 402, f"got {resp.status_code}: {resp.text[:200]}"
 
 
 def test_trm_gap_analysis_requires_suite_plan_to_block_deepseek_cost_leak(

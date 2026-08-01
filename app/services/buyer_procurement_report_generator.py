@@ -127,6 +127,10 @@ def generate_buyer_procurement_report_pdf(data: Dict[str, Any]) -> bytes:
         buf,
         title=f"Procurement Intelligence Report — {company}",
         header_label="PROCUREMENT INTELLIGENCE REPORT",
+        # Buyer Enterprise white-label: logo + brand colours on the buyer's own
+        # deliverable. None for every other tier, which falls back to Booppa's
+        # wordmark inside pdf_layout.draw_page.
+        branding=data.get("white_label"),
     )
     story: list = []
 
@@ -320,8 +324,17 @@ def build_buyer_procurement_report_pdf(
         suppliers = demo_watched_suppliers()
         sample_data = True
 
+    # Buyer Enterprise white-label. Resolved per render (not cached) so a lapsed
+    # or downgraded plan reverts to Booppa branding on the very next cycle.
+    from app.billing.enforcement import BUYER_WHITE_LABEL_PLAN_KEYS
+    from app.white_label_and_sso import resolve_branding_for_owner
+    white_label = resolve_branding_for_owner(
+        user_id, db, plan_keys=BUYER_WHITE_LABEL_PLAN_KEYS, fallback_header=company,
+    )
+
     return generate_buyer_procurement_report_pdf({
         "company_name": company,
+        "white_label": white_label,
         "plan_label": plan_label,
         "tier": tier,
         # Threaded from the digest task so the PDF's "As of" date matches the

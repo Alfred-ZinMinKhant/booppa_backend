@@ -827,9 +827,14 @@ async def _activate_subscription(
                         "Manage due diligence across multiple BUs / legal entities from one account.",
                         "Manage subsidiaries", "https://www.booppa.io/vendor/subsidiaries",
                     ))
+                    # Scoped deliberately: Buyer Enterprise white-label covers the
+                    # buyer's own deliverables. The MAS TRM board report stays a
+                    # Pro Suite capability — do not reuse Pro Suite's copy here.
+                    # Gate: BUYER_WHITE_LABEL_PLAN_KEYS in app/billing/enforcement.py.
                     feats.append(_bf(
                         "White-label reports",
-                        "Board- and regulator-ready reports carrying your own branding.",
+                        "Your Procurement Intelligence Report and Welcome Pack carry your own "
+                        "logo and brand colours instead of Booppa's.",
                         "Manage branding", "https://www.booppa.io/settings",
                     ))
                     feats.append(_bf(

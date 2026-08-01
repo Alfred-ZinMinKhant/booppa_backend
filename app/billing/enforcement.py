@@ -55,7 +55,9 @@ SUITE_PLAN_KEYS = {
 }
 
 # Pro Suite only (plus the legacy GOVERNMENT-tier Enterprise Pro).
-# Gates: SSO and white-label reports.
+# Gates: SSO, and board-report white-label (the MAS TRM baseline + monthly board
+# report). Buyer-facing white-label is a separate, narrower entitlement — see
+# BUYER_WHITE_LABEL_PLAN_KEYS below.
 #
 # NOT multi-subsidiary. `multi_vendor` resolves off `tier == ENTERPRISE`, and
 # ENTERPRISE_PLAN_KEYS includes standard_suite — so multi-subsidiary is a
@@ -66,6 +68,19 @@ SUITE_PLAN_KEYS = {
 PRO_SUITE_PLAN_KEYS = {
     "pro_suite", "pro_suite_monthly",
     "enterprise_pro", "enterprise_pro_monthly",
+}
+
+# Buyer-facing white-label: logo + brand colours on the buyer's own deliverables
+# (Procurement Intelligence Report, Welcome Pack). Deliberately NOT the same
+# capability as Pro Suite's — the MAS TRM baseline and board report stay
+# Pro-Suite-only, because that is the SGD 4,500/mo tier's differentiator, and
+# Buyer Enterprise is SGD 799/mo on a different product line.
+#
+# Keep the buyer_enterprise activation-email copy in
+# app/services/fulfillment/subscriptions.py in sync with this scope: it must
+# describe the buyer deliverables, not Pro Suite's board reports.
+BUYER_WHITE_LABEL_PLAN_KEYS = PRO_SUITE_PLAN_KEYS | {
+    "buyer_enterprise", "buyer_enterprise_monthly", "buyer_enterprise_annual",
 }
 
 # Team-collaboration features (shared watchlist, invites, member listing).
@@ -303,7 +318,10 @@ def enforce_tier(
         "api_access": tier in {PRO, ENTERPRISE} and paid,
         "webhooks": tier == ENTERPRISE and paid,
         "sso": is_pro_suite and paid,
-        "white_label": is_pro_suite and paid,
+        # Buyer Enterprise gets a scoped white-label (buyer deliverables only);
+        # the flag must match the PUT /white-label gate in enterprise_api.py or
+        # the frontend hides a settings page the API would accept.
+        "white_label": plan_value in BUYER_WHITE_LABEL_PLAN_KEYS and paid,
         "monthly_notarization_quota": notarization_quota,
     }
 

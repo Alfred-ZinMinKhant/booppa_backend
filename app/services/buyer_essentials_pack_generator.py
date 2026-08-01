@@ -33,6 +33,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
+from reportlab.lib.utils import ImageReader
 from reportlab.platypus import (
     BaseDocTemplate, Frame, HRFlowable, Image, KeepTogether, PageBreak,
     PageTemplate, Paragraph, Spacer, Table, TableStyle,
@@ -58,7 +59,9 @@ for _c in _LOGO_CANDIDATES:
 
 # Bump when the visible structure of the welcome pack changes.
 # v2: tier-aware header, plan-at-a-glance, and capability blocks (was Essentials-only).
-WELCOME_PACK_SCHEMA_VERSION = 2
+# v3: multi-subsidiary + white-label capability blocks (Enterprise), and white-label
+#     branding applied to the pack itself.
+WELCOME_PACK_SCHEMA_VERSION = 3
 
 # Monthly QUICK-scan quota for Buyer Essentials (buyer_starter). Mirrors
 # BUYER_SCAN_LIMITS["buyer_starter"] QUICK in app/billing/enforcement.py — kept
@@ -83,7 +86,9 @@ def _resolve_plan_spec(product_type: str | None, tier: str | None) -> Dict[str, 
     Deep-scan terminology differs by tier in the marketing language:
     Professional calls it "Deep Scan"; Enterprise calls it "Enhanced Scan".
     """
-    from app.billing.enforcement import scan_limit_for, max_seats_for
+    from app.billing.enforcement import (
+        scan_limit_for, max_seats_for, ENTERPRISE_PLAN_KEYS, BUYER_WHITE_LABEL_PLAN_KEYS,
+    )
     from app.core.models import ENTERPRISE_NOTARIZATION_LIMITS
 
     pk = (product_type or "buyer_starter").lower().strip()
@@ -114,6 +119,11 @@ def _resolve_plan_spec(product_type: str | None, tier: str | None) -> Dict[str, 
         "deep_label_singular": deep_label_singular,
         "has_deep": bool(deep),
         "has_evidence": bool(evidence),
+        # Resolved off the SAME key sets the API gates use, so the pack can never
+        # document a capability the endpoint would 402 (which is exactly what the
+        # activation email did before the gates were fixed).
+        "has_subsidiaries": pk in ENTERPRISE_PLAN_KEYS,
+        "has_white_label": pk in BUYER_WHITE_LABEL_PLAN_KEYS,
     }
 
 PAGE_W, PAGE_H = A4
@@ -129,9 +139,26 @@ BORDER  = colors.HexColor("#e2e8f0")
 WHITE   = colors.white
 
 
-def _draw_page(canvas, doc, *, header_label: str = "WELCOME PACK"):
+def _hex_or(value: str | None, fallback):
+    """Parse a white-label hex colour, falling back on anything unparseable."""
+    if value:
+        try:
+            return colors.HexColor(value)
+        except Exception:
+            pass
+    return fallback
+
+
+def _draw_page(canvas, doc, *, header_label: str = "WELCOME PACK", branding: dict | None = None):
+    branding = branding or {}
+    # Buyer Enterprise white-label: the customer's primary colour becomes the
+    # header band and their secondary the accent text, matching the mapping
+    # pdf_layout.draw_page uses for the Procurement Intelligence Report.
+    band_color = _hex_or(branding.get("secondary_color"), NAVY)
+    accent_color = _hex_or(branding.get("primary_color"), EMERALD)
+
     canvas.saveState()
-    canvas.setFillColor(NAVY)
+    canvas.setFillColor(band_color)
     canvas.rect(0, PAGE_H - HEADER_H, PAGE_W, HEADER_H, fill=1, stroke=0)
 
     # Explicit width — drawImage with only `height` silently skips on some
@@ -139,11 +166,20 @@ def _draw_page(canvas, doc, *, header_label: str = "WELCOME PACK"):
     logo_h = 0.48 * inch
     logo_w = logo_h * 2.94
     logo_y = PAGE_H - HEADER_H + (HEADER_H - logo_h) / 2
+    logo_src, logo_aspect = _LOGO_PATH, 2.94
+    if branding.get("logo_bytes"):
+        try:
+            reader = ImageReader(BytesIO(branding["logo_bytes"]))
+            _lw, _lh = reader.getSize()
+            logo_src, logo_aspect = reader, (_lw / _lh if _lh else 2.94)
+        except Exception:
+            logo_src, logo_aspect = _LOGO_PATH, 2.94
+    logo_w = logo_h * logo_aspect
     logo_drawn = False
-    if _LOGO_PATH:
+    if logo_src:
         try:
             canvas.drawImage(
-                _LOGO_PATH, MARGIN, logo_y,
+                logo_src, MARGIN, logo_y,
                 width=logo_w, height=logo_h,
                 preserveAspectRatio=True, mask="auto",
             )
@@ -151,11 +187,14 @@ def _draw_page(canvas, doc, *, header_label: str = "WELCOME PACK"):
         except Exception:
             logo_drawn = False
     if not logo_drawn:
-        canvas.setFillColor(EMERALD)
+        canvas.setFillColor(accent_color)
         canvas.setFont("Helvetica-Bold", 10)
-        canvas.drawString(MARGIN, PAGE_H - HEADER_H + 0.26 * inch, "BOOPPA")
+        canvas.drawString(
+            MARGIN, PAGE_H - HEADER_H + 0.26 * inch,
+            (branding.get("report_header_text") or "BOOPPA")[:40].upper(),
+        )
 
-    canvas.setFillColor(EMERALD)
+    canvas.setFillColor(accent_color)
     canvas.setFont("Helvetica-Bold", 7.5)
     canvas.drawRightString(
         PAGE_W - MARGIN, PAGE_H - HEADER_H + 0.26 * inch,
@@ -167,7 +206,10 @@ def _draw_page(canvas, doc, *, header_label: str = "WELCOME PACK"):
     canvas.line(MARGIN, FOOTER_H, PAGE_W - MARGIN, FOOTER_H)
     canvas.setFillColor(SLATE)
     canvas.setFont("Helvetica", 6.5)
-    canvas.drawString(MARGIN, FOOTER_H - 9, "Booppa Smart Care LLC · booppa.io · Confidential")
+    canvas.drawString(
+        MARGIN, FOOTER_H - 9,
+        branding.get("footer_text") or "Booppa Smart Care LLC · booppa.io · Confidential",
+    )
     canvas.drawRightString(PAGE_W - MARGIN, FOOTER_H - 9, f"Page {doc.page}")
     canvas.restoreState()
 
@@ -193,11 +235,28 @@ def _xml_escape(s: str) -> str:
     )
 
 
-def _section(title: str, *, page_break: bool = False) -> list:
+def _accent_hex(branding: dict | None) -> str:
+    """Body accent colour — the white-label brand colour, else Booppa emerald.
+
+    The header band alone is not what the activation email promises ("your own
+    logo and brand colours"), so the section markers, capability chips and
+    bullets follow it too.
+    """
+    raw = (branding or {}).get("primary_color")
+    if raw:
+        try:
+            colors.HexColor(raw)
+            return raw
+        except Exception:
+            pass
+    return "#10b981"
+
+
+def _section(title: str, *, page_break: bool = False, accent: str = "#10b981") -> list:
     """Section header; keepWithNext on h2 prevents the title widowing."""
     out: list = []
     out.append(PageBreak() if page_break else Spacer(1, 0.15 * inch))
-    out.append(Paragraph(f'<font color="#10b981">■</font>  <b>{_xml_escape(title)}</b>', _STYLES["h2"]))
+    out.append(Paragraph(f'<font color="{accent}">■</font>  <b>{_xml_escape(title)}</b>', _STYLES["h2"]))
     out.append(HRFlowable(width="100%", thickness=0.5, color=BORDER, spaceAfter=6))
     return out
 
@@ -220,7 +279,8 @@ def _kv_table(rows: list[tuple[str, str]]) -> Table:
     return t
 
 
-def _capability_block(number: int, title: str, blurb: str, bullets: list[str]) -> KeepTogether:
+def _capability_block(number: int, title: str, blurb: str, bullets: list[str],
+                      *, accent: str = "#10b981") -> KeepTogether:
     """A numbered capability card: emerald index + title, blurb, bullet list.
     KeepTogether so a card never splits across a page boundary.
     """
@@ -234,7 +294,7 @@ def _capability_block(number: int, title: str, blurb: str, bullets: list[str]) -
         colWidths=[0.32 * inch, 6.38 * inch],
     )
     head.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, 0), EMERALD),
+        ("BACKGROUND", (0, 0), (0, 0), _hex_or(accent, EMERALD)),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (1, 0), (1, 0), 8),
         ("TOPPADDING", (0, 0), (-1, -1), 4),
@@ -243,7 +303,7 @@ def _capability_block(number: int, title: str, blurb: str, bullets: list[str]) -
     flow: list = [head, Spacer(1, 0.04 * inch),
                   Paragraph(_xml_escape(blurb), _STYLES["body"])]
     for b in bullets:
-        flow.append(Paragraph(f'<font color="#10b981">•</font>  {_xml_escape(b)}', _STYLES["body"]))
+        flow.append(Paragraph(f'<font color="{accent}">•</font>  {_xml_escape(b)}', _STYLES["body"]))
     return KeepTogether(flow)
 
 
@@ -258,11 +318,14 @@ def generate_buyer_essentials_pack(data: Dict[str, Any]) -> bytes:
                        every tier quota from the enforcement source of truth
       tier           — resolved tier: starter | pro | enterprise
       scan_quota     — legacy override for the QUICK quota (optional)
+      white_label    — branding dict from white_label_and_sso
+                       .resolve_branding_for_owner, or None (Buyer Enterprise only)
     """
     company    = data.get("company") or "Your organisation"
     buyer_email = data.get("buyer_email") or ""
     plan_label = data.get("plan_label") or "Buyer Essentials"
     now = datetime.now(timezone.utc).strftime("%d %b %Y")
+    accent = _accent_hex(data.get("white_label"))
 
     spec = _resolve_plan_spec(data.get("product_type"), data.get("tier"))
     # Explicit legacy override still wins for the QUICK count if supplied.
@@ -278,19 +341,47 @@ def generate_buyer_essentials_pack(data: Dict[str, Any]) -> bytes:
         bottomMargin=FOOTER_H + 0.3 * inch,
     )
     header_label = f"{plan_label.upper()} · WELCOME PACK"
+    # Buyer Enterprise white-label; None for every other tier → Booppa branding.
+    branding = data.get("white_label") or None
     frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="main")
     doc.addPageTemplates([PageTemplate(
         id="main", frames=frame,
-        onPage=functools.partial(_draw_page, header_label=header_label),
+        onPage=functools.partial(_draw_page, header_label=header_label, branding=branding),
     )])
 
     story: list = []
 
     # ── Section 1: Cover / Welcome ────────────────────────────────────────────
-    if _LOGO_PATH:
+    # The cover logo goes through platypus Image, which needs a source it can
+    # read TWICE: once at construction for the size, again at draw time for the
+    # pixels. A BytesIO is at EOF by the second read ("broken data stream when
+    # reading image file") and an ImageReader isn't accepted at all, so spill the
+    # white-label logo to a temp file — the same shape as _LOGO_PATH. Cleaned up
+    # in the finally below, after doc.build has consumed it.
+    _cover_logo = _LOGO_PATH
+    _tmp_logo = None
+    if branding and branding.get("logo_bytes"):
+        try:
+            import tempfile
+            # Force a full decode NOW. ReportLab defers pixel decoding to draw
+            # time, where a failure escapes doc.build and kills the whole pack —
+            # a customer's bad logo upload must only cost them their branding.
+            ImageReader(BytesIO(branding["logo_bytes"])).getRGBData()
+            _fd, _tmp_logo = tempfile.mkstemp(suffix=".png")
+            with os.fdopen(_fd, "wb") as _fh:
+                _fh.write(branding["logo_bytes"])
+            _cover_logo = _tmp_logo
+        except Exception as e:
+            logger.warning("[WelcomePack] white-label cover logo staging failed: %s", e)
+            _cover_logo, _tmp_logo = _LOGO_PATH, None
+    if _cover_logo:
         try:
             story.append(Spacer(1, 0.05 * inch))
-            story.append(Image(_LOGO_PATH, width=2.4 * inch, height=0.82 * inch, kind="proportional"))
+            # lazy=0 decodes at construction. The default re-reads the source at
+            # draw time, which is fine for a path but leaves an already-consumed
+            # BytesIO at EOF → "broken data stream when reading image file".
+            story.append(Image(_cover_logo, width=2.4 * inch, height=0.82 * inch,
+                               kind="proportional"))
             story.append(Spacer(1, 0.12 * inch))
         except Exception as e:
             logger.warning("[WelcomePack] Body logo render failed: %s", e)
@@ -311,7 +402,7 @@ def generate_buyer_essentials_pack(data: Dict[str, Any]) -> bytes:
     )
     seats_display = _fmt_count(spec["seats"]) + (" seat" if spec["seats"] == 1 else " seats")
 
-    story += _section("Your plan at a glance")
+    story += _section("Your plan at a glance", accent=accent)
     glance_rows = [
         ("Plan", plan_label),
         ("Organisation", company),
@@ -330,7 +421,7 @@ def generate_buyer_essentials_pack(data: Dict[str, Any]) -> bytes:
     story.append(_kv_table(glance_rows))
 
     # ── Section 2: What's included ────────────────────────────────────────────
-    story += _section("What's included")
+    story += _section("What's included", accent=accent)
     cap_no = 1
     # Name only the lists we actually screen against — MAS prohibition-order
     # coverage depends on provider configuration (see csp_sanctions).
@@ -349,6 +440,7 @@ def generate_buyer_essentials_pack(data: Dict[str, Any]) -> bytes:
         f"the vendor against the ACRA company registry and {_sanctions_label}, and raises a "
         "PDPA compliance flag.",
         quick_bullets,
+        accent=accent,
     ))
     cap_no += 1
 
@@ -371,6 +463,7 @@ def generate_buyer_essentials_pack(data: Dict[str, Any]) -> bytes:
             "scoring, drift tracking, and a comparison engine to rank shortlisted "
             "vendors with your own risk weightings.",
             deep_bullets,
+            accent=accent,
         ))
         cap_no += 1
 
@@ -389,6 +482,42 @@ def generate_buyer_essentials_pack(data: Dict[str, Any]) -> bytes:
                 "Role-based access control (RBAC)",
                 "RESTful API access",
             ],
+            accent=accent,
+        ))
+        cap_no += 1
+
+    # Multi-subsidiary + white-label. These are the two capabilities the Buyer
+    # Enterprise activation email advertises with live CTAs; the pack previously
+    # never mentioned either, so the "everything included" document contradicted
+    # the email that shipped alongside it.
+    if spec["has_subsidiaries"]:
+        story.append(Spacer(1, 0.08 * inch))
+        story.append(_capability_block(
+            cap_no, "Multi-subsidiary management",
+            "Run due diligence across multiple business units or legal entities from "
+            "one account, with a group-level rollup rather than separate logins.",
+            [
+                "Add each subsidiary (name, UEN, country) under your organisation",
+                "Group rollup across every linked entity",
+                "Manage them at booppa.io/vendor/subsidiaries",
+            ],
+            accent=accent,
+        ))
+        cap_no += 1
+
+    if spec["has_white_label"]:
+        story.append(Spacer(1, 0.08 * inch))
+        story.append(_capability_block(
+            cap_no, "White-label reports",
+            "This Welcome Pack and your monthly Procurement Intelligence Report carry "
+            "your own logo and brand colours instead of Booppa's, so they can go "
+            "straight to an internal stakeholder.",
+            [
+                "Upload your logo and set your brand colours",
+                "Applied to your Procurement Intelligence Report and Welcome Pack",
+                "Set it up at booppa.io/settings",
+            ],
+            accent=accent,
         ))
         cap_no += 1
 
@@ -402,6 +531,7 @@ def generate_buyer_essentials_pack(data: Dict[str, Any]) -> bytes:
             "Automatic alert when a vendor crosses your alert threshold",
             "Portfolio risk summary counts",
         ],
+        accent=accent,
     ))
     cap_no += 1
     story.append(Spacer(1, 0.08 * inch))
@@ -414,6 +544,7 @@ def generate_buyer_essentials_pack(data: Dict[str, Any]) -> bytes:
             "Sort by compliance score and verification status",
             "See risk signal and trajectory before you engage",
         ],
+        accent=accent,
     ))
     cap_no += 1
     story.append(Spacer(1, 0.08 * inch))
@@ -425,10 +556,11 @@ def generate_buyer_essentials_pack(data: Dict[str, Any]) -> bytes:
             "CSV export of scan results for tender spreadsheets",
             "PDF export for filing and sharing",
         ],
+        accent=accent,
     ))
 
     # ── Sections 3–6: How to use each capability ──────────────────────────────
-    story += _section("Vendor Scans — how to scan", page_break=True)
+    story += _section("Vendor Scans — how to scan", page_break=True, accent=accent)
     scan_rows = [("Quick Scan quota", f"{scan_quota} per month")]
     if spec["has_deep"]:
         scan_rows.append((f"{spec['deep_label']} quota", f"{_fmt_count(spec['deep'])} per month"))
@@ -447,7 +579,7 @@ def generate_buyer_essentials_pack(data: Dict[str, Any]) -> bytes:
         _STYLES["body"],
     ))
 
-    story += _section("Compliance Dashboard — traffic-light & alerts")
+    story += _section("Compliance Dashboard — traffic-light & alerts", accent=accent)
     story.append(_kv_table([
         ("CLEAN", "No open risk signals — cleared for procurement."),
         ("WATCH", "Minor signals — monitor before you commit."),
@@ -461,7 +593,7 @@ def generate_buyer_essentials_pack(data: Dict[str, Any]) -> bytes:
         _STYLES["body"],
     ))
 
-    story += _section("Vendor Directory — browse & filter")
+    story += _section("Vendor Directory — browse & filter", accent=accent)
     story.append(Paragraph(
         "Open the vendor directory to explore the network. Narrow the list with filters "
         "for sector, company size, and certifications, then sort by compliance score or "
@@ -469,7 +601,7 @@ def generate_buyer_essentials_pack(data: Dict[str, Any]) -> bytes:
         _STYLES["body"],
     ))
 
-    story += _section("Exports — CSV & PDF")
+    story += _section("Exports — CSV & PDF", accent=accent)
     story.append(Paragraph(
         "From your scan results, export a CSV to pull vendor status straight into a "
         "tender evaluation spreadsheet, or export a formatted PDF for your records and "
@@ -478,7 +610,7 @@ def generate_buyer_essentials_pack(data: Dict[str, Any]) -> bytes:
     ))
 
     # ── Section 7: Getting started ────────────────────────────────────────────
-    story += _section("Getting started")
+    story += _section("Getting started", accent=accent)
     for step in [
         "Open your buyer dashboard and add your first suppliers to the watchlist.",
         "Run a Quick Scan on the vendors you are evaluating this month.",
@@ -494,5 +626,12 @@ def generate_buyer_essentials_pack(data: Dict[str, Any]) -> bytes:
         _STYLES["small"],
     ))
 
-    doc.build(story)
+    try:
+        doc.build(story)
+    finally:
+        if _tmp_logo:
+            try:
+                os.unlink(_tmp_logo)
+            except OSError:
+                pass
     return buf.getvalue()
