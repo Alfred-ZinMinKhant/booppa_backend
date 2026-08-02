@@ -6,9 +6,18 @@ Tiers:
   1. FREE  — OFAC SDN List (US Treasury, public, updated daily)
              UN Consolidated Sanctions List (public)
              EU Consolidated Financial Sanctions List / FSF (public)
-  2. PAID  — World-Check / Refinitiv One (ready for API key integration); also the
+             MAS Targeted Financial Sanctions — TSOFA 2002 First Schedule (public)
+  2. PAID  — World-Check / Refinitiv One (ready for API key integration); the only
              source of MAS prohibition-order, PEP and adverse-media coverage
              Dow Jones Risk & Compliance (ready for API key integration)
+
+Note the two distinct MAS lists — they are NOT interchangeable and are labelled
+separately (see MAS_TSOFA_LABEL vs MAS_LIST_LABEL):
+  * Targeted Financial Sanctions — designations under the Terrorism (Suppression
+    of Financing) Act 2002, published in statute. Free, screened on every call.
+  * Prohibition Orders — individuals barred from the financial industry. MAS
+    publishes these only as individual press releases, with no authoritative
+    in-force list, so we reach them solely through World-Check.
 
 All screening results are cached (Redis) for 24 hours to avoid
 hammering public APIs. Cache invalidated daily when new lists are fetched.
@@ -22,6 +31,7 @@ Environment variables:
     WORLDCHECK_API_KEY         = your-key   (optional, paid tier)
     WORLDCHECK_API_SECRET      = your-secret
     WORLDCHECK_API_BASE        = https://api.worldcheck.com/v2
+    MAS_TSOFA_URL              = override for the TSOFA First Schedule source
 """
 from __future__ import annotations
 
@@ -73,6 +83,15 @@ def _eu_candidate_urls() -> List[str]:
 
 # Back-compat: first candidate (env override if set, else the primary default).
 EU_SANCTIONS_XML_URL = _eu_candidate_urls()[0]
+
+# MAS Targeted Financial Sanctions. The authoritative source is the First Schedule of
+# the Terrorism (Suppression of Financing) Act 2002 on Singapore Statutes Online — the
+# designations are enacted in statute, so this IS the list, not a rendering of one.
+# MAS's own TFS landing page merely links here.
+MAS_TSOFA_URL = os.environ.get(
+    "MAS_TSOFA_URL",
+    "https://sso.agc.gov.sg/Act/TSFA2002?ProvIds=Sc1-",
+)
 
 CACHE_TTL = int(os.environ.get("SANCTIONS_CACHE_TTL", 86400))
 
@@ -567,6 +586,173 @@ class WorldCheckScreener:
             return []
 
 
+# ── MAS TARGETED FINANCIAL SANCTIONS (Singapore-specific, FREE tier) ─────────
+# The one canonical spelling of this list, for the same reason as MAS_LIST_LABEL:
+# customer-facing copy and the API both key off it, so they cannot drift apart.
+MAS_TSOFA_LABEL = "MAS Targeted Financial Sanctions (TSOFA First Schedule)"
+
+# Amendment annotations trailing each entry, e.g. "[S 107/2025 wef 11/02/2025]".
+_TSOFA_AMENDMENT_RE = re.compile(r"\[S\s+[^\]]*\]")
+_TSOFA_BRACKET_RE   = re.compile(r"\(([^)]*)\)")
+_TSOFA_ROW_RE       = re.compile(
+    r'<td[^>]*class="sProvP1No"[^>]*>(.*?)</td>\s*<td[^>]*class="sProvP1"[^>]*>(.*?)</td>',
+    re.S,
+)
+_TSOFA_TAIL_RE      = re.compile(r'<td[^>]*class="tailSTxt"[^>]*>', re.S)
+
+
+def _strip_html(fragment: str) -> str:
+    """Tags out, entities decoded, whitespace collapsed."""
+    import html as _html
+    text = re.sub(r"<[^>]+>", "", fragment)
+    return " ".join(_html.unescape(text).split())
+
+
+class MasTsofaScreener:
+    """
+    Screens against Singapore's Targeted Financial Sanctions designations —
+    the individuals named in the First Schedule of the Terrorism (Suppression
+    of Financing) Act 2002.
+
+    ~50 individuals. Singapore otherwise enforces the UN Security Council list
+    (already covered by UnConsolidatedScreener); this schedule is the small set
+    of *additional* names Singapore designates on its own, so it is the part of
+    Singapore sanctions coverage the other free lists genuinely miss.
+
+    Source: https://sso.agc.gov.sg/Act/TSFA2002?ProvIds=Sc1-
+    Landing: https://www.mas.gov.sg/regulation/anti-money-laundering/targeted-financial-sanctions
+    """
+
+    _entries_cache: Optional[List[Dict]] = None
+    _cache_loaded_at: Optional[datetime] = None
+
+    @staticmethod
+    def _parse(html_text: str) -> List[Dict]:
+        """
+        Extract the paragraph-2 designation list.
+
+        The Schedule has three paragraphs; only paragraph 2 ("The following
+        individuals:") enumerates names. Paragraph 1 incorporates the UN lists by
+        reference and paragraph 3 is definitions — both use the same row markup,
+        so scoping to paragraph 2 is what keeps prose out of the name list.
+        """
+        tails = list(_TSOFA_TAIL_RE.finditer(html_text))
+        start = end = None
+        for idx, match in enumerate(tails):
+            head = _strip_html(html_text[match.start(): match.start() + 200])
+            if head.startswith("2."):
+                start = match.start()
+                end   = tails[idx + 1].start() if idx + 1 < len(tails) else len(html_text)
+                break
+        if start is None:
+            raise ValueError("TSOFA First Schedule: paragraph 2 not found — source layout changed")
+
+        entries: List[Dict] = []
+        for ref_html, body_html in _TSOFA_ROW_RE.findall(html_text[start:end]):
+            ref  = _strip_html(ref_html)
+            text = _strip_html(body_html)
+            if not text or text.startswith("[Deleted"):
+                continue
+
+            text = _TSOFA_AMENDMENT_RE.sub("", text).strip().rstrip(".").rstrip(";").strip()
+            name = text.split("(", 1)[0].strip() if "(" in text else text
+            if not name:
+                continue
+
+            # "s/o" (son of) and "@" (also known as) join name variants in the
+            # statute; each side is a name the person is screened under.
+            aliases = [p.strip() for p in re.split(r"\bs/o\b|@", name) if p.strip()]
+            primary = aliases[0]
+
+            citizenship = dob = passport = None
+            for term in _TSOFA_BRACKET_RE.findall(text):
+                term = term.strip()
+                if term.endswith("citizen"):
+                    citizenship = term[: -len("citizen")].strip()
+                elif term.startswith("Date of Birth:"):
+                    dob = term.split(":", 1)[1].strip()
+                elif term.startswith("Passport No."):
+                    passport = term[len("Passport No."):].strip()
+
+            entries.append({
+                "ref":         ref,
+                "name":        primary,
+                "type":        "individual",
+                "aliases":     aliases[1:],
+                "citizenship": citizenship,
+                "birth_date":  dob,
+                "passport":    passport,
+            })
+        return entries
+
+    @classmethod
+    def _load_entries(cls) -> List[Dict]:
+        now = datetime.now(timezone.utc)
+        if (
+            cls._entries_cache is not None
+            and cls._cache_loaded_at is not None
+            and (now - cls._cache_loaded_at).seconds < CACHE_TTL
+        ):
+            return cls._entries_cache
+
+        logger.info("Fetching MAS Targeted Financial Sanctions (TSOFA First Schedule)...")
+        try:
+            # Statutes Online 403s the default httpx User-Agent.
+            response = httpx.get(
+                MAS_TSOFA_URL,
+                timeout=30.0,
+                follow_redirects=True,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml",
+                },
+            )
+            response.raise_for_status()
+            entries = cls._parse(response.text)
+            if not entries:
+                raise ValueError("TSOFA First Schedule parsed to zero entries")
+
+            cls._entries_cache   = entries
+            cls._cache_loaded_at = now
+            logger.info("MAS TSOFA list loaded: %d entries", len(entries))
+            return entries
+
+        except Exception as exc:
+            # Serving a stale list is defensible; silently serving an empty one is
+            # not — an empty list would report every name as clear.
+            logger.error("Failed to load MAS TSOFA list: %s", exc)
+            return cls._entries_cache or []
+
+    @classmethod
+    def is_available(cls) -> bool:
+        """True when we hold a usable list — i.e. this screen can be claimed."""
+        return bool(cls._load_entries())
+
+    @classmethod
+    def screen(cls, name: str) -> List[Dict]:
+        entries = cls._load_entries()
+        hits    = []
+        for entry in entries:
+            for candidate in [entry["name"]] + entry.get("aliases", []):
+                if _names_match(name, candidate):
+                    hits.append({
+                        "list":          MAS_TSOFA_LABEL,
+                        "entry_id":      entry["ref"],
+                        "name":          entry["name"],
+                        "type":          entry["type"],
+                        "citizenship":   entry.get("citizenship"),
+                        "birth_date":    entry.get("birth_date"),
+                        "passport":      entry.get("passport"),
+                        "source_url":    MAS_TSOFA_URL,
+                        "matched_alias": candidate if candidate != entry["name"] else None,
+                    })
+                    break
+        return hits
+
+
 # ── MAS PROHIBITION ORDERS (Singapore-specific) ──────────────────────────────
 # The one canonical spelling of this list. Customer-facing copy and the API
 # both key off it, so they cannot drift apart.
@@ -614,7 +800,7 @@ def screen_individual(
     Returns:
         ScreeningResult with all hits across all lists
     """
-    cache_key = _cache_key(name, ["ofac","un","eu","worldcheck","mas"])
+    cache_key = _cache_key(name, ["ofac","un","eu","worldcheck","mas","mas_tsofa"])
     cached    = _cache_get(cache_key)
     if cached:
         logger.debug("Sanctions screening cache hit for '%s'", name)
@@ -647,6 +833,15 @@ def screen_individual(
             all_hits.extend(eu_hits)
         if "EU Consolidated" not in lists_checked:
             lists_checked.append("EU Consolidated")
+
+        # MAS Targeted Financial Sanctions (free). Only claim it when the list
+        # actually loaded — an empty list would clear every name it screened.
+        if MasTsofaScreener.is_available():
+            tsofa_hits = MasTsofaScreener.screen(screen_name)
+            if tsofa_hits:
+                all_hits.extend(tsofa_hits)
+            if MAS_TSOFA_LABEL not in lists_checked:
+                lists_checked.append(MAS_TSOFA_LABEL)
 
         # World-Check (if configured) — also our only source of MAS prohibition-order
         # and PEP/adverse-media coverage. Only report these lists when it actually ran.
@@ -690,20 +885,35 @@ def screen_individual(
 def sanctions_coverage_label(lists_checked: Optional[List[str]] = None) -> str:
     """Customer-facing description of what a sanctions screen actually covers.
 
-    MAS prohibition-order coverage reaches us only through World-Check (see
-    screen_individual). Naming MAS when World-Check is unconfigured would be a
-    claim we cannot defend, so the label degrades to the lists we really hit.
+    There are three tiers, because the two MAS lists have different sources:
+
+      1. World-Check configured -> MAS prohibition orders AND targeted financial
+         sanctions. Prohibition-order coverage reaches us only this way.
+      2. TSOFA list loaded (the free default) -> MAS targeted financial sanctions
+         only. This must NOT say "prohibition orders" — nothing screened them.
+      3. Neither -> the international lists we really hit.
+
+    Naming a list we did not screen would be a claim we cannot defend, so the
+    label degrades rather than overstating.
 
     Pass `lists_checked` from a completed ScreeningResult to describe that
     specific screen; omit it for forward-looking copy, which falls back to the
     current provider configuration.
     """
     if lists_checked is not None:
-        covered = MAS_LIST_LABEL in lists_checked
+        prohibition_orders = MAS_LIST_LABEL in lists_checked
+        targeted_sanctions = MAS_TSOFA_LABEL in lists_checked
     else:
-        covered = WorldCheckScreener.is_configured()
-    if covered:
+        prohibition_orders = WorldCheckScreener.is_configured()
+        targeted_sanctions = MasTsofaScreener.is_available()
+
+    if prohibition_orders:
         return "MAS Prohibition Orders and international sanctions lists"
+    if targeted_sanctions:
+        return (
+            "MAS targeted financial sanctions and international sanctions lists "
+            "(OFAC, UN and EU consolidated)"
+        )
     return "international sanctions lists (OFAC, UN and EU consolidated)"
 
 
@@ -723,15 +933,19 @@ def refresh_sanctions_lists() -> Dict[str, int]:
     UnConsolidatedScreener._cache_loaded_at = None
     EuConsolidatedScreener._entries_cache   = None
     EuConsolidatedScreener._cache_loaded_at = None
+    MasTsofaScreener._entries_cache         = None
+    MasTsofaScreener._cache_loaded_at       = None
 
     # Re-load
-    ofac_entries = OfacSdnScreener._load_entries()
-    un_entries   = UnConsolidatedScreener._load_entries()
-    eu_entries   = EuConsolidatedScreener._load_entries()
+    ofac_entries  = OfacSdnScreener._load_entries()
+    un_entries    = UnConsolidatedScreener._load_entries()
+    eu_entries    = EuConsolidatedScreener._load_entries()
+    tsofa_entries = MasTsofaScreener._load_entries()
 
     return {
-        "ofac_entries": len(ofac_entries),
-        "un_entries":   len(un_entries),
-        "eu_entries":   len(eu_entries),
+        "ofac_entries":      len(ofac_entries),
+        "un_entries":        len(un_entries),
+        "eu_entries":        len(eu_entries),
+        "mas_tsofa_entries": len(tsofa_entries),
         "refreshed_at": datetime.now(timezone.utc).isoformat(),
     }

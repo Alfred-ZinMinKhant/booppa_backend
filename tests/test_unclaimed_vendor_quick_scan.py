@@ -206,3 +206,69 @@ def test_sanctions_copy_does_not_name_mas_unless_actually_checked():
     assert "MAS" not in sanctions_coverage_label([])
     assert "MAS" not in sanctions_coverage_label(["OFAC SDN", "UN Consolidated"])
     assert "MAS Prohibition Orders" in sanctions_coverage_label(["OFAC SDN", MAS_LIST_LABEL])
+
+
+def test_tsofa_coverage_never_claims_prohibition_orders():
+    """
+    The two MAS lists have different sources and must not be conflated: TSOFA is
+    free and always screened, prohibition orders reach us only via World-Check.
+    A TSOFA-only screen may say MAS, but never "Prohibition Orders".
+    """
+    from app.services.csp_sanctions import (
+        sanctions_coverage_label, MAS_LIST_LABEL, MAS_TSOFA_LABEL,
+    )
+
+    tsofa_only = sanctions_coverage_label(["OFAC SDN", MAS_TSOFA_LABEL])
+    assert "MAS targeted financial sanctions" in tsofa_only
+    assert "Prohibition Orders" not in tsofa_only
+
+    both = sanctions_coverage_label(["OFAC SDN", MAS_TSOFA_LABEL, MAS_LIST_LABEL])
+    assert "MAS Prohibition Orders" in both
+
+
+def test_tsofa_parses_designations_and_skips_prose():
+    """
+    Only paragraph 2 enumerates designated individuals; paragraphs 1 and 3 use the
+    same row markup for prose. Parsing the whole schedule would inject sentences
+    into the name list.
+    """
+    from app.services.csp_sanctions import MasTsofaScreener
+
+    html = """
+    <td class="tailSTxt">1. All individuals in the Taliban List
+      <tr><td class="sProvP1No">(a)</td><td class="sProvP1">where any individual is added to the Lists, blah;</td></tr>
+    </td>
+    <td class="tailSTxt">2. The following individuals:
+      <tr><td class="sProvP1No">(a)</td><td class="sProvP1">Ali bin Baba (Singapore citizen) (Date of Birth: 1 October 1950);</td></tr>
+      <tr><td class="sProvP1No">(b)</td><td class="sProvP1">[Deleted by S 1/2020]</td></tr>
+      <tr><td class="sProvP1No">(c)</td><td class="sProvP1">Chan Wei s/o Chan Lee (Malaysia citizen) (Passport No. A123) (Date of Birth: 3 September 1990).[S 495/2025 wef 18/07/2025]</td></tr>
+    </td>
+    <td class="tailSTxt">3. In this Schedule —
+      <tr><td class="sProvP1No">(a)</td><td class="sProvP1">"Lists" means the following, namely;</td></tr>
+    </td>
+    """
+    entries = MasTsofaScreener._parse(html)
+
+    assert [e["name"] for e in entries] == ["Ali bin Baba", "Chan Wei"]
+
+    ali = entries[0]
+    assert ali["citizenship"] == "Singapore"
+    assert ali["birth_date"] == "1 October 1950"
+
+    chan = entries[1]
+    assert chan["aliases"] == ["Chan Lee"]          # s/o splits into a screenable variant
+    assert chan["passport"] == "A123"
+    assert "S 495/2025" not in chan["name"]         # amendment annotation stripped
+
+
+def test_tsofa_unavailable_is_not_reported_as_clear():
+    """
+    A failed fetch yields zero entries. Claiming MAS coverage off an empty list
+    would report every name as clear — the exact overclaim the label guards.
+    """
+    from unittest.mock import patch
+    from app.services.csp_sanctions import MasTsofaScreener, sanctions_coverage_label
+
+    with patch.object(MasTsofaScreener, "_load_entries", return_value=[]):
+        assert MasTsofaScreener.is_available() is False
+        assert "MAS" not in sanctions_coverage_label()

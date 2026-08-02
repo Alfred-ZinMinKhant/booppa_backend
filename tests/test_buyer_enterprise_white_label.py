@@ -13,7 +13,7 @@ Scope boundary these tests pin:
 """
 import uuid
 
-from app.billing.enforcement import BUYER_WHITE_LABEL_PLAN_KEYS
+from app.billing.enforcement import BUYER_WHITE_LABEL_PLAN_KEYS, PRO_SUITE_PLAN_KEYS
 from app.core.models import WhiteLabelConfig
 from app.services.buyer_essentials_pack_generator import generate_buyer_essentials_pack
 from app.services.buyer_procurement_report_generator import (
@@ -185,6 +185,36 @@ def test_resolver_denies_buyer_pro_even_with_a_config(test_db):
     assert resolve_branding_for_owner(
         owner.id, test_db, plan_keys=BUYER_WHITE_LABEL_PLAN_KEYS,
     ) is None
+
+
+def test_buyer_enterprise_branding_does_not_reach_pro_suite_documents(test_db):
+    """The scope split, asserted on the reader side.
+
+    Buyer Enterprise (SGD 799/mo) and Pro Suite (SGD 4,500/mo) write the SAME
+    WhiteLabelConfig through the same PUT endpoint — the only thing keeping the
+    MAS TRM baseline and monthly board report a Pro Suite differentiator is the
+    `plan_keys` set each reader passes to resolve_branding_for_owner. Nothing
+    else fails if someone widens the TRM call site to BUYER_WHITE_LABEL_PLAN_KEYS,
+    so pin both directions here.
+    """
+    owner, _ = _config_org(test_db, "buyer_enterprise_monthly")
+
+    # Buyer deliverables: entitled.
+    assert resolve_branding_for_owner(
+        owner.id, test_db, plan_keys=BUYER_WHITE_LABEL_PLAN_KEYS,
+    ) is not None
+
+    # TRM baseline / board report: NOT entitled, same config, same org.
+    assert resolve_branding_for_owner(
+        owner.id, test_db, plan_keys=PRO_SUITE_PLAN_KEYS,
+    ) is None
+
+
+def test_pro_suite_branding_reaches_both_document_families(test_db):
+    """Converse of the split: Pro Suite is in both sets, so it gets both."""
+    owner, _ = _config_org(test_db, "pro_suite_monthly")
+    for keys in (BUYER_WHITE_LABEL_PLAN_KEYS, PRO_SUITE_PLAN_KEYS):
+        assert resolve_branding_for_owner(owner.id, test_db, plan_keys=keys) is not None
 
 
 def test_resolver_returns_none_without_a_config(test_db):
