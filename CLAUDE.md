@@ -32,7 +32,7 @@ docker compose up app worker
 ```
 
 - `app` runs `uvicorn app.main:app --host 0.0.0.0 --port 8000`.
-- `worker` runs `python -m celery -A app.workers.celery_app worker -B --loglevel=info -Q fast_queue,heavy_queue` — note `-B` (beat embedded in the worker, no separate beat process). Locally, `docker-compose.yml` splits this into two services (one `-Q fast_queue` with `-B`, one `-Q heavy_queue`); in ECS a single worker consumes both queues.
+- `worker` runs `python -m celery -A app.workers.celery_app worker -B --loglevel=info -Q fast_queue,heavy_queue` — note `-B` (beat embedded in the worker). This is **compose-only**. Locally, `docker-compose.yml` splits this into two services (one `-Q fast_queue` with `-B`, one `-Q heavy_queue`). **In ECS the worker carries no `-B`** and beat runs as its own service — see the deployment note below.
 - Compose also includes `postgres:15`, `redis:7-alpine`, `django_admin`, and `browserless/chrome` (used by the PDPA scanner for headless renders).
 
 ### Migrations
@@ -99,7 +99,9 @@ Major flows live in `app/workers/tasks.py`:
 - `fulfill_bundle_task` — Vendor Trust Pack / RFP Accelerator / Enterprise Bid Kit / Compliance Evidence Pack.
 - `fulfill_cover_sheet_task` — generates and anchors the signed Compliance Cover Sheet.
 
-`celery_app.conf.beat_schedule` (in `app/workers/celery_app.py`) runs ~14 cronjobs: monthly PDPA rescans (1st @ 03:00 UTC), GeBIZ tender sync every 30 min, weekly vendor-score digests, monthly compliance refresh, vendor contact scraping. Beat is **embedded in the worker** via `-B`, so the worker container is the only place schedules fire.
+`celery_app.conf.beat_schedule` (in `app/workers/celery_app.py`) runs ~14 cronjobs: monthly PDPA rescans (1st @ 03:00 UTC), GeBIZ tender sync every 30 min, weekly vendor-score digests, monthly compliance refresh, vendor contact scraping.
+
+**Where beat actually runs differs by environment — this has bitten us.** Under Docker Compose beat is embedded in the worker via `-B`. **In ECS (`booppa-cluster`) it is not**: `booppa-worker`'s command is `celery … worker -Q fast_queue,heavy_queue --without-gossip --without-mingle --without-heartbeat` with **no `-B`**, and beat runs as a separate service `booppa-beat` (`celery -A app.workers.celery_app beat`, sized 256 CPU / 512 MB — scheduling only, don't run heavy work there). Deleting or stopping `booppa-beat` silently stops all ~14 cronjobs: nothing errors, the work just never runs. Before touching either service, read the live task definition rather than trusting this file.
 
 ### Stripe purchase → fulfillment pipeline
 
