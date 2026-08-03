@@ -436,6 +436,29 @@ async def _activate_subscription(
                         is_first_cycle=True,
                     )
             elif new_plan in ("standard_suite", "pro_suite"):
+                # Seed the MAS licence class if checkout captured it. Only ever
+                # fills a NULL — never overwrites a value the customer confirmed
+                # via /vendor/trm/licence, because checkout metadata is the less
+                # trustworthy of the two sources.
+                try:
+                    from app.core.models import Organisation
+                    from app.services.mas_licence import normalise_licence
+                    licence_input = normalise_licence(
+                        (metadata or {}).get("mas_licence_type")
+                        or (metadata or {}).get("licence_type")
+                    )
+                    if licence_input:
+                        _org = db.query(Organisation).filter(
+                            Organisation.owner_user_id == user.id
+                        ).first()
+                        if _org is not None and not _org.mas_licence_type:
+                            _org.mas_licence_type = licence_input
+                            db.commit()
+                except Exception as _lic_err:
+                    logger.warning(
+                        "[Subscription] Failed to seed mas_licence_type for %s: %s",
+                        getattr(user, "email", "?"), _lic_err,
+                    )
                 # Deliver the MAS TRM Baseline Assessment PDF. Small countdown so
                 # the TRM controls initialised later in this same activation are
                 # committed first (the task also falls back to canonical domains).
@@ -448,6 +471,25 @@ async def _activate_subscription(
                         "bypass_idempotency": test_simulation,
                     },
                     countdown=30,
+                )
+                # MAS TRM document pack — the artefacts the baseline only
+                # tracks. Longer countdown than the baseline so the TRM
+                # controls seeded in this activation are committed before the
+                # pack reads them; the pack is built from the same control
+                # view as the tracker and must not race it.
+                #
+                # Generated once, here. If the org's mas_licence_type is not
+                # confirmed the pack lands `blocked_licence_unknown` with six
+                # of seven documents and asks the customer to confirm — it does
+                # not guess a regime.
+                from app.workers.trm_doc_tasks import generate_trm_document_pack
+                generate_trm_document_pack.apply_async(
+                    args=[str(user.id)],
+                    kwargs={
+                        "override_company": override_company,
+                        "bypass_idempotency": test_simulation,
+                    },
+                    countdown=90,
                 )
             logger.info(
                 "[Subscription] First-cycle delivery queued for user=%s tier=%s",

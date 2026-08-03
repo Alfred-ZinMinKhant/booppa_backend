@@ -802,7 +802,11 @@ def generate_all_csp_documents(profile: Dict, clients: List[Dict]) -> List[Dict]
             if needs_clients:
                 content, in_tok, out_tok = fn(profile, clients)
             else:
-                content, in_tok, out_tok = fn(profile) if len(fn.__code__.co_varnames) == 1 else fn(profile, [])
+                # co_argcount, NOT len(co_varnames) — co_varnames counts locals as
+                # well as arguments, so every profile-only generator (all of which
+                # declare locals) took the two-arg branch, raised TypeError, and was
+                # emitted below with content=None. Customers received 3-doc packs.
+                content, in_tok, out_tok = fn(profile) if fn.__code__.co_argcount == 1 else fn(profile, [])
             cost = (in_tok/1_000_000*_IN) + (out_tok/1_000_000*_OUT)
             results.append({
                 "doc_type": doc_type, "title": title,
@@ -876,63 +880,19 @@ def generate_csp_document_pdf(
 
     Markdown handled: ``#``/``##``/``###`` headings, ``- ``/``* `` bullets, blank-line
     paragraph breaks. All text is ``_xml_escape``d before entering a Paragraph.
+
+    Thin wrapper over :func:`app.services.compliance_doc_pdf.render_compliance_document`,
+    which is shared with the MAS TRM document pack. Going through it also gives
+    CSP documents the first-page AI-GENERATED DRAFT banner they previously lacked.
     """
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.units import inch
-    from reportlab.lib import colors
-    from reportlab.platypus import CondPageBreak, Paragraph, Spacer
+    from app.services.compliance_doc_pdf import render_compliance_document
 
-    from app.services import pdf_layout as _pl
-    from app.services.pdf_layout import keep_together_safe
-
-    meta = meta or {}
-    styles = get_unified_styles()
-    h1 = ParagraphStyle("CspH1", parent=styles["Heading1"], fontSize=16, spaceAfter=10, textColor=colors.HexColor("#0f172a"))
-    h2 = ParagraphStyle("CspH2", parent=styles["Heading2"], fontSize=13, spaceBefore=10, spaceAfter=6, keepWithNext=1)
-    h3 = ParagraphStyle("CspH3", parent=styles["Heading3"], fontSize=11, spaceBefore=8, spaceAfter=4, keepWithNext=1)
-    body_style = ParagraphStyle("CspBody", parent=styles["BodyText"], fontSize=9.5, leading=14, spaceAfter=6)
-    bullet_style = ParagraphStyle("CspBullet", parent=body_style, leftIndent=16, bulletIndent=4)
-    small = ParagraphStyle("CspSmall", parent=styles["BodyText"], fontSize=7.5, leading=10, textColor=colors.HexColor("#64748b"))
-
-    flow = [Paragraph(_xml_escape(title), h1)]
-    sub = []
-    if meta.get("legal_name"):
-        sub.append(_xml_escape(str(meta["legal_name"])))
-    if meta.get("uen"):
-        sub.append("UEN " + _xml_escape(str(meta["uen"])))
-    sub.append("Generated " + datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"))
-    flow.append(Paragraph(" · ".join(sub), small))
-    flow.append(Spacer(1, 0.2 * inch))
-
-    for raw in (body or "").splitlines():
-        line = raw.rstrip()
-        if not line.strip():
-            flow.append(Spacer(1, 0.06 * inch))
-            continue
-        if line.startswith("### "):
-            flow.append(Paragraph(_xml_escape(line[4:]), h3))
-        elif line.startswith("## "):
-            flow.append(Paragraph(_xml_escape(line[3:]), h2))
-        elif line.startswith("# "):
-            flow.append(Paragraph(_xml_escape(line[2:]), h2))
-        elif line.lstrip().startswith(("- ", "* ")):
-            txt = line.lstrip()[2:]
-            flow.append(Paragraph(_inline(txt), bullet_style, bulletText="•"))
-        else:
-            flow.append(Paragraph(_inline(line), body_style))
-
-    # Conditional: the disclaimer is ~6 lines, and an unconditional PageBreak
-    # here gave every one of these eight documents a final page containing
-    # nothing but it.
-    flow.append(CondPageBreak(1.6 * inch))
-    flow.extend(keep_together_safe([
-        Paragraph("Legal Disclaimer", h3),
-        Paragraph(_xml_escape(LEGAL_DISCLAIMER), small),
-    ]))
-
-    buf = BytesIO()
-    doc = _pl.build_doc(buf, title=title, header_label="CSP COMPLIANCE DOCUMENT")
-    doc.author = "Booppa Smart Care LLC"
-    _pl.render(doc, flow)
-    pdf_bytes = buf.getvalue()
-    return pdf_bytes, hashlib.sha256(pdf_bytes).hexdigest()
+    return render_compliance_document(
+        title,
+        body,
+        meta or {},
+        header_label="CSP COMPLIANCE DOCUMENT",
+        disclaimer=LEGAL_DISCLAIMER,
+        draft_banner=True,
+        signature_block=True,
+    )

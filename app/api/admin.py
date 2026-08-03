@@ -1061,7 +1061,11 @@ class SimulatePurchaseRequest(BaseModel):
     uen: Optional[str] = Field(
         default=None,
         description="Optional Singapore UEN — exercises the offline "
-        "DiscoveredVendor registry match + live ACRA lookup on the certificate.",
+        "DiscoveredVendor registry match + live ACRA lookup on the certificate. "
+        "For an account-subject run it is also resolved against ACRA and, on a "
+        "match, persisted to the account, so subscription SKUs (MAS TRM Suite) "
+        "render a registered legal name and UEN instead of the [UEN] placeholder. "
+        "No match means the account stays unverified — nothing is invented.",
     )
     managed_entity_id: Optional[str] = Field(
         default=None,
@@ -1152,6 +1156,7 @@ async def simulate_purchase(
     subject_is_entity = bool(entity_id or entity_name)
     resolved_entity_id: Optional[str] = None
     entity_identity: Optional[dict] = None
+    account_identity: Optional[dict] = None
     rfp_description = (body.rfp_description or "").strip() or DEFAULT_QA_RFP_BRIEF
     sim_id = f"admin-sim-{_uuid.uuid4()}"
     # The simulated *subscription* id is deterministic per (email, SKU), unlike
@@ -1224,6 +1229,51 @@ async def simulate_purchase(
 
                 clear_cached_identity(user, db, commit=False)
                 db.commit()
+
+        # Account-subject UEN: resolve it against the live ACRA registry and, on a
+        # match, persist through the single sanctioned write path. Until now the
+        # typed UEN only rode along in Stripe-style metadata, which reaches the stub
+        # Report — so one-time SKUs saw it and *subscription* SKUs did not. That is
+        # why a Suite test checkout produced a MAS TRM pack whose cover read
+        # "UEN [UEN]": nothing had ever written an identity onto the account.
+        #
+        # Deliberately not a blind write of whatever was typed. `resolve_legal_name`
+        # queries data.gov.sg and only records what the registry actually returns,
+        # so a wrong or invented number leaves the account unverified rather than
+        # stamping a fabricated registration onto a certified deliverable.
+        if uen and not subject_is_entity:
+            from app.services.evidence_enricher import (resolve_legal_name,
+                                                        trusted_cached_uen)
+
+            try:
+                _hint = company_name or user.company
+                _site = vendor_url or user.website
+                acra_legal_name = await resolve_legal_name(
+                    user, db, company_hint=_hint, uen=uen, website_hint=_site,
+                )
+                db.refresh(user)
+                # Read back through the trust gate, not off the column: a UEN whose
+                # provenance doesn't match this run's company belongs to whatever
+                # the account was doing last time, and reporting it as "verified"
+                # here would be the same lie one layer up.
+                confirmed_uen = trusted_cached_uen(
+                    user, company_hint=_hint, website_hint=_site,
+                )
+                account_identity = {
+                    "uen": confirmed_uen,
+                    "legal_name": acra_legal_name,
+                    "verified": bool(confirmed_uen),
+                }
+                if not confirmed_uen:
+                    logger.warning(
+                        "[simulate-purchase] ACRA had no match for uen=%s company=%r "
+                        "— account left unverified", uen, company_name,
+                    )
+            except Exception as _acra_err:
+                # Identity enrichment is not what this test checkout is proving;
+                # a registry outage must not block the fulfillment run under test.
+                logger.warning("[simulate-purchase] ACRA resolution failed: %s", _acra_err)
+                db.rollback()
 
         sim_sector = (body.industry or body.sector or getattr(user, "industry", None) or "").strip()
         if sim_sector:
@@ -1524,6 +1574,10 @@ async def simulate_purchase(
         # which company the deliverable is actually about and whether ACRA
         # confirmed it — the two facts a QA run of this path exists to check.
         "subject_identity": entity_identity,
+        # Present only when a UEN was supplied for an account-subject run.
+        # `verified: false` means ACRA returned nothing and the deliverable will
+        # show the placeholder — not that the lookup was skipped.
+        "account_identity": account_identity,
     }
 
 
@@ -1684,6 +1738,77 @@ def admin_trm_demo_baseline_latest(
     if not url:
         return {"available": False}
     return {"available": True, "download_url": url}
+
+
+class TrmDemoDocumentPackRequest(BaseModel):
+    mode: str = Field(
+        default="matrix",
+        description="'matrix' runs all three acceptance cases; 'single' runs one tenant.",
+    )
+    customer_email: Optional[str] = Field(default=None)
+    company_name: Optional[str] = Field(default="NovaPay Fintech Pte Ltd")
+    uen: Optional[str] = None
+    mas_licence_type: Optional[str] = Field(
+        default=None,
+        description=(
+            "MAS licence key (bank | merchant_bank | mpi | spi | insurer | "
+            "capital_markets | other_fi). Omit to exercise the unconfirmed case, "
+            "which gates the Outsourcing Risk Register."
+        ),
+    )
+    live_ai: bool = Field(default=True)
+
+    @field_validator("company_name")
+    @classmethod
+    def validate_names(cls, v):
+        if v in (None, "", "NovaPay Fintech Pte Ltd"):
+            return v or "NovaPay Fintech Pte Ltd"
+        return validate_name_field(v)
+
+
+# Sync `def` for the same reason as the baseline endpoint above: the pack worker
+# bridges to async via asyncio.run(), which raises inside a live event loop.
+@router.post("/trm/demo-document-pack")
+def admin_trm_demo_document_pack(
+    body: TrmDemoDocumentPackRequest,
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    """Run the MAS TRM document-pack acceptance matrix (or a single tenant).
+
+    Same code path as `scripts/demo_trm_document_pack.py`. PDF bytes are
+    stripped from the response — this returns the verification readout (branch,
+    status, per-document hashes), not a 7-PDF JSON payload. Use the script when
+    you need the files themselves.
+
+    Nothing is emailed and nothing is anchored: the harness stubs S3, the chain
+    and the mail provider, so this cannot mail a demo pack to a real customer.
+    """
+    from app.services.trm_demo_harness import (run_acceptance_matrix,
+                                               seed_and_generate_document_pack)
+
+    db = SessionLocal()
+    try:
+        if body.mode == "matrix":
+            result = run_acceptance_matrix(live_ai=body.live_ai, db=db)
+        else:
+            result = {"cases": [seed_and_generate_document_pack(
+                customer_email=body.customer_email,
+                company_name=body.company_name or "NovaPay Fintech Pte Ltd",
+                uen=body.uen,
+                mas_licence_type=body.mas_licence_type,
+                live_ai=body.live_ai,
+                db=db,
+            )]}
+    except Exception as exc:
+        logger.exception("[AdminTRMDemo] document pack generation failed")
+        raise HTTPException(status_code=500, detail=f"Demo document pack failed: {exc}")
+    finally:
+        db.close()
+
+    for case in result.get("cases", []):
+        for entry in (case.get("documents") or {}).values():
+            entry.pop("pdf_bytes", None)
+    return {"success": True, **result}
 
 
 class ProSuiteDemoRequest(BaseModel):

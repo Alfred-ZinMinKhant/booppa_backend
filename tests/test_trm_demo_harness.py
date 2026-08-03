@@ -6,7 +6,7 @@ contract — documented vs tested grading, no duplicate evidence on re-run — a
 that the endpoint exists and is auth-gated.
 """
 import uuid
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -60,8 +60,8 @@ def test_seeds_documented_and_tested_evidence(test_db):
     assert dr.attestation and "3h58m" in dr.attestation
 
     # Gap narratives cite the binding notice by number, not a generic "MAS says".
-    assert "655/FSM-N06" in by_domain["Cyber Security"].gap_analysis
-    assert "644/FSM-N05" in by_domain["Incident Management"].gap_analysis
+    assert "FSM-N06" in by_domain["Cyber Security"].gap_analysis
+    assert "FSM-N05" in by_domain["Incident Management"].gap_analysis
 
 
 def test_rerun_does_not_duplicate_evidence_or_controls(test_db):
@@ -91,3 +91,61 @@ def test_admin_demo_endpoint_is_registered_and_auth_gated(client):
                        json={"customer_email": "qa@booppa.io"})
     # Registered (not 404) and refuses an unauthenticated caller.
     assert resp.status_code == 401
+
+
+# ── ACRA identity: a supplied UEN is a query, never a fact ───────────────────
+#
+# The harness used to hand the typed UEN straight to `record_verified_identity`,
+# which persists without asking any registry. A demo cover then printed an
+# unverified number under the heading "UEN", indistinguishable from a real
+# registration. These pin the replacement: resolution goes through ACRA, and a
+# miss leaves the account unverified rather than inventing an identity.
+
+def _seed_with_uen(db, email, uen, *, acra_result):
+    with patch("app.workers.tasks.run_suite_trm_baseline_for_user"), \
+         patch("app.services.evidence_enricher.fetch_acra_status",
+               new=AsyncMock(return_value=acra_result)):
+        return seed_and_generate(
+            customer_email=email, company_name="Meridian Demo Pte Ltd",
+            uen=uen, live_ai=False, capture_pdf=True, db=db,
+        )
+
+
+def test_unmatched_uen_is_not_persisted_as_a_verified_identity(test_db):
+    from app.core.models import User
+
+    email = f"demo-{uuid.uuid4().hex[:8]}@booppa.io"
+    result = _seed_with_uen(test_db, email, "201700000Z",
+                            acra_result={"found": False})
+
+    user = test_db.query(User).filter(User.email == email).one()
+    assert user.uen is None, "an unverified UEN must never reach the account"
+    assert result["acra"]["attempted"] is True
+    assert result["acra"]["verified"] is False
+    # The readout has to say so explicitly — a silent False is how a demo gets
+    # screenshotted as if it were verified.
+    assert "No ACRA match" in result["acra"]["note"]
+
+
+def test_registry_confirmed_uen_is_persisted(test_db):
+    from app.core.models import User
+
+    email = f"demo-{uuid.uuid4().hex[:8]}@booppa.io"
+    result = _seed_with_uen(test_db, email, "201700000Z", acra_result={
+        "found": True, "live": True, "uen": "201700000Z",
+        "registered_name": "MERIDIAN DEMO PTE. LTD.",
+        "entity_status": "LIVE", "entity_type": "PTE LTD",
+        "registration_date": "2017-01-01", "warning": None,
+    })
+
+    user = test_db.query(User).filter(User.email == email).one()
+    assert user.uen == "201700000Z"
+    assert user.legal_name == "MERIDIAN DEMO PTE. LTD."
+    assert result["acra"]["verified"] is True
+    assert result["acra"]["note"] is None
+
+
+def test_no_uen_supplied_makes_no_second_acra_attempt(test_db):
+    email = f"demo-{uuid.uuid4().hex[:8]}@booppa.io"
+    result = _seed(test_db, email)
+    assert result["acra"]["attempted"] is False

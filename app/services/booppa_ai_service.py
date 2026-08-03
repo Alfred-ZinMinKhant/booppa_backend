@@ -176,7 +176,10 @@ SINGAPORE_LEGISLATION = {
         "655": {
             "title": "Cyber Hygiene",
             "scope": "All regulated financial institutions",
-            "citation": "MAS Notice 655/FSM-N06 - Cyber Hygiene",
+            # Unreachable while `notice_655` is in mas_notice_registry (which
+            # redirects 655 → FSM-N06). Kept correct anyway: if that entry is ever
+            # dropped, this table must not resurrect the cancelled number alone.
+            "citation": "MAS Notice FSM-N06 - Cyber Hygiene",
             "key_points": [
                 "Multi-factor authentication for administrative accounts",
                 "Rapid security patching",
@@ -201,15 +204,38 @@ def mas_notice_citation(number: str) -> str:
     Every customer-facing string that names a MAS notice must go through this
     helper — inline titles are how "Notice 644 - Cyber Hygiene" (644 is
     Technology Risk Management; 655 is Cyber Hygiene) reached buyer output.
+
+    The TRM instruments now resolve through app/services/mas_notice_registry.py,
+    the single source of truth for which MAS instruments are in force. That is
+    why 655 renders as FSM-N06 with no "655/" prefix: Notice 655 was cancelled on
+    10 May 2024, and printing the cancelled number alongside the live one invites
+    a reader to cite the dead notice. Notices outside the registry (626, AML/CFT)
+    still resolve from the table above.
     """
+    from app.services.mas_notice_registry import MAS_INSTRUMENTS
+
+    for inst in MAS_INSTRUMENTS.values():
+        if str(number) not in inst.ids:
+            continue
+        if inst.is_current:
+            return inst.citation
+        # A cancelled number resolves to its replacement. Asking for "655" is a
+        # caller using the number they remember, not a request to cite a notice
+        # that no longer binds anyone.
+        successor = MAS_INSTRUMENTS.get(inst.superseded_by or "")
+        if successor is not None:
+            return successor.citation
+
     entry = SINGAPORE_LEGISLATION["MAS_NOTICES"].get(str(number))
     if not entry:
         return f"MAS Notice {number}"
     return entry.get("citation") or f"MAS Notice {number} - {entry['title']}"
 
 
-# Cyber-hygiene controls (MFA, patching, privileged access) are Notice 655/
-# FSM-N06 — this is the notice a security/data-protection failing engages.
+# Cyber-hygiene controls (MFA, patching, privileged access) are Notice FSM-N06,
+# which replaced the cancelled Notice 655 on 10 May 2024 — this is the notice a
+# security/data-protection failing engages. Keyed by "655" because that is the
+# number callers remember; the registry does the redirect.
 MAS_CYBER_HYGIENE_CITATION = mas_notice_citation("655")
 MAS_TRM_CITATION = mas_notice_citation("644")
 

@@ -38,7 +38,7 @@ SEEDED_GAP: dict[str, dict[str, str]] = {
     "Cyber Security": {
         "gap_analysis": (
             "MFA is enforced for customer-facing logins but not for internal admin "
-            "consoles, and patch SLAs are undocumented. Notice 655/FSM-N06 requires MFA "
+            "consoles, and patch SLAs are undocumented. Notice FSM-N06 (which replaced the cancelled Notice 655 on 10 May 2024) requires MFA "
             "and rapid patching as mandatory controls, not best practice. Tested evidence "
             "that would close this: a dated privileged-access MFA rollout confirmation and "
             "a patch-cadence report showing critical CVEs remediated within SLA, not just "
@@ -50,7 +50,7 @@ SEEDED_GAP: dict[str, dict[str, str]] = {
     "Incident Management": {
         "gap_analysis": (
             "An incident response plan exists but has no verified 1-hour MAS notification "
-            "drill. Notice 644/FSM-N05 requires major incidents to be notified to MAS within "
+            "drill. Notice FSM-N05 (formerly 644) requires major incidents to be notified to MAS within "
             "1 hour of discovery. Tested evidence that would close this: a dated tabletop or "
             "live drill log showing detection-to-notification time under 60 minutes, signed "
             "off by the incident commander — not merely the escalation policy document."
@@ -61,7 +61,7 @@ SEEDED_GAP: dict[str, dict[str, str]] = {
     "Business Continuity and Disaster Recovery": {
         "gap_analysis": (
             "A DR plan exists with a documented 4-hour RTO for critical systems per Notice "
-            "644/FSM-N05, and it was tested with an annual failover exercise. MAS treats an "
+            "FSM-N05 (formerly 644), and it was tested with an annual failover exercise. MAS treats an "
             "untested BCP/DR plan as an aspiration, not a control — the dated test result is "
             "what closes this gap, distinct from the plan document itself."
         ),
@@ -122,6 +122,7 @@ def seed_and_generate(
     uen: Optional[str] = None,
     live_ai: bool = True,
     capture_pdf: bool = False,
+    mas_licence_type: Optional[str] = None,
     db=None,
 ) -> dict[str, Any]:
     """Seed the evidence-graded demo tenant and regenerate its TRM baseline.
@@ -134,6 +135,11 @@ def seed_and_generate(
     raw bytes instead — the shell script's mode, which must not mail anyone.
     Otherwise the real upload/email path runs and `download_url` is a live
     presigned link.
+
+    `mas_licence_type` seeds the org's MAS licence class. `None` is a real
+    state, not a missing argument: it is the unconfirmed case that gates the
+    Outsourcing Risk Register, and the acceptance matrix exercises it directly.
+    Unrecognised values normalise to `None` rather than to a plausible guess.
 
     Returns `{download_url, pdf_bytes, user_id, user_email, org_id,
     domains_analysed, evidence_summary, deepseek_live}`.
@@ -177,6 +183,14 @@ def seed_and_generate(
             db.add(org)
             db.commit()
             db.refresh(org)
+
+        # Set explicitly (including back to None) so a re-run against the same
+        # demo tenant with a different licence really re-branches the register
+        # rather than inheriting the previous run's regime.
+        from app.services.mas_licence import normalise_licence
+
+        org.mas_licence_type = normalise_licence(mas_licence_type)
+        db.commit()
 
         from app.trm_workflow_service import initialise_trm_controls
 
@@ -235,18 +249,7 @@ def seed_and_generate(
             ))
         db.commit()
 
-        if uen:
-            # Give the ACRA/legal-name resolver something to work with so the
-            # cover stamps a registered legal name, not a raw domain.
-            try:
-                if hasattr(user, "uen") and not user.uen:
-                    from app.services.evidence_enricher import record_verified_identity
-
-                    record_verified_identity(
-                        user, db, uen=uen, company_hint=company_name
-                    )
-            except Exception:
-                db.rollback()
+        acra = _verify_identity_with_acra(user, db, uen=uen, company_name=company_name)
 
         result = _generate(user, org, company_name, capture_pdf, db)
         result.update({
@@ -261,11 +264,69 @@ def seed_and_generate(
                     f"Tested — {DR_TEST_DATE:%d %b %Y}",
             },
             "deepseek_live": bool(live_ai and settings.DEEPSEEK_API_KEY),
+            "mas_licence_type": org.mas_licence_type,
+            "acra": acra,
         })
         return result
     finally:
         if owns_db:
             db.close()
+
+
+def _verify_identity_with_acra(user, db, *, uen: Optional[str], company_name: str) -> dict:
+    """Resolve the demo tenant's identity against the **live** ACRA registry.
+
+    The previous version wrote whatever UEN string the caller typed straight onto
+    the account via `record_verified_identity`. That is the one thing a demo must
+    not do: an unverified number rendered on a cover under the heading "UEN" is a
+    fabricated registration, and it looks exactly like a verified one. Here the
+    number is only a *query* — nothing is persisted unless data.gov.sg returns a
+    matching entity, and `resolve_legal_name` (the single sanctioned account write
+    path) is what does the persisting.
+
+    A miss is reported, not papered over: the cover then renders the `[UEN]`
+    placeholder, which is the honest output for an entity ACRA does not know.
+    """
+    from app.services.evidence_enricher import (ACRA_SYNC_RESOLVE_TIMEOUT,
+                                                _run_coro_blocking, resolve_legal_name,
+                                                trusted_cached_uen)
+
+    # Gated on an explicit UEN: with none supplied there is nothing new to resolve
+    # here, and the baseline's own `display_legal_name` already does the
+    # name-only ACRA attempt. Adding a second one would just double the lookups.
+    if not uen:
+        return {"attempted": False,
+                "verified": bool(trusted_cached_uen(user, company_hint=company_name))}
+
+    try:
+        resolved = _run_coro_blocking(
+            resolve_legal_name(
+                user, db, company_hint=company_name, uen=uen,
+                website_hint=getattr(user, "website", None),
+            ),
+            timeout=ACRA_SYNC_RESOLVE_TIMEOUT,
+        )
+    except Exception as exc:  # noqa: BLE001 — network/registry failure, never fatal
+        db.rollback()
+        logger.warning("[TRMDemo] ACRA resolution failed for %r: %s", company_name, exc)
+        return {"attempted": True, "verified": False, "error": str(exc)}
+
+    db.refresh(user)
+    # Read back through the trust gate, never off the column — see
+    # trusted_cached_uen's docstring for why the raw read is banned.
+    confirmed = trusted_cached_uen(user, company_hint=company_name)
+    verified = bool(confirmed)
+    return {
+        "attempted": True,
+        "verified": verified,
+        "uen": confirmed,
+        "legal_name": resolved,
+        # Stated plainly so a demo readout can never be mistaken for a registry hit.
+        "note": None if verified else (
+            "No ACRA match — the cover renders the [UEN] placeholder. Seed a real "
+            "Singapore UEN for a customer-facing sample."
+        ),
+    }
 
 
 def _generate(user, org, company_name: str, capture_pdf: bool, db) -> dict[str, Any]:
@@ -295,6 +356,183 @@ def _generate(user, org, company_name: str, capture_pdf: bool, db) -> dict[str, 
         str(user.id), override_company=company_name, bypass_idempotency=True
     )
     return {"pdf_bytes": None, "download_url": latest_baseline_url(str(user.id), db)}
+
+
+# ── document pack ────────────────────────────────────────────────────────────
+
+def seed_and_generate_document_pack(
+    *,
+    customer_email: Optional[str] = None,
+    company_name: str = "NovaPay Fintech Pte Ltd",
+    uen: Optional[str] = None,
+    mas_licence_type: Optional[str] = None,
+    live_ai: bool = True,
+    capture_pdf: bool = True,
+    db=None,
+) -> dict[str, Any]:
+    """Seed a demo tenant and run the **real** document-pack worker against it.
+
+    Same shape as `seed_and_generate` and deliberately built on top of it: the
+    pack is generated from the same control view as the baseline tracker, so
+    running them from one seed is the only way the acceptance evidence shows the
+    two agreeing about what is documented vs tested.
+
+    `capture_pdf=True` (the default here, unlike the baseline harness) keeps the
+    run from touching S3, the chain or anyone's inbox — the pack email carries
+    seven download links, and a demo run that mails them is a demo run that
+    mailed a customer. Returns the PDF bytes instead.
+
+    Returns `{pack_id, status, outsourcing_regime, mas_licence_type, user_id,
+    user_email, org_id, documents: {doc_type: {title, sha256, word_count,
+    pdf_bytes, skipped, skip_reason}}}`.
+    """
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    owns_db = db is None
+    db = db or SessionLocal()
+    try:
+        seed = seed_and_generate(
+            customer_email=customer_email,
+            company_name=company_name,
+            uen=uen,
+            live_ai=live_ai,
+            capture_pdf=True,   # never mail the baseline from the pack harness
+            mas_licence_type=mas_licence_type,
+            db=db,
+        )
+
+        from app.workers.trm_doc_tasks import generate_trm_document_pack
+
+        captured: dict[str, bytes] = {}
+
+        def _fake_upload(pdf_bytes: bytes, key: str) -> str:
+            # key is trm/{org}/packs/{pack}/{doc_type}.pdf
+            captured[key.rsplit("/", 1)[-1].removesuffix(".pdf")] = pdf_bytes
+            return f"https://s3.example/{key}"
+
+        async def _fake_email(self, to_email, subject, body_html, **kwargs):
+            return True
+
+        def _no_anchor(sha256_hex, metadata):
+            # Not a fabricated tx: a demo must not spend gas, and a plausible-
+            # looking hash in a demo pack is exactly the fake that survives
+            # into a screenshot. No anchor is the honest value.
+            return None, None
+
+        with ExitStack() as stack:
+            if capture_pdf:
+                stack.enter_context(
+                    patch("app.services.trm_pack_delivery.upload_pack_pdf", _fake_upload))
+                stack.enter_context(
+                    patch("app.services.trm_pack_delivery.anchor_document", _no_anchor))
+                stack.enter_context(
+                    patch("app.services.email_service.EmailService.send_html_email",
+                          _fake_email))
+            outcome = generate_trm_document_pack(
+                str(seed["user_id"]),
+                override_company=company_name,
+                bypass_idempotency=True,
+            )
+
+        pack = _load_pack(db, outcome.get("pack_id") if isinstance(outcome, dict) else None)
+        documents: dict[str, Any] = {}
+        for doc_type, entry in ((pack.documents if pack else None) or {}).items():
+            documents[doc_type] = {
+                "title": entry.get("title"),
+                "sha256": entry.get("sha256"),
+                "word_count": entry.get("word_count"),
+                "skipped": bool(entry.get("skipped")),
+                "skip_reason": entry.get("skip_reason"),
+                "error": entry.get("error"),
+                "pdf_bytes": captured.get(doc_type),
+            }
+
+        return {
+            "pack_id": (str(pack.id) if pack else None),
+            "status": (pack.status if pack else "unknown"),
+            "outsourcing_regime": (pack.outsourcing_regime if pack else None),
+            "mas_licence_type": (pack.mas_licence_type if pack else None),
+            "total_cost_usd": (pack.total_cost_usd if pack else None),
+            "user_id": seed["user_id"],
+            "user_email": seed["user_email"],
+            "org_id": seed["org_id"],
+            "deepseek_live": seed["deepseek_live"],
+            # Carried through so the pack readout says whether the cover carries a
+            # registry-verified UEN or the placeholder — never leaves it ambiguous.
+            "acra": seed.get("acra"),
+            "documents": documents,
+        }
+    finally:
+        if owns_db:
+            db.close()
+
+
+def _load_pack(db, pack_id: Optional[str]):
+    from app.core.models import TrmDocumentPack
+
+    if not pack_id:
+        return None
+    db.expire_all()
+    return db.query(TrmDocumentPack).filter(TrmDocumentPack.id == pack_id).first()
+
+
+# The acceptance matrix Gianpaolo asked for, verbatim: one bank-category
+# customer, one non-bank FI, and — added because it is the state every existing
+# subscriber is currently in — one with no licence confirmed.
+ACCEPTANCE_CASES: tuple[dict[str, Any], ...] = (
+    {"case": "A", "company_name": "Meridian Bank (Singapore) Pte Ltd",
+     "mas_licence_type": "bank",
+     "expect_regime": "bank_notices", "expect_status": "ready", "expect_docs": 7},
+    {"case": "B", "company_name": "NovaPay Payments Pte Ltd",
+     "mas_licence_type": "mpi",
+     "expect_regime": "non_bank_guidelines", "expect_status": "ready", "expect_docs": 7},
+    {"case": "C", "company_name": "Harbourline Capital Pte Ltd",
+     "mas_licence_type": None,
+     "expect_regime": None, "expect_status": "blocked_licence_unknown", "expect_docs": 6},
+)
+
+
+def run_acceptance_matrix(*, live_ai: bool = True, db=None) -> dict[str, Any]:
+    """Run every acceptance case and report pass/fail per case.
+
+    Each case gets a **fresh** tenant (no `customer_email`), because reusing one
+    would let a previous case's register survive into the next and make a branch
+    failure look like a pass.
+    """
+    results: list[dict[str, Any]] = []
+    for case in ACCEPTANCE_CASES:
+        out = seed_and_generate_document_pack(
+            company_name=case["company_name"],
+            mas_licence_type=case["mas_licence_type"],
+            live_ai=live_ai,
+            db=db,
+        )
+        delivered = [
+            dt for dt, e in out["documents"].items()
+            if e.get("pdf_bytes") and not e.get("skipped")
+        ]
+        register = out["documents"].get("outsourcing_risk_register") or {}
+        checks = {
+            "status": out["status"] == case["expect_status"],
+            "regime": out["outsourcing_regime"] == case["expect_regime"],
+            "document_count": len(delivered) == case["expect_docs"],
+            "register_gated": (
+                register.get("skipped") is True
+                if case["mas_licence_type"] is None
+                else bool(register.get("pdf_bytes"))
+            ),
+        }
+        results.append({
+            **out,
+            "case": case["case"],
+            "company_name": case["company_name"],
+            "expected": case,
+            "delivered_doc_types": sorted(delivered),
+            "checks": checks,
+            "passed": all(checks.values()),
+        })
+    return {"passed": all(r["passed"] for r in results), "cases": results}
 
 
 def latest_baseline_url(user_id: str, db) -> Optional[str]:

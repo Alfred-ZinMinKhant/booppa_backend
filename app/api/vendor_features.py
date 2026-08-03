@@ -83,11 +83,17 @@ def _get_or_create_org(db: Session, user: User) -> Organisation:
     # so the TRM baseline + workspace order domains by sector criticality without
     # needing a separate intake step.
     from app.services.trm_sector_override import normalise_sector
+    # Best-effort MAS licence class from the same free-text industry field. Only
+    # an exact-ish match lands (normalise_licence returns None otherwise) — an
+    # industry of "fintech" or "payments" is NOT a licence class and must stay
+    # NULL so the Outsourcing Register gates instead of guessing a regime.
+    from app.services.mas_licence import normalise_licence
     org = Organisation(
         name=user.company or user.full_name or user.email,
         slug=slug,
         tier=tier,
         sector=normalise_sector(getattr(user, "industry", None)),
+        mas_licence_type=normalise_licence(getattr(user, "industry", None)),
         owner_user_id=user.id,
     )
     db.add(org)
@@ -1345,3 +1351,131 @@ def delete_trm_evidence(
     db.delete(ev)
     db.commit()
     return {"deleted": True, "id": evidence_id}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MAS licence class
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TrmLicenceUpdate(BaseModel):
+    mas_licence_type: str = Field(..., description="Key from MAS_LICENCE_TYPES")
+
+
+@router.get("/trm/licence")
+def get_trm_licence(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Current MAS licence class for the caller's organisation.
+
+    `is_set=False` means the Outsourcing Risk Register in the TRM Document Pack
+    is gated — there is no safe default regime to fall back on.
+    """
+    from app.services.mas_licence import MAS_LICENCE_TYPES, licence_label
+
+    org = _get_or_create_org(db, user)
+    current = org.mas_licence_type
+    pack = _latest_trm_pack(db, org)
+    return {
+        "mas_licence_type": current,
+        "label": licence_label(current),
+        "is_set": bool(current),
+        "options": [
+            {"value": k, "label": v} for k, v in MAS_LICENCE_TYPES.items()
+        ],
+        # Surfaced so the dashboard can explain *why* the prompt is blocking:
+        # the pack already shipped six of seven documents and is waiting on this.
+        "pack_status": (pack.status if pack else None),
+        "register_blocked": bool(pack and pack.status == "blocked_licence_unknown"),
+    }
+
+
+def _latest_trm_pack(db: Session, org):
+    """Most recent document pack for the org, or None."""
+    from app.core.models import TrmDocumentPack
+
+    if org is None:
+        return None
+    return (
+        db.query(TrmDocumentPack)
+        .filter(TrmDocumentPack.organisation_id == org.id)
+        .order_by(TrmDocumentPack.generated_at.desc())
+        .first()
+    )
+
+
+@router.put("/trm/licence")
+def set_trm_licence(
+    payload: TrmLicenceUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Set or correct the MAS licence class.
+
+    Re-settable on purpose: a mis-selection produces a register in the wrong
+    regulatory regime, and the customer must be able to fix that themselves
+    rather than through support.
+    """
+    from app.services.mas_licence import (MAS_LICENCE_TYPES, licence_label,
+                                          normalise_licence, outsourcing_regime)
+
+    key = normalise_licence(payload.mas_licence_type)
+    if key is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unrecognised MAS licence type. Expected one of: "
+                + ", ".join(sorted(MAS_LICENCE_TYPES))
+            ),
+        )
+
+    org = _get_or_create_org(db, user)
+    previous = org.mas_licence_type
+    org.mas_licence_type = key
+    db.commit()
+    logger.info(
+        "[TRMLicence] org=%s licence %s -> %s (user=%s)",
+        org.id, previous or "unset", key, user.email,
+    )
+
+    # Writing the column is not the deliverable — the register is. A customer
+    # whose pack landed `blocked_licence_unknown` (or who corrected a
+    # mis-selection) still holds no Outsourcing Risk Register until this runs.
+    # Subset regeneration only: the other six documents did not branch on the
+    # licence and re-generating them is six needless DeepSeek calls. S3 keys are
+    # pack-scoped, so this never overwrites a copy the customer may have signed.
+    register_regenerating = False
+    pack = _latest_trm_pack(db, org)
+    if pack is not None and previous != key:
+        try:
+            from app.workers.trm_doc_tasks import generate_trm_document_pack
+
+            generate_trm_document_pack.apply_async(
+                args=[str(user.id)],
+                kwargs={
+                    "only_doc_types": ["outsourcing_risk_register"],
+                    # The pack already shipped; the once-per-activation lock is
+                    # exactly what must not apply on the correction path.
+                    "bypass_idempotency": True,
+                },
+            )
+            register_regenerating = True
+            logger.info(
+                "[TRMLicence] register regeneration queued org=%s pack=%s licence=%s",
+                org.id, pack.id, key,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # The licence write already committed and is the durable part;
+            # a broker hiccup must not lose it or 500 the confirmation UI.
+            logger.error(
+                "[TRMLicence] register regeneration enqueue FAILED org=%s: %s",
+                org.id, exc, exc_info=True,
+            )
+
+    return {
+        "mas_licence_type": key,
+        "label": licence_label(key),
+        "outsourcing_regime": outsourcing_regime(key),
+        "changed": previous != key,
+        "register_regenerating": register_regenerating,
+    }

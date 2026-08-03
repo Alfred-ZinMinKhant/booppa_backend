@@ -321,9 +321,18 @@ async def _match_acra(
     an exact `DiscoveredVendor` UEN lookup first, then — when no UEN is known — a
     local `DiscoveredVendor` name/domain lookup, then a live data.gov.sg fuzzy
     match on the company name. `fetch_acra_status` is Redis-cached 24h.
+
+    **`resolved_uen` is only ever a UEN some source confirmed.** A caller-supplied
+    UEN that matches nothing comes back as `None`, not echoed. It used to be
+    echoed, which meant `record_verified_identity` persisted an unchecked number
+    onto the account (`uen` + `identity_verified_at`) and every downstream
+    `verified` flag read True off it — a certificate could print an invented
+    registration under the heading "UEN" and look exactly like a real one. The
+    honest output for an entity ACRA does not know is "not verified".
     """
     registered_name: Optional[str] = None
-    resolved_uen: Optional[str] = uen
+    # Held separately from `uen`: the input is a *query*, this is the answer.
+    resolved_uen: Optional[str] = None
 
     if uen:
         try:
@@ -332,6 +341,8 @@ async def _match_acra(
             dv = db.query(DiscoveredVendor).filter(DiscoveredVendor.uen == uen).first()
             if dv and dv.company_name:
                 registered_name = dv.company_name
+                # A registry row carrying this exact UEN is a confirmation of it.
+                resolved_uen = uen
         except Exception as exc:
             logger.warning("_match_acra: DiscoveredVendor lookup failed for %s: %s", uen, exc)
 
@@ -349,8 +360,10 @@ async def _match_acra(
         try:
             live = await fetch_acra_status(uen, company_name=company)
             if live.get("found"):
-                if not resolved_uen and live.get("uen"):
-                    resolved_uen = live.get("uen")
+                # `found` is the confirmation. When the lookup was keyed by UEN the
+                # registry may not echo the field back, so fall back to the queried
+                # number — but only inside this branch, where ACRA matched it.
+                resolved_uen = resolved_uen or live.get("uen") or uen
                 if live.get("registered_name"):
                     registered_name = live.get("registered_name")
         except Exception as exc:

@@ -36,15 +36,16 @@ _DOMAIN_REFS = {
 # statutory hook are included.
 _DOMAIN_NOTICE_MAP = {
     "Cyber Security": (
-        "Notice 655/FSM-N06: multi-factor authentication, rapid security patching, "
+        "Notice FSM-N06 (Cyber Hygiene; replaced the cancelled Notice 655 on "
+        "10 May 2024): multi-factor authentication, rapid security patching, "
         "and privileged-account controls are mandatory, not best-practice suggestions."
     ),
     "Authentication and Access Management": (
-        "Notice 655/FSM-N06: multi-factor authentication and privileged-access "
-        "management controls are mandatory."
+        "Notice FSM-N06 (Cyber Hygiene): multi-factor authentication and "
+        "privileged-access management controls are mandatory."
     ),
     "Incident Management": (
-        "Notice 644/FSM-N05: major incidents must be notified to MAS within 1 hour "
+        "Notice FSM-N05 (formerly 644): major incidents must be notified to MAS within 1 hour "
         "of discovery."
     ),
     "Business Continuity and Disaster Recovery": (

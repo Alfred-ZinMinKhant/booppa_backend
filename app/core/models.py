@@ -1185,6 +1185,11 @@ class Organisation(Base):
     # Business sector (fintech | healthcare | …). Drives sector-priority ordering
     # of the 13 MAS TRM domains in the baseline + workspace. NULL → canonical order.
     sector = Column(String(50), nullable=True)
+    # MAS licence class of the regulated entity (see app/services/mas_licence.py).
+    # Decides which outsourcing regime binds the customer: Notices 658/1121 for
+    # banks/merchant banks, the non-bank Guidelines for everyone else. NULL means
+    # "not confirmed" — never guess a default, gate the document instead.
+    mas_licence_type = Column(String(40), nullable=True)
     owner_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     is_active = Column(Boolean, default=True)
     # Seat cap. NULL = unlimited (Suites + legacy Enterprise + Buyer Enterprise).
@@ -2634,7 +2639,8 @@ verifies + signs it (the PDF carries that disclaimer).
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, String
+from sqlalchemy import (Column, DateTime, Float, ForeignKey, Index, Integer,
+                        String)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from app.core.db import Base
@@ -2670,6 +2676,69 @@ class EvidencePack(Base):
 
 
 Index("ix_evidence_packs_user_status", EvidencePack.user_id, EvidencePack.status)
+
+
+class TrmDocumentPack(Base):
+    """MAS TRM Suite document pack — the artefacts the baseline tracker only tracks.
+
+    One row per generation run. Lifecycle:
+      queued → generating → anchoring → building_pdfs → ready
+      blocked_licence_unknown  — six of seven generated; the Outsourcing Risk
+                                 Register is withheld because `mas_licence_type`
+                                 is NULL. A bank handed a non-bank register is
+                                 worse than no register: it is signed evidence
+                                 the entity misread its own regime.
+      error                    — the completeness gate failed; nothing emailed.
+
+    `documents` maps doc_type → {title, word_count, cost_usd, s3_key, url,
+    sha256, tx_hash, polygonscan_url, error}. Rows are never overwritten across
+    runs: S3 keys are pack-scoped, so a register regenerated after a licence
+    correction does not destroy the copy the customer may already have signed.
+
+    tx_hash columns are String(80): the `demo-0x…` sentinel is 71 chars (see the
+    note at the top of this file). Never store the literal "pending" — anything
+    not routed through `is_real_onchain_tx` will read it as a real anchor.
+    """
+
+    __tablename__ = "trm_document_packs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organisation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    owner_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    plan_label = Column(String(60), nullable=True)          # Standard Suite | Pro Suite
+    # Snapshot of the licence at generation time, not a live read: the register
+    # in this pack was branched on THIS value, and the org's value can change.
+    mas_licence_type = Column(String(40), nullable=True)
+    outsourcing_regime = Column(String(40), nullable=True)  # bank_notices | non_bank_guidelines
+    schema_version = Column(Integer, nullable=False, default=1, server_default="1")
+
+    status = Column(String(32), nullable=False, default="queued", server_default="queued")
+    documents = Column(JSONB, nullable=True)
+    master_hash = Column(String(64), nullable=True)
+    master_tx_hash = Column(String(80), nullable=True)
+    total_cost_usd = Column(Float, nullable=True)
+
+    generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+    error_message = Column(String(1000), nullable=True)
+
+
+Index(
+    "ix_trm_document_packs_org_status",
+    TrmDocumentPack.organisation_id,
+    TrmDocumentPack.status,
+)
 
 
 class EmailSuppression(Base):

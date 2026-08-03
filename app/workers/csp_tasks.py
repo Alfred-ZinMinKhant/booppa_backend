@@ -284,7 +284,11 @@ def generate_csp_documents(self, profile_id: str) -> dict:
     Renders each to PDF, uploads to S3, and notarizes on-chain.
     """
     from app.core.models import CspProfile, CspClient, CspAmlProgramme, CspBlockchainEvidence
-    from app.services.csp_doc_generator import generate_all_csp_documents, generate_csp_document_pdf
+    from app.services.csp_doc_generator import (
+        CSP_DOCUMENT_CATALOG,
+        generate_all_csp_documents,
+        generate_csp_document_pdf,
+    )
 
     db = _db()
     try:
@@ -310,6 +314,7 @@ def generate_csp_documents(self, profile_id: str) -> dict:
         doc_results = generate_all_csp_documents(profile_dict, client_dicts)
 
         generated_ok = 0
+        generated_types: set[str] = set()
         # (filename, bytes) for the completion email — the buyer gets the
         # documents in hand, not just a dashboard they have to remember to open.
         doc_attachments: list[tuple[str, bytes]] = []
@@ -318,6 +323,7 @@ def generate_csp_documents(self, profile_id: str) -> dict:
                 logger.warning("Skipping failed doc: %s — %s", dr.get("doc_type"), dr.get("error"))
                 continue
             generated_ok += 1
+            generated_types.add(dr["doc_type"])
 
             doc_type = dr["doc_type"]
             content  = dr["content"]
@@ -387,30 +393,46 @@ def generate_csp_documents(self, profile_id: str) -> dict:
             )
             db.add(ev)
 
-        # Guard against a silent empty success: if every document failed (e.g.
-        # DEEPSEEK_API_KEY missing or the provider is down), do NOT mark the
-        # programme as existing. Roll back, alert, and retry — never tell the
-        # buyer their pack is ready when zero documents were produced.
-        if generated_ok == 0:
+        # Completeness gate. A partial pack is a silent failure: the buyer is told
+        # their documents are ready and receives fewer than the catalog promises,
+        # with nothing in the email indicating anything is missing. A zero-doc gate
+        # is not enough — the co_argcount bug in csp_doc_generator shipped 3-of-8
+        # packs to paying customers and passed the old `generated_ok == 0` check.
+        # Every document in the catalog must be present, or roll back and retry.
+        expected_types = {spec[0] for spec in CSP_DOCUMENT_CATALOG}
+        missing_types = expected_types - generated_types
+        if missing_types:
             db.rollback()
+            missing_csv = ", ".join(sorted(missing_types))
             msg = (
-                f"CSP document generation produced 0 documents for {profile.legal_name} "
-                f"({profile_id}). Check DEEPSEEK_API_KEY / provider availability."
+                f"CSP document generation produced {generated_ok}/{len(expected_types)} "
+                f"documents for {profile.legal_name} ({profile_id}). "
+                f"Missing: {missing_csv}. Check DEEPSEEK_API_KEY / provider availability."
             )
             logger.error(msg)
             try:
                 from app.services.fulfillment import alert_payment_fulfillment_issue
                 asyncio.run(alert_payment_fulfillment_issue(
-                    reason="CSP document generation produced 0 documents",
+                    reason=(
+                        f"CSP document pack incomplete: {generated_ok}/{len(expected_types)} "
+                        f"documents (missing: {missing_csv})"
+                    ),
                     product_type="csp_pack",
                     customer_email=None,
-                    extra={"profile_id": profile_id, "legal_name": profile.legal_name},
+                    extra={
+                        "profile_id": profile_id,
+                        "legal_name": profile.legal_name,
+                        "generated": sorted(generated_types),
+                        "missing": sorted(missing_types),
+                    },
                     notify_customer=False,
                 ))
             except Exception as alert_err:
                 logger.error("Failed to send fulfillment alert: %s", alert_err)
             raise self.retry(
-                exc=RuntimeError("CSP doc generation produced 0 documents"),
+                exc=RuntimeError(
+                    f"CSP doc generation incomplete: missing {missing_csv}"
+                ),
                 countdown=60 * (self.request.retries + 1),
             )
 

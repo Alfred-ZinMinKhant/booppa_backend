@@ -6,7 +6,12 @@ celery_app = Celery(
     "booppa",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["app.workers.tasks", "app.workers.monthly_credit_reset", "app.workers.csp_tasks"],
+    include=[
+        "app.workers.tasks",
+        "app.workers.monthly_credit_reset",
+        "app.workers.csp_tasks",
+        "app.workers.trm_doc_tasks",
+    ],
 )
 
 # Celery configuration
@@ -96,6 +101,11 @@ celery_app.conf.update(
         # CSP Compliance Pack tasks (csp.generate_documents, csp.notarize_record,
         # csp.refresh_sanctions_lists, csp.daily_monitoring, csp.run_sanctions_screening)
         "csp.*": {"queue": "fast_queue"},
+        # MAS TRM document pack: seven LLM calls + seven PDF renders + anchoring.
+        # heavy_queue, same as the baseline — deliberately NOT a new queue, which
+        # would need a worker deployment change and risks enqueueing to a
+        # consumer that does not exist.
+        "trm.generate_document_pack": {"queue": "heavy_queue"},
     },
     # Beat schedule
     beat_schedule={
