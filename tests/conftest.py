@@ -127,8 +127,9 @@ def _disable_rate_limit(monkeypatch):
 #
 # Two paths:
 #   - `s3_bucket`  — moto fake. Default. Fast, hermetic, no AWS creds needed.
-#   - `real_s3`    — boto3 against the real `booppa-reports` bucket scoped to a
-#                    unique `test/<run-id>/` prefix; cleans up on teardown.
+#   - `real_s3`    — boto3 against the real `booppa-reports-04bd50c4` bucket
+#                    scoped to a unique `test/<run-id>/` prefix; cleans up on
+#                    teardown.
 #
 # The autouse `_aws_credentials` fixture defaults to fake creds so a misconfigured
 # test cannot reach real AWS by accident. Opting into `real_s3` overrides this.
@@ -163,7 +164,8 @@ def s3_bucket():
 
 @pytest.fixture
 def real_s3(monkeypatch):
-    """Real S3 against `booppa-reports` under a unique `test/<run-id>/` prefix.
+    """Real S3 against `booppa-reports-04bd50c4` under a unique `test/<run-id>/`
+    prefix.
 
     Cleanup: every key uploaded during the test is deleted on teardown. As
     defense-in-depth, the bucket has a lifecycle rule that expires anything

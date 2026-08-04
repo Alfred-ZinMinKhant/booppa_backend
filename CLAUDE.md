@@ -130,7 +130,7 @@ Response carries `Cache-Control: no-store` because the brief state flips as the 
 - `cover_sheet_generator.py` — Compliance Evidence Pack cover sheet, schema-versioned via `COVER_SHEET_SCHEMA_VERSION`. Bump the constant whenever visible structure changes; the UI surfaces an "outdated" badge + free regenerate to customers holding older versions.
 - `email_service.py` — Resend (`RESEND_API_KEY`) preferred, falls back to AWS SES. **`send_html_email` returns `False` on provider rejection and does not raise.** Always check the return value if delivery matters; surface failures via `_alert_payment_fulfillment_issue` for fulfillment flows.
 - `BlockchainService` — anchors SHA-256 hashes to Polygon Amoy via the `EvidenceAnchorV3` contract. Treat anchoring as expensive (gas) and idempotent on `report_id`.
-- `S3Service` — uploads and presigned URL minting (presigns expire in 7 days — the cover sheet status endpoint re-presigns on every fetch).
+- `S3Service` / `S3StorageAdapter` — uploads and presigned URL minting (presigns expire in 7 days — the cover sheet status endpoint re-presigns on every fetch). The bucket is `booppa-reports-04bd50c4` (`S3_BUCKET`), private, and holds **both** customer deliverables under `reports/` and public CMS images under `cms/`. Any unauthenticated read path into this bucket must pin its key prefix — see the CMS media note below.
 - `AIService` / `BooppaAIService` — multi-provider (Anthropic, DeepSeek, OpenAI, Ollama) routed by config. Compliance narratives go through `BooppaAIService`.
 
 ### Shared PDF helpers — reuse before rolling new ones
@@ -138,6 +138,16 @@ Response carries `Cache-Control: no-store` because the brief state flips as the 
 `cover_sheet_generator.py` and `pdf_service.py` both rely on a small set of helpers and patterns: `_section_header` / `_section`, `_kv_table`, `_xml_escape`, `_pdpa_finding_block`, `_rfp_qa_block`, plus `KeepTogether` + `PageBreak` imported from `reportlab.platypus`. Prefer extending these over inventing new layout code.
 
 User-supplied strings rendered in a `Paragraph` **must** be `_xml_escape`d — ReportLab's Paragraph mini-XML treats `&` and `<` as entity/tag starts. The "Q&A; Coverage" rendering glitch a few iterations back was exactly this.
+
+### CMS content — mid-migration off Django (`booppa-cms`)
+
+The four public content types (blogs, RFP tips, compliance posts, vendor guides) are being folded out of the Django service `booppa-cms` into this app. Public reads are already ported to `app/api/cms_public.py`; admin CRUD is not yet. **Both services are live** — Django still serves production traffic at `cms.booppa.io` and is the rollback path, so don't delete it as part of the cutover.
+
+Media: blog images live on S3 under `cms/blog_images/…` and are served by `GET /api/public/cms-media/{path}`, which 302s to a freshly minted presign. This indirection exists because the stored URL must be permanent — blog images sit in cached pages and `next/image`, so a raw 7-day presign would break every post older than a week. The route pins keys under `cms/`; without that pin it is an unauthenticated reader for the whole bucket, which also holds customer reports.
+
+`blog_post_images.image` holds a **Django-relative path** (`blog_images/x.png`) today. `_image_url` routes those to `CMS_LEGACY_MEDIA_BASE`, and only a `cms/`-prefixed value routes to this backend. All 10 referenced images are already copied to S3; the row rewrite to the `cms/` prefix is deliberately **not** done, because Django is still the serving path and rewriting now would 404 the live blog. It happens at cutover, after the frontend is repointed.
+
+**`booppa-cms`'s media lives on an EFS mount** (`fs-0634ca84d161452f4` → `/app/media`). Any task definition registered without that volume/mountPoint drops the uploaded blog images. `ci.yml` generates the CMS task definition correctly (volume + mountPoint included); the stale hand-written `task-def-cms.json` that omitted them has been deleted, and `task-def-*.json` is now gitignored so no such file can look authoritative again. Read the live task definition before touching the service.
 
 ### Frontend coordination
 
@@ -150,7 +160,17 @@ Sibling Next.js repo at `../booppa-nextjs`. Two polling contracts the frontend d
 
 ## Deployment
 
-`entrypoint.sh` runs `alembic upgrade head` then uvicorn. ECS deployment uses the `task-def-*.json` files at the repo root. The backend sits behind a Cloudflare Tunnel running in ECS Fargate — see `README_BACKEND.md` and `scripts/deploy_cloudflared_tunnel.sh` if tunnel work is needed.
+`entrypoint.sh` runs `alembic upgrade head` then uvicorn. ECS task definitions are **generated at deploy time** by `.github/workflows/ci.yml` (heredocs for app/worker/cms, plus a `jq` transform of the worker def for beat) and by `scripts/deploy_cloudflared_tunnel.sh`. They are gitignored, not committed — the previously committed `task-def-*.json` files had drifted badly from what was running and have been deleted. `ci.yml` is the source of truth for what gets registered; `aws ecs describe-task-definition` is the source of truth for what is running.
+
+**Reaching the production database.** `booppa-postgres` is VPC-only and not publicly accessible; there is no bastion. Run `scripts/db_tunnel.sh` to SSM-port-forward `localhost:5433` through a running `booppa-app` task. Credentials are **not** in `.env` (that file holds local-only creds and will fail with `password authentication failed`) — pull them from Secrets Manager:
+
+```bash
+aws secretsmanager get-secret-value --region ap-southeast-1 \
+  --secret-id arn:aws:secretsmanager:ap-southeast-1:997493291407:secret:booppa/DatabaseUrl-ZjhS09 \
+  --query SecretString --output text     # postgresql+psycopg2://…/booppadb
+```
+
+Strip the `+psycopg2` and override host/port to `localhost:5433` when connecting through the tunnel. The backend sits behind a Cloudflare Tunnel running in ECS Fargate — see `README_BACKEND.md` and `scripts/deploy_cloudflared_tunnel.sh` if tunnel work is needed.
 
 ## Definition of Commercially Ready
 

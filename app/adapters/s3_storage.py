@@ -55,6 +55,74 @@ class S3StorageAdapter(StoragePort):
             logger.error(f"S3 upload failed: {e}")
             raise
 
+    # Image types the CMS accepts. Django's `ImageField` validated nothing at the
+    # HTTP layer beyond Pillow being able to open the file, and the endpoint that
+    # fed it was admin-only, so in practice anything was uploadable. Keep this
+    # narrow: these three are what `next/image` can serve and what the blog uses.
+    ALLOWED_IMAGE_TYPES = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/webp": ".webp",
+    }
+    MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+    def upload_image(self, image_bytes: bytes, key: str, content_type: str) -> str:
+        """Store a public CMS image and return the object key it was written to.
+
+        Deliberately returns the *key*, not a URL. Blog images are public content
+        embedded in cached pages and `next/image`, so they cannot be served from
+        a presigned URL — `upload_pdf`'s 7-day expiry would turn every post older
+        than a week into a broken image. Callers persist the key and the read
+        path (`/api/public/cms-media/…`) mints a fresh presign per request, which
+        keeps the bucket private while the public URL stays stable forever.
+
+        Raises `ValueError` for a disallowed content type or an oversized file;
+        both are caller (admin upload) errors and should surface as a 400, not a
+        500.
+        """
+        if content_type not in self.ALLOWED_IMAGE_TYPES:
+            raise ValueError(
+                f"Unsupported image type {content_type!r}; allowed: "
+                + ", ".join(sorted(self.ALLOWED_IMAGE_TYPES))
+            )
+        if not image_bytes:
+            raise ValueError("Empty image upload")
+        if len(image_bytes) > self.MAX_IMAGE_BYTES:
+            raise ValueError(
+                f"Image is {len(image_bytes)} bytes; limit is {self.MAX_IMAGE_BYTES}"
+            )
+
+        try:
+            self.s3_client.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=image_bytes,
+                ContentType=content_type,
+                # Long max-age is safe because keys are uuid-suffixed and never
+                # rewritten in place — an edited image gets a new key.
+                CacheControl="public, max-age=31536000, immutable",
+            )
+        except ClientError as e:
+            logger.error(f"S3 image upload failed for {key}: {e}")
+            raise
+
+        logger.info(f"CMS image uploaded: {key}")
+        return key
+
+    def presign_key(self, key: str, expires_in: int = 604800) -> str | None:
+        """Presign a known object key. Unlike `refresh_url`, takes a key rather
+        than parsing one out of a stale URL. Returns None on failure so callers
+        can 404 instead of redirecting somewhere useless."""
+        try:
+            return self.s3_client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.bucket, "Key": key},
+                ExpiresIn=expires_in,
+            )
+        except ClientError as e:
+            logger.warning(f"Presign failed for {key}: {e}")
+            return None
+
     def key_from_url(self, url: str) -> str | None:
         """Extract the S3 object key from a stored (possibly-expired) presigned
         URL. Returns None for non-S3 URLs (e.g. backend redirect routes) so

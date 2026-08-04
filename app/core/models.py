@@ -3708,3 +3708,150 @@ in models.py). Sprint 5's API and fulfillment code import it from
 # RopaActivities is defined above in this file. No `__all__` here either: a
 # module-level `__all__` naming one model would break `import *` for every other
 # table in this file.
+
+
+# ============================================================
+# Extracted from cms_admin (Django CMS retirement)
+# ============================================================
+# These five tables were created and owned by the Django CMS service
+# (`cms_admin/cms/migrations/0001`-`0005`) before it was retired into this app.
+# They already exist in the database with production data — the Alembic revision
+# that accompanies these models ADOPTS them, it does not create them.
+#
+# Two Django-isms are load-bearing here and must not be "tidied":
+#
+# 1. **The timestamp columns are not uniform, and cannot be made uniform.**
+#    Verified against the production database on 2026-08-04:
+#
+#      blog_posts, blog_post_images          -> timestamp WITHOUT time zone
+#      rfp_tips, compliance_posts,
+#      vendor_guides                         -> timestamp WITH time zone
+#
+#    `cms_admin/settings.py:85` says `USE_TZ = True`, which reads like all five
+#    should be aware — but the blog tables were created by migration 0001,
+#    *before* that flag was turned on, and Django never rewrites an existing
+#    column when `USE_TZ` changes. The later migrations (0003-0005) ran with it
+#    on, so the other three are aware. The live API confirms the split: blog
+#    timestamps serialize as `2026-03-31T04:02:10.501` with no `Z`, the others
+#    with one. Declaring the blog columns `timezone=True` would make Postgres
+#    convert aware writes against the session TimeZone and store them shifted.
+# 2. `BlogImage.id` is a Django AutoField (integer identity), not the UUID this
+#    file uses everywhere else.
+#
+# The three other models the Django service exposed (`demo_bookings`,
+# `support_tickets`, `support_ticket_replies`) were `managed = False` there —
+# they are Alembic-owned and already defined above.
+
+
+# Explicit rather than relying on the `timezone` bound by an earlier section's
+# import — several later sections re-import `datetime` alone, so what is in scope
+# here depends on file ordering.
+from datetime import timezone as _timezone
+
+
+def _utcnow_aware() -> datetime:
+    """Timezone-aware UTC, for the `timestamptz` columns in this section only.
+
+    NOT interchangeable with the `datetime.utcnow` used everywhere else in this
+    file. `utcnow()` returns a *naive* datetime; writing one to `TIMESTAMP WITH
+    TIME ZONE` makes Postgres interpret it against the session's TimeZone, so on
+    any non-UTC connection the timestamp lands shifted by that offset (observed
+    as UTC+07:00 locally). The inverse is equally true, which is why the two
+    timestamp mixins below are separate and must stay that way: an aware value
+    written to the blog tables' naive columns is shifted the other way.
+    """
+    return datetime.now(_timezone.utc)
+
+
+class _CmsAwareTimestamps:
+    """For `rfp_tips`, `compliance_posts`, `vendor_guides` — created by Django
+    migrations 0003-0005, i.e. after `USE_TZ = True`."""
+
+    published_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow_aware)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow_aware,
+                        onupdate=_utcnow_aware)
+
+
+class _CmsNaiveTimestamps:
+    """For `blog_posts` — created by Django migration 0001, before `USE_TZ` was
+    turned on, so the columns are `timestamp WITHOUT time zone`. Uses the same
+    naive `datetime.utcnow` as the rest of this file."""
+
+    published_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow,
+                        onupdate=datetime.utcnow)
+
+
+class _CmsContentMixin:
+    """Shared column set for the four CMS content types.
+
+    `blog_posts`, `rfp_tips`, `compliance_posts` and `vendor_guides` are
+    column-identical apart from `blog_posts.category` and its image relation, so
+    the shape lives here rather than being copy-pasted four times (as it was in
+    the Django original, cms/models.py:66-165).
+
+    Timestamps are deliberately NOT here — they differ per table. Each model
+    also mixes in `_CmsAwareTimestamps` or `_CmsNaiveTimestamps`.
+    """
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title = Column(String(255), nullable=False)
+    slug = Column(String(255), unique=True, nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    author = Column(String(255), nullable=True)
+
+    cta1_text = Column(String(255), nullable=True)
+    cta1_url = Column(String(1024), nullable=True)
+    cta2_text = Column(String(255), nullable=True)
+    cta2_url = Column(String(1024), nullable=True)
+
+    published = Column(Boolean, default=False, nullable=False)
+
+
+class BlogPost(_CmsNaiveTimestamps, _CmsContentMixin, Base):
+    __tablename__ = "blog_posts"
+
+    category = Column(String(64), nullable=True)
+
+    images = relationship(
+        "BlogImage",
+        back_populates="blog_post",
+        cascade="all, delete-orphan",
+        order_by="BlogImage.id",
+    )
+
+
+class BlogImage(Base):
+    __tablename__ = "blog_post_images"
+
+    # AutoField in Django, not a UUID — see the section note above.
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    blog_post_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("blog_posts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Django's ImageField stored a path relative to MEDIA_ROOT
+    # ("blog_images/foo.png") on the container's ephemeral disk. Post-migration
+    # this holds the S3 object key; `image_url` is derived, never stored.
+    image = Column(String(255), nullable=False)
+    caption = Column(String(255), nullable=True)
+    # Naive, like its parent table — created by Django migration 0001.
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    blog_post = relationship("BlogPost", back_populates="images")
+
+
+class RfpTip(_CmsAwareTimestamps, _CmsContentMixin, Base):
+    __tablename__ = "rfp_tips"
+
+
+class CompliancePost(_CmsAwareTimestamps, _CmsContentMixin, Base):
+    __tablename__ = "compliance_posts"
+
+
+class VendorGuide(_CmsAwareTimestamps, _CmsContentMixin, Base):
+    __tablename__ = "vendor_guides"

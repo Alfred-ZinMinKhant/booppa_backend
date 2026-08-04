@@ -1,5 +1,5 @@
 """Real-AWS round-trip test: generate a PDPA PDF and upload it to the real
-`booppa-reports` bucket under `test/<run-id>/`. The `real_s3` fixture deletes
+`booppa-reports-04bd50c4` bucket under `test/<run-id>/`. The `real_s3` fixture deletes
 every uploaded key on teardown; a 1-day lifecycle rule on the `test/` prefix
 catches any leftover from a crashed run.
 

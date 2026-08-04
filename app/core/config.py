@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     AWS_ACCESS_KEY_ID: Optional[str] = None
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
     AWS_REGION: str = "ap-southeast-1"
-    S3_BUCKET: str = "booppa-reports"
+    S3_BUCKET: str = "booppa-reports-04bd50c4"
 
     # AWS SES
     AWS_SES_REGION: str = "ap-southeast-1"
@@ -123,6 +123,12 @@ class Settings(BaseSettings):
     # Set to the backend's public/tunnel origin; falls back to VERIFY_BASE_URL,
     # which proxies `/api` to the backend in the standard deployment.
     API_PUBLIC_BASE_URL: str = ""
+
+    # Origin of the retiring `booppa-cms` Django service, used only to resolve
+    # blog images whose `blog_post_images.image` still holds a Django-era
+    # MEDIA_ROOT-relative path. Once the S3 backfill has rewritten every row to
+    # a `cms/` key this is dead and can go with the service.
+    CMS_LEGACY_MEDIA_BASE: str = "https://cms.booppa.io"
 
     MONITOR_SCAN1_COMMAND: Optional[str] = "python Scan1.py {url}"
     MONITOR_ANCHOR_ENABLED: bool = True

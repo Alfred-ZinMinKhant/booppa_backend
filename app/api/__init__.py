@@ -171,6 +171,21 @@ router.include_router(remediations_router, prefix="/remediations", tags=["remedi
 from .resources import router as resources_router
 
 router.include_router(resources_router, prefix="/resources", tags=["resources"])
+
+# Public blog/tips/compliance/vendor-guide content, ported off the retiring
+# `booppa-cms` Django service. The `/public` prefix plus main.py's `/api` mount
+# reproduces the exact paths the frontend already calls.
+from .cms_public import router as cms_public_router
+
+router.include_router(cms_public_router, prefix="/public", tags=["cms-public"])
+
+# Admin CRUD for the same content. `/admin/cms` is the path the Next.js proxy
+# already builds, so only the upstream host changes at cutover. Auth is the
+# router's own `_admin_auth` dependency — the `X-Admin-Token` shared secret the
+# Django service used is retired with it.
+from .cms_admin import router as cms_admin_router
+
+router.include_router(cms_admin_router, prefix="/admin/cms", tags=["cms-admin"])
 from .mock_report import router as mock_report_router
 
 router.include_router(mock_report_router, prefix="/mock", tags=["mock"])

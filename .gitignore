@@ -136,6 +136,14 @@ docker-compose.override.yml
 cookies.txt
 *.cookies
 
+# ECS task definitions are generated at deploy time by ci.yml (and
+# scripts/deploy_cloudflared_tunnel.sh), not authored here. Committing them
+# produces files that look authoritative but drift from what is actually
+# running — read the live definition with `aws ecs describe-task-definition`
+# instead.
+task-def-*.json
+task-def-*-arn.txt
+
 # Local runtime artifacts
 .cache/
 celerybeat-schedule
