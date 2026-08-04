@@ -385,7 +385,10 @@ def test_all_csp_documents_return_non_none_content():
         "entity_type": "Private Limited Company",
         "registered_address": "1 Raffles Place, Singapore",
     }
-    with patch.object(csp, "_call", lambda system, user: ("## Doc\n\nbody", 10, 20)):
+    # `_call` returns (content, prompt_tokens, completion_tokens, finish_reason);
+    # `finish_reason` is a delivery contract, so a stub short of it fails the
+    # unpack inside the generator and reads here as "the generator returned None".
+    with patch.object(csp, "_call", lambda system, user: ("## Doc\n\nbody", 10, 20, "stop")):
         results = csp.generate_all_csp_documents(profile, clients=[])
 
     assert len(results) == 8
