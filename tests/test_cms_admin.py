@@ -222,6 +222,95 @@ def test_admin_images_are_objects_not_url_strings(client, auth, cms_db):
     assert data["images"][0]["url"].endswith("/api/public/cms-media/blog_images/x.png")
 
 
+# ── Direct-to-S3 image upload ─────────────────────────────────────────────────
+#
+# Uploads bypass this service entirely: the browser POSTs to S3 with a presigned
+# ticket, then calls `confirm` with the key. The multipart route still exists but
+# cannot carry a real image — Cloudflare → CloudFront → Amplify caps the request
+# body near 1MB and the blog's own images are 1–2MB.
+
+
+@pytest.fixture
+def blog(cms_db):
+    db, created = cms_db
+    post = _mk(BlogPost)
+    db.add(post)
+    db.commit()
+    created.append(post)
+    return post
+
+
+def test_presign_rejects_disallowed_content_type(client, auth, blog):
+    res = client.post(
+        f"{BASE}/blogs/{blog.id}/images/presign/",
+        headers=auth,
+        json={"content_type": "image/gif", "size": 1000},
+    )
+    assert res.status_code == 400
+
+
+def test_presign_rejects_oversized_file_before_s3_roundtrip(client, auth, blog):
+    res = client.post(
+        f"{BASE}/blogs/{blog.id}/images/presign/",
+        headers=auth,
+        json={"content_type": "image/png", "size": 50 * 1024 * 1024},
+    )
+    assert res.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "reports/some-customer-report.pdf",
+        "cms/blog_images/other-post-id/x.png",
+        "../reports/x.pdf",
+        "",
+    ],
+)
+def test_confirm_refuses_keys_outside_this_post(client, auth, blog, key):
+    """The bucket also holds customer PDPA reports and evidence packs. If
+    `confirm` trusted the supplied key, an admin-token holder could register one
+    as a blog image and have it served publicly and unauthenticated through
+    `/api/public/cms-media/…`. The key must be re-derived, never accepted."""
+    res = client.post(
+        f"{BASE}/blogs/{blog.id}/images/confirm/",
+        headers=auth,
+        json={"key": key},
+    )
+    assert res.status_code == 400
+    assert not res.json().get("id")
+
+
+def test_confirm_refuses_nested_key_under_correct_prefix(client, auth, blog):
+    """A key that starts with the right prefix but nests deeper is still not one
+    we minted — the guard checks for a trailing path separator too."""
+    res = client.post(
+        f"{BASE}/blogs/{blog.id}/images/confirm/",
+        headers=auth,
+        json={"key": f"cms/blog_images/{blog.id}/../../../reports/x.pdf"},
+    )
+    assert res.status_code == 400
+
+
+def test_confirm_refuses_key_with_no_object_behind_it(client, auth, blog):
+    """A browser upload that silently failed must not leave a row pointing at a
+    nonexistent object — that renders as a permanently broken image."""
+    res = client.post(
+        f"{BASE}/blogs/{blog.id}/images/confirm/",
+        headers=auth,
+        json={"key": f"cms/blog_images/{blog.id}/{uuid.uuid4().hex}.png"},
+    )
+    assert res.status_code == 400
+
+
+def test_presign_and_confirm_are_admin_gated(client, blog):
+    for path in ("presign", "confirm"):
+        assert (
+            client.post(f"{BASE}/blogs/{blog.id}/images/{path}/", json={}).status_code
+            == 401
+        )
+
+
 # ── Bookings ──────────────────────────────────────────────────────────────────
 
 

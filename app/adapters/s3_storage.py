@@ -109,6 +109,59 @@ class S3StorageAdapter(StoragePort):
         logger.info(f"CMS image uploaded: {key}")
         return key
 
+    def presign_image_upload(
+        self, key: str, content_type: str, expires_in: int = 900
+    ) -> dict:
+        """Mint a presigned POST so the browser can upload straight to S3.
+
+        This exists because the admin UI cannot reach `upload_image` for a
+        real-world image. The path in front of the frontend is Cloudflare →
+        CloudFront → Amplify SSR (Lambda), and that chain caps a request body at
+        ~1MB; the blog's own images run 1.0–1.8MB, so every one of them dies
+        before FastAPI ever sees it. Uploading direct to S3 skips that chain
+        entirely and restores the full `MAX_IMAGE_BYTES` budget.
+
+        The returned policy is *itself* the enforcement, not a hint: S3 rejects
+        the upload unless the key, content type, and size all match. A caller
+        holding these fields cannot retarget them at another key or exceed the
+        cap. Short expiry because the browser uses it immediately.
+        """
+        if content_type not in self.ALLOWED_IMAGE_TYPES:
+            raise ValueError(
+                f"Unsupported image type {content_type!r}; allowed: "
+                + ", ".join(sorted(self.ALLOWED_IMAGE_TYPES))
+            )
+
+        try:
+            return self.s3_client.generate_presigned_post(
+                Bucket=self.bucket,
+                Key=key,
+                Fields={
+                    "Content-Type": content_type,
+                    "Cache-Control": "public, max-age=31536000, immutable",
+                },
+                Conditions=[
+                    {"Content-Type": content_type},
+                    {"Cache-Control": "public, max-age=31536000, immutable"},
+                    ["content-length-range", 1, self.MAX_IMAGE_BYTES],
+                ],
+                ExpiresIn=expires_in,
+            )
+        except ClientError as e:
+            logger.error(f"Presigned upload mint failed for {key}: {e}")
+            raise
+
+    def head_object(self, key: str) -> dict | None:
+        """Return an object's metadata, or None if it is absent/unreadable.
+
+        Used to verify a browser-side upload actually landed before a database
+        row is written to point at it.
+        """
+        try:
+            return self.s3_client.head_object(Bucket=self.bucket, Key=key)
+        except ClientError:
+            return None
+
     def presign_key(self, key: str, expires_in: int = 604800) -> str | None:
         """Presign a known object key. Unlike `refresh_url`, takes a key rather
         than parsing one out of a stale URL. Returns None on failure so callers

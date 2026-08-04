@@ -360,6 +360,97 @@ async def upload_blog_image(
         db.close()
 
 
+@router.post("/blogs/{item_id}/images/presign/")
+def presign_blog_image(item_id: str, payload: dict = Body(...)):
+    """Mint a direct-to-S3 upload ticket for a blog image.
+
+    Step 1 of 2. The browser POSTs the file straight to S3 with the returned
+    fields, then calls `…/images/confirm/` to record it. See
+    `S3StorageAdapter.presign_image_upload` for why the multipart route through
+    this service cannot carry a real image.
+    """
+    from app.adapters.s3_storage import S3StorageAdapter
+
+    adapter = S3StorageAdapter()
+    content_type = str(payload.get("content_type") or "").split(";")[0].strip().lower()
+    if content_type not in adapter.ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unsupported image type; allowed: "
+                + ", ".join(sorted(adapter.ALLOWED_IMAGE_TYPES))
+            ),
+        )
+
+    # Reject oversized files before the round-trip to S3. The presign policy
+    # enforces this too — this is only a faster, clearer error for the admin.
+    size = payload.get("size")
+    if isinstance(size, int) and size > adapter.MAX_IMAGE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Image is {size} bytes; limit is {adapter.MAX_IMAGE_BYTES}",
+        )
+
+    db = SessionLocal()
+    try:
+        post = _load(db, BlogPost, False, item_id)
+        ext = adapter.ALLOWED_IMAGE_TYPES[content_type]
+        key = f"cms/blog_images/{post.id}/{uuid.uuid4().hex}{ext}"
+    finally:
+        db.close()
+
+    try:
+        presigned = adapter.presign_image_upload(key, content_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        logger.exception("Presigned upload mint failed for blog %s", item_id)
+        raise HTTPException(status_code=502, detail="Image storage unavailable")
+
+    return {"key": key, "url": presigned["url"], "fields": presigned["fields"]}
+
+
+@router.post("/blogs/{item_id}/images/confirm/", status_code=201)
+def confirm_blog_image(item_id: str, payload: dict = Body(...)):
+    """Record a browser-uploaded blog image. Step 2 of 2.
+
+    The key is re-derived against this post rather than trusted: a caller could
+    otherwise hand back any key in the bucket — which also holds customer PDPA
+    reports and evidence packs — and have it served publicly through
+    `/api/public/cms-media/…`. We also confirm the object really exists, so a
+    failed browser upload cannot leave a row pointing at nothing.
+    """
+    from app.adapters.s3_storage import S3StorageAdapter
+
+    adapter = S3StorageAdapter()
+    key = str(payload.get("key") or "")
+
+    db = SessionLocal()
+    try:
+        post = _load(db, BlogPost, False, item_id)
+
+        expected_prefix = f"cms/blog_images/{post.id}/"
+        if not key.startswith(expected_prefix) or "/" in key[len(expected_prefix):]:
+            raise HTTPException(status_code=400, detail="Invalid image key")
+
+        head = adapter.head_object(key)
+        if head is None:
+            raise HTTPException(
+                status_code=400, detail="Upload not found; please retry"
+            )
+        if head.get("ContentLength", 0) > adapter.MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=400, detail="Image exceeds size limit")
+
+        caption = payload.get("caption")
+        row = BlogImage(blog_post_id=post.id, image=key, caption=caption or None)
+        db.add(row)
+        _commit(db, what="create blog image")
+        db.refresh(row)
+        return {"id": row.id, "url": _image_url(row.image), "caption": row.caption}
+    finally:
+        db.close()
+
+
 @router.delete("/blogs/{item_id}/images/{image_id}/", status_code=204)
 def delete_blog_image(item_id: str, image_id: int):
     db = SessionLocal()
