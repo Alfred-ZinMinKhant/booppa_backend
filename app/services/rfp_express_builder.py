@@ -597,11 +597,14 @@ class RFPExpressBuilder:
                 score = db.query(VendorScore).filter(VendorScore.vendor_id == self.vendor_id).first()
                 if score:
                     ctx["trust_score"] = score.total_score
-            sector_row = db.query(VendorSector).filter(
-                VendorSector.vendor_id == (user.id if user else self.vendor_id)
-            ).first() if is_uuid or user else None
-            if sector_row and not ctx.get("sector"):
-                ctx["sector"] = sector_row.sector
+            # Deterministic resolution — this lands in a customer-facing RFP kit.
+            from app.services.tender_service import resolve_primary_sector
+            _sector = (
+                resolve_primary_sector(db, user.id if user else self.vendor_id)
+                if (is_uuid or user) else None
+            )
+            if _sector and not ctx.get("sector"):
+                ctx["sector"] = _sector
 
             # ACRA lookup — enrich with registered company name and entity type
             uen_to_check = ctx.get("uen") or (intake.get("uen") if intake else None)

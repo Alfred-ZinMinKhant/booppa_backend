@@ -113,12 +113,9 @@ async def dashboard_alerts(
     )
 
     # ── 7. Sector data ──────────────────────────────────────────────────────
-    from app.core.models import VendorSector
+    from app.services.tender_service import resolve_primary_sector
 
-    sector_row = (
-        db.query(VendorSector).filter(VendorSector.vendor_id == vendor_id).first()
-    )
-    primary_sector = sector_row.sector if sector_row else sector
+    primary_sector = resolve_primary_sector(db, vendor_id) or sector
 
     # Sector percentile from score snapshot
     from app.core.models import ScoreSnapshot

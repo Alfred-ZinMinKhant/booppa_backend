@@ -170,12 +170,12 @@ async def dashboard(
 
     # ── 3. Active procurements — open GeBIZ tenders in vendor's sector ───────
     from app.core.models import GebizTender
-    from app.core.models import VendorSector
+    from app.services.tender_service import resolve_primary_sector
 
-    vendor_sector_row = db.query(VendorSector).filter(
-        VendorSector.vendor_id == vendor_id
-    ).first()
-    primary_sector = vendor_sector_row.sector if vendor_sector_row else None
+    # Deterministic resolution, not `.first()`: a vendor with several sector rows
+    # would otherwise have their active-procurement count computed against
+    # whichever identity Postgres happened to return.
+    primary_sector = resolve_primary_sector(db, vendor_id)
 
     active_procurements = 0
     if primary_sector:
@@ -284,6 +284,7 @@ async def dashboard(
     sector_rank = None
     if primary_sector:
         from app.core.models import User as _User
+        from app.core.models import VendorSector
         ranked = (
             db.query(VendorSector.vendor_id, VendorScore.total_score)
             .join(VendorScore, VendorScore.vendor_id == VendorSector.vendor_id)

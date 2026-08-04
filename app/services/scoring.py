@@ -15,11 +15,11 @@ def _record_score_snapshot_lazy(db: Session, vendor_id: str, score_record):
     """Write a ScoreSnapshot and refresh VendorStatusSnapshot after every score update."""
     try:
         from app.services.vendor_status import record_score_snapshot, upsert_status_snapshot
-        from app.core.models import VendorSector
-        sector_row = db.query(VendorSector).filter(
-            VendorSector.vendor_id == vendor_id
-        ).first()
-        sector = sector_row.sector if sector_row else None
+        # Deterministic resolution: this sector is PERSISTED into the score
+        # snapshot, so an unordered `.first()` wrote whichever identity Postgres
+        # returned into permanent score history.
+        from app.services.tender_service import resolve_primary_sector
+        sector = resolve_primary_sector(db, vendor_id)
         record_score_snapshot(
             db=db,
             vendor_id=str(vendor_id),

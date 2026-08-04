@@ -30,7 +30,7 @@ from app.services.cal import (
     render_message,
 )
 from app.services.notarization_elevation import fetch_elevation_metadata
-from app.core.models import VendorSector
+from app.services.tender_service import resolve_primary_sector
 
 router = APIRouter(route_class=RetryAPIRoute)
 
@@ -128,12 +128,13 @@ async def sector_pressure(
     """
     vendor_id = str(current_user.id)
 
-    # Resolve primary sector (1 DB query)
-    sector_row = db.query(VendorSector).filter(
-        VendorSector.vendor_id == current_user.id
-    ).first()
+    # Deterministic resolution, not `.first()`. Returns None where the vendor's
+    # sector is genuinely ambiguous, which falls through to the "register your
+    # sector" message below — a peer benchmark against the wrong sector reads as
+    # a real competitive position and is worse than no benchmark at all.
+    primary_sector = resolve_primary_sector(db, current_user.id)
 
-    if not sector_row:
+    if not primary_sector:
         return {
             "snapshot": {
                 "sector": None,
@@ -146,8 +147,6 @@ async def sector_pressure(
             },
             "message": "Register your sector to see how you compare with peers in your industry.",
         }
-
-    primary_sector = sector_row.sector
 
     snapshot          = get_sector_competitive_pressure(db, primary_sector, vendor_id)
     cached_rows       = get_cached_rows(primary_sector)
@@ -182,12 +181,8 @@ async def dashboard_cal(
     """
     vendor_id = str(current_user.id)
 
-    # Single DB lookup: sector + elevation
-    sector_row = db.query(VendorSector).filter(
-        VendorSector.vendor_id == current_user.id
-    ).first()
-
-    primary_sector = sector_row.sector if sector_row else None
+    # Deterministic resolution, not `.first()` — see the note in sector_pressure.
+    primary_sector = resolve_primary_sector(db, current_user.id)
 
     # Elevation metadata & vendor score data
     elevation = fetch_elevation_metadata(db, vendor_id)

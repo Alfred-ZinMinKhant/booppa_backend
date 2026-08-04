@@ -152,3 +152,104 @@ def test_competitor_signals_reports_the_corrected_sector(test_db):
     # ...and after it, the stale row is gone entirely.
     assert _sectors(test_db, user) == ["Fintech"]
     assert _sector_for_vendor(test_db, user.id) == "FINTECH"
+
+
+# ── Every identity reader, not just the deliverable ──────────────────────────
+#
+# The original fix converted the write paths and the Competitor Signals PDF, but
+# eleven other call sites still did an unordered `.first()`. Each one could hand
+# a different answer for the same vendor in the same request cycle. These pin the
+# readers that feed something a customer or a procurement officer actually sees.
+
+
+def _ambiguous_vendor(db):
+    """A vendor with two undated sector rows and no `User.industry` anchor.
+
+    This is precisely the state `resolve_primary_sector` refuses to guess at, and
+    the state every `.first()` reader used to resolve arbitrarily.
+    """
+    user = make_user(db, plan="vendor_pro")
+    user.industry = None
+    db.add(VendorSector(vendor_id=user.id, sector="Construction"))
+    db.add(VendorSector(vendor_id=user.id, sector="Fintech"))
+    db.commit()
+    db.execute(
+        text("UPDATE vendor_sectors SET created_at = NULL WHERE vendor_id = :v"),
+        {"v": str(user.id)},
+    )
+    db.commit()
+    return user
+
+
+def test_tender_alert_digest_skips_rather_than_defaulting_to_it(test_db):
+    """The digest loop defaulted an unresolvable vendor to sector 'IT'.
+
+    That produced a complete, plausible IT tender shortlist for a vendor of
+    unknown sector — the exact failure mode as the Construction report, and one
+    a vendor would act on by bidding.
+    """
+    import inspect
+    from app.workers import tasks
+
+    src = inspect.getsource(tasks.send_tender_alerts)
+    assert 'else "IT"' not in src, "the 'IT' fallback is back"
+    assert "resolve_primary_sector" in src
+
+
+def test_government_portal_does_not_label_unresolvable_vendor_general(test_db):
+    """`_vendor_row` defaulted to 'General', which is itself a real sector label
+    (Miscellaneous maps to it) — so an unresolvable vendor was indistinguishable
+    from one that genuinely trades there."""
+    from app.api.government import _vendor_row
+
+    user = _ambiguous_vendor(test_db)
+    row = _vendor_row(user, None, None, resolve_primary_sector(test_db, user.id))
+    assert row["industry"] is None
+
+
+def test_government_vendor_list_does_not_duplicate_multi_sector_vendors(test_db):
+    """VendorSector is one-to-many; the old outer join emitted one result row per
+    sector, so a two-sector vendor appeared twice and was counted twice."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    user = _ambiguous_vendor(test_db)
+    user.role = "VENDOR"
+    user.is_active = True
+    test_db.commit()
+
+    with TestClient(app) as client:
+        body = client.get("/api/government/vendors", params={"per_page": 100}).json()
+
+    ids = [v["id"] for v in body["vendors"]]
+    assert ids.count(str(user.id)) == 1, "vendor duplicated by the sector join"
+
+
+def test_score_snapshot_does_not_persist_an_arbitrary_sector(test_db):
+    """scoring.py wrote the `.first()` sector into permanent score history."""
+    import inspect
+    from app.services import scoring
+
+    src = inspect.getsource(scoring._record_score_snapshot_lazy)
+    assert "resolve_primary_sector" in src
+    assert "query(VendorSector)" not in src
+
+
+def test_no_identity_reader_still_uses_unordered_first(test_db):
+    """Guard against a new `.first()` identity read being reintroduced.
+
+    Only `sync_vendor_sector`'s existence check may do this — it asks *whether a
+    row exists*, not *which sector the vendor is*.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path("app")
+    offenders = []
+    for path in root.rglob("*.py"):
+        for i, line in enumerate(path.read_text().splitlines(), 1):
+            if re.search(r"query\(VendorSector\).*first\(\)", line):
+                if path.name == "tender_service.py":
+                    continue  # the existence check in sync_vendor_sector
+                offenders.append(f"{path}:{i}")
+    assert not offenders, f"unordered VendorSector identity reads: {offenders}"

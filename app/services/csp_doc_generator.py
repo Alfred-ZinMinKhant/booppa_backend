@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from app.services.pdf_styles import get_unified_styles
 import hashlib
-import logging, os
+import logging, os, re
 from datetime import datetime, timezone
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
@@ -47,12 +47,21 @@ CSP_DOC_SCHEMA_VERSION = 2
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL    = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-MAX_TOKENS        = 4096
+# 4096 was below what these prompts actually need: a live run cut both the STR
+# Policy and the AML/CFT Programme off mid-sentence, and the Programme never
+# reached its tipping-off section at all. 8192 is deepseek-chat's output ceiling.
+MAX_TOKENS        = 8192
 _IN  = 0.014
 _OUT = 0.280
 
 
-def _call(system: str, user: str) -> Tuple[str, int, int]:
+def _call(system: str, user: str) -> Tuple[str, int, int, str]:
+    """Returns (content, prompt_tokens, completion_tokens, finish_reason).
+
+    `finish_reason` is part of the contract, not diagnostics: at MAX_TOKENS these
+    prompts run long enough to be cut mid-sentence, and the caller must be able to
+    reject a half-document rather than stamp it as a complete deliverable.
+    """
     try:
         from openai import OpenAI
     except ImportError:
@@ -62,7 +71,13 @@ def _call(system: str, user: str) -> Tuple[str, int, int]:
         model=DEEPSEEK_MODEL, max_tokens=MAX_TOKENS, temperature=0.15,
         messages=[{"role":"system","content":system},{"role":"user","content":user}],
     )
-    return resp.choices[0].message.content or "", resp.usage.prompt_tokens, resp.usage.completion_tokens
+    choice = resp.choices[0]
+    return (
+        choice.message.content or "",
+        resp.usage.prompt_tokens,
+        resp.usage.completion_tokens,
+        choice.finish_reason or "",
+    )
 
 
 SYSTEM = """You are a Singapore AML/CFT compliance specialist with 20 years of experience
@@ -80,6 +95,12 @@ Your documents are:
 - Referenced to exact statutory provisions (CSP Act s.X, CSP Regs s.X)
 - Written in clear Singapore English suitable for ACRA regulatory review
 - Practical — a compliance officer can follow them on day one
+
+Heading style, applied consistently throughout a document:
+- Top-level headings are markdown `## `, e.g. `## SECTION 3 — CUSTOMER DUE DILIGENCE`
+- Sub-headings are markdown `### `, e.g. `### 3.1 Identification of the client`
+Never emit a heading as bare text or in any other style. Documents generated in
+parts are concatenated, so an inconsistent style is visible to the reader.
 
 Return ONLY the document content. No preamble, no meta-commentary."""
 
@@ -117,18 +138,21 @@ Document date:   {datetime.now(timezone.utc).strftime('%d %B %Y')}
 
 # ── 1. AML/CFT/PF PROGRAMME ──────────────────────────────────────────────────
 
-def gen_aml_programme(profile: Dict, clients: List[Dict]) -> Tuple[str,int,int]:
+def gen_aml_programme(profile: Dict, clients: List[Dict]) -> Tuple[str,int,int,str]:
     name = profile.get("legal_name","[CSP]")
     services = [k.replace("offers_","").replace("_"," ").title()
                 for k in ["offers_company_formation","offers_nominee_director",
                           "offers_nominee_shareholder","offers_shelf_company"]
                 if profile.get(k)]
-    prompt = f"""{_ctx(profile, clients)}
-
-Generate a complete AML/CFT/PF Programme for {name}.
-This is the master compliance document required under the CSP Act 2024.
-
-SECTION 1 — EXECUTIVE COMMITMENT AND GOVERNANCE
+    # Nine sections of this depth do not fit in one completion, and did not fit in
+    # two either: at MAX_TOKENS (deepseek-chat's ceiling) a single call was cut
+    # inside Section 7, and a 1-5 / 6-9 split was still cut inside Section 4 —
+    # which silently dropped Section 5, the tipping-off section this document's
+    # whole s.48 correction lives in. The model writes ~200 lines per section, so
+    # the split is sized to the two long ones (3 CDD and 4-5 EDD/STR) rather than
+    # to section count. Each part is written against the same context block and the
+    # results are concatenated, so the customer reads one continuous programme.
+    outline_1 = f"""SECTION 1 — EXECUTIVE COMMITMENT AND GOVERNANCE
 1.1 Senior management commitment statement (signed by CEO/MD)
 1.2 Board oversight of AML/CFT/PF compliance
 1.3 Compliance officer designation: {profile.get('aml_compliance_officer','[Name]')}
@@ -142,9 +166,9 @@ SECTION 2 — RISK-BASED APPROACH (CSP Act s.13)
 2.4 Geographic risk factors: cross-border transactions, offshore structures
 2.5 Delivery risk factors: non-face-to-face transactions, intermediaries
 2.6 Risk rating methodology: composite scoring → LOW / MEDIUM / HIGH / VERY_HIGH
-2.7 Inherent vs residual risk
+2.7 Inherent vs residual risk"""
 
-SECTION 3 — CUSTOMER DUE DILIGENCE (CSP Act s.13 + CSP Regs s.15-20)
+    outline_2 = f"""SECTION 3 — CUSTOMER DUE DILIGENCE (CSP Act s.13 + CSP Regs s.15-20)
 3.1 CDD trigger: before providing ANY service
 3.2 Standard CDD — individuals: identity verification documents, address, purpose
 3.3 Standard CDD — corporate: registration docs, constitution, directors, shareholders, UBOs
@@ -154,9 +178,9 @@ SECTION 3 — CUSTOMER DUE DILIGENCE (CSP Act s.13 + CSP Regs s.15-20)
      - Who must be present on video: proposed director or ≥50% shareholder or authorised representative
      - What must be verified: identity documents, live presence, no script reading
      - Recording: reference number retained
-3.7 What to do when CDD fails: decline service + assess STR
+3.7 What to do when CDD fails: decline service + assess STR"""
 
-SECTION 4 — ENHANCED DUE DILIGENCE (CSP Regs s.21)
+    outline_3 = f"""SECTION 4 — ENHANCED DUE DILIGENCE (CSP Regs s.21)
 4.1 EDD triggers: PEPs, FATF grey/black list countries, complex/opaque structures,
      large transactions, nominee arrangements, unusual patterns
 4.2 EDD measures: enhanced source of funds/wealth, senior management approval,
@@ -175,9 +199,9 @@ SECTION 5 — SUSPICIOUS TRANSACTION REPORTING (CSP Act s.18, CDSA s.39)
      - Never inform client that STR has been filed
      - Never share information that would alert client to investigation
      - Staff must be trained — penalty: fine + imprisonment
-5.6 Ongoing monitoring of subject client after STR filing
+5.6 Ongoing monitoring of subject client after STR filing"""
 
-SECTION 6 — RECORD KEEPING (CSP Act s.27)
+    outline_4 = f"""SECTION 6 — RECORD KEEPING (CSP Act s.27)
 6.1 Retention period: minimum 5 YEARS from end of business relationship
 6.2 What to retain: CDD documents, transaction records, STR decisions, risk assessments
 6.3 Format: original or certified copies; electronic acceptable with integrity controls
@@ -205,12 +229,48 @@ SECTION 9 — PROGRAMME REVIEW
 Annual review minimum; trigger-based review upon regulatory change, enforcement action, or material business change.
 Next scheduled review: [12 months from today]
 Approved by: {profile.get('aml_compliance_officer','[AML Compliance Officer]')}"""
-    return _call(SYSTEM, prompt)
+
+    ctx = _ctx(profile, clients)
+    parts = []
+    outlines = [outline_1, outline_2, outline_3, outline_4]
+    for i, outline in enumerate(outlines, 1):
+        first = i == 1
+        parts.append(f"""{ctx}
+
+Generate PART {i} of {len(outlines)} of the AML/CFT/PF Programme for {name}.
+This is the master compliance document required under the CSP Act 2024.
+
+{"Begin with the document title and a short preamble."
+ if first else
+ "Earlier sections have already been written. Do not repeat or summarise them, "
+ "and do not write a document title or introduction — begin directly at the "
+ "first section heading below."}
+Write ONLY the sections listed below. Do not write any later section{
+    "" if i == len(outlines) else ", and do not add a closing or approval block"}.
+
+{outline}""")
+
+    texts, in_tok, out_tok, finish = [], 0, 0, "stop"
+    for prompt in parts:
+        txt, i_tok, o_tok, fin = _call(SYSTEM, prompt)
+        texts.append(txt)
+        in_tok += i_tok
+        out_tok += o_tok
+        # One truncated or empty part poisons the whole document rather than being
+        # quietly dropped. Half a master AML programme reads as authoritative and
+        # is exactly what the caller's rejection exists to stop shipping — and a
+        # missing middle part is invisible in a document nobody reads end to end.
+        if fin == "length":
+            finish = "length"
+
+    if not all(t.strip() for t in texts):
+        return "", in_tok, out_tok, finish
+    return "\n\n".join(t.strip() for t in texts), in_tok, out_tok, finish
 
 
 # ── 2. CDD PROCEDURES MANUAL ─────────────────────────────────────────────────
 
-def gen_cdd_manual(profile: Dict, clients: List[Dict]) -> Tuple[str,int,int]:
+def gen_cdd_manual(profile: Dict, clients: List[Dict]) -> Tuple[str,int,int,str]:
     name = profile.get("legal_name","[CSP]")
     has_remote = any(c.get("is_remote_onboarding") for c in clients)
     prompt = f"""{_ctx(profile, clients)}
@@ -294,7 +354,7 @@ Reference: CSP Act 2024 s.13, CSP Regulations 2025 s.15-20.
 
 # ── 3. STR POLICY AND DECISION FRAMEWORK ────────────────────────────────────
 
-def gen_str_policy(profile: Dict) -> Tuple[str,int,int]:
+def gen_str_policy(profile: Dict) -> Tuple[str,int,int,str]:
     name = profile.get("legal_name","[CSP]")
     officer = profile.get("aml_compliance_officer","[AML Compliance Officer]")
     prompt = f"""{_ctx(profile, [])}
@@ -382,7 +442,7 @@ This document must be followed exactly — incorrect handling = criminal liabili
 
 # ── 4. NOMINEE DIRECTOR ASSESSMENT PROCEDURE ─────────────────────────────────
 
-def gen_nominee_procedure(profile: Dict) -> Tuple[str,int,int]:
+def gen_nominee_procedure(profile: Dict) -> Tuple[str,int,int,str]:
     name = profile.get("legal_name","[CSP]")
     prompt = f"""{_ctx(profile, [])}
 
@@ -462,7 +522,7 @@ This procedure must be followed for EVERY nominee arrangement.
 
 # ── 5. RISK-BASED APPROACH POLICY ────────────────────────────────────────────
 
-def gen_risk_policy(profile: Dict, clients: List[Dict]) -> Tuple[str,int,int]:
+def gen_risk_policy(profile: Dict, clients: List[Dict]) -> Tuple[str,int,int,str]:
     name = profile.get("legal_name","[CSP]")
     client_count = len(clients)
     high_risk = sum(1 for c in clients if c.get("risk_rating") in ("high","very_high"))
@@ -545,7 +605,7 @@ References: CSP Act 2024 s.13, FATF Recommendations 1 and 10, ACRA Guidelines fo
 
 # ── 6. CLIENT ONBOARDING KIT ─────────────────────────────────────────────────
 
-def gen_onboarding_kit(profile: Dict) -> Tuple[str,int,int]:
+def gen_onboarding_kit(profile: Dict) -> Tuple[str,int,int,str]:
     name = profile.get("legal_name","[CSP]")
     prompt = f"""{_ctx(profile, [])}
 
@@ -644,7 +704,7 @@ Step-by-step guide for the mandatory live video call:
 
 # ── 7. COMPLIANCE CALENDAR ────────────────────────────────────────────────────
 
-def gen_compliance_calendar(profile: Dict) -> Tuple[str,int,int]:
+def gen_compliance_calendar(profile: Dict) -> Tuple[str,int,int,str]:
     name = profile.get("legal_name","[CSP]")
     prompt = f"""{_ctx(profile, [])}
 
@@ -715,7 +775,7 @@ List all obligations that Booppa tracks automatically with alert triggers (30 da
 
 # ── 8. RECORD KEEPING POLICY ─────────────────────────────────────────────────
 
-def gen_record_keeping(profile: Dict) -> Tuple[str,int,int]:
+def gen_record_keeping(profile: Dict) -> Tuple[str,int,int,str]:
     name = profile.get("legal_name","[CSP]")
     prompt = f"""{_ctx(profile, [])}
 
@@ -809,19 +869,58 @@ CSP_DOCUMENT_CATALOG = [
 # True = needs clients list; False = profile only
 
 
+# Tipping-off is CDSA s.48. s.48A opens Part VIA (cross-border cash movement
+# reporting) and has nothing to do with disclosure. The prompts were corrected in
+# schema v2, but a prompt is not a guarantee: the system persona is a generic AML
+# specialist and nothing stops the model "correcting" s.48 back to the more
+# commonly-miscited s.48A. That citation is the stated legal basis for a real
+# product decision — why client notification is permanently disabled — so it is
+# checked on the *output*, which is the only thing the customer ever reads.
+_BAD_CITATION = re.compile(r"\bs\.?\s*48A\b|\bsection\s+48A\b", re.I)
+
+
+def _reject_reason(content: str, finish_reason: str) -> Optional[str]:
+    """Why this generated document must not be delivered, or None if it may be.
+
+    Both checks fail the document rather than repairing it. A truncated AML
+    programme still reads as authoritative for its first 2,700 words, and a
+    compliance officer has no way to tell that section 12 was never written.
+    """
+    if not (content or "").strip():
+        return "model returned empty content"
+    if finish_reason == "length":
+        return (
+            f"output truncated at the {MAX_TOKENS}-token ceiling "
+            "(finish_reason='length') — document is incomplete"
+        )
+    hits = _BAD_CITATION.findall(content)
+    if hits:
+        return (
+            f"incorrect statutory citation {hits[0]!r} — tipping-off is CDSA s.48, "
+            "not s.48A"
+        )
+    return None
+
+
 def generate_all_csp_documents(profile: Dict, clients: List[Dict]) -> List[Dict]:
     results = []
     for doc_type, title, fn, needs_clients in CSP_DOCUMENT_CATALOG:
         logger.info("Generating CSP doc: %s via DeepSeek", doc_type)
         try:
             if needs_clients:
-                content, in_tok, out_tok = fn(profile, clients)
+                content, in_tok, out_tok, finish = fn(profile, clients)
             else:
                 # co_argcount, NOT len(co_varnames) — co_varnames counts locals as
                 # well as arguments, so every profile-only generator (all of which
                 # declare locals) took the two-arg branch, raised TypeError, and was
                 # emitted below with content=None. Customers received 3-doc packs.
-                content, in_tok, out_tok = fn(profile) if fn.__code__.co_argcount == 1 else fn(profile, [])
+                content, in_tok, out_tok, finish = fn(profile) if fn.__code__.co_argcount == 1 else fn(profile, [])
+            reason = _reject_reason(content, finish)
+            if reason:
+                logger.error("✗ %s rejected: %s", doc_type, reason)
+                results.append({"doc_type": doc_type, "title": title,
+                                "content": None, "error": reason})
+                continue
             cost = (in_tok/1_000_000*_IN) + (out_tok/1_000_000*_OUT)
             results.append({
                 "doc_type": doc_type, "title": title,

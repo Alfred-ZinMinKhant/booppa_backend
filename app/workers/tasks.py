@@ -5997,9 +5997,8 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
         # Personalised regulatory briefing — keyed on THIS org's open findings +
         # sector (replaces the generic 3-bullet checklist that was identical for
         # every client; forensic-audit finding).
-        from app.core.models import VendorSector
-        _sec_row = db.query(VendorSector).filter(VendorSector.vendor_id == user.id).first()
-        _sector = _sec_row.sector if _sec_row else None
+        from app.services.tender_service import resolve_primary_sector
+        _sector = resolve_primary_sector(db, user.id)
         briefing_bullets = _pdpa_monitor_briefing_bullets(
             company, _sector, findings, _compliance(current),
             _compliance(previous) if previous else None,
@@ -8074,8 +8073,20 @@ def send_tender_alerts():
             if not sub.email:
                 continue
             try:
-                sec = db.query(VendorSector).filter(VendorSector.vendor_id == sub.id).first()
-                sector = (sec.sector.upper() if sec and sec.sector else "IT")
+                # Deterministic resolution, and NO "IT" default. The old fallback
+                # sent a vendor of unknown sector a complete, plausible IT tender
+                # digest — the same failure that published a payments company a
+                # Construction competitor report. Skip instead: a missing digest
+                # is visibly missing, a wrong one is acted on.
+                from app.services.tender_service import resolve_primary_sector
+                _resolved = resolve_primary_sector(db, sub.id)
+                if not _resolved:
+                    logger.warning(
+                        "[TenderAlerts] Skipping %s — sector unresolved. "
+                        "Run scripts/reconcile_vendor_sectors.py.", sub.email,
+                    )
+                    continue
+                sector = _resolved.upper()
                 history = build_vendor_history(db, str(sub.id), sector=sector)
 
                 from app.services.tender_service import _CATEGORY_TO_SECTOR
@@ -9875,6 +9886,7 @@ def run_trm_board_report_for_user(self, user_id: str, override_company: str | No
     from app.services.email_layout import branded_email_html
 
     db = SessionLocal()
+    user = None
     try:
         user = UserRepository.get_by_id(db, str(user_id))
         if not user or not user.email:
@@ -9935,12 +9947,16 @@ def run_trm_board_report_for_user(self, user_id: str, override_company: str | No
         # not. No scan → `pdpa` stays None → the section renders "Not Assessed",
         # which is the honest reading and never "Compliant".
         pdpa_ctx = None
+        # Imports sit OUTSIDE the tolerant block below. A missing name here is a
+        # broken deploy, not an absent scan, and this task has already been
+        # killed once by exactly that (`swallowed_exception_dead_feature`) — an
+        # ImportError caught as "no PDPA position" renders a clean Not Assessed
+        # section and hides the breakage indefinitely.
+        from app.services.pdpa_findings import (
+            latest_vendor_pdpa_reports, resolve_pdpa_score,
+        )
+        from app.core.models import EvidencePack
         try:
-            from app.services.pdpa_findings import (
-                latest_vendor_pdpa_reports, resolve_pdpa_score,
-            )
-            from app.core.models import EvidencePack
-
             scans = latest_vendor_pdpa_reports(db, user, limit=1)
             latest_scan = scans[0] if scans else None
             scan_score = (
@@ -10017,6 +10033,15 @@ def run_trm_board_report_for_user(self, user_id: str, override_company: str | No
             logger.error("[TRMBoard] delivery email rejected for %s", user.email)
 
         # Persist this month's snapshot for next month's delta.
+        #
+        # The status records what actually reached the customer, not that the
+        # code path ran. The PDF is delivered as an email attachment, so a
+        # rejected send means the board report does not exist for its reader —
+        # `send_html_email` returns False rather than raising, and this row used
+        # to claim "completed" regardless. `/admin/stranded-fulfillments` keys on
+        # delivery evidence, and can only see this if the row admits it.
+        delivered = bool(sent)
+        status = "completed" if delivered else "delivery_failed"
         try:
             db.add(Report(
                 owner_id=user.id,
@@ -10032,11 +10057,12 @@ def run_trm_board_report_for_user(self, user_id: str, override_company: str | No
                     "s3_url": report_url,
                     "s3_key": board_file_key,
                     "plan_label": plan_label,
+                    "delivered": delivered,
                 },
-                status="completed",
+                status=status,
                 s3_url=report_url,
                 file_key=board_file_key,
-                completed_at=datetime.now(timezone.utc),
+                completed_at=datetime.now(timezone.utc) if delivered else None,
             ))
             db.commit()
         except Exception as persist_err:
@@ -10044,7 +10070,17 @@ def run_trm_board_report_for_user(self, user_id: str, override_company: str | No
             db.rollback()
     except Exception as exc:
         logger.error("[TRMBoard] Failed for %s: %s", user_id, exc)
-        raise self.retry(exc=exc, countdown=120)
+        # A bare `self.retry` dies after max_retries with nothing but a Celery
+        # log line. This report is a paid Suite deliverable on a monthly cycle:
+        # if it exhausts silently, nobody notices until the subscriber asks why
+        # the board pack never came — and by then the month has passed.
+        _retry_or_alert(
+            self, exc,
+            product_type="trm_board_report",
+            customer_email=getattr(user, "email", None),
+            extra={"user_id": str(user_id)},
+            countdown=120,
+        )
     finally:
         db.close()
 
@@ -10054,6 +10090,7 @@ def run_trm_monthly_board_reports():
     """Monthly fan-out: enqueue the TRM board report for every active Suite user."""
     db = SessionLocal()
     queued = 0
+    failed = 0
     try:
         from app.core.models import User, Subscription as SubModel
         subs = db.query(SubModel).filter(
@@ -10064,14 +10101,25 @@ def run_trm_monthly_board_reports():
             SubModel.status.in_(("active", "trialing")),
         ).all()
         user_ids = {s.user_id for s in subs if s.user_id}
+        # Per-subscriber, not per-loop. A single unqueueable uid used to abort
+        # every subscriber after it — and the task still logged a queued count
+        # and returned normally, so a partial month read exactly like a full one.
         for uid in user_ids:
-            run_trm_board_report_for_user.delay(str(uid))
-            queued += 1
+            try:
+                run_trm_board_report_for_user.delay(str(uid))
+                queued += 1
+            except Exception as one_err:
+                failed += 1
+                logger.error("[TRMBoard] could not queue board report for %s: %s",
+                             uid, one_err)
     except Exception as exc:
         logger.error("[TRMBoard] monthly fan-out failed: %s", exc)
+        raise
     finally:
         db.close()
-    logger.info("[TRMBoard] queued %d monthly board report(s)", queued)
+    logger.info("[TRMBoard] queued %d monthly board report(s), %d failed to queue",
+                queued, failed)
+    return {"queued": queued, "failed": failed}
 
 
 @celery_app.task(bind=True, max_retries=2, name="fulfill_evidence_pack_task")

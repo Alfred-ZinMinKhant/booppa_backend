@@ -76,13 +76,10 @@ def get_sector_benchmark(db, vendor_id: str) -> dict | None:
     when the vendor has no sector tag or no snapshot.
     """
     try:
-        from app.core.models import VendorSector
         from app.core.models import ScoreSnapshot
+        from app.services.tender_service import resolve_primary_sector
 
-        sector_row = (
-            db.query(VendorSector).filter(VendorSector.vendor_id == vendor_id).first()
-        )
-        sector = sector_row.sector if sector_row else None
+        sector = resolve_primary_sector(db, vendor_id)
         if not sector:
             return None
         snap = (
@@ -188,11 +185,9 @@ def get_sector_rank(db, vendor_id: str) -> dict | None:
     """
     try:
         from app.core.models import VendorScore, VendorSector
+        from app.services.tender_service import resolve_primary_sector
 
-        sector_row = (
-            db.query(VendorSector).filter(VendorSector.vendor_id == vendor_id).first()
-        )
-        sector = sector_row.sector if sector_row else None
+        sector = resolve_primary_sector(db, vendor_id)
         if not sector:
             return None
 
@@ -261,15 +256,15 @@ def get_tender_matches(db, vendor_id: str, limit: int = 5,
     """
     try:
         from app.core.models import GebizTender
-        from app.core.models import VendorSector
         from app.services.tender_service_bid_classifier import (
             build_vendor_history,
             enrich_tender_digest_with_classifications,
         )
 
-        sector_row = db.query(VendorSector).filter(VendorSector.vendor_id == vendor_id).first()
-        sector = sector_row.sector if sector_row else None
-        
+        from app.services.tender_service import resolve_primary_sector
+        sector = resolve_primary_sector(db, vendor_id)
+
+
         from app.services.tender_service import _CATEGORY_TO_SECTOR
         matching_categories = [c for c, s in _CATEGORY_TO_SECTOR.items() if s.lower() == (sector or "").lower()]
 

@@ -40,6 +40,7 @@ from app.core.auth import (
     authenticate_user, register_user,
     create_access_token, create_refresh_token,
 )
+from app.services.tender_service import resolve_primary_sector
 
 logger = logging.getLogger(__name__)
 router = APIRouter(route_class=RetryAPIRoute)
@@ -53,8 +54,13 @@ def _vendor_row(
     user: User,
     score: Optional[VendorScore],
     snapshot: Optional[VendorStatusSnapshot],
-    sector: Optional[VendorSector],
+    sector: Optional[str],
 ) -> dict:
+    # `sector` is a resolved label from `resolve_primary_sector`, not a
+    # VendorSector row. Callers must resolve rather than `.first()`: a vendor
+    # with several rows otherwise gets whichever identity Postgres returned
+    # that request, which is how a payments company was published as
+    # Construction.
     trust_score = score.total_score if score else 0
     depth       = snapshot.verification_depth if snapshot else "UNVERIFIED"
     risk        = snapshot.risk_signal        if snapshot else "CLEAN"
@@ -79,7 +85,10 @@ def _vendor_row(
         "id":             str(user.id),
         "name":           user.company or "Unknown",
         "uen":            getattr(user, "uen", None) or "",
-        "industry":       sector.sector if sector else "General",
+        # None, not "General" — "General" is a real sector label (Miscellaneous
+        # maps to it), so defaulting made an unresolvable vendor indistinguishable
+        # from one that genuinely trades there. The portal renders a blank chip.
+        "industry":       sector or None,
         "trust_score":    trust_score,
         "depth":          depth,
         "risk":           risk_map.get(risk, "CLEAN"),
@@ -193,11 +202,15 @@ def list_vendors(
     db: Session = Depends(get_db),
 ):
     """Return paginated vendor list with all procurement intelligence fields."""
+    # VendorSector is deliberately NOT joined here. It is one-to-many, so an
+    # outer join emitted one result row per sector: a vendor holding two rows
+    # appeared twice on the page and was counted twice in `total`. The sector is
+    # resolved per vendor below instead, and the `industry` filter goes through
+    # an EXISTS so it stays a filter rather than a row multiplier.
     base = (
-        db.query(User, VendorScore, VendorStatusSnapshot, VendorSector)
+        db.query(User, VendorScore, VendorStatusSnapshot)
         .outerjoin(VendorScore,          VendorScore.vendor_id          == User.id)
         .outerjoin(VendorStatusSnapshot, VendorStatusSnapshot.vendor_id == User.id)
-        .outerjoin(VendorSector,         VendorSector.vendor_id         == User.id)
         .filter(User.is_active == True, User.role == "VENDOR")
     )
 
@@ -207,7 +220,14 @@ def list_vendors(
             or_(User.company.ilike(like), User.uen.ilike(like))  # type: ignore[union-attr]
         )
     if industry and industry != "All":
-        base = base.filter(VendorSector.sector == industry)
+        base = base.filter(
+            db.query(VendorSector)
+            .filter(
+                VendorSector.vendor_id == User.id,
+                VendorSector.sector == industry,
+            )
+            .exists()
+        )
     if depth:
         base = base.filter(VendorStatusSnapshot.verification_depth == depth)
     if readiness:
@@ -224,7 +244,10 @@ def list_vendors(
     )
 
     return {
-        "vendors":  [_vendor_row(u, s, snap, sec) for u, s, snap, sec in rows],
+        "vendors":  [
+            _vendor_row(u, s, snap, resolve_primary_sector(db, u.id))
+            for u, s, snap in rows
+        ],
         "total":    total,
         "page":     page,
         "per_page": per_page,
@@ -243,7 +266,7 @@ def get_vendor_by_uen(uen: str, db: Session = Depends(get_db)):
 
     score    = db.query(VendorScore).filter(VendorScore.vendor_id == user.id).first()
     snapshot = db.query(VendorStatusSnapshot).filter(VendorStatusSnapshot.vendor_id == user.id).first()
-    sector   = db.query(VendorSector).filter(VendorSector.vendor_id == user.id).first()
+    sector   = resolve_primary_sector(db, user.id)
 
     row = _vendor_row(user, score, snapshot, sector)
 
