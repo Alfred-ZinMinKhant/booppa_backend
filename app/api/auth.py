@@ -408,8 +408,8 @@ async def update_me(
     if body.industry is not None:
         user.industry = body.industry
         try:
-            from app.services.tender_service import sync_vendor_sector
-            sync_vendor_sector(db, user.id, body.industry)
+            from app.services.tender_service import set_vendor_sector
+            set_vendor_sector(db, user.id, body.industry)
         except Exception:
             pass
     if body.company_description is not None:

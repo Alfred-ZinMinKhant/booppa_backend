@@ -1278,8 +1278,8 @@ async def simulate_purchase(
         sim_sector = (body.industry or body.sector or getattr(user, "industry", None) or "").strip()
         if sim_sector:
             try:
-                from app.services.tender_service import sync_vendor_sector
-                sync_vendor_sector(db, user.id, sim_sector)
+                from app.services.tender_service import set_vendor_sector
+                set_vendor_sector(db, user.id, sim_sector)
             except Exception as _sec_err:
                 logger.warning("[simulate-purchase] Failed to sync VendorSector: %s", _sec_err)
 

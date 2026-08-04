@@ -617,11 +617,13 @@ class IntentRequest(BaseModel):
 def _primary_sector(db: Session, vendor_id) -> str:
     """Vendor's primary registered sector (uppercased); 'IT' default — mirrors
     the monthly digest's sector resolution so in-app == email."""
-    rows = [
-        (r.sector or "").strip()
-        for r in db.query(VendorSector).filter(VendorSector.vendor_id == vendor_id).all()
-        if (r.sector or "").strip()
-    ]
+    # Deterministic resolution — a plain `.all()[0]` let Postgres pick which of
+    # several accumulated rows won, so the same vendor could be scoped to a
+    # different sector on consecutive loads.
+    from app.services.tender_service import resolve_primary_sector
+
+    _primary = resolve_primary_sector(db, vendor_id)
+    rows = [_primary] if _primary else []
     if not rows:
         # Same industry fallback the digest applies, including the write-back, so
         # a standalone subscriber who never bought a Vendor product doesn't see
@@ -631,8 +633,8 @@ def _primary_sector(db: Session, vendor_id) -> str:
         _industry = (getattr(_user, "industry", "") or "").strip()
         if _industry:
             try:
-                from app.services.tender_service import sync_vendor_sector
-                _resolved = sync_vendor_sector(db, vendor_id, _industry)
+                from app.services.tender_service import set_vendor_sector
+                _resolved = set_vendor_sector(db, vendor_id, _industry)
                 if _resolved:
                     rows = [_resolved]
             except Exception as _sec_err:

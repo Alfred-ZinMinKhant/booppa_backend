@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Any, Optional
 from sqlalchemy.orm import Session
 
 from app.core.models import TenderShortlist
@@ -49,21 +49,177 @@ _CATEGORY_TO_SECTOR: dict[str, str] = {
 logger = logging.getLogger(__name__)
 
 
-def sync_vendor_sector(db: Session, vendor_id: Any, sector_or_industry: Optional[str]) -> Optional[str]:
-    """Ensure `vendor_id` has a `VendorSector` entry for `sector_or_industry`.
-
-    Normalises input using `_CATEGORY_TO_SECTOR` if applicable. Auto-provisions
-    a `VendorSector` row if one does not already exist for this vendor and sector.
-    Returns the resolved sector name string.
-    """
-    if not vendor_id or not sector_or_industry:
+def normalise_sector(sector_or_industry: Optional[str]) -> Optional[str]:
+    """Map a raw GeBIZ category or free-text industry to a normalised label."""
+    if not sector_or_industry:
         return None
     raw = sector_or_industry.strip()
     if not raw:
         return None
+    return _CATEGORY_TO_SECTOR.get(raw) or raw
 
-    # Map if known category/industry, otherwise preserve normalised title-cased string
-    sector_name = _CATEGORY_TO_SECTOR.get(raw) or raw
+
+def set_vendor_sector(
+    db: Session,
+    vendor_id: Any,
+    sector_or_industry: Optional[str],
+    *,
+    commit: bool = True,
+) -> Optional[str]:
+    """Authoritatively set the vendor's sector, REPLACING any previous rows.
+
+    This is the write path for anything that describes *who the vendor is* —
+    registration, profile update, subscription activation, admin simulation.
+    Those are single-valued facts: a vendor does not accumulate identities.
+
+    `sync_vendor_sector` is the additive sibling, correct only where a vendor
+    genuinely operates across several sectors (tender shortlisting). Using the
+    additive path for identity is what produced the reported bug: a stale
+    "Construction" row written once outlived every later correction, and the
+    unordered `.first()` reads scattered through the codebase let Postgres pick
+    which identity a report was generated under.
+
+    Pass ``commit=False`` when called inside a caller-owned transaction (the
+    fulfillment paths flush rather than commit, and a commit here would land
+    their half-built work).
+
+    Returns the resolved sector name, or None when there is nothing to set.
+    """
+    if not vendor_id:
+        return None
+    sector_name = normalise_sector(sector_or_industry)
+    if not sector_name:
+        return None
+
+    from app.core.models import VendorSector
+    from sqlalchemy import func
+
+    try:
+        rows = (
+            db.query(VendorSector)
+            .filter(VendorSector.vendor_id == vendor_id)
+            .all()
+        )
+        keep = next(
+            (r for r in rows if (r.sector or "").strip().lower() == sector_name.lower()),
+            None,
+        )
+        stale = [r for r in rows if r is not keep]
+        for r in stale:
+            db.delete(r)
+        if stale:
+            logger.info(
+                "[VendorSector] Replaced %d stale sector row(s) %r for vendor %s with %r",
+                len(stale), [r.sector for r in stale], vendor_id, sector_name,
+            )
+        if keep is None:
+            db.add(VendorSector(vendor_id=vendor_id, sector=sector_name))
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+    except Exception as e:
+        if commit:
+            db.rollback()
+            logger.warning(
+                "[VendorSector] Failed to set sector %r for vendor %s: %s",
+                sector_name, vendor_id, e,
+            )
+        else:
+            # The caller owns this transaction; swallowing the error here would
+            # leave their session in a failed state that fails confusingly later.
+            raise
+
+    return sector_name
+
+
+def resolve_primary_sector(db: Session, vendor_id: Any) -> Optional[str]:
+    """The vendor's single primary sector, resolved deterministically.
+
+    Read-side counterpart to `set_vendor_sector`. Every historical reader did an
+    unordered `.first()`, so with more than one row the answer was whatever
+    Postgres returned that day — the same vendor could be Construction in one
+    report and IT in the next.
+
+    Order of preference:
+      1. the row matching the account's own `User.industry` (the identity fact),
+      2. otherwise the newest row,
+      3. otherwise None.
+
+    Returns None rather than a default. Callers must render "not assessed" — a
+    fallback sector produces a complete, plausible, wrong report, which is worse
+    than an obviously empty one.
+    """
+    if not vendor_id:
+        return None
+
+    from app.core.models import User, VendorSector
+
+    try:
+        rows = (
+            db.query(VendorSector)
+            .filter(VendorSector.vendor_id == vendor_id)
+            .all()
+        )
+    except Exception as e:
+        logger.warning("[VendorSector] Could not load sectors for %s: %s", vendor_id, e)
+        return None
+
+    if not rows:
+        return None
+    if len(rows) == 1:
+        return (rows[0].sector or "").strip() or None
+
+    try:
+        user = db.query(User).filter(User.id == vendor_id).first()
+        industry = normalise_sector(getattr(user, "industry", None))
+    except Exception:
+        industry = None
+
+    if industry:
+        match = next(
+            (r for r in rows if (r.sector or "").strip().lower() == industry.lower()),
+            None,
+        )
+        if match:
+            return (match.sector or "").strip() or None
+
+    # No identity anchor. Fall back to the newest row — but only where creation
+    # order is actually known. `id` is a random UUID and carries no ordering, and
+    # rows predating `created_at` are all NULL, so there is no honest "newest"
+    # among them. In that case return None: the caller renders "not assessed",
+    # which is the truth. Guessing here is what shipped a payments company a
+    # complete and entirely plausible Construction competitor report.
+    dated = [r for r in rows if getattr(r, "created_at", None) is not None]
+    if not dated:
+        logger.warning(
+            "[VendorSector] Vendor %s has %d undated sector rows %r — ambiguous, "
+            "resolving to None. Run scripts/reconcile_vendor_sectors.py.",
+            vendor_id, len(rows), [r.sector for r in rows],
+        )
+        return None
+
+    newest = max(dated, key=lambda r: r.created_at)
+    logger.info(
+        "[VendorSector] Vendor %s has %d sector rows %r — resolved to %r. "
+        "Run scripts/reconcile_vendor_sectors.py to collapse these.",
+        vendor_id, len(rows), [r.sector for r in rows], newest.sector,
+    )
+    return (newest.sector or "").strip() or None
+
+
+def sync_vendor_sector(db: Session, vendor_id: Any, sector_or_industry: Optional[str]) -> Optional[str]:
+    """Additively ensure `vendor_id` has a `VendorSector` entry.
+
+    Correct only for genuinely multi-sector facts (tender shortlisting, where a
+    vendor really does bid across categories). For anything identity-bearing use
+    `set_vendor_sector`, which replaces instead of accumulating.
+    """
+    if not vendor_id:
+        return None
+    sector_name = normalise_sector(sector_or_industry)
+    if not sector_name:
+        return None
 
     from app.core.models import VendorSector
     from sqlalchemy import func

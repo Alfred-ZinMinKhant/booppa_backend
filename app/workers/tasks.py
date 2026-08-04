@@ -8546,18 +8546,18 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                 # THIS subscriber's sector + history. Must stay inside the loop —
                 # hoisting it out is the v1 cross-contamination bug (every vendor
                 # got the IT-sector recommendation).
-                _sub_sectors = [
-                    (r.sector or "").strip()
-                    for r in db.query(VendorSector).filter(VendorSector.vendor_id == sub.id).all()
-                    if (r.sector or "").strip()
-                ]
+                # Deterministic — an unordered read let Postgres decide which of
+                # several accumulated rows won for this subscriber.
+                from app.services.tender_service import resolve_primary_sector
+                _sub_primary = resolve_primary_sector(db, sub.id)
+                _sub_sectors = [_sub_primary] if _sub_primary else []
                 if not _sub_sectors:
                     # Fall back to user.industry if set, auto-provisioning VendorSector so it persists
                     _user_ind = (getattr(sub, "industry", "") or "").strip()
                     if _user_ind:
                         try:
-                            from app.services.tender_service import sync_vendor_sector
-                            _sec_name = sync_vendor_sector(db, sub.id, _user_ind)
+                            from app.services.tender_service import set_vendor_sector
+                            _sec_name = set_vendor_sector(db, sub.id, _user_ind)
                             if _sec_name:
                                 _sub_sectors = [_sec_name]
                         except Exception as _sec_err:
@@ -9483,6 +9483,100 @@ def run_vendor_pro_activation_for_user(self, user_id: str, override_website: str
             db.close()
 
 
+@celery_app.task(bind=True, max_retries=2, name="run_suite_pdpa_scan_for_user")
+def run_suite_pdpa_scan_for_user(self, user_id: str, override_company: str | None = None,
+                                 bypass_idempotency: bool = False):
+    """PDPA Quick Scan for a Standard/Pro Suite activation.
+
+    The Suite shipped covering MAS TRM only. MAS TRM and the PDPA are separate
+    regimes with separate regulators and a MAS-regulated FI is subject to both,
+    so a Suite that assessed one and stayed silent on the other left the customer
+    with half a compliance picture and no signal that it was half.
+
+    This deliberately does NOT reuse `pdpa_monitor_monthly_rescan_task`: that task
+    chains the PDPA Monitor Report and the Vendor Pro quarterly snapshot, which
+    are different products the Suite customer did not buy. It reuses the same
+    underlying pipeline — a `pdpa_quick_scan` Report through `fulfill_pdpa` — so
+    the resulting row is indistinguishable from any other Quick Scan and is
+    picked up unchanged by the monthly board report.
+
+    Skips silently when the account has no website: there is nothing to scan, and
+    inventing a domain would produce a scored report about someone else's site.
+    """
+    from app.core.models import Report
+    import uuid as _uuid
+
+    db = SessionLocal()
+    user = None
+    try:
+        user = UserRepository.get_by_id(db, str(user_id))
+        if not user or not user.email:
+            return
+        website = (getattr(user, "website", "") or "").strip()
+        if not website:
+            logger.warning(
+                "[SuitePDPA] %s has no website on file — scan skipped (nothing to scan)",
+                user.email,
+            )
+            return
+
+        # A scan from the last 24h already answers the question. Test checkouts
+        # pass bypass_idempotency so QA can re-run against the same account.
+        if not bypass_idempotency:
+            recent = (
+                db.query(Report)
+                .filter(
+                    Report.owner_id == user.id,
+                    Report.framework == "pdpa_quick_scan",
+                    Report.created_at >= datetime.now(timezone.utc) - timedelta(hours=24),
+                )
+                .first()
+            )
+            if recent:
+                logger.info("[SuitePDPA] recent scan exists for %s — skipping", user.email)
+                return
+
+        from app.services.evidence_enricher import display_legal_name
+        company = (override_company or "").strip() or display_legal_name(
+            user, db,
+            company_hint=getattr(user, "company", None),
+            website_hint=getattr(user, "website", None),
+        ) or "Customer"
+
+        stub = Report(
+            owner_id=_uuid.UUID(str(user.id)),
+            framework="pdpa_quick_scan",
+            company_name=company,
+            company_website=website,
+            status="pending",
+            assessment_data={
+                "payment_confirmed": True,
+                "on_page_only": False,
+                "tier": "PRO",
+                "contact_email": user.email,
+                "triggered_by": "suite_activation",
+                "test_simulation": bool(bypass_idempotency),
+            },
+        )
+        db.add(stub)
+        db.commit()
+        db.refresh(stub)
+
+        from app.services.fulfillment import fulfill_pdpa
+        asyncio.run(fulfill_pdpa(report_id=str(stub.id), customer_email=user.email))
+        logger.info("[SuitePDPA] Quick Scan delivered for %s (report %s)", user.email, stub.id)
+    except Exception as exc:
+        _retry_or_alert(
+            self, exc,
+            product_type="standard_suite",
+            customer_email=(getattr(user, "email", None) if user else None),
+            extra={"stage": "suite_pdpa_scan", "user_id": str(user_id)},
+            countdown=120,
+        )
+    finally:
+        db.close()
+
+
 @celery_app.task(bind=True, max_retries=2, name="run_suite_trm_baseline_for_user")
 def run_suite_trm_baseline_for_user(self, user_id: str, override_company: str | None = None,
                                     bypass_idempotency: bool = False):
@@ -9833,9 +9927,54 @@ def run_trm_board_report_for_user(self, user_id: str, override_company: str | No
                 user.id, db, plan_keys=PRO_SUITE_PLAN_KEYS, fallback_header=company_name,
             )
 
+        # PDPA position for the same organisation. Scoped via
+        # `latest_vendor_pdpa_reports`, which filters on `User.website`: a Suite
+        # account that also scans clients would otherwise print another company's
+        # score under its own letterhead. A report with no recorded website is
+        # merely unattributed and still counts; one naming a different site does
+        # not. No scan → `pdpa` stays None → the section renders "Not Assessed",
+        # which is the honest reading and never "Compliant".
+        pdpa_ctx = None
+        try:
+            from app.services.pdpa_findings import (
+                latest_vendor_pdpa_reports, resolve_pdpa_score,
+            )
+            from app.core.models import EvidencePack
+
+            scans = latest_vendor_pdpa_reports(db, user, limit=1)
+            latest_scan = scans[0] if scans else None
+            scan_score = (
+                resolve_pdpa_score(latest_scan.assessment_data) if latest_scan else None
+            )
+            ep_row = (
+                db.query(EvidencePack)
+                .filter(EvidencePack.user_id == user.id)
+                .order_by(EvidencePack.created_at.desc())
+                .first()
+            )
+            scanned_at = getattr(latest_scan, "completed_at", None) or getattr(
+                latest_scan, "created_at", None
+            )
+            pdpa_ctx = {
+                "assessed": scan_score is not None,
+                "score": scan_score,
+                "website": getattr(latest_scan, "company_website", None)
+                or getattr(user, "website", None),
+                "scanned_at": scanned_at.strftime("%d %B %Y") if scanned_at else None,
+                "evidence_pack_status": getattr(ep_row, "status", None),
+            }
+        except Exception as pdpa_err:
+            # A failed lookup must not silently read as "no PDPA exposure" — but
+            # it also must not lose the TRM report the board is waiting on. None
+            # renders "Not Assessed", which is the correct thing to say when we
+            # could not establish a position.
+            logger.warning("[TRMBoard] PDPA context unavailable for %s: %s",
+                           user.email, pdpa_err)
+
         pdf_bytes = generate_trm_board_report_pdf({
             "company_name": company_name,
             "plan_label": plan_label,
+            "pdpa": pdpa_ctx,
             "domains": board["domains"],
             "compliant_pct": board["compliant_pct"],
             "previous_pct": prev_pct,
@@ -9863,8 +10002,9 @@ def run_trm_board_report_for_user(self, user_id: str, override_company: str | No
                 f"""
                 <p style="margin:0 0 12px;color:#334155;font-size:15px;line-height:1.6;">Hello <strong>{company_name}</strong>,</p>
                 <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.6;">Your monthly MAS TRM board report for {month_label} is
-                <strong>attached as a PDF</strong> — overall compliance {board['compliant_pct']}%,
-                RAG status per domain, top open risks, and next month's focus.</p>
+                <strong>attached as a PDF</strong> — overall TRM compliance {board['compliant_pct']}%,
+                RAG status per domain, top open risks, next month's focus, and your
+                current PDPA coverage.</p>
                 <p style="color:#64748b;font-size:12px;line-height:1.6;">Open your
                 <a href="https://www.booppa.io/vendor/trm" style="color:#10b981;">TRM workspace</a> to update controls.</p>
                 """,
@@ -9884,6 +10024,10 @@ def run_trm_board_report_for_user(self, user_id: str, override_company: str | No
                 company_name=company_name,
                 assessment_data={
                     "compliant_pct": board["compliant_pct"],
+                    # Recorded for the audit trail of what this board report
+                    # actually said, not for next month's delta — the PDPA delta
+                    # belongs to the scan record, which is authoritative.
+                    "pdpa": pdpa_ctx,
                     "schema_version": TRM_BOARD_REPORT_SCHEMA_VERSION,
                     "s3_url": report_url,
                     "s3_key": board_file_key,

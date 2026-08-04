@@ -28,8 +28,11 @@ from app.services.tx_utils import is_real_onchain_tx
 
 logger = logging.getLogger(__name__)
 
-# Bump when the visible structure of an exported record changes.
-CSP_RECORD_SCHEMA_VERSION = 1
+# Bump when the visible structure of an exported record changes, or when a
+# statement of law printed in it is corrected.
+#   v1 -> v2: tipping-off cited CDSA s.48A; the offence is s.48 (s.48A opens
+#             Part VIA, cross-border cash movement reporting).
+CSP_RECORD_SCHEMA_VERSION = 2
 
 _PROVENANCE = (
     "This record is the assessment made by the corporate service provider named "
@@ -265,7 +268,7 @@ def build_str_decision_record(
         f"- **Client notified:** {'Yes' if report.client_notified else 'No'}",
         "",
         "Client notification is permanently disabled in this system. Tipping-off "
-        "is an offence under section 48A of the Corruption, Drug Trafficking and "
+        "is an offence under section 48 of the Corruption, Drug Trafficking and "
         "Other Serious Crimes (Confiscation of Benefits) Act — a fine of up to "
         "S$250,000 and/or imprisonment of up to 3 years.",
         "",

@@ -1191,28 +1191,24 @@ async def _fulfill_vendor_proof(report_id: str, customer_email: str | None) -> N
 
         # Step 1b: Seed VendorSector from report metadata or assessment data.
         #
-        # `business_sector` is kept as a trailing fallback but is currently dead:
-        # nothing in the codebase writes that key. It was assumed to be an
+        # `business_sector` used to sit here as a trailing fallback and was dead:
+        # nothing in the codebase ever wrote that key. It was assumed to be an
         # ACRA-derived value, but the open ACRA dataset carries no SSIC/activity
-        # field, so it never had a source. `sector` / `industry` (seeded from the
-        # order and the account at checkout) are what actually populate this.
+        # field, so it never had a source. Removed — a fallback that can only
+        # ever be empty is noise that invites the wrong root-cause guess.
+        # `sector` / `industry` (seeded from the order and the account at
+        # checkout) are what actually populate this.
+        #
+        # Authoritative write: this describes who the vendor is, so it replaces
+        # any earlier row rather than adding to a pile the readers then pick from
+        # at random.
         sector = (
             (report.assessment_data or {}).get("sector")
             or (report.assessment_data or {}).get("industry")
-            or (report.assessment_data or {}).get("business_sector")
         )
         if sector:
-            existing_sector = (
-                db.query(VendorSector)
-                .filter(
-                    VendorSector.vendor_id == vendor_id,
-                    VendorSector.sector == sector,
-                )
-                .first()
-            )
-            if not existing_sector:
-                db.add(VendorSector(vendor_id=vendor_id, sector=sector))
-                db.flush()
+            from app.services.tender_service import set_vendor_sector
+            set_vendor_sector(db, vendor_id, sector, commit=False)
 
         # Step 2: Create or upsert VendorStatusSnapshot
         snapshot = (

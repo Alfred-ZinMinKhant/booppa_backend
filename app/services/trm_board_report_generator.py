@@ -26,6 +26,22 @@ from app.core.company import COMPANY_NAME
 
 _xml_escape = xml_escape
 
+# Bump when the visible structure of the board report changes, so a reader can
+# tell which layout a delivered PDF was produced under.
+#
+# NOTE: this constant was referenced by `run_trm_board_report_for_user` but never
+# defined here, so the import at the top of that task raised ImportError on every
+# invocation. The task swallowed it into its generic `except Exception` and
+# retried twice before dying, which means no Suite subscriber has ever received a
+# monthly board report and nothing surfaced the failure. Defining it is the fix;
+# the version starts at 2 because the report it now describes carries the PDPA
+# section added alongside this.
+#
+#   v1 -> v2: added the PDPA Coverage section. MAS TRM and the PDPA are separate
+#             regimes with separate regulators; a Suite board report that showed
+#             only TRM implied a completeness it did not have.
+TRM_BOARD_REPORT_SCHEMA_VERSION = 2
+
 # status → (RAG label, colour). not_started/in_progress are Amber (work owed);
 # gap is Red; compliant is Green.
 _RAG = {
@@ -89,6 +105,79 @@ def board_data_from_controls(controls, sector: str | None) -> dict:
     }
 
 
+def _pdpa_section(pdpa: Dict[str, Any] | None, s: Dict[str, Any], primary: str) -> list:
+    """Render the PDPA Coverage block.
+
+    MAS TRM and the PDPA are separate regimes with separate regulators, and a
+    MAS-regulated FI is fully subject to both. Reporting only TRM to a board
+    reads as "this is our compliance position" when it is half of it.
+
+    Two disciplines this block must keep:
+
+    * **A missing or failed scan renders "Not Assessed", never "Compliant".**
+      An empty finding set is not proof of absence — the scan may simply not have
+      run — and a board report is exactly the document where that distinction
+      stops being academic.
+    * **Documented is not tested.** The Evidence Pack line says which documents
+      exist. It deliberately does not claim the controls behind them were
+      exercised, because we hold no evidence of that. Regulators treat an
+      untested plan as an aspiration, and so does this paragraph.
+    """
+    out: list = [Paragraph("PDPA Coverage", s["h2"])]
+    p = pdpa if isinstance(pdpa, dict) else {}
+    score = p.get("score")
+    assessed = bool(p.get("assessed")) and isinstance(score, int)
+
+    if not assessed:
+        out.append(Paragraph(
+            '<font color="#b45309"><b>Not Assessed.</b></font> No completed PDPA '
+            "scan is on file for this organisation in the current cycle, so no "
+            "PDPA position is stated here. This is the absence of an assessment, "
+            "not a finding of compliance.",
+            s["body"]))
+    else:
+        band, band_color = (
+            ("GREEN", "#065f46") if score >= 80 else
+            ("AMBER", "#b45309") if score >= 50 else
+            ("RED", "#dc2626")
+        )
+        site = p.get("website") or "the registered domain"
+        when = p.get("scanned_at") or "this cycle"
+        out.append(Paragraph(
+            f'PDPA posture score <b>{score}/100</b> '
+            f'(<font color="{band_color}"><b>{band}</b></font>), from an automated '
+            f"scan of {_xml_escape(str(site))} on {_xml_escape(str(when))}. The scan "
+            "covers observable public-facing signals — notice, consent, cookies, "
+            "transport security — and does not inspect internal handling practices.",
+            s["body"]))
+
+    out.append(Spacer(1, 6))
+
+    ep = (p.get("evidence_pack_status") or "").lower()
+    if ep == "ready":
+        ep_line = (
+            "PDPA Evidence Pack: <b>issued</b> — the seven governance documents "
+            "(policy, ROPA, DPIA, breach plan, retention, training, vendor "
+            "register) have been generated and anchored. Documents evidence that "
+            "a control is <i>defined</i>; they are not evidence that it has been "
+            "<i>tested</i>. Board attention: schedule and record a test of the "
+            "breach-response plan."
+        )
+    elif ep in ("intake_pending", "queued", "generating", "anchoring", "building_pdfs"):
+        ep_line = (
+            "PDPA Evidence Pack: <b>outstanding</b> — generation is waiting on the "
+            "organisation's intake submission. Until it completes, no PDPA "
+            "governance documentation exists on file."
+        )
+    else:
+        ep_line = (
+            "PDPA Evidence Pack: <b>not started</b>. No PDPA governance "
+            "documentation is on file for this organisation."
+        )
+    out.append(Paragraph(ep_line, s["body"]))
+    return out
+
+
 def generate_trm_board_report_pdf(data: Dict[str, Any]) -> bytes:
     """Render the monthly board report.
 
@@ -101,6 +190,10 @@ def generate_trm_board_report_pdf(data: Dict[str, Any]) -> bytes:
       previous_pct:  int | None    (None on the first cycle)
       top_risks:    list[str]      (open high/critical controls; optional)
       next_focus:   str | None
+      pdpa:         dict | None    {assessed, score, risk_score, scanned_at,
+                                    website, evidence_pack_status}. Omit or pass
+                                    None to render the section as Not Assessed —
+                                    never as compliant. See `_pdpa_section`.
       white_label:  dict | None    Pro only:
                       {primary_color, secondary_color, footer_text,
                        report_header_text, logo_bytes(optional)}
@@ -257,13 +350,17 @@ def generate_trm_board_report_pdf(data: Dict[str, Any]) -> bytes:
     story.append(Paragraph("Recommended Focus Next Month", s["h2"]))
     story.append(Paragraph(_xml_escape(next_focus) if next_focus
                            else "Maintain compliant controls and evidence the in-progress domains.", s["body"]))
+    story.append(Spacer(1, 10))
+
+    story.extend(_pdpa_section(data.get("pdpa"), s, primary))
     story.append(Spacer(1, 14))
 
     footer = (wl or {}).get("footer_text") if wl else None
     story.append(Paragraph(
         _xml_escape(footer) if footer else
         f"Prepared by {COMPANY_NAME} for board reporting. Reflects the organisation's "
-        "MAS TRM workspace at generation time; not a statement of regulatory compliance.",
+        "MAS TRM workspace and PDPA scan record at generation time; not a statement "
+        "of regulatory compliance under either regime.",
         s["small"]))
 
     if on_page:

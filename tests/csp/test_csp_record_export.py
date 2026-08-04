@@ -246,7 +246,11 @@ def test_filed_record_carries_the_stro_reference_and_tipping_off_notice():
     )
     _, body = build_str_decision_record(report, _profile())
     assert "STRO/2026/00417" in body
-    assert "48A" in body
+    # Tipping-off is CDSA s.48. s.48A opens Part VIA (cross-border cash
+    # movement reporting) and is a different offence entirely — it must never
+    # reappear here.
+    assert "section 48 of the Corruption, Drug Trafficking" in body
+    assert "48A" not in body
     assert "Client notified:** No" in body
     assert "A decision not to file" not in body
 

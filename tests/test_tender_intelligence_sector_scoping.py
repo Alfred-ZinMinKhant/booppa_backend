@@ -62,9 +62,11 @@ def test_primary_sector_falls_back_to_user_industry():
     user.industry = "IT & Telecommunication"
     db.query.return_value.filter.return_value.first.return_value = user
 
-    with patch("app.services.tender_service.sync_vendor_sector", return_value="IT") as _sync:
+    # The write-back is authoritative (`set_vendor_sector`, which replaces) —
+    # the industry is an identity fact, not one sector among several.
+    with patch("app.services.tender_service.set_vendor_sector", return_value="IT") as _set:
         assert _primary_sector(db, "vendor-id") == "IT"
-        _sync.assert_called_once()
+        _set.assert_called_once()
 
 
 def test_primary_sector_defaults_only_when_nothing_on_file():

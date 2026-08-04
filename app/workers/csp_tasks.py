@@ -286,6 +286,7 @@ def generate_csp_documents(self, profile_id: str) -> dict:
     from app.core.models import CspProfile, CspClient, CspAmlProgramme, CspBlockchainEvidence
     from app.services.csp_doc_generator import (
         CSP_DOCUMENT_CATALOG,
+        CSP_DOC_SCHEMA_VERSION,
         generate_all_csp_documents,
         generate_csp_document_pdf,
     )
@@ -331,7 +332,12 @@ def generate_csp_documents(self, profile_id: str) -> dict:
             pdf_bytes, pdf_hash = generate_csp_document_pdf(
                 title=dr["title"],
                 body=content,
-                meta={"legal_name": profile.legal_name, "uen": profile.uen, "doc_type": doc_type},
+                meta={
+                    "legal_name": profile.legal_name,
+                    "uen": profile.uen,
+                    "doc_type": doc_type,
+                    "schema_version": dr.get("schema_version", CSP_DOC_SCHEMA_VERSION),
+                },
             )
 
             doc_attachments.append((
@@ -373,6 +379,7 @@ def generate_csp_documents(self, profile_id: str) -> dict:
                     status="draft",
                     generated_by_model=dr.get("generated_by_model", "deepseek-chat"),
                     generation_cost_usd=dr.get("cost_usd"),
+                    schema_version=dr.get("schema_version", CSP_DOC_SCHEMA_VERSION),
                     s3_key=s3_key,
                     pdf_hash=pdf_hash,
                     blockchain_tx_hash=bc_tx,
@@ -822,7 +829,10 @@ def run_csp_baseline_for_user(
     """
     from app.core.models import Report, User
     from app.core.cache import cache as _cache
-    from app.services.csp_baseline_generator import generate_csp_baseline_pdf
+    from app.services.csp_baseline_generator import (
+        CSP_BASELINE_SCHEMA_VERSION,
+        generate_csp_baseline_pdf,
+    )
     from app.services.email_service import EmailService
     from app.services.email_layout import branded_email_html, email_button
     from app.services.evidence_enricher import (
@@ -968,8 +978,17 @@ def run_csp_baseline_for_user(
                 .first()
             )
             snapshot = {
+                "schema_version": CSP_BASELINE_SCHEMA_VERSION,
                 "plan_label": plan_label,
                 "billing_label": billing_label,
+                # Raw inputs, not just their display labels: a regenerate has to
+                # reproduce the same document, and the labels are lossy.
+                "plan": plan,
+                "billing_type": billing_type,
+                "override_company": override_company,
+                "override_website": override_website,
+                "override_uen": override_uen,
+                "managed_entity_id": managed_entity_id,
                 "s3_url": download_url,
                 "s3_key": file_key,
                 "acra_found": bool(acra.get("found")),

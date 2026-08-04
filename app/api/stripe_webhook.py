@@ -331,6 +331,12 @@ async def _stripe_webhook_impl(
                     stripe_subscription_id=stripe_sub_id,
                     stripe_customer_id=stripe_cust_id,
                     demo=demo_checkout,
+                    # The first-cycle block reads both (sector for the Tender
+                    # digest, mas_licence_type for the Suite, session_id for the
+                    # Evidence Pack intake). They were referenced but never
+                    # passed — see the note in `_activate_subscription`.
+                    metadata=session.get("metadata") or {},
+                    session_id=session.get("id"),
                 )
                 logger.info(
                     f"Activated subscription for {product_type} email={customer_email}"

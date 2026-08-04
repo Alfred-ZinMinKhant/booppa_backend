@@ -30,6 +30,21 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Bump when the visible structure of a generated document changes, or when a
+# statement of law carried in the prompts is corrected. This is the one CSP
+# generator whose output is written by the model, so the version is the only
+# reliable marker of which legal text a delivered PDF was produced under —
+# grepping the repo says nothing about a PDF issued last month.
+#
+#   v1 -> v2: the STR Policy and AML/CFT Programme prompts cited tipping-off as
+#             CDSA s.48A; the offence is s.48 (s.48A opens Part VIA,
+#             cross-border cash movement reporting).
+#
+# Documents issued before this constant existed carry no stamp; a missing
+# version reads as v1 (i.e. outdated), which is correct — those are exactly the
+# packs generated under the wrong citation.
+CSP_DOC_SCHEMA_VERSION = 2
+
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL    = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 MAX_TOKENS        = 4096
@@ -156,7 +171,7 @@ SECTION 5 — SUSPICIOUS TRANSACTION REPORTING (CSP Act s.18, CDSA s.39)
      - Filing portal: SONAR (go.gov.sg/stro)
      - Timeline: file promptly, no statutory deadline but delays = risk
 5.4 NON-FILING: must document rationale even when deciding NOT to file
-5.5 TIPPING-OFF PROHIBITION: criminal offence under CDSA s.48A and TSOFA
+5.5 TIPPING-OFF PROHIBITION: criminal offence under CDSA s.48 and TSOFA
      - Never inform client that STR has been filed
      - Never share information that would alert client to investigation
      - Staff must be trained — penalty: fine + imprisonment
@@ -335,7 +350,7 @@ This document must be followed exactly — incorrect handling = criminal liabili
    - Retained in AML/CFT records for 5 years minimum
 
 6. TIPPING-OFF PROHIBITION — CRIMINAL OFFENCE
-   Under CDSA s.48A and TSOFA:
+   Under CDSA s.48 and TSOFA:
    ❌ NEVER tell the client an STR has been filed
    ❌ NEVER share information that would alert client to investigation
    ❌ NEVER allow the client to withdraw assets after STR decision to file
@@ -814,6 +829,7 @@ def generate_all_csp_documents(profile: Dict, clients: List[Dict]) -> List[Dict]
                 "output_tokens": out_tok, "cost_usd": round(cost,5),
                 "word_count": len(content.split()),
                 "generated_by_model": DEEPSEEK_MODEL,
+                "schema_version": CSP_DOC_SCHEMA_VERSION,
             })
             logger.info("✓ %s — %d words | $%.5f", doc_type, len(content.split()), cost)
         except Exception as e:

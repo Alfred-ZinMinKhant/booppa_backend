@@ -190,6 +190,8 @@ async def _activate_subscription(
     override_website: str | None = None,
     demo: bool = False,
     force_rescan: bool = False,
+    metadata: dict | None = None,
+    session_id: str | None = None,
 ) -> None:
     """
     Persist subscription state when a new Stripe subscription is created or renewed.
@@ -206,6 +208,15 @@ async def _activate_subscription(
     real user profile (the harness email can be a real account). They are passed
     through to the per-user first-cycle wrappers; production renewals leave them
     None and fall back to the stored profile as before.
+
+    `metadata` is the Stripe Checkout session's metadata dict and `session_id` its
+    id. Both were referenced by the first-cycle block but were never parameters,
+    so every read raised `NameError` — swallowed by the enclosing
+    `except Exception`, which is why nothing surfaced. The visible damage was
+    that Tender Intelligence's first-cycle branch aborted at its first
+    `metadata.get(...)` (no welcome digest ever sent) and Suite activations never
+    seeded `mas_licence_type` from checkout. Both default to None so a caller that
+    genuinely has neither is still correct.
 
     `force_rescan` is set ONLY by the admin harness's `force_resend`. Releasing
     the once-per-subscription claim is not enough to re-deliver a Vendor Pro test
@@ -379,8 +390,8 @@ async def _activate_subscription(
                         user.industry = sector_input
                         db.commit()
                     try:
-                        from app.services.tender_service import sync_vendor_sector
-                        sync_vendor_sector(db, user.id, sector_input)
+                        from app.services.tender_service import set_vendor_sector
+                        set_vendor_sector(db, user.id, sector_input)
                     except Exception as _sec_err:
                         logger.warning("[Subscription] Failed to sync VendorSector for %s: %s", getattr(user, "email", "?"), _sec_err)
                 _wtasks.send_tender_intelligence_digest_for_user.delay(str(user.id))
@@ -491,6 +502,43 @@ async def _activate_subscription(
                     },
                     countdown=90,
                 )
+                # PDPA Quick Scan. The Suite covered MAS TRM only; a MAS-regulated
+                # FI is fully subject to the PDPA as well, under a different
+                # regulator. The scan produces a normal `pdpa_quick_scan` Report,
+                # which is what the monthly board report's PDPA section reads.
+                # Skips itself when the account has no website on file.
+                _wtasks.run_suite_pdpa_scan_for_user.apply_async(
+                    args=[str(user.id)],
+                    kwargs={
+                        "override_company": override_company,
+                        "bypass_idempotency": test_simulation,
+                    },
+                    countdown=45,
+                )
+                # PDPA Evidence Pack (7 governance documents). Deferred to the
+                # structured intake rather than auto-generated: the intake
+                # enforces a well-formed ACRA UEN, and auto-filling one would
+                # persist a supplied UEN as though it were verified — a UEN we
+                # have not looked up is a query, not a fact.
+                try:
+                    from app.services.fulfillment.bundles import (
+                        _fulfill_compliance_evidence_pack,
+                    )
+                    await _fulfill_compliance_evidence_pack(
+                        db=db,
+                        owner_id=user.id,
+                        customer_email=user.email,
+                        company_name=override_company or (user.company or ""),
+                        website=(user.website or ""),
+                        session_id=session_id,
+                        metadata=metadata or {},
+                        is_test=test_simulation,
+                    )
+                except Exception as _ep_err:
+                    logger.warning(
+                        "[Subscription] Evidence Pack intake failed for %s: %s",
+                        user.email, _ep_err,
+                    )
             logger.info(
                 "[Subscription] First-cycle delivery queued for user=%s tier=%s",
                 user.email, new_plan,

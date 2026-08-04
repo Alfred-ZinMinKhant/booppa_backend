@@ -36,8 +36,11 @@ from app.services.pdf_logo import draw_logo_header
 
 logger = logging.getLogger(__name__)
 
-# Bump when the visible structure of the baseline PDF changes.
-CSP_BASELINE_SCHEMA_VERSION = 1
+# Bump when the visible structure of the baseline PDF changes, or when a
+# statement of law printed in it is corrected.
+#   v1 -> v2: tipping-off cited CDSA s.48A; the offence is s.48 (s.48A opens
+#             Part VIA, cross-border cash movement reporting).
+CSP_BASELINE_SCHEMA_VERSION = 2
 
 _TABLE_STYLE = TableStyle([
     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
@@ -273,7 +276,7 @@ def generate_csp_baseline_pdf(data: Dict[str, Any]) -> bytes:
         "<i>not</i> to file, with your rationale. That rationale is what answers an ACRA "
         "inspector asking why no report was made. Booppa stores and notarizes it; the "
         "reasoning is yours. Client notification is permanently disabled &mdash; tipping-off "
-        "is an offence under CDSA s.48A.",
+        "is an offence under CDSA s.48.",
     ):
         story.append(Paragraph(f"&bull; {point}", s["body"]))
         story.append(Spacer(1, 4))

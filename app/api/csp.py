@@ -957,7 +957,7 @@ def log_str_decision(
     report = CspStrReport(
         csp_id=profile.id,
         decision_date=datetime.now(timezone.utc),
-        # client_notified is ALWAYS False — tipping-off = criminal offence, CDSA s.48A
+        # client_notified is ALWAYS False — tipping-off = criminal offence, CDSA s.48
         client_notified=False,
         **{k: v for k, v in payload.model_dump().items()
            if hasattr(CspStrReport, k) and k != "client_notified"},
@@ -984,7 +984,7 @@ def log_str_decision(
         "notarized": True,
         "tipping_off_reminder": (
             "LEGAL NOTICE: Do NOT inform the client that an STR has been filed. "
-            "Tipping-off is a criminal offence under CDSA s.48A — "
+            "Tipping-off is a criminal offence under CDSA s.48 — "
             "a fine of up to S$250,000 and/or imprisonment of up to 3 years."
             if payload.decision == "filed" else
             "Rationale for not filing recorded and notarized on the blockchain."
@@ -1386,6 +1386,8 @@ def complete_calendar_item(
 
 @router.get("/documents", summary="List generated AML/CFT documents")
 def list_documents(current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+    from app.services.csp_doc_generator import CSP_DOC_SCHEMA_VERSION
+
     profile = _get_profile(db, current_user)
     progs   = db.query(CspAmlProgramme).filter(
         CspAmlProgramme.csp_id == profile.id
@@ -1393,6 +1395,18 @@ def list_documents(current_user: dict = Depends(get_current_user), db=Depends(ge
     return [{
         "id":           str(p.id),
         "version":      p.version,
+        # Document schema, distinct from `version` (the CSP's own programme
+        # revision number). NULL predates the constant and is outdated by
+        # definition — those packs cited CDSA s.48A for tipping-off.
+        "schema_version": p.schema_version,
+        "outdated": (p.schema_version or 1) != CSP_DOC_SCHEMA_VERSION,
+        "outdated_reason": (
+            "This pack was generated before a correction to the tipping-off "
+            "citation (CDSA s.48, previously stated as s.48A). Regenerate at no "
+            "charge to receive the corrected documents. The existing blockchain "
+            "anchor remains valid for the document it attested."
+            if (p.schema_version or 1) != CSP_DOC_SCHEMA_VERSION else None
+        ),
         "status":       p.status,
         "is_current":   p.is_current,
         "approved_by":  p.approved_by,
@@ -1407,6 +1421,61 @@ def list_documents(current_user: dict = Depends(get_current_user), db=Depends(ge
             if p.status == "draft" else None
         ),
     } for p in progs]
+
+
+@router.post("/documents/regenerate",
+             summary="Regenerate an outdated AML/CFT pack at no charge")
+def regenerate_documents(
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_db),
+):
+    """Re-run the 8-document pack when the current one is on an old schema.
+
+    Gated on `outdated` rather than being a free-form "regenerate" button: each
+    run is 8 DeepSeek completions billed to us, so an ungated endpoint is an
+    unbounded cost a customer can trigger in a loop. When the pack is already
+    current there is nothing to correct, so this 409s.
+
+    The new pack is written as a fresh `CspAmlProgramme` version by the task and
+    lands in `status='draft'` — it must be re-attested. That is deliberate: the
+    corrected document is not the one the previous approver signed, and carrying
+    their attestation across would put a name against text they never read.
+    """
+    from app.services.csp_doc_generator import CSP_DOC_SCHEMA_VERSION
+    from app.workers.csp_tasks import generate_csp_documents
+
+    profile = _get_profile(db, current_user)
+    current = (
+        db.query(CspAmlProgramme)
+        .filter(CspAmlProgramme.csp_id == profile.id)
+        .order_by(CspAmlProgramme.generated_at.desc())
+        .first()
+    )
+    if not current:
+        raise HTTPException(
+            404,
+            "No AML/CFT pack has been generated yet. Create a CSP profile first.",
+        )
+    if (current.schema_version or 1) == CSP_DOC_SCHEMA_VERSION:
+        raise HTTPException(
+            409,
+            "Your AML/CFT pack is already on the current document schema; "
+            "there is nothing to correct.",
+        )
+
+    task = generate_csp_documents.apply_async(args=[str(profile.id)], countdown=3)
+    return {
+        "status": "queued",
+        "task_id": task.id,
+        "from_schema_version": current.schema_version,
+        "to_schema_version": CSP_DOC_SCHEMA_VERSION,
+        "message": (
+            "Regenerating your 8 AML/CFT documents at no charge — ready in "
+            "~10 minutes. The new pack requires attestation before evidentiary "
+            "use. Your existing blockchain anchors remain valid for the "
+            "documents they attested."
+        ),
+    }
 
 
 # ── DAY-1 BASELINE ────────────────────────────────────────────────────────────
@@ -1456,15 +1525,94 @@ def get_latest_csp_baseline(
         except Exception:  # fall back to the stored (possibly expired) URL
             pass
 
+    from app.services.csp_baseline_generator import CSP_BASELINE_SCHEMA_VERSION
+    stored_version = ad.get("schema_version")
+    baseline_outdated = (stored_version or 1) != CSP_BASELINE_SCHEMA_VERSION
+
     return {
         "available": True,
         "download_url": download_url,
         "generated_at": row.completed_at.isoformat() if row.completed_at else None,
+        # NULL predates the stamp, so it reads as v1 — correctly outdated, since
+        # v1 baselines cited tipping-off as CDSA s.48A rather than s.48.
+        "schema_version": stored_version,
+        "outdated": baseline_outdated,
+        "outdated_reason": (
+            "This baseline was issued before a correction to the tipping-off "
+            "citation (CDSA s.48, previously stated as s.48A). Regenerate at no "
+            "charge. The existing blockchain anchor remains valid for the "
+            "document it attested."
+            if baseline_outdated else None
+        ),
         "company_name": row.company_name,
         "plan_label": ad.get("plan_label"),
         "billing_label": ad.get("billing_label"),
         "acra_verified": bool(ad.get("acra_found")),
         "uen": ad.get("uen"),
+    }
+
+
+@router.post("/baseline/regenerate",
+             summary="Reissue an outdated baseline at no charge")
+def regenerate_csp_baseline(
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_db),
+):
+    """Reissue the Day-1 baseline when the delivered one is on an old schema.
+
+    Replays the original generation inputs from the stored snapshot rather than
+    re-deriving them, so the reissued baseline names the same entity as the
+    original — re-deriving would fall back to the account's own company, which
+    is wrong whenever the baseline was bought about a managed client entity.
+
+    `bypass_idempotency` is required: the 24h once-only send lock exists to stop
+    duplicate activation emails, and without it a reissue silently delivers
+    nothing.
+    """
+    from app.core.models import Report
+    from app.services.csp_baseline_generator import CSP_BASELINE_SCHEMA_VERSION
+    from app.workers.csp_tasks import run_csp_baseline_for_user
+
+    row = (
+        db.query(Report)
+        .filter(
+            Report.owner_id == uuid.UUID(current_user["id"]),
+            Report.framework == "csp_baseline",
+            Report.status == "completed",
+        )
+        .order_by(Report.completed_at.desc().nullslast())
+        .first()
+    )
+    if not row:
+        raise HTTPException(404, "No baseline has been issued for this account.")
+
+    ad = row.assessment_data if isinstance(row.assessment_data, dict) else {}
+    if (ad.get("schema_version") or 1) == CSP_BASELINE_SCHEMA_VERSION:
+        raise HTTPException(
+            409,
+            "Your baseline is already on the current schema; there is nothing "
+            "to correct.",
+        )
+
+    task = run_csp_baseline_for_user.apply_async(kwargs={
+        "user_id": current_user["id"],
+        "plan": ad.get("plan") or "csp",
+        "billing_type": ad.get("billing_type") or "one_time",
+        "override_company": ad.get("override_company"),
+        "override_website": ad.get("override_website"),
+        "override_uen": ad.get("override_uen"),
+        "managed_entity_id": ad.get("managed_entity_id"),
+        "bypass_idempotency": True,
+    })
+    return {
+        "status": "queued",
+        "task_id": task.id,
+        "from_schema_version": ad.get("schema_version"),
+        "to_schema_version": CSP_BASELINE_SCHEMA_VERSION,
+        "message": (
+            "Reissuing your baseline at no charge. It will be emailed to you "
+            "and available here shortly."
+        ),
     }
 
 

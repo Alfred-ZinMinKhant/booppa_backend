@@ -860,6 +860,10 @@ class CspAmlProgramme(Base):
     blockchain_tx_hash    = Column(String(80))
     blockchain_timestamp  = Column(DateTime(timezone=True))
     polygonscan_url       = Column(String(500))
+    # CSP_DOC_SCHEMA_VERSION the pack was generated under. Nullable: rows
+    # written before the constant existed carry NULL, which the status endpoint
+    # reads as v1 — i.e. outdated, which is what those rows are.
+    schema_version   = Column(Integer)
     generated_at = Column(DateTime(timezone=True), default=utcnow)
     updated_at   = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -2985,6 +2989,11 @@ class VendorSector(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     vendor_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     sector = Column(String(255), index=True)
+    # Needed to break ties when a vendor accumulated several rows. Nullable:
+    # rows written before this column existed have no knowable creation order,
+    # and `resolve_primary_sector` treats that as ambiguous rather than
+    # inventing one.
+    created_at = Column(DateTime(timezone=True), default=utcnow)
     __table_args__ = (UniqueConstraint("vendor_id", "sector", name="uq_vendor_sector"),)
 
 class ActivityLog(Base):

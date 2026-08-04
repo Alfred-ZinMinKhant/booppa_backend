@@ -525,8 +525,8 @@ async def update_profile(
     # Propagate industry to MarketplaceVendor and VendorSector if linked
     if body.industry is not None:
         try:
-            from app.services.tender_service import sync_vendor_sector
-            sync_vendor_sector(db, user.id, body.industry)
+            from app.services.tender_service import set_vendor_sector
+            set_vendor_sector(db, user.id, body.industry)
         except Exception:
             pass
         try:

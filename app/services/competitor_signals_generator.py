@@ -33,22 +33,30 @@ except ImportError:
     logger.warning("[CompetitorSignals] ReportLab not installed — PDF generation disabled")
 
 
-def _sector_for_vendor(db, vendor_id: str) -> str:
-    """
-    Look up the vendor's primary sector from VendorSector.
-    Falls back to 'IT' if not set — most Singapore gov tenders are IT-adjacent.
+def _sector_for_vendor(db, vendor_id: str) -> str | None:
+    """The vendor's primary sector, or None when it cannot be resolved.
+
+    There is deliberately no default. The previous version fell back to "IT" on
+    the theory that most Singapore government tenders are IT-adjacent, and read
+    the row with an unordered `.first()`. Both parts were harmful:
+
+      - the unordered read meant a vendor holding several accumulated rows got
+        whichever one Postgres felt like returning;
+      - the fallback meant an unresolvable vendor still got a full report.
+
+    Neither fails loudly. A wrong sector label lowercases into a *valid*
+    `GebizAwardHistory.sector` key, so the report fills with a complete and
+    entirely plausible competitor set for the wrong industry — which is how a
+    payments company (matchmove, MAS-licensed MPI) was issued a Construction
+    competitor report that nobody caught. An empty report would have been.
     """
     try:
-        # VendorSector lives in models_v6 and is NOT re-exported from models —
-        # importing it from app.core.models raised ImportError, which the except
-        # swallowed, so this always returned the "IT" fallback (competitor intel
-        # then matched nothing and rendered empty). Import from the real module.
-        from app.core.models import VendorSector
-        row = db.query(VendorSector).filter(VendorSector.vendor_id == vendor_id).first()
-        return (row.sector or "IT").upper() if row else "IT"
+        from app.services.tender_service import resolve_primary_sector
+        sector = resolve_primary_sector(db, vendor_id)
+        return sector.upper() if sector else None
     except Exception as e:
         logger.warning("[CompetitorSignals] Could not load vendor sector: %s", e)
-        return "IT"
+        return None
 
 
 def _get_signals(db, sector: str, days: int = 90, company_name: str | None = None, uen: str | None = None) -> dict:
@@ -327,9 +335,20 @@ async def generate_and_deliver_competitor_signals(
     from app.core.models import User
     
     sector = _sector_for_vendor(db, vendor_id)
+    if not sector:
+        # Do not fall back to a default sector. Competitor intelligence for the
+        # wrong industry looks exactly as complete as the right one, so sending
+        # it is worse than sending nothing — the vendor has no way to tell.
+        logger.warning(
+            "[CompetitorSignals] No resolvable sector for vendor %s — skipping "
+            "delivery rather than issuing a report for a guessed sector.",
+            vendor_id,
+        )
+        return False
+
     profile = db.query(User).filter(User.id == str(vendor_id)).first()
     c_uen = profile.uen if profile else None
-    
+
     signals = _get_signals(db, sector, days=90, company_name=company_name, uen=c_uen)
     month_label = datetime.now(timezone.utc).strftime("%B %Y")
 
