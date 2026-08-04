@@ -10,13 +10,6 @@
 # entry in one gate, clear it in the other.
 
 # ---------------------------------------------------------------------------
-# cryptography (pinned ==46.0.7). Bundled OpenSSL advisory. The only fix is a
-# 46 -> 48.x MAJOR jump; PYSEC-2026-35/36 are already patched via 46.0.7.
-# pip-audit equivalent: GHSA-537c-gmf6-5ccf (ci.yml). Drop when we do the
-# framework-upgrade pass that moves cryptography to 48.x.
-GHSA-537c-gmf6-5ccf
-
-# ---------------------------------------------------------------------------
 # pyasn1 (resolves to 0.4.8). DoS via unbounded recursion. Fix is 0.6.3, but
 # python-jose==3.4.0 caps pyasn1<0.5.0, so it cannot be bumped without a
 # python-jose upgrade. pip-audit equivalent: PYSEC-2026-2263. Drop when
