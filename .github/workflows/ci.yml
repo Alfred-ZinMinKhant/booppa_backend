@@ -24,12 +24,10 @@ env:
   ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
   APP_ECR_REPO: booppa-app
   WORKER_ECR_REPO: booppa-worker
-  CMS_ECR_REPO: booppa-cms
   ECS_CLUSTER: booppa-cluster
   ECS_SERVICE: booppa-app
   WORKER_ECS_SERVICE: booppa-worker
   BEAT_ECS_SERVICE: booppa-beat
-  CMS_ECS_SERVICE: booppa-cms
   CLOUDFLARE_TUNNEL_SECRET_ARN: ${{ secrets.CLOUDFLARE_TUNNEL_SECRET_ARN }}
   CLOUDFLARE_TUNNEL_CONFIG_SECRET_ARN: ${{ secrets.CLOUDFLARE_TUNNEL_CONFIG_SECRET_ARN }}
   CLOUDFLARE_TUNNEL_ORIGINCERT_SECRET_ARN: ${{ secrets.CLOUDFLARE_TUNNEL_ORIGINCERT_SECRET_ARN }}
@@ -269,18 +267,6 @@ jobs:
             ${{ env.ECR_REGISTRY }}/${{ env.WORKER_ECR_REPO }}:${{ github.sha }}
             ${{ env.ECR_REGISTRY }}/${{ env.WORKER_ECR_REPO }}:latest
 
-      - name: Build & push cms image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./cms_admin
-          file: ./cms_admin/Dockerfile
-          push: true
-          platforms: linux/amd64
-          tags: |
-            ${{ env.ECR_REGISTRY }}/${{ env.CMS_ECR_REPO }}:${{ github.sha }}
-            ${{ env.ECR_REGISTRY }}/${{ env.CMS_ECR_REPO }}:latest
-
-
 
       # Push the sensitive credentials (kept in GitHub secrets as the source of
       # truth) into a single Secrets Manager secret on every deploy. The task
@@ -483,7 +469,7 @@ jobs:
                   { "name": "FEATURE_SEO", "value": "${FEATURE_SEO}" },                  { "name": "ENVIRONMENT", "value": "production" },
                   { "name": "EMAIL_PROVIDER", "value": "ses" },
                   { "name": "ALLOWED_HOSTS", "value": "api.booppa.io" },
-                  { "name": "ALLOWED_ORIGINS", "value": "https://booppa.io,https://www.booppa.io,https://api.booppa.io,https://cms.booppa.io" },
+                  { "name": "ALLOWED_ORIGINS", "value": "https://booppa.io,https://www.booppa.io,https://api.booppa.io" },
                   { "name": "CSRF_TRUSTED_ORIGINS", "value": "https://api.booppa.io,https://booppa.io,https://www.booppa.io" },
                   { "name": "CORS_ALLOWED_ORIGINS", "value": "https://api.booppa.io,https://booppa.io,https://www.booppa.io" },
                   { "name": "ADMIN_USER", "value": "${ADMIN_USER}" },                  { "name": "STRIPE_CSP_PACK_ONETIME", "value": "${STRIPE_CSP_PACK_ONETIME}" },
@@ -761,70 +747,6 @@ jobs:
           echo "BEAT_TASK_DEF_ARN=$(cat task-def-beat-arn.txt)" >> $GITHUB_ENV
 
 
-      - name: Register ECS task definition - cms
-        env:
-          CMS_IMAGE: ${{ env.ECR_REGISTRY }}/${{ env.CMS_ECR_REPO }}:latest
-          EXECUTION_ROLE_ARN: ${{ secrets.AWS_ECS_EXECUTION_ROLE_ARN }}
-          TASK_ROLE_ARN: ${{ secrets.AWS_ECS_TASK_ROLE_ARN }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          DB_SECRET_ARN: ${{ secrets.AWS_SECRETSMANAGER_DATABASE_URL_ARN }}
-          APP_SECRETS_ARN: ${{ secrets.AWS_SECRETSMANAGER_APP_SECRETS_ARN }}
-          CMS_ADMIN_TOKEN: ${{ secrets.CMS_ADMIN_TOKEN }}
-        run: |
-          CPU=256
-          MEMORY=512
-          cat > task-def-cms.json <<JSON
-          {
-            "family": "${{ env.CMS_ECR_REPO }}",
-            "networkMode": "awsvpc",
-            "requiresCompatibilities": ["FARGATE"],
-            "cpu": "${CPU}",
-            "memory": "${MEMORY}",
-            "executionRoleArn": "${EXECUTION_ROLE_ARN}",
-            "taskRoleArn": "${TASK_ROLE_ARN}",
-            "volumes": [
-              {
-                "name": "media-volume",
-                "efsVolumeConfiguration": {
-                  "fileSystemId": "fs-0634ca84d161452f4",
-                  "rootDirectory": "/"
-                }
-              }
-            ],
-            "containerDefinitions": [
-              {
-                "name": "cms",
-                "image": "${CMS_IMAGE}",
-                "essential": true,
-                "environment": [
-                  { "name": "ENVIRONMENT", "value": "production" },
-                  { "name": "ALLOWED_HOSTS", "value": "cms.booppa.io" },
-                  { "name": "ALLOWED_ORIGINS", "value": "https://booppa.io,https://www.booppa.io,https://api.booppa.io,https://cms.booppa.io" },
-                  { "name": "CSRF_TRUSTED_ORIGINS", "value": "https://cms.booppa.io,https://booppa.io,https://api.booppa.io,https://www.booppa.io" },
-                  { "name": "CORS_ALLOWED_ORIGINS", "value": "https://cms.booppa.io,https://booppa.io,https://api.booppa.io,https://www.booppa.io" }
-                ],
-                "secrets": [
-                  { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" },
-                  { "name": "CMS_ADMIN_TOKEN", "valueFrom": "${APP_SECRETS_ARN}:CMS_ADMIN_TOKEN::" }
-                ],
-                "mountPoints": [
-                  {
-                    "sourceVolume": "media-volume",
-                    "containerPath": "/app/media",
-                    "readOnly": false
-                  }
-                ],
-                "portMappings": [{ "containerPort": 8001, "protocol": "tcp" }],
-                "logConfiguration": { "logDriver": "awslogs", "options": { "awslogs-group": "/ecs/${{ env.CMS_ECR_REPO }}", "awslogs-region": "${AWS_REGION}", "awslogs-stream-prefix": "ecs" } }
-              }
-            ]
-          }
-          JSON
-
-          aws ecs register-task-definition --cli-input-json file://task-def-cms.json --region $AWS_REGION > task-def-cms-out.json
-          jq -r '.taskDefinition.taskDefinitionArn' task-def-cms-out.json > task-def-cms-arn.txt
-          echo "CMS_TASK_DEF_ARN=$(cat task-def-cms-arn.txt)" >> $GITHUB_ENV
-
       - name: Run DB migrations (ECS one-off)
         if: github.event.inputs.run_migrations == 'true'
         env:
@@ -888,74 +810,6 @@ jobs:
             aws logs get-log-events \
               --log-group-name "/ecs/${APP_ECR_REPO}" \
               --log-stream-name "ecs/app/${task_id}" \
-              --limit 200 \
-              --region "$AWS_REGION" \
-              --query 'events[].message' \
-              --output text || echo "Log fetch failed" >&2
-            exit 1
-          fi
-
-      - name: Run CMS DB migrations (ECS one-off)
-        if: github.event.inputs.run_migrations == 'true'
-        env:
-          CMS_TASK_DEF_ARN: ${{ env.CMS_TASK_DEF_ARN }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          ECS_CLUSTER: ${{ env.ECS_CLUSTER }}
-          AWS_SUBNETS: ${{ secrets.AWS_SUBNETS }}
-          AWS_SECURITY_GROUPS: ${{ secrets.AWS_SECURITY_GROUPS }}
-        run: |
-          echo "Running CMS DB migrations as an ECS one-off task..."
-          if [ -z "$CMS_TASK_DEF_ARN" ]; then
-            echo "CMS_TASK_DEF_ARN is empty. Aborting CMS migrations." >&2
-            exit 1
-          fi
-
-          IFS=',' read -ra SUBS <<< "$AWS_SUBNETS"
-          IFS=',' read -ra SGS <<< "$AWS_SECURITY_GROUPS"
-          subs_json=$(printf '%s\n' "${SUBS[@]}" | jq -R . | jq -s .)
-          sgs_json=$(printf '%s\n' "${SGS[@]}" | jq -R . | jq -s .)
-
-          network_config=$(jq -n --argjson subs "$subs_json" --argjson sgs "$sgs_json" '{awsvpcConfiguration: {subnets: $subs, securityGroups: $sgs, assignPublicIp: "ENABLED"}}')
-
-          run_output=$(aws ecs run-task \
-            --cluster "$ECS_CLUSTER" \
-            --launch-type FARGATE \
-            --task-definition "$CMS_TASK_DEF_ARN" \
-            --network-configuration "$network_config" \
-            --overrides "{\"containerOverrides\":[{\"name\":\"cms\",\"command\":[\"sh\",\"-c\",\"python manage.py migrate\"]}]}" \
-            --region "$AWS_REGION")
-
-          echo "$run_output"
-          exit_code=$(echo "$run_output" | jq -r '.failures | length')
-          if [ "$exit_code" -gt 0 ]; then
-            echo "CMS Migration task failed to start:" >&2
-            echo "$run_output" | jq -r '.failures[] | @json' >&2
-            exit 1
-          fi
-
-          task_arn=$(echo "$run_output" | jq -r '.tasks[0].taskArn')
-          if [ -z "$task_arn" ] || [ "$task_arn" = "null" ]; then
-            echo "Failed to capture CMS migration task ARN" >&2
-            exit 1
-          fi
-
-          echo "Waiting for CMS migration task to stop: $task_arn"
-          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$task_arn" --region "$AWS_REGION"
-
-          describe=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$task_arn" --region "$AWS_REGION")
-          container_exit=$(echo "$describe" | jq -r '.tasks[0].containers[0].exitCode')
-          container_reason=$(echo "$describe" | jq -r '.tasks[0].containers[0].reason')
-          stop_reason=$(echo "$describe" | jq -r '.tasks[0].stoppedReason')
-          task_id=$(echo "$task_arn" | awk -F'/' '{print $NF}')
-
-          echo "CMS migration task exit code: $container_exit"
-          if [ "$container_exit" != "0" ]; then
-            echo "CMS migration task failed: $container_reason" >&2
-            echo "Task stopped reason: $stop_reason" >&2
-            echo "Last 200 log lines for CMS migration task:" >&2
-            aws logs get-log-events \
-              --log-group-name "/ecs/${CMS_ECR_REPO}" \
-              --log-stream-name "ecs/cms/${task_id}" \
               --limit 200 \
               --region "$AWS_REGION" \
               --query 'events[].message' \
@@ -1030,19 +884,6 @@ jobs:
               --region "$AWS_REGION"
           fi
 
-
-      - name: Update ECS cms service to use new task definition (cms)
-        env:
-          CLUSTER: ${{ env.ECS_CLUSTER }}
-          CMS_SERVICE: ${{ env.CMS_ECS_SERVICE }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-        run: |
-          if [ -n "$CMS_TASK_DEF_ARN" ]; then
-            echo "Updating cms service to task definition ARN: $CMS_TASK_DEF_ARN"
-            aws ecs update-service --cluster $CLUSTER --service $CMS_SERVICE --task-definition "$CMS_TASK_DEF_ARN" --force-new-deployment --region $AWS_REGION || true
-          else
-            echo "No CMS_TASK_DEF_ARN found; skipping cms service update."
-          fi
 
       - name: Ensure service uses registered task definition (fallback)
         run: |
@@ -1264,38 +1105,3 @@ jobs:
         run: |
           chmod +x scripts/deploy_cloudflared_tunnel.sh
           ./scripts/deploy_cloudflared_tunnel.sh
-      - name: Create Django superuser if not exists (ECS one-off)
-        if: github.event.inputs.run_migrations == 'true'
-        env:
-          CMS_TASK_DEF_ARN: ${{ env.CMS_TASK_DEF_ARN }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          ECS_CLUSTER: ${{ env.ECS_CLUSTER }}
-          AWS_SUBNETS: ${{ secrets.AWS_SUBNETS }}
-          AWS_SECURITY_GROUPS: ${{ secrets.AWS_SECURITY_GROUPS }}
-          DJANGO_SUPERUSER_USERNAME: ${{ secrets.DJANGO_SUPERUSER_USERNAME }}
-          DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
-          DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
-        run: |
-          echo "Creating Django superuser if not exists as an ECS one-off task..."
-          IFS=',' read -ra SUBS <<< "$AWS_SUBNETS"
-          IFS=',' read -ra SGS <<< "$AWS_SECURITY_GROUPS"
-          subs_json=$(printf '%s\n' "${SUBS[@]}" | jq -R . | jq -s .)
-          sgs_json=$(printf '%s\n' "${SGS[@]}" | jq -R . | jq -s .)
-          network_config=$(jq -n --argjson subs "$subs_json" --argjson sgs "$sgs_json" '{awsvpcConfiguration: {subnets: $subs, securityGroups: $sgs, assignPublicIp: "ENABLED"}}')
-
-          # Run the ECS task to create the superuser if it doesn't exist
-          run_output=$(aws ecs run-task \
-            --cluster "$ECS_CLUSTER" \
-            --launch-type FARGATE \
-            --task-definition "$CMS_TASK_DEF_ARN" \
-            --network-configuration "$network_config" \
-            --overrides "{\"containerOverrides\":[{\"name\":\"cms\",\"command\":[\"sh\",\"-c\",\"python manage.py shell -c \\\"from django.contrib.auth import get_user_model; User=get_user_model(); u='$DJANGO_SUPERUSER_USERNAME'; e='$DJANGO_SUPERUSER_EMAIL'; p='$DJANGO_SUPERUSER_PASSWORD'; print('exists' if User.objects.filter(username=u).exists() else (User.objects.create_superuser(u,e,p) and 'created'))\\\"\"]}]}" \
-            --region "$AWS_REGION")
-
-          echo "$run_output"
-          exit_code=$(echo "$run_output" | jq -r '.failures | length')
-          if [ "$exit_code" -gt 0 ]; then
-            echo "Superuser creation task failed to start:" >&2
-            echo "$run_output" | jq -r '.failures[] | @json' >&2
-            exit 1
-          fi
