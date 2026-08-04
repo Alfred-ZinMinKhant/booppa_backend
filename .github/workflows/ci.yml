@@ -741,8 +741,15 @@ jobs:
           # only the family, container name, command and log group differ. The
           # worker's healthCheck is dropped: beat is a scheduler, not a consumer,
           # so `inspect ping` addressed to it always fails.
+          #
+          # cpu/memory are pinned rather than inherited: beat only wakes up and
+          # enqueues, it never executes a task, so it does not need the worker's
+          # sizing. Inheriting it silently cost ~$10/mo (2026-08-04) — if the
+          # worker is ever scaled up, beat must NOT follow it.
           jq '
             .family = "booppa-beat"
+            | .cpu = "256"
+            | .memory = "512"
             | .containerDefinitions[0].name = "beat"
             | .containerDefinitions[0].command = ["python","-m","celery","-A","app.workers.celery_app","beat","--loglevel=info"]
             | .containerDefinitions[0].logConfiguration.options["awslogs-group"] = "/ecs/booppa-beat"
