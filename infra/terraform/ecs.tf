@@ -46,6 +46,9 @@ resource "aws_ecs_task_definition" "app" {
 
 resource "aws_cloudwatch_log_group" "app" {
   name = "/ecs/${var.project}-app"
+  # Without this the group never expires and grows forever. Set to match the
+  # cloudflared-tunnel group; raise it if an investigation needs deeper history.
+  retention_in_days = 14
 }
 
 resource "aws_ecs_service" "app" {
@@ -100,7 +103,8 @@ resource "aws_ecs_task_definition" "worker" {
 }
 
 resource "aws_cloudwatch_log_group" "worker" {
-  name = "/ecs/${var.project}-worker"
+  name              = "/ecs/${var.project}-worker"
+  retention_in_days = 14
 }
 
 resource "aws_ecs_service" "worker" {
@@ -154,7 +158,8 @@ resource "aws_ecs_task_definition" "beat" {
 }
 
 resource "aws_cloudwatch_log_group" "beat" {
-  name = "/ecs/${var.project}-beat"
+  name              = "/ecs/${var.project}-beat"
+  retention_in_days = 14
 }
 
 resource "aws_ecs_service" "beat" {

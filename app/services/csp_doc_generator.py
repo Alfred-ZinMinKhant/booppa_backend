@@ -24,6 +24,7 @@ from __future__ import annotations
 from app.services.pdf_styles import get_unified_styles
 import hashlib
 import logging, os, re
+from app.services import regulatory_registry as _reg
 from datetime import datetime, timezone
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
@@ -37,13 +38,18 @@ logger = logging.getLogger(__name__)
 # grepping the repo says nothing about a PDF issued last month.
 #
 #   v1 -> v2: the STR Policy and AML/CFT Programme prompts cited tipping-off as
-#             CDSA s.48A; the offence is s.48 (s.48A opens Part VIA,
-#             cross-border cash movement reporting).
+#             CDSA s.48A; corrected to s.48. That correction was itself wrong.
+#   v2 -> v3: tipping-off is CDSA s.57 ("Tipping-off", Part 6 OFFENCES),
+#             verified against SSO on 2026-08-05. s.48A is cross-border cash
+#             movement reporting; s.48 is communication of information to a
+#             foreign authority; neither is the disclosure offence. The prompts
+#             no longer carry the number at all — they interpolate it from the
+#             registry, because a number typed into prose is what drifted twice.
 #
 # Documents issued before this constant existed carry no stamp; a missing
 # version reads as v1 (i.e. outdated), which is correct — those are exactly the
 # packs generated under the wrong citation.
-CSP_DOC_SCHEMA_VERSION = 2
+CSP_DOC_SCHEMA_VERSION = 3
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL    = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
@@ -148,7 +154,7 @@ def gen_aml_programme(profile: Dict, clients: List[Dict]) -> Tuple[str,int,int,s
     # two either: at MAX_TOKENS (deepseek-chat's ceiling) a single call was cut
     # inside Section 7, and a 1-5 / 6-9 split was still cut inside Section 4 —
     # which silently dropped Section 5, the tipping-off section this document's
-    # whole s.48 correction lives in. The model writes ~200 lines per section, so
+    # whole tipping-off correction lives in. The model writes ~200 lines per section, so
     # the split is sized to the two long ones (3 CDD and 4-5 EDD/STR) rather than
     # to section count. Each part is written against the same context block and the
     # results are concatenated, so the customer reads one continuous programme.
@@ -195,7 +201,7 @@ SECTION 5 — SUSPICIOUS TRANSACTION REPORTING (CSP Act s.18, CDSA s.39)
      - Filing portal: SONAR (go.gov.sg/stro)
      - Timeline: file promptly, no statutory deadline but delays = risk
 5.4 NON-FILING: must document rationale even when deciding NOT to file
-5.5 TIPPING-OFF PROHIBITION: criminal offence under CDSA s.48 and TSOFA
+5.5 TIPPING-OFF PROHIBITION: criminal offence under {_TIPPING_OFF_SHORT} and TSOFA
      - Never inform client that STR has been filed
      - Never share information that would alert client to investigation
      - Staff must be trained — penalty: fine + imprisonment
@@ -410,7 +416,7 @@ This document must be followed exactly — incorrect handling = criminal liabili
    - Retained in AML/CFT records for 5 years minimum
 
 6. TIPPING-OFF PROHIBITION — CRIMINAL OFFENCE
-   Under CDSA s.48 and TSOFA:
+   Under {_TIPPING_OFF_SHORT} and TSOFA:
    ❌ NEVER tell the client an STR has been filed
    ❌ NEVER share information that would alert client to investigation
    ❌ NEVER allow the client to withdraw assets after STR decision to file
@@ -869,14 +875,26 @@ CSP_DOCUMENT_CATALOG = [
 # True = needs clients list; False = profile only
 
 
-# Tipping-off is CDSA s.48. s.48A opens Part VIA (cross-border cash movement
-# reporting) and has nothing to do with disclosure. The prompts were corrected in
-# schema v2, but a prompt is not a guarantee: the system persona is a generic AML
-# specialist and nothing stops the model "correcting" s.48 back to the more
-# commonly-miscited s.48A. That citation is the stated legal basis for a real
-# product decision — why client notification is permanently disabled — so it is
-# checked on the *output*, which is the only thing the customer ever reads.
-_BAD_CITATION = re.compile(r"\bs\.?\s*48A\b|\bsection\s+48A\b", re.I)
+_TIPPING_OFF_SHORT = _reg.get(_reg.BODY_CDSA, "tipping_off").ids[0]
+
+# Tipping-off is CDSA s.57. Both of the numbers this product previously shipped
+# are wrong and both are plausible enough for a model to "correct" back to:
+# s.48A opens Part VIA (cross-border cash movement reporting) and s.48 is
+# communication of information to a foreign authority. The prompts interpolate
+# the registry value, but a prompt is not a guarantee — the system persona is a
+# generic AML specialist trained on text that miscites this constantly. That
+# citation is the stated legal basis for a real product decision (why client
+# notification is permanently disabled), so it is checked on the *output*, the
+# only thing the customer ever reads.
+#
+# Deliberately a denylist of the two known-wrong values rather than "any section
+# that is not s.57": the model legitimately cites other CDSA sections (s.45 STR
+# reporting, s.39) in the same documents, and a whitelist would reject those.
+_BAD_CITATION = re.compile(
+    r"\bs\.?\s*48A\b|\bsection\s+48A\b"
+    r"|\bs\.?\s*48\b(?!\w)|\bsection\s+48\b(?!\w)",
+    re.I,
+)
 
 
 def _reject_reason(content: str, finish_reason: str) -> Optional[str]:
@@ -896,8 +914,8 @@ def _reject_reason(content: str, finish_reason: str) -> Optional[str]:
     hits = _BAD_CITATION.findall(content)
     if hits:
         return (
-            f"incorrect statutory citation {hits[0]!r} — tipping-off is CDSA s.48, "
-            "not s.48A"
+            f"incorrect statutory citation {hits[0]!r} — tipping-off is "
+            f"{_TIPPING_OFF_SHORT}, not s.48 or s.48A"
         )
     return None
 

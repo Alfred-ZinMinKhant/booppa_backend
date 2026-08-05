@@ -13,6 +13,7 @@ fixture; asserting on the prompt tests the branch.
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from unittest.mock import patch
 
@@ -52,19 +53,30 @@ def _ctx(licence, *, gap: str | None = None) -> gen.TrmDocContext:
     )
 
 
-def _fsm_n06_body(prompt: str) -> str:
-    """A body that satisfies `_validate_fsm_n06` while still carrying the prompt.
+def _cyber_hygiene_body(prompt: str) -> str:
+    """A body that satisfies `_validate_cyber_hygiene` while carrying the prompt.
 
     Without the clause headings the attestation generator retries and then
     raises, so a naive echo stub would make every test look like a validator
     failure rather than exercising the path under test.
+
+    The Notice is read back out of the prompt rather than hardcoded to FSM-N06:
+    the generator now resolves it per licence class, and a stub that always
+    emitted FSM-N06 would pass for a bank and silently fail every other class —
+    exactly the bug under test.
     """
+    match = re.search(r"FSM-N\d{2}", prompt)
+    notice_id = match.group(0) if match else "FSM-N06"
+    inst = next(
+        i for i in registry.MAS_INSTRUMENTS.values()
+        if notice_id in i.ids and i.is_current
+    )
     anchors = "\n".join(f"| {a} | ... | ... | ... | NOT IMPLEMENTED |"
-                        for a in registry.get("fsm_n06").clause_anchors)
+                        for a in inst.clause_anchors)
     return (
-        "FSM-N06 attestation. FSM-N06 is binding. This addresses FSM-N06 "
-        "clause by clause. Notice 655 was cancelled on 10 May 2024 and "
-        "replaced.\n" + anchors + "\n\n=== PROMPT ECHO ===\n" + prompt
+        f"{notice_id} attestation. {notice_id} is binding. This addresses "
+        f"{notice_id} clause by clause. Notice 655 was cancelled on 10 May 2024 "
+        "and replaced.\n" + anchors + "\n\n=== PROMPT ECHO ===\n" + prompt
     )
 
 
@@ -76,7 +88,7 @@ def stub_model():
     def _text(system, user):
         prompts.append(user)
         if "Cyber Hygiene Compliance Attestation" in user:
-            return _fsm_n06_body(user), 100, 200
+            return _cyber_hygiene_body(user), 100, 200
         return f"## Document\n\n{user}", 100, 200
 
     def _json(system, user):
@@ -115,20 +127,26 @@ def test_register_branches_on_licence(stub_model, licence):
     data, _, _ = gen.gen_outsourcing_register(_ctx(licence))
     cited = _governing_section(stub_model[-1])
 
+    # Compared against the registry row, not a literal. These three assertions
+    # used to hardcode the citation text, so when the row said "Notice 658 —
+    # Outsourcing (Banks)" — our paraphrase, not the title MAS publishes — the
+    # test agreed with it. What is being tested here is that the *right row* is
+    # selected for the licence; whether that row's wording is correct is the
+    # registry's own test.
     if licence == "bank":
-        assert data["instrument"] == "MAS Notice 658 — Outsourcing (Banks)"
+        assert data["instrument"] == registry.get("notice_658").citation
         assert "MAS Notice 658" in cited
         assert "1121" not in cited
         assert "Guidelines on Outsourcing" not in cited
     elif licence == "merchant_bank":
-        assert data["instrument"] == "MAS Notice 1121 — Outsourcing (Merchant Banks)"
+        assert data["instrument"] == registry.get("notice_1121").citation
         assert "MAS Notice 1121" in cited
         assert "658" not in cited
         assert "Guidelines on Outsourcing" not in cited
     else:
-        assert data["instrument"] == (
-            "MAS Guidelines on Outsourcing (Financial Institutions other than Banks)"
-        )
+        assert data["instrument"] == registry.get(
+            "outsourcing_guidelines_nonbank"
+        ).citation
         assert "Guidelines on Outsourcing" in cited
         assert "658" not in cited
         assert "1121" not in cited
@@ -163,20 +181,41 @@ def test_non_bank_register_uses_the_non_bank_column_set(stub_model, licence):
     assert data["regime"] == "non_bank_guidelines"
 
 
-# ── 2. the Cyber Hygiene Attestation cites FSM-N06 specifically ──────────────
+# ── 2. the Cyber Hygiene Attestation cites the entity's own Notice ───────────
 
-def test_attestation_cites_fsm_n06_not_generic_cyber_security(stub_model):
-    content, _, _ = gen.gen_cyber_hygiene_attestation(_ctx("mpi"))
+@pytest.mark.parametrize(
+    "licence,notice_key",
+    [
+        ("bank", "fsm_n06"),
+        ("merchant_bank", "fsm_n12"),
+        ("insurer", "fsm_n04"),
+        ("capital_markets", "fsm_n22"),
+        ("mpi", "fsm_n14"),
+        ("spi", "fsm_n14"),
+    ],
+)
+def test_attestation_cites_the_notice_binding_that_licence_class(
+    stub_model, licence, notice_key
+):
+    """The original defect: every class got FSM-N06, the bank Notice.
 
-    assert content.count("FSM-N06") >= gen._FSM_N06_MIN_MENTIONS
-    for anchor in registry.get("fsm_n06").clause_anchors:
+    A signed attestation naming a Notice that does not bind the entity is not a
+    cosmetic error — it is the entity asserting the wrong obligation on paper.
+    """
+    inst = registry.get(notice_key)
+    content, _, _ = gen.gen_cyber_hygiene_attestation(_ctx(licence))
+
+    assert content.count(inst.ids[0]) >= gen._CYBER_HYGIENE_MIN_MENTIONS
+    for anchor in inst.clause_anchors:
         assert anchor.lower() in content.lower(), f"missing clause anchor: {anchor}"
-    assert not gen._validate_fsm_n06(content)
+    assert not gen._validate_cyber_hygiene(content, inst)
+    if notice_key != "fsm_n06":
+        assert "FSM-N06" not in content, "bank Notice leaked into a non-bank attestation"
 
 
 def test_notice_655_never_appears_unqualified(stub_model):
     """655 is cancelled. It may appear only next to its cancellation."""
-    gen.gen_cyber_hygiene_attestation(_ctx("mpi"))
+    gen.gen_cyber_hygiene_attestation(_ctx("bank"))
     prompt = next(p for p in stub_model if "Cyber Hygiene Compliance Attestation" in p)
 
     lowered = prompt.lower()
@@ -191,9 +230,17 @@ def test_notice_655_never_appears_unqualified(stub_model):
 
 def test_validator_rejects_a_generic_cyber_security_document():
     generic = "We take cyber security seriously. " * 50
-    problems = gen._validate_fsm_n06(generic)
+    problems = gen._validate_cyber_hygiene(generic, registry.get("fsm_n06"))
     assert problems
     assert any("FSM-N06" in p for p in problems)
+
+
+def test_validator_rejects_the_wrong_notice_for_the_licence_class():
+    """An FSM-N06 body handed to an MPI must fail — same words, wrong Notice."""
+    body = _cyber_hygiene_body("drafted against FSM-N06")
+    problems = gen._validate_cyber_hygiene(body, registry.get("fsm_n14"))
+    assert problems
+    assert any("FSM-N14" in p for p in problems)
 
 
 # ── 3. unknown licence gates rather than defaults ────────────────────────────
@@ -220,8 +267,10 @@ def test_unknown_licence_skips_the_register_and_emits_no_default_regime(stub_mod
     assert "Notice 1121" not in joined
     assert "Guidelines on Outsourcing" not in joined
 
+    # With no licence class, only the document that cites no entity-specific
+    # instrument survives: the IT Audit & VAPT log.
     delivered = [r for r in results if not r.get("skipped")]
-    assert len(delivered) == 6
+    assert [r["doc_type"] for r in delivered] == ["it_audit_vapt_log"]
 
 
 def test_unknown_licence_is_blocked_not_error(stub_model):
@@ -239,11 +288,11 @@ def test_unknown_licence_is_blocked_not_error(stub_model):
 def test_gate_fails_when_any_expected_document_is_missing():
     docs = {
         dt: {"url": "https://s3.example/x.pdf"}
-        for dt in gen.expected_doc_types("mpi")
+        for dt in gen.expected_doc_types("bank")
     }
     docs["incident_response_plan"].pop("url")
 
-    status, missing = delivery.evaluate_pack_gate(docs, "mpi")
+    status, missing = delivery.evaluate_pack_gate(docs, "bank")
     assert status == delivery.PACK_STATUS_ERROR
     assert missing == ["incident_response_plan"]
 
@@ -316,9 +365,25 @@ def test_notice_655_is_recorded_as_superseded():
 
 
 def test_every_catalog_notice_key_resolves():
+    """No document may name a key the registry cannot turn into an instrument.
+
+    `notices` now holds licence-dependent sentinels alongside literal registry
+    keys, so this resolves each one the way the generator does — per licence
+    class — rather than assuming every entry is a direct key.
+    """
     for spec in gen.TRM_DOCUMENT_CATALOG:
         for key in spec.notices:
-            assert registry.get(key).key == key
+            for licence in ("bank", "merchant_bank", "insurer", "capital_markets"):
+                inst = gen._resolve_instrument(key, licence)
+                assert inst.ids or inst.title, f"{key} resolved to an empty instrument"
+
+
+def test_sentinels_never_resolve_for_a_licence_they_do_not_bind():
+    """The sentinel must raise, not fall back to a default instrument."""
+    with pytest.raises(ValueError):
+        gen._resolve_instrument("trm_notice", "mpi")
+    with pytest.raises(ValueError):
+        gen._resolve_instrument("cyber_hygiene_notice", None)
 
 
 def test_citation_block_never_offers_a_superseded_instrument_as_current():
@@ -358,9 +423,29 @@ def test_every_rendered_pdf_carries_the_draft_banner(stub_model):
 def test_catalog_and_gate_agree_on_what_a_complete_pack_is():
     assert set(gen.expected_doc_types("bank")) == set(gen.TRM_DOC_TYPES)
     assert len(gen.TRM_DOC_TYPES) == 7
-    assert set(gen.expected_doc_types(None)) == set(gen.TRM_DOC_TYPES) - {
-        "outsourcing_risk_register"
+
+    # Gating is per document, not all-or-nothing. Only the IT Audit & VAPT log
+    # names no entity-specific instrument, so it is all an unconfirmed licence
+    # can support.
+    assert set(gen.expected_doc_types(None)) == {"it_audit_vapt_log"}
+
+    # An MPI resolves its cyber-hygiene Notice (FSM-N14) and its outsourcing
+    # regime (non-bank Guidelines), but no MAS technology-risk Notice is mapped
+    # to a plain major payment institution — FSM-N13 binds designated payment
+    # systems and DPT service providers, which is a narrower set. Those three
+    # documents gate rather than over-claim.
+    assert set(gen.expected_doc_types("mpi")) == {
+        "it_audit_vapt_log",
+        "outsourcing_risk_register",
+        "cyber_hygiene_attestation",
+        "access_control_policy",
     }
+    assert set(gen.expected_doc_types("spi")) == set(gen.expected_doc_types("mpi"))
+
+    # Fully-mapped non-bank classes get the complete pack — the fix is not
+    # "gate everything that is not a bank".
+    for licence in ("merchant_bank", "insurer", "capital_markets"):
+        assert set(gen.expected_doc_types(licence)) == set(gen.TRM_DOC_TYPES)
 
 
 def test_every_generator_takes_exactly_one_argument():

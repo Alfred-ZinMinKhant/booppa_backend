@@ -67,6 +67,11 @@ def test_subscription_activates_plan_and_emails(
         return (
             "subscription is active" in subject
             or "here's everything included" in subject
+            # The Suite welcome mail switches to this subject when the MAS
+            # licence class is unset, because most of the document pack cannot
+            # be generated until the customer confirms it. Still the activation
+            # email — the body assertion below is what actually pins that.
+            or "to finish activation" in subject
         ) and "subscription is now active" in m["body"].lower()
 
     # vendor_active / vendor_pro no longer emit a synchronous activation email:

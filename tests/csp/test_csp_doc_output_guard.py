@@ -1,11 +1,12 @@
 """The generated document is checked, not just the prompt that asked for it.
 
-Schema v2 corrected the tipping-off citation from CDSA s.48A to s.48, but that
-correction lives in a prompt string. Nothing in the system persona forbids the
-model from "correcting" it back to the more commonly-miscited s.48A, and
-`schema_version: 2` was stamped unconditionally on whatever came back — so a
-delivered PDF could carry the wrong statute under a version claiming the right
-one.
+Schema v2 corrected the tipping-off citation from CDSA s.48A to s.48, and v3
+corrected s.48 to s.57 — the actual offence. That correction reaches the model
+through a prompt string. Nothing in the system persona forbids it "correcting"
+the number back to either of the commonly-miscited values, and the schema
+version was stamped unconditionally on whatever came back — so a delivered PDF
+could carry the wrong statute under a version claiming the right one. The guard
+therefore rejects both known-wrong sections on the output.
 
 The truncation half was found by a live run: at the old 4096-token ceiling both
 the STR Policy and the AML/CFT Programme came back cut mid-sentence with
@@ -41,7 +42,7 @@ def _stub_parts(monkeypatch, *parts):
     monkeypatch.setattr(gen, "_call", lambda system, user: queue.pop(0))
 
 
-GOOD = "Tipping-off is a criminal offence under CDSA s.48. File via STRO SONAR."
+GOOD = "Tipping-off is a criminal offence under CDSA s.57. File via STRO SONAR."
 
 
 def test_good_document_is_kept_and_stamped(_one_doc, monkeypatch):
@@ -57,20 +58,30 @@ def test_good_document_is_kept_and_stamped(_one_doc, monkeypatch):
     "Tipping-off is an offence under CDSA s. 48A.",
     "an offence under section 48A of the Corruption, Drug Trafficking and Other "
     "Serious Crimes Act",
+    # s.48 is the v2 value: wrong too, and the one a model is most likely to
+    # produce, since it is what we ourselves published.
+    "Tipping-off is an offence under CDSA s.48.",
+    "an offence under section 48 of the Corruption, Drug Trafficking and Other "
+    "Serious Crimes Act",
 ])
-def test_s48a_citation_is_rejected_not_stamped(_one_doc, monkeypatch, bad):
+def test_a_known_wrong_tipping_off_section_is_rejected_not_stamped(
+    _one_doc, monkeypatch, bad
+):
     _stub(monkeypatch, bad)
     (doc,) = gen.generate_all_csp_documents({"legal_name": "X"}, [])
 
     assert doc["content"] is None
-    assert "s.48" in doc["error"]
-    # The failure must not masquerade as a v2 deliverable.
+    assert "s.57" in doc["error"]
+    # The failure must not masquerade as a current-schema deliverable.
     assert "schema_version" not in doc
 
 
-def test_s48_alone_does_not_trip_the_guard(_one_doc, monkeypatch):
-    """`\\bs\\.?\\s*48A\\b` must not fire on a correct s.48 followed by a word."""
-    _stub(monkeypatch, "Under CDSA s.48 Any disclosure is prohibited. See s.48 above.")
+def test_other_cdsa_sections_do_not_trip_the_guard(_one_doc, monkeypatch):
+    """The guard denies two specific wrong values, not "any section that isn't
+    s.57" — these documents legitimately cite s.45 (STR reporting) and s.39 in
+    the same breath, and a whitelist would reject the correct text."""
+    _stub(monkeypatch, "File under CDSA s.45. Tipping-off is an offence under "
+                       "CDSA s.57. See also s.39 and s.480 of other Acts.")
     (doc,) = gen.generate_all_csp_documents({"legal_name": "X"}, [])
 
     assert doc["content"] is not None
@@ -89,7 +100,7 @@ def test_truncated_document_is_rejected(_one_doc, monkeypatch):
 # Nine sections did not fit in one completion, or in two. A single call at the
 # 8192-token ceiling was cut inside Section 7; a 1-5 / 6-9 split was cut inside
 # Section 4, which silently dropped Section 5 — the tipping-off section this
-# document's whole s.48 correction lives in. Splitting it further is only safe if
+# document's whole tipping-off correction lives in. Splitting it further is only safe if
 # every failure mode of a single call survives the concatenation, which is what
 # these pin.
 
@@ -112,7 +123,7 @@ def test_aml_programme_concatenates_every_part(_aml_only, monkeypatch):
     _stub_parts(monkeypatch, *_four(texts=[
         "SECTION 1 — EXECUTIVE COMMITMENT",
         "SECTION 3 — CUSTOMER DUE DILIGENCE",
-        "SECTION 5 ... Tipping-off is an offence under CDSA s.48.",
+        "SECTION 5 ... Tipping-off is an offence under CDSA s.57.",
         "SECTION 9 — PROGRAMME REVIEW",
     ]))
     (doc,) = gen.generate_all_csp_documents({"legal_name": "X"}, [])
@@ -158,7 +169,7 @@ def test_an_empty_part_rejects_the_whole_programme(_aml_only, monkeypatch, blank
 
 
 @pytest.mark.parametrize("where", [0, 1, 2, 3])
-def test_s48a_in_any_part_is_still_caught(_aml_only, monkeypatch, where):
+def test_a_wrong_section_in_any_part_is_still_caught(_aml_only, monkeypatch, where):
     """The guard reads the concatenation, so no part can smuggle it in."""
     texts = ["part one", "part two", "part three", "part four"]
     texts[where] = "see CDSA s.48A for tipping-off"
@@ -167,7 +178,7 @@ def test_s48a_in_any_part_is_still_caught(_aml_only, monkeypatch, where):
     (doc,) = gen.generate_all_csp_documents({"legal_name": "X"}, [])
 
     assert doc["content"] is None
-    assert "s.48" in doc["error"]
+    assert "s.57" in doc["error"]
 
 
 def test_empty_response_is_rejected(_one_doc, monkeypatch):

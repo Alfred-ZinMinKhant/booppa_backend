@@ -21,10 +21,15 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 from app.services.pdf_service import NAVY, EMERALD, SLATE, LIGHT_BG, BORDER, TEXT_DARK, WHITE, get_booppa_styles, get_booppa_doc_template, draw_booppa_page
 
 from app.core.company import COMPANY_NAME
+from app.services import regulatory_registry as _reg
 
 logger = logging.getLogger(__name__)
 
 PDPA_MONITOR_REPORT_SCHEMA_VERSION = 2  # +drift chart, +urgency alert box
+
+# The statutory basis for "an unresolved finding gets worse by staying
+# unresolved" — the entire premise of this deliverable. Sourced, not typed.
+_PDPA_PENALTY = _reg.cite(_reg.BODY_PDPC, "pdpa_s48j")
 
 
 def _xml_escape(s: str) -> str:
@@ -129,7 +134,7 @@ def generate_pdpa_monitor_report_pdf(data: Dict[str, Any]) -> bytes:
         for u in urgent[:6]:
             days = int(u.get("days_open") or 0)
             label = _xml_escape(u.get("label") or "Finding")
-            esc = (" Section 48J(6) of the PDPA requires PDPC to consider the duration "
+            esc = (f" Under {_PDPA_PENALTY}, PDPC must have regard to the duration "
                    "of non-compliance and the timeliness of remedial action when setting "
                    "a financial penalty — unresolved findings do not become less "
                    "relevant over time.") if days >= 30 else ""

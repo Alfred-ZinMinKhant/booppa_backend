@@ -33,14 +33,26 @@ from reportlab.platypus import (
 from app.services.pdf_styles import get_unified_styles
 from app.core.company import COMPANY_NAME
 from app.services.pdf_logo import draw_logo_header
+from app.services import regulatory_registry as _reg
 
 logger = logging.getLogger(__name__)
 
 # Bump when the visible structure of the baseline PDF changes, or when a
 # statement of law printed in it is corrected.
-#   v1 -> v2: tipping-off cited CDSA s.48A; the offence is s.48 (s.48A opens
-#             Part VIA, cross-border cash movement reporting).
-CSP_BASELINE_SCHEMA_VERSION = 2
+#   v1 -> v2: tipping-off cited CDSA s.48A; "corrected" to s.48.
+#   v2 -> v3: the offence is CDSA s.57 ("Tipping-off", Part 6), verified
+#             against SSO on 2026-08-05. s.48A opens Part VIA (cross-border
+#             cash movement reporting); s.48 is communication of information to
+#             a foreign authority. Neither is the disclosure offence.
+CSP_BASELINE_SCHEMA_VERSION = 3
+
+# Statutory citations come from the registry, not from prose in this file. The
+# two wrong section numbers above are what happens when a citation lives in a
+# string literal in four generators at once — and the v2 "fix" shows that
+# moving it to one place is only half the job: the value there still has to be
+# read off the primary source.
+_CSP_ACT = _reg.cite(_reg.BODY_ACRA, "csp_act_2024")
+_TIPPING_OFF_SHORT = _reg.get(_reg.BODY_CDSA, "tipping_off").ids[0]
 
 _TABLE_STYLE = TableStyle([
     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
@@ -199,7 +211,7 @@ def generate_csp_baseline_pdf(data: Dict[str, Any]) -> bytes:
             s["body"]))
     story.append(Spacer(1, 8))
     story.append(Paragraph(
-        "Under the CSP Act 2024 a corporate service provider must itself be registered with "
+        f"Under the {_CSP_ACT} a corporate service provider must itself be registered with "
         "ACRA. The entity confirmed above is the entity your compliance records, nominee "
         "director assessments, and STR decisions will be filed under.",
         s["small"]))
@@ -262,7 +274,7 @@ def generate_csp_baseline_pdf(data: Dict[str, Any]) -> bytes:
     # ── 4. Where the work is genuinely yours ────────────────────────────────
     story.append(Paragraph("4. Assessments You Must Perform Yourself", s["h2"]))
     story.append(Paragraph(
-        "Two obligations under the CSP Act 2024 cannot be satisfied by a generated document, "
+        f"Two obligations under the {_CSP_ACT} cannot be satisfied by a generated document, "
         "and this platform does not attempt to generate them:",
         s["body"]))
     story.append(Spacer(1, 4))
@@ -276,7 +288,7 @@ def generate_csp_baseline_pdf(data: Dict[str, Any]) -> bytes:
         "<i>not</i> to file, with your rationale. That rationale is what answers an ACRA "
         "inspector asking why no report was made. Booppa stores and notarizes it; the "
         "reasoning is yours. Client notification is permanently disabled &mdash; tipping-off "
-        "is an offence under CDSA s.48.",
+        f"is an offence under {_TIPPING_OFF_SHORT}.",
     ):
         story.append(Paragraph(f"&bull; {point}", s["body"]))
         story.append(Spacer(1, 4))

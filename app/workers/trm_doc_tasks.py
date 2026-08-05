@@ -2,9 +2,10 @@
 
 The Suite's baseline tracker (`tasks.run_suite_trm_baseline_for_user`) records
 *that* 13 domains exist; this task produces the artefacts a MAS-regulated entity
-must actually hold on file — governance policy, FSM-N06 cyber hygiene
-attestation, outsourcing risk register, incident response plan, BCM/DR plan,
-IT audit & VAPT log, access control policy.
+must actually hold on file — governance policy, cyber hygiene attestation,
+outsourcing risk register, incident response plan, BCM/DR plan, IT audit & VAPT
+log, access control policy. Which MAS Notice each cites is resolved per licence
+class through `mas_notice_registry`, never hardcoded to the bank pair.
 
 Kept out of `app/workers/tasks.py` (already ~10k lines), parallel to
 `csp_tasks.py`, and registered via the Celery `include` list.
@@ -17,15 +18,19 @@ Three properties this file exists to preserve:
   * **No email unless the completeness gate passes.** `evaluate_pack_gate`
     requires every expected document to be both generated AND delivered. The CSP
     bug that shipped 3-of-8 packs passed a `generated_ok > 0` check.
-  * **Unknown licence blocks the register only.** Status becomes
-    `blocked_licence_unknown`, the other six are delivered, and the customer is
-    asked to confirm. A bank handed a non-bank register is worse than no
-    register: it is signed evidence the entity misread its own regime.
+  * **Gating is per document, resolved against the licence class.** A document
+    is generated only when its binding instrument resolves for that class:
+    the outsourcing regime for the register, the Cyber Hygiene or Technology
+    Risk Notice for the five notice-bearing documents. Status becomes
+    `blocked_licence_unknown` whenever anything is withheld, whatever is
+    resolvable is delivered, and the customer is asked to confirm. An entity
+    handed the wrong Notice or the wrong register is worse off than with no
+    document: it is signed evidence the entity misread its own regime.
 
 Generated ONCE on Suite activation. Not per board-report cycle — seven DeepSeek
 calls per month per customer buys nothing when the underlying controls have not
 moved. Regeneration is explicit: a licence correction re-enqueues with
-`only_doc_types=["outsourcing_risk_register"]`.
+`only_doc_types` set to exactly the documents the new licence makes resolvable.
 """
 
 from __future__ import annotations

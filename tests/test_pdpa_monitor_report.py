@@ -8,6 +8,10 @@ from io import BytesIO
 
 from pypdf import PdfReader
 
+from app.services.regulatory_registry import BODY_PDPC, cite
+
+_PDPA_PENALTY_CITATION = cite(BODY_PDPC, "pdpa_s48j")
+
 
 def test_generator_delta_and_baseline():
     from app.services.pdpa_monitor_delta_generator import generate_pdpa_monitor_report_pdf
@@ -170,7 +174,10 @@ def test_urgent_findings_regulatory_text_30_plus_days():
     assert "URGENT — UNRESOLVED HIGH-RISK FINDINGS" in txt_30_clean
     assert "Security HTTP Headers" in txt_30_clean
     assert "35 days" in txt_30_clean
-    assert "Section 48J(6) of the PDPA requires PDPC to consider the duration of non-compliance" in txt_30_clean
+    # The statutory citation is sourced from the regulatory registry, not typed
+    # here — assert against the registry so a correction to the row moves the
+    # test with the document instead of pinning the old text.
+    assert f"Under {_PDPA_PENALTY_CITATION}, PDPC must have regard to the duration of non-compliance" in txt_30_clean
     assert "typically begin with a review" not in txt_30_clean
 
     pdf_20 = generate_pdpa_monitor_report_pdf({

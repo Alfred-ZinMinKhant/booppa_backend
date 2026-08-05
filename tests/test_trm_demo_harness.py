@@ -13,12 +13,13 @@ import pytest
 from app.services.trm_demo_harness import DEMO_DOMAINS, DR_TEST_DATE, seed_and_generate
 
 
-def _seed(db, email):
+def _seed(db, email, mas_licence_type=None):
     # The worker path is exercised by the script end-to-end; here we only pin the
     # seeding contract, so the generation step is stubbed out.
     with patch("app.workers.tasks.run_suite_trm_baseline_for_user"):
         return seed_and_generate(
-            customer_email=email, live_ai=False, capture_pdf=True, db=db
+            customer_email=email, live_ai=False, capture_pdf=True, db=db,
+            mas_licence_type=mas_licence_type,
         )
 
 
@@ -59,9 +60,38 @@ def test_seeds_documented_and_tested_evidence(test_db):
     assert dr.tested_at == DR_TEST_DATE
     assert dr.attestation and "3h58m" in dr.attestation
 
-    # Gap narratives cite the binding notice by number, not a generic "MAS says".
-    assert "FSM-N06" in by_domain["Cyber Security"].gap_analysis
-    assert "FSM-N05" in by_domain["Incident Management"].gap_analysis
+    # No licence class was seeded, so no FSM Notice is known to bind this
+    # entity. The narrative must degrade to the Guidelines rather than name a
+    # Notice — naming one here is the FSM-N06-for-everyone bug.
+    for domain in ("Cyber Security", "Incident Management"):
+        assert "FSM-N" not in by_domain[domain].gap_analysis
+        assert "Guidelines" in by_domain[domain].gap_analysis
+
+
+def test_seeded_gap_narratives_cite_the_notice_for_the_licence_class(test_db):
+    """Gap narratives name the binding Notice by number — the right one.
+
+    A bank gets FSM-N05/N06; an MPI gets FSM-N14 on the cyber-hygiene half and
+    no Notice at all on the technology-risk half, because FSM-N13's scope
+    (designated payment systems / DPT licensees) does not cover every MPI.
+    """
+    from app.core.models import TrmControl
+
+    def gaps(licence):
+        res = _seed(test_db, f"demo-{uuid.uuid4().hex[:8]}@booppa.io", licence)
+        rows = test_db.query(TrmControl).filter(
+            TrmControl.organisation_id == res["org_id"]).all()
+        return {c.domain: c.gap_analysis for c in rows}
+
+    bank = gaps("bank")
+    assert "FSM-N06" in bank["Cyber Security"]
+    assert "FSM-N05" in bank["Incident Management"]
+
+    mpi = gaps("mpi")
+    assert "FSM-N14" in mpi["Cyber Security"]
+    assert "FSM-N06" not in mpi["Cyber Security"]
+    assert "FSM-N" not in mpi["Incident Management"]
+    assert "Guidelines" in mpi["Incident Management"]
 
 
 def test_rerun_does_not_duplicate_evidence_or_controls(test_db):

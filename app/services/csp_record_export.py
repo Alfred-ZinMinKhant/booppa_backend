@@ -25,14 +25,19 @@ from datetime import datetime
 from typing import Any, Optional, Tuple
 
 from app.services.tx_utils import is_real_onchain_tx
+from app.services import regulatory_registry as _reg
 
 logger = logging.getLogger(__name__)
 
 # Bump when the visible structure of an exported record changes, or when a
 # statement of law printed in it is corrected.
-#   v1 -> v2: tipping-off cited CDSA s.48A; the offence is s.48 (s.48A opens
-#             Part VIA, cross-border cash movement reporting).
-CSP_RECORD_SCHEMA_VERSION = 2
+# Statutory citations come from the registry — see regulatory_registry.py.
+_CSP_ACT = _reg.cite(_reg.BODY_ACRA, "csp_act_2024")
+_TIPPING_OFF = _reg.cite(_reg.BODY_CDSA, "tipping_off")
+
+#   v1 -> v2: tipping-off cited CDSA s.48A; "corrected" to s.48.
+#   v2 -> v3: the offence is CDSA s.57, verified against SSO on 2026-08-05.
+CSP_RECORD_SCHEMA_VERSION = 3
 
 _PROVENANCE = (
     "This record is the assessment made by the corporate service provider named "
@@ -147,7 +152,7 @@ def build_nominee_assessment_record(
         "",
         "## 2. Checks Performed",
         "",
-        "Under the CSP Act 2024 the registered corporate service provider must "
+        f"Under the {_CSP_ACT} the registered corporate service provider must "
         "itself perform these checks. Each is recorded below as performed or not "
         "performed — there is no implied answer.",
         "",
@@ -268,8 +273,7 @@ def build_str_decision_record(
         f"- **Client notified:** {'Yes' if report.client_notified else 'No'}",
         "",
         "Client notification is permanently disabled in this system. Tipping-off "
-        "is an offence under section 48 of the Corruption, Drug Trafficking and "
-        "Other Serious Crimes (Confiscation of Benefits) Act — a fine of up to "
+        f"is an offence under {_TIPPING_OFF} — a fine of up to "
         "S$250,000 and/or imprisonment of up to 3 years.",
         "",
         _anchor_section(evidence, report.blockchain_tx_hash, report.polygonscan_url),

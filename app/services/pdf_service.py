@@ -2642,7 +2642,7 @@ class PDFService:
             refs.append({"title": "PDPC Advisory Guidelines on the Do Not Call Provisions",
                          "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/"
                                 "regulatory-guidance/advisory-guidelines-on-the-do-not-call-provisions"})
-            refs.append({"title": "Spam Control Act (Cap. 311A)",
+            refs.append({"title": "Spam Control Act 2007",
                          "url": "https://sso.agc.gov.sg/Act/SCA2007"})
 
         if "nric" in combined or "fin" in combined or "identity" in combined:

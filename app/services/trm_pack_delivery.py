@@ -40,6 +40,7 @@ from app.services.compliance_doc_pdf import (
 )
 from app.services.trm_doc_generator import (
     TRM_DOC_SCHEMA_VERSION,
+    TRM_DOCUMENT_CATALOG,
     TrmDocContext,
     expected_doc_types,
 )
@@ -260,15 +261,21 @@ def evaluate_pack_gate(
 ) -> Tuple[str, List[str]]:
     """Returns (status, missing_doc_types).
 
-    A document counts only if it both generated and has a download URL. When the
-    licence is unknown the register is not expected — the pack is `blocked`, not
-    `error`: six real documents plus an explicit ask is an honest outcome, a
-    guessed regime is not.
+    A document counts only if it both generated and has a download URL. Whatever
+    the licence class cannot support is not *expected* — the pack is `blocked`,
+    not `error`: the real documents this entity's regime supports, plus an
+    explicit ask for the rest, is an honest outcome; a guessed regime is not.
+
+    `blocked` is keyed off the resolvable set, not off `licence_type is None`.
+    An MPI resolves its cyber-hygiene Notice (FSM-N14) but has no mapped
+    technology-risk Notice, so it is partially gated even with a licence set,
+    and reporting that pack as `ready` would hide three missing documents.
 
     `only_doc_types` narrows what "complete" means to the subset that was asked
-    for — the licence-correction path regenerates the register alone, and
-    without this the gate would report the six it never attempted as missing,
-    fail the run, and withhold the one document the customer is waiting for.
+    for — the licence-correction path regenerates only the newly-resolvable
+    documents, and without this the gate would report the ones it never
+    attempted as missing, fail the run, and withhold what the customer is
+    waiting for.
     """
     expected = expected_doc_types(licence_type)
     if only_doc_types is not None:
@@ -280,7 +287,7 @@ def evaluate_pack_gate(
     ]
     if missing:
         return PACK_STATUS_ERROR, missing
-    if licence_type is None:
+    if len(expected_doc_types(licence_type)) < len(TRM_DOCUMENT_CATALOG):
         return PACK_STATUS_BLOCKED, []
     return PACK_STATUS_READY, []
 
@@ -335,12 +342,29 @@ def email_pack(
     # pack is ready" a second time reads as a duplicate of the original mail and
     # buries the one thing that actually changed.
     if is_correction:
-        heading = "Your Outsourcing Risk Register is ready"
-        subject = f"Your MAS TRM Outsourcing Risk Register is ready — {ctx.legal_name}"
+        # Name what actually regenerated. Confirming a licence can unlock one
+        # document or five depending on the class, so a fixed "your Outsourcing
+        # Risk Register is ready" is wrong for most licence classes.
+        titles = [
+            (e.get("title") or dt)
+            for dt, e in documents.items() if e.get("url")
+        ]
+        noun = "document" if delivered == 1 else "documents"
+        only = f" {titles[0]}" if delivered == 1 else ""
+        heading = (
+            f"Your{only} is ready" if delivered == 1
+            else f"{delivered} more MAS TRM documents are ready"
+        )
+        subject = (
+            f"Your MAS TRM{only} is ready — {ctx.legal_name}" if delivered == 1
+            else f"{delivered} more MAS TRM documents are ready — {ctx.legal_name}"
+        )
         intro = (
-            "You confirmed your MAS licence class, so we generated the document "
-            "that was withheld. Documents from your original pack are unchanged "
-            "and remain in your workspace."
+            "You confirmed your MAS licence class, so we generated the "
+            f"{noun} that {'was' if delivered == 1 else 'were'} withheld — we "
+            "now know which MAS Notice and outsourcing regime bind you. "
+            "Documents from your original pack are unchanged and remain in "
+            "your workspace."
         )
     else:
         heading = f"Your {delivered} MAS TRM documents are ready"
@@ -348,18 +372,32 @@ def email_pack(
         intro = None
 
     if status == PACK_STATUS_BLOCKED:
+        resolvable = set(expected_doc_types(ctx.licence_type))
+        withheld = [
+            s.title for s in TRM_DOCUMENT_CATALOG if s.doc_type not in resolvable
+        ]
+        withheld_html = "".join(
+            f'<li style="margin:0 0 4px;">{t}</li>' for t in withheld
+        )
         gate_html = f"""
         <div style="border-left:4px solid #b45309;background:#fffbeb;padding:12px 16px;margin:0 0 16px;">
           <p style="margin:0 0 6px;color:#92400e;font-weight:700;font-size:14px;">
-            Outsourcing Risk Register not generated
+            {len(withheld)} document{'' if len(withheld) == 1 else 's'} not generated
           </p>
+          <ul style="margin:0 0 8px;padding-left:18px;color:#78350f;font-size:14px;">
+            {withheld_html}
+          </ul>
           <p style="margin:0;color:#78350f;line-height:1.6;font-size:14px;">
-            Your MAS licence class is not yet confirmed on your account. The register
-            differs entirely between banks and merchant banks (MAS Notices 658 / 1121,
-            binding since 11 December 2024) and every other licensed FI (the Guidelines
-            on Outsourcing). We will not guess: a register in the wrong format is signed
-            evidence that the entity misread its own regime. Confirm your licence class
-            and we will generate it.
+            Your MAS licence class is not confirmed on your account, and these
+            documents cannot be written without it. The MAS Notice that binds you
+            differs by licence class — a bank is bound by FSM-N05/N06, a merchant
+            bank by FSM-N11/N12, an insurer by FSM-N03/N04, a payment licensee by
+            FSM-N14 — and the outsourcing regime differs too (MAS Notices 658 /
+            1121, binding since 11 December 2024, for banks and merchant banks;
+            the Guidelines on Outsourcing for every other licensed FI). We will
+            not guess: a signed attestation citing the wrong Notice is evidence
+            that the entity misread its own obligations. Confirm your licence
+            class and we will generate what it unlocks.
           </p>
         </div>
         {email_button(DASHBOARD_URL, "Confirm your MAS licence class")}

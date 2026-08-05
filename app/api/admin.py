@@ -1751,9 +1751,11 @@ class TrmDemoDocumentPackRequest(BaseModel):
     mas_licence_type: Optional[str] = Field(
         default=None,
         description=(
-            "MAS licence key (bank | merchant_bank | mpi | spi | insurer | "
-            "capital_markets | other_fi). Omit to exercise the unconfirmed case, "
-            "which gates the Outsourcing Risk Register."
+            "MAS licence key — see mas_licence.MAS_LICENCE_TYPES for the "
+            "authoritative list (bank | merchant_bank | mpi | spi | insurer | "
+            "captive_insurer | marine_mutual_insurer | insurance_agent | "
+            "capital_markets | dtsp | other_fi). Omit to exercise the "
+            "unconfirmed case, which gates the Outsourcing Risk Register."
         ),
     )
     live_ai: bool = Field(default=True)

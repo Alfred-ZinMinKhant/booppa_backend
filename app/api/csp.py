@@ -73,6 +73,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/csp", route_class=RetryAPIRoute)
 
+# The tipping-off section number, sourced rather than typed. It has been wrong
+# twice in customer-facing text (s.48A, then s.48); the offence is CDSA s.57.
+# See app/services/regulatory_registry.py::CDSA_INSTRUMENTS["tipping_off"].
+from app.services import regulatory_registry as _reg  # noqa: E402
+_TIPPING_OFF_CITE = _reg.get(_reg.BODY_CDSA, "tipping_off").ids[0]
+
 
 # ── AUTH ADAPTER ────────────────────────────────────────────────────────────────
 # The ported router was written for a JWT carrying an `org_id` claim. Booppa's auth
@@ -957,7 +963,8 @@ def log_str_decision(
     report = CspStrReport(
         csp_id=profile.id,
         decision_date=datetime.now(timezone.utc),
-        # client_notified is ALWAYS False — tipping-off = criminal offence, CDSA s.48
+        # client_notified is ALWAYS False — tipping-off = criminal offence,
+        # CDSA s.57 (section number sourced from the regulatory registry below)
         client_notified=False,
         **{k: v for k, v in payload.model_dump().items()
            if hasattr(CspStrReport, k) and k != "client_notified"},
@@ -984,7 +991,7 @@ def log_str_decision(
         "notarized": True,
         "tipping_off_reminder": (
             "LEGAL NOTICE: Do NOT inform the client that an STR has been filed. "
-            "Tipping-off is a criminal offence under CDSA s.48 — "
+            f"Tipping-off is a criminal offence under {_TIPPING_OFF_CITE} — "
             "a fine of up to S$250,000 and/or imprisonment of up to 3 years."
             if payload.decision == "filed" else
             "Rationale for not filing recorded and notarized on the blockchain."
@@ -1397,14 +1404,16 @@ def list_documents(current_user: dict = Depends(get_current_user), db=Depends(ge
         "version":      p.version,
         # Document schema, distinct from `version` (the CSP's own programme
         # revision number). NULL predates the constant and is outdated by
-        # definition — those packs cited CDSA s.48A for tipping-off.
+        # definition — those packs cited CDSA s.48A (v1) or s.48 (v2) for
+        # tipping-off; the offence is s.57.
         "schema_version": p.schema_version,
         "outdated": (p.schema_version or 1) != CSP_DOC_SCHEMA_VERSION,
         "outdated_reason": (
-            "This pack was generated before a correction to the tipping-off "
-            "citation (CDSA s.48, previously stated as s.48A). Regenerate at no "
-            "charge to receive the corrected documents. The existing blockchain "
-            "anchor remains valid for the document it attested."
+            f"This pack was generated before a correction to the tipping-off "
+            f"citation (the offence is {_TIPPING_OFF_CITE}; earlier packs "
+            f"stated s.48A or s.48). Regenerate at no charge to receive the "
+            f"corrected documents. The existing blockchain anchor remains "
+            f"valid for the document it attested."
             if (p.schema_version or 1) != CSP_DOC_SCHEMA_VERSION else None
         ),
         "status":       p.status,
@@ -1534,14 +1543,15 @@ def get_latest_csp_baseline(
         "download_url": download_url,
         "generated_at": row.completed_at.isoformat() if row.completed_at else None,
         # NULL predates the stamp, so it reads as v1 — correctly outdated, since
-        # v1 baselines cited tipping-off as CDSA s.48A rather than s.48.
+        # v1/v2 baselines cited tipping-off as CDSA s.48A / s.48 rather than
+        # s.57.
         "schema_version": stored_version,
         "outdated": baseline_outdated,
         "outdated_reason": (
-            "This baseline was issued before a correction to the tipping-off "
-            "citation (CDSA s.48, previously stated as s.48A). Regenerate at no "
-            "charge. The existing blockchain anchor remains valid for the "
-            "document it attested."
+            f"This baseline was issued before a correction to the tipping-off "
+            f"citation (the offence is {_TIPPING_OFF_CITE}; earlier baselines "
+            f"stated s.48A or s.48). Regenerate at no charge. The existing "
+            f"blockchain anchor remains valid for the document it attested."
             if baseline_outdated else None
         ),
         "company_name": row.company_name,

@@ -16,7 +16,7 @@ import json
 import logging
 import secrets as _secrets
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
@@ -1368,14 +1368,22 @@ def get_trm_licence(
 ):
     """Current MAS licence class for the caller's organisation.
 
-    `is_set=False` means the Outsourcing Risk Register in the TRM Document Pack
-    is gated — there is no safe default regime to fall back on.
+    `is_set=False` gates most of the TRM Document Pack: the Outsourcing Risk
+    Register has no safe default regime, and the five notice-bearing documents
+    have no binding MAS Notice to cite until the licence class is known.
     """
     from app.services.mas_licence import MAS_LICENCE_TYPES, licence_label
+    from app.services.trm_doc_generator import (TRM_DOCUMENT_CATALOG,
+                                                expected_doc_types)
 
     org = _get_or_create_org(db, user)
     current = org.mas_licence_type
     pack = _latest_trm_pack(db, org)
+    # How many documents this licence class can actually support. Not a fixed
+    # "six of seven": an MPI resolves its cyber-hygiene Notice (FSM-N14) but not
+    # a technology-risk one, so the blocked count differs per licence.
+    resolvable = len(expected_doc_types(current))
+    blocked = len(TRM_DOCUMENT_CATALOG) - resolvable
     return {
         "mas_licence_type": current,
         "label": licence_label(current),
@@ -1384,9 +1392,16 @@ def get_trm_licence(
             {"value": k, "label": v} for k, v in MAS_LICENCE_TYPES.items()
         ],
         # Surfaced so the dashboard can explain *why* the prompt is blocking:
-        # the pack already shipped six of seven documents and is waiting on this.
+        # this many documents cannot be generated until the licence is confirmed.
         "pack_status": (pack.status if pack else None),
+        "documents_blocked": blocked,
+        "documents_available": resolvable,
         "register_blocked": bool(pack and pack.status == "blocked_licence_unknown"),
+        # Single signal for the dashboard's incomplete-activation banner. The
+        # licence class is a required activation step, not an optional profile
+        # field: until it is set the Suite cannot deliver most of what was paid
+        # for, so this is surfaced as unfinished setup rather than a nudge.
+        "activation_incomplete": not bool(current),
     }
 
 
@@ -1438,37 +1453,44 @@ def set_trm_licence(
         org.id, previous or "unset", key, user.email,
     )
 
-    # Writing the column is not the deliverable — the register is. A customer
+    # Writing the column is not the deliverable — the documents are. A customer
     # whose pack landed `blocked_licence_unknown` (or who corrected a
-    # mis-selection) still holds no Outsourcing Risk Register until this runs.
-    # Subset regeneration only: the other six documents did not branch on the
-    # licence and re-generating them is six needless DeepSeek calls. S3 keys are
-    # pack-scoped, so this never overwrites a copy the customer may have signed.
-    register_regenerating = False
+    # mis-selection) still holds none of the documents that were gated on the
+    # licence: the Outsourcing Risk Register *and* every document that cites an
+    # entity-specific MAS Notice. Regenerate exactly the delta that the new
+    # licence makes resolvable — regenerating the rest is needless DeepSeek
+    # calls, and regenerating nothing leaves the customer permanently short.
+    # S3 keys are pack-scoped, so this never overwrites a copy they may have signed.
+    from app.services.trm_doc_generator import expected_doc_types
+
+    newly_resolvable = sorted(
+        set(expected_doc_types(key)) - set(expected_doc_types(previous))
+    )
+    regenerating: List[str] = []
     pack = _latest_trm_pack(db, org)
-    if pack is not None and previous != key:
+    if pack is not None and previous != key and newly_resolvable:
         try:
             from app.workers.trm_doc_tasks import generate_trm_document_pack
 
             generate_trm_document_pack.apply_async(
                 args=[str(user.id)],
                 kwargs={
-                    "only_doc_types": ["outsourcing_risk_register"],
+                    "only_doc_types": newly_resolvable,
                     # The pack already shipped; the once-per-activation lock is
                     # exactly what must not apply on the correction path.
                     "bypass_idempotency": True,
                 },
             )
-            register_regenerating = True
+            regenerating = newly_resolvable
             logger.info(
-                "[TRMLicence] register regeneration queued org=%s pack=%s licence=%s",
-                org.id, pack.id, key,
+                "[TRMLicence] regeneration queued org=%s pack=%s licence=%s docs=%s",
+                org.id, pack.id, key, newly_resolvable,
             )
         except Exception as exc:  # noqa: BLE001
             # The licence write already committed and is the durable part;
             # a broker hiccup must not lose it or 500 the confirmation UI.
             logger.error(
-                "[TRMLicence] register regeneration enqueue FAILED org=%s: %s",
+                "[TRMLicence] regeneration enqueue FAILED org=%s: %s",
                 org.id, exc, exc_info=True,
             )
 
@@ -1477,5 +1499,7 @@ def set_trm_licence(
         "label": licence_label(key),
         "outsourcing_regime": outsourcing_regime(key),
         "changed": previous != key,
-        "register_regenerating": register_regenerating,
+        "documents_regenerating": regenerating,
+        # Retained for the existing dashboard poll; prefer documents_regenerating.
+        "register_regenerating": "outsourcing_risk_register" in regenerating,
     }

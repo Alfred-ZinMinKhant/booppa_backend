@@ -34,11 +34,17 @@ DEMO_DOMAINS = [
 
 # Deterministic fallback narratives — notice-specific, matching the shape the
 # sharpened prompt asks DeepSeek to produce.
+#
+# `{notice}` is substituted with the Notice that actually binds the demo tenant's
+# licence class. It is NOT hardcoded to FSM-N05/N06: those bind banks, and the
+# acceptance matrix deliberately includes a payment licensee and an entity with
+# no licence confirmed. Where no Notice resolves, the substitution degrades to
+# Guidelines wording rather than naming a Notice that does not bind.
 SEEDED_GAP: dict[str, dict[str, str]] = {
     "Cyber Security": {
         "gap_analysis": (
             "MFA is enforced for customer-facing logins but not for internal admin "
-            "consoles, and patch SLAs are undocumented. Notice FSM-N06 (which replaced the cancelled Notice 655 on 10 May 2024) requires MFA "
+            "consoles, and patch SLAs are undocumented. {notice} requires MFA "
             "and rapid patching as mandatory controls, not best practice. Tested evidence "
             "that would close this: a dated privileged-access MFA rollout confirmation and "
             "a patch-cadence report showing critical CVEs remediated within SLA, not just "
@@ -50,7 +56,7 @@ SEEDED_GAP: dict[str, dict[str, str]] = {
     "Incident Management": {
         "gap_analysis": (
             "An incident response plan exists but has no verified 1-hour MAS notification "
-            "drill. Notice FSM-N05 (formerly 644) requires major incidents to be notified to MAS within "
+            "drill. {notice} requires major incidents to be notified to MAS within "
             "1 hour of discovery. Tested evidence that would close this: a dated tabletop or "
             "live drill log showing detection-to-notification time under 60 minutes, signed "
             "off by the incident commander — not merely the escalation policy document."
@@ -60,8 +66,8 @@ SEEDED_GAP: dict[str, dict[str, str]] = {
     },
     "Business Continuity and Disaster Recovery": {
         "gap_analysis": (
-            "A DR plan exists with a documented 4-hour RTO for critical systems per Notice "
-            "FSM-N05 (formerly 644), and it was tested with an annual failover exercise. MAS treats an "
+            "A DR plan exists with a documented 4-hour RTO for critical systems per "
+            "{notice}, and it was tested with an annual failover exercise. MAS treats an "
             "untested BCP/DR plan as an aspiration, not a control — the dated test result is "
             "what closes this gap, distinct from the plan document itself."
         ),
@@ -95,6 +101,32 @@ def _fake_hash() -> str:
     return uuid.uuid4().hex + uuid.uuid4().hex[:32]
 
 
+def _seeded_notice_phrase(control: TrmControl, db) -> str:
+    """Subject phrase for `{notice}` in SEEDED_GAP, correct for this tenant.
+
+    Resolves the binding Notice for the org's licence class. When none binds
+    (payment licensee on the TRM half, unmapped class, licence unconfirmed) it
+    degrades to the Guidelines, which are guidance and bind no one specifically
+    — never to a Notice number that would be false for this entity.
+    """
+    from app.trm_workflow_service import (_DOMAIN_NOTICE_MAP,
+                                          _organisation_licence_type)
+    from app.services import mas_notice_registry as registry
+
+    entry = _DOMAIN_NOTICE_MAP.get(control.domain)
+    if entry is not None:
+        family, _ = entry
+        resolver = (
+            registry.cyber_hygiene_instrument if family == "cyber_hygiene"
+            else registry.technology_risk_instrument
+        )
+        try:
+            return resolver(_organisation_licence_type(control, db)).citation
+        except (ValueError, KeyError):
+            pass
+    return "The MAS Guidelines on Technology Risk Management"
+
+
 async def _run_gap(control: TrmControl, context: str, db, live_ai: bool) -> TrmControl:
     if live_ai and settings.DEEPSEEK_API_KEY:
         from app.trm_workflow_service import run_gap_analysis
@@ -106,7 +138,9 @@ async def _run_gap(control: TrmControl, context: str, db, live_ai: bool) -> TrmC
             logger.warning("[TRMDemo] live gap analysis for %s failed (%s); using seeded fallback",
                            control.domain, exc)
     seeded = SEEDED_GAP[control.domain]
-    control.gap_analysis = seeded["gap_analysis"]
+    control.gap_analysis = seeded["gap_analysis"].format(
+        notice=_seeded_notice_phrase(control, db)
+    )
     control.risk_rating = seeded["risk_rating"]
     control.status = seeded["status"]
     control.updated_at = datetime.utcnow()
@@ -477,19 +511,30 @@ def _load_pack(db, pack_id: Optional[str]):
     return db.query(TrmDocumentPack).filter(TrmDocumentPack.id == pack_id).first()
 
 
-# The acceptance matrix Gianpaolo asked for, verbatim: one bank-category
-# customer, one non-bank FI, and — added because it is the state every existing
-# subscriber is currently in — one with no licence confirmed.
+# The acceptance matrix Gianpaolo asked for: one bank-category customer, one
+# non-bank FI, and — added because it is the state every existing subscriber is
+# currently in — one with no licence confirmed. Case D was added alongside the
+# per-licence Notice fix: an insurer is a fully-mapped non-bank class, which
+# proves the pack is complete without being bank-scoped.
+#
+# `expect_docs` is per-licence, not a constant. An MPI resolves its cyber-hygiene
+# Notice (FSM-N14) and its outsourcing regime (non-bank Guidelines) but has no
+# mapped technology-risk Notice, so it receives 4 of 7 and reports `blocked` —
+# partial delivery with an honest ask, not a pack that guesses.
 ACCEPTANCE_CASES: tuple[dict[str, Any], ...] = (
     {"case": "A", "company_name": "Meridian Bank (Singapore) Pte Ltd",
      "mas_licence_type": "bank",
      "expect_regime": "bank_notices", "expect_status": "ready", "expect_docs": 7},
     {"case": "B", "company_name": "NovaPay Payments Pte Ltd",
      "mas_licence_type": "mpi",
-     "expect_regime": "non_bank_guidelines", "expect_status": "ready", "expect_docs": 7},
+     "expect_regime": "non_bank_guidelines",
+     "expect_status": "blocked_licence_unknown", "expect_docs": 4},
     {"case": "C", "company_name": "Harbourline Capital Pte Ltd",
      "mas_licence_type": None,
-     "expect_regime": None, "expect_status": "blocked_licence_unknown", "expect_docs": 6},
+     "expect_regime": None, "expect_status": "blocked_licence_unknown", "expect_docs": 1},
+    {"case": "D", "company_name": "Straitsure Insurance Pte Ltd",
+     "mas_licence_type": "insurer",
+     "expect_regime": "non_bank_guidelines", "expect_status": "ready", "expect_docs": 7},
 )
 
 

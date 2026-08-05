@@ -2687,11 +2687,17 @@ class TrmDocumentPack(Base):
 
     One row per generation run. Lifecycle:
       queued → generating → anchoring → building_pdfs → ready
-      blocked_licence_unknown  — six of seven generated; the Outsourcing Risk
-                                 Register is withheld because `mas_licence_type`
-                                 is NULL. A bank handed a non-bank register is
-                                 worse than no register: it is signed evidence
-                                 the entity misread its own regime.
+      blocked_licence_unknown  — a partial pack. Every document whose binding
+                                 instrument the licence class resolves is
+                                 generated; the rest are withheld. How many that
+                                 is depends on the class, not a fixed six of
+                                 seven: an unset `mas_licence_type` yields the
+                                 VAPT log alone, an MPI yields four (FSM-N14
+                                 covers cyber hygiene; no TRM Notice binds it).
+                                 A bank handed a non-bank register — or any
+                                 entity handed the wrong MAS Notice — is worse
+                                 than no document: it is signed evidence the
+                                 entity misread its own regime.
       error                    — the completeness gate failed; nothing emailed.
 
     `documents` maps doc_type → {title, word_count, cost_usd, s3_key, url,

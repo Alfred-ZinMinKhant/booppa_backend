@@ -682,7 +682,7 @@ class TestBulkImport:
 
 class TestTippingOffProtection:
     """
-    CDSA s.48 — informing a client of an STR filing is a criminal offence.
+    CDSA s.57 — informing a client of an STR filing is a criminal offence.
     These tests verify server-side enforcement.
     """
 

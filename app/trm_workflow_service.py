@@ -34,26 +34,77 @@ _DOMAIN_REFS = {
 # sharpen the gap-analysis prompt so narratives cite the actual standard rather
 # than generic filler. Not exhaustive — only domains with a clear, testable
 # statutory hook are included.
-_DOMAIN_NOTICE_MAP = {
+#
+# The *obligation* is stable across a Notice family (every cyber-hygiene Notice
+# mandates MFA/patching/privileged access; every TRM Notice carries the 1-hour
+# and 4-hour thresholds) but the *Notice number* is not: it is determined by the
+# entity's licence class. This map therefore stores which family a domain hooks
+# into, and the citation is resolved per organisation at prompt time. Hardcoding
+# FSM-N05/N06 here told every insurer, merchant bank and payment licensee they
+# were bound by the bank Notices — the same defect as in the document pack.
+_CYBER_HYGIENE = "cyber_hygiene"
+_TECHNOLOGY_RISK = "technology_risk"
+
+_DOMAIN_NOTICE_MAP: dict = {
     "Cyber Security": (
-        "Notice FSM-N06 (Cyber Hygiene; replaced the cancelled Notice 655 on "
-        "10 May 2024): multi-factor authentication, rapid security patching, "
-        "and privileged-account controls are mandatory, not best-practice suggestions."
+        _CYBER_HYGIENE,
+        "multi-factor authentication, rapid security patching, and "
+        "privileged-account controls are mandatory, not best-practice suggestions.",
     ),
     "Authentication and Access Management": (
-        "Notice FSM-N06 (Cyber Hygiene): multi-factor authentication and "
-        "privileged-access management controls are mandatory."
+        _CYBER_HYGIENE,
+        "multi-factor authentication and privileged-access management controls "
+        "are mandatory.",
     ),
     "Incident Management": (
-        "Notice FSM-N05 (formerly 644): major incidents must be notified to MAS within 1 hour "
-        "of discovery."
+        _TECHNOLOGY_RISK,
+        "major incidents must be notified to MAS within 1 hour of discovery.",
     ),
     "Business Continuity and Disaster Recovery": (
-        "Notice 644/FSM-N05: critical systems must recover within 4 hours, and the "
-        "recovery plan must be regularly tested — an untested BCP/DR plan is treated "
-        "by MAS as an aspiration, not a control."
+        _TECHNOLOGY_RISK,
+        "critical systems must recover within 4 hours, and the recovery plan "
+        "must be regularly tested — an untested BCP/DR plan is treated by MAS "
+        "as an aspiration, not a control.",
     ),
 }
+
+
+def _domain_notice_sentence(domain: str, licence_type: Optional[str]) -> Optional[str]:
+    """Resolve `domain` to a licence-correct binding-Notice sentence, or None.
+
+    Returns None — meaning the prompt falls back to the (non-binding, entity-
+    agnostic) TRM Guidelines framing — whenever the licence class does not
+    resolve to a Notice in that family. Naming a Notice that does not bind the
+    entity is worse than naming none: it is a false statement of obligation in a
+    document the customer may put in front of a regulator.
+    """
+    from app.services import mas_notice_registry as registry
+
+    entry = _DOMAIN_NOTICE_MAP.get(domain)
+    if entry is None:
+        return None
+    family, obligation = entry
+    resolver = (
+        registry.cyber_hygiene_instrument if family == _CYBER_HYGIENE
+        else registry.technology_risk_instrument
+    )
+    try:
+        inst = resolver(licence_type)
+    except (ValueError, KeyError):
+        return None
+    return f"{inst.citation}: {obligation}"
+
+
+def _organisation_licence_type(control: TrmControl, db: Session) -> Optional[str]:
+    """The org's confirmed MAS licence class, or None if unset."""
+    from app.core.models import Organisation
+
+    org = (
+        db.query(Organisation)
+        .filter(Organisation.id == control.organisation_id)
+        .first()
+    )
+    return getattr(org, "mas_licence_type", None) if org else None
 
 
 def initialise_trm_controls(organisation_id: str, db: Session) -> list[TrmControl]:
@@ -98,14 +149,26 @@ async def run_gap_analysis(control: TrmControl, context: str, db: Session) -> Tr
         "You are a MAS TRM compliance expert. Always respond with strict JSON only "
         "(no markdown fences, no commentary)."
     )
-    notice = _DOMAIN_NOTICE_MAP.get(control.domain)
-    notice_block = (
-        f"\nThis domain maps to a binding MAS statutory requirement: {notice}\n"
-        f"Your gap analysis MUST test the context against this specific standard "
-        f"(cite the concrete threshold, e.g. the 1-hour/4-hour window or MFA "
-        f"requirement, don't just say \"improve controls\").\n"
-        if notice else ""
+    notice = _domain_notice_sentence(
+        control.domain, _organisation_licence_type(control, db)
     )
+    if notice:
+        notice_block = (
+            f"\nThis domain maps to a binding MAS statutory requirement: {notice}\n"
+            f"Your gap analysis MUST test the context against this specific standard "
+            f"(cite the concrete threshold, e.g. the 1-hour/4-hour window or MFA "
+            f"requirement, don't just say \"improve controls\").\n"
+        )
+    else:
+        # No Notice in this family binds this licence class (or the class is not
+        # confirmed). Assess against the Guidelines, which are guidance and apply
+        # entity-agnostically, and say so — do not name a Notice.
+        notice_block = (
+            "\nNo entity-specific MAS Notice has been confirmed as binding this "
+            "organisation for this domain. Assess against the MAS Guidelines on "
+            "Technology Risk Management (guidance, not a statutory notice) and do "
+            "NOT name or cite any MAS Notice number in your narrative.\n"
+        )
     user_prompt = (
         f"Analyse the following organisation context against the MAS Technology Risk "
         f"Management domain: **{control.domain}** (ref: {control.control_ref}).\n"

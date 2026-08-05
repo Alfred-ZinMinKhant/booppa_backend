@@ -7,9 +7,9 @@ entity must actually hold on file — the TRM equivalent of csp_doc_generator.py
 
 Seven documents (see TRM_DOCUMENT_CATALOG):
   1. Technology Risk Governance Policy
-  2. Cyber Hygiene Compliance Attestation (MAS Notice FSM-N06)   [clause-validated]
+  2. Cyber Hygiene Compliance Attestation      [clause-validated, licence-branched]
   3. Outsourcing Risk Register                                    [licence-branched]
-  4. Incident Response Plan (MAS Notice FSM-N05 timelines)
+  4. Incident Response Plan (TRM Notice timelines)                [licence-branched]
   5. Business Continuity & Disaster Recovery Plan
   6. IT Audit & VAPT Tracking Log
   7. Access Control & Authentication Policy
@@ -29,8 +29,13 @@ Three properties are load-bearing and must survive refactoring:
 
 * **The Cyber Hygiene Attestation is checked programmatically after generation.**
   It is a signed representation to MAS. If the model returns a generic "cyber
-  security" narrative instead of clause-by-clause FSM-N06 coverage, the document
-  fails rather than ships.
+  security" narrative instead of clause-by-clause coverage of the Notice that
+  actually binds this entity, the document fails rather than ships.
+
+* **No document names a Notice the registry did not resolve for that licence.**
+  Every entity type has its own TRM and Cyber Hygiene Notices; there is no
+  house default. A document whose instrument is unmapped is withheld, never
+  generated against the bank Notice.
 
 Cost discipline (see the deepseek prompt-cost invariant): never pass
 Report.assessment_data, never pass raw TrmEvidence rows, and truncate every
@@ -225,9 +230,13 @@ _SYSTEM_BASE = """You are a Singapore technology risk and regulatory compliance
 specialist advising MAS-regulated financial institutions. You have deep working
 knowledge of:
 - MAS Technology Risk Management Guidelines
-- MAS Notice FSM-N05 (formerly Notice 644) — Technology Risk Management
-- MAS Notice FSM-N06 — Cyber Hygiene (which replaced the cancelled Notice 655 on
-  10 May 2024)
+- The MAS Technology Risk Management Notices issued under the FSMA in May 2024,
+  which are per-licence-class: FSM-N05 (banks, formerly Notice 644), FSM-N11
+  (merchant banks), FSM-N03 (insurers), FSM-N21 (capital markets)
+- The MAS Cyber Hygiene Notices, likewise per-licence-class: FSM-N06 (banks,
+  which replaced the cancelled Notice 655 on 10 May 2024), FSM-N12 (merchant
+  banks), FSM-N04 (insurers), FSM-N22 (capital markets), FSM-N14 (payment
+  services and digital payment token licensees)
 - MAS Notice 658 (Banks) and MAS Notice 1121 (Merchant Banks) on Outsourcing,
   binding since 11 December 2024
 - MAS Guidelines on Outsourcing (Financial Institutions other than Banks)
@@ -236,7 +245,12 @@ knowledge of:
 Hard rules you never break:
 - The Notices are legally binding. The Guidelines are guidance — describe them as
   guidance, never as binding obligations.
-- Never cite MAS Notice 655. It was cancelled on 10 May 2024. Cite FSM-N06.
+- Never cite MAS Notice 655. It was cancelled on 10 May 2024. Cite the Cyber
+  Hygiene Notice for this entity's licence class, as named in the APPLICABLE MAS
+  INSTRUMENTS block of the request.
+- Never name a MAS Notice that is not in that block. The Notice that binds an
+  entity is determined by its licence class, and asserting the wrong one in a
+  document the entity will sign is a false statement of its obligations.
 - Never assert that a control is implemented, tested, or evidenced unless the
   supplied context says so. Where the entity has no evidence, write exactly
   "%s" and nothing more reassuring. A plausible-sounding
@@ -341,7 +355,9 @@ def _call_with_retry(fn: Callable, *args, attempts: int = 2):
 # ── 1. TECHNOLOGY RISK GOVERNANCE POLICY ─────────────────────────────────────
 
 def gen_governance_policy(ctx: TrmDocContext) -> Tuple[str, int, int]:
-    cites = registry.citation_block(["trm_guidelines", "fsm_n05"])
+    trm_inst = registry.technology_risk_instrument(ctx.licence_type)
+    notice_id = trm_inst.ids[0]
+    cites = registry.citation_block(["trm_guidelines", trm_inst.key])
     prompt = f"""{_ctx_block(ctx)}
 
 === APPLICABLE MAS INSTRUMENTS ===
@@ -351,8 +367,9 @@ Draft a Technology Risk Governance Policy for {ctx.legal_name}.
 
 1. PURPOSE, SCOPE AND REGULATORY BASIS
    State that the policy gives effect to the MAS Technology Risk Management
-   Guidelines and the entity's obligations under MAS Notice FSM-N05. Be explicit
-   that the TRM Guidelines are guidance and FSM-N05 is a binding notice.
+   Guidelines and the entity's obligations under MAS Notice {notice_id}. Be
+   explicit that the TRM Guidelines are guidance and {notice_id} is a binding
+   notice.
 2. BOARD AND SENIOR MANAGEMENT ACCOUNTABILITY
    Board responsibilities, the risk appetite statement, reporting cadence, and
    the named roles to be appointed ({UNEVIDENCED} where unappointed).
@@ -371,26 +388,29 @@ Use Markdown headings (##) and tables."""
     return _call_text(_SYSTEM_BASE, prompt)
 
 
-# ── 2. CYBER HYGIENE COMPLIANCE ATTESTATION (FSM-N06) ────────────────────────
+# ── 2. CYBER HYGIENE COMPLIANCE ATTESTATION (per-licence Notice) ────────────
 
-_FSM_N06_MIN_MENTIONS = 3
+_CYBER_HYGIENE_MIN_MENTIONS = 3
 
 
-def _validate_fsm_n06(content: str) -> List[str]:
+def _validate_cyber_hygiene(content: str, inst) -> List[str]:
     """Return the reasons this attestation is unacceptable, empty if it passes.
 
     This exists because the failure mode is silent and expensive: the model
     produces a fluent, professional, generic "cyber security policy" that never
-    engages Notice FSM-N06 clause by clause, and it gets signed. A word count
-    and a plausible tone cannot distinguish that from the real thing; the clause
-    anchors can.
+    engages the entity's actual Cyber Hygiene Notice clause by clause, and it
+    gets signed. A word count and a plausible tone cannot distinguish that from
+    the real thing; the clause anchors can.
+
+    ``inst`` is the resolved instrument for this entity's licence class (e.g.
+    FSM-N14 for a payment institution, FSM-N06 for a bank) — never hardcoded.
     """
     problems: List[str] = []
-    inst = registry.get("fsm_n06")
-    if content.count("FSM-N06") < _FSM_N06_MIN_MENTIONS:
+    notice_id = inst.ids[0]
+    if content.count(notice_id) < _CYBER_HYGIENE_MIN_MENTIONS:
         problems.append(
-            f"cites FSM-N06 only {content.count('FSM-N06')} time(s), "
-            f"minimum {_FSM_N06_MIN_MENTIONS}"
+            f"cites {notice_id} only {content.count(notice_id)} time(s), "
+            f"minimum {_CYBER_HYGIENE_MIN_MENTIONS}"
         )
     missing = [a for a in inst.clause_anchors if a.lower() not in content.lower()]
     if missing:
@@ -408,9 +428,16 @@ def _validate_fsm_n06(content: str) -> List[str]:
     return problems
 
 
-def _fsm_n06_prompt(ctx: TrmDocContext, *, strict: bool) -> str:
-    inst = registry.get("fsm_n06")
-    cites = registry.citation_block(["fsm_n06", "notice_655"])
+def _cyber_hygiene_prompt(ctx: TrmDocContext, inst, *, strict: bool) -> str:
+    notice_id = inst.ids[0]
+    # Notice 655 (cancelled) was bank-specific — other licence classes had their
+    # own predecessor notice (insurers: 132, credit/charge card: 655A, finance
+    # companies: 834, ...). We have not verified those numbers, so we cite the
+    # cancellation only for the licence it actually applied to rather than
+    # attaching the bank predecessor to every entity type. See email to Alfred,
+    # item 1, for the follow-up to source and add the others properly.
+    citation_keys = [inst.key] + (["notice_655"] if inst.key in ("fsm_n05", "fsm_n06") else [])
+    cites = registry.citation_block(citation_keys)
     anchors = "\n".join(f"   {i+1}. {a}" for i, a in enumerate(inst.clause_anchors))
     extra = ""
     if strict:
@@ -418,7 +445,7 @@ def _fsm_n06_prompt(ctx: TrmDocContext, *, strict: bool) -> str:
 
 THE PREVIOUS ATTEMPT WAS REJECTED. It read as a generic cyber security document.
 This attempt MUST:
-- contain the literal string "FSM-N06" at least {_FSM_N06_MIN_MENTIONS} times;
+- contain the literal string "{notice_id}" at least {_CYBER_HYGIENE_MIN_MENTIONS} times;
 - contain one table row per clause heading, using the heading text verbatim;
 - contain no generic best-practice filler that is not tied to a clause."""
     return f"""{_ctx_block(ctx)}
@@ -427,18 +454,18 @@ This attempt MUST:
 {cites}
 
 Draft a Cyber Hygiene Compliance Attestation for {ctx.legal_name} against MAS
-Notice FSM-N06 specifically. This is a formal attestation instrument, not a
+Notice {notice_id} specifically. This is a formal attestation instrument, not a
 policy and not a general cyber security overview.
 
 STRUCTURE
 1. ATTESTATION STATEMENT — the entity, its UEN, its MAS licence class
    ({ctx.licence_label}), the attestation period, and the authorised
    representative who will sign.
-2. REGULATORY BASIS — one paragraph stating that FSM-N06 is a binding MAS Notice
-   on cyber hygiene, that it replaced the cancelled Notice 655 on 10 May 2024,
-   and that this attestation addresses each of its requirements in turn.
+2. REGULATORY BASIS — one paragraph stating that {notice_id} is a binding MAS
+   Notice on cyber hygiene for this licence class, and that this attestation
+   addresses each of its requirements in turn.
 3. CLAUSE-BY-CLAUSE ATTESTATION — a table with columns:
-   Clause | Requirement under FSM-N06 | Implementation at this entity | Evidence reference | Attested status
+   Clause | Requirement under {notice_id} | Implementation at this entity | Evidence reference | Attested status
    One row for EACH of the following clause headings, using the heading text
    verbatim in the Clause column:
 {anchors}
@@ -451,25 +478,29 @@ STRUCTURE
 5. SIGN-OFF BLOCK — name, designation, date.
 
 Do not write a general cyber security narrative. Every paragraph must attach to a
-clause of FSM-N06.{extra}"""
+clause of {notice_id}.{extra}"""
 
 
 def gen_cyber_hygiene_attestation(ctx: TrmDocContext) -> Tuple[str, int, int]:
-    content, in_tok, out_tok = _call_text(_SYSTEM_BASE, _fsm_n06_prompt(ctx, strict=False))
-    problems = _validate_fsm_n06(content)
+    # Raises if licence_type is unmapped — the catalog gate (requires_licence)
+    # must keep this from being called with ctx.licence_known == False. See
+    # TRM_DOCUMENT_CATALOG below.
+    inst = registry.cyber_hygiene_instrument(ctx.licence_type)
+    content, in_tok, out_tok = _call_text(_SYSTEM_BASE, _cyber_hygiene_prompt(ctx, inst, strict=False))
+    problems = _validate_cyber_hygiene(content, inst)
     if not problems:
         return content, in_tok, out_tok
 
-    logger.warning("[TRMDoc] FSM-N06 attestation rejected (%s) — retrying stricter",
-                   "; ".join(problems))
-    content2, in2, out2 = _call_text(_SYSTEM_BASE, _fsm_n06_prompt(ctx, strict=True))
-    problems2 = _validate_fsm_n06(content2)
+    logger.warning("[TRMDoc] %s attestation rejected (%s) — retrying stricter",
+                   inst.ids[0], "; ".join(problems))
+    content2, in2, out2 = _call_text(_SYSTEM_BASE, _cyber_hygiene_prompt(ctx, inst, strict=True))
+    problems2 = _validate_cyber_hygiene(content2, inst)
     if problems2:
         # Fail the document rather than ship a generic attestation. An empty slot
         # in the pack is recoverable; a signed generic attestation presented to
-        # MAS as FSM-N06 coverage is not.
+        # MAS as coverage of the wrong Notice is not.
         raise ValueError(
-            "Cyber Hygiene Attestation failed FSM-N06 validation after retry: "
+            f"Cyber Hygiene Attestation failed {inst.ids[0]} validation after retry: "
             + "; ".join(problems2)
         )
     return content2, in_tok + in2, out_tok + out2
@@ -563,7 +594,9 @@ triggers a re-assessment of a material arrangement."""
 # ── 4. INCIDENT RESPONSE PLAN ────────────────────────────────────────────────
 
 def gen_incident_response_plan(ctx: TrmDocContext) -> Tuple[str, int, int]:
-    cites = registry.citation_block(["fsm_n05", "trm_guidelines"])
+    trm_inst = registry.technology_risk_instrument(ctx.licence_type)
+    notice_id = trm_inst.ids[0]
+    cites = registry.citation_block([trm_inst.key, "trm_guidelines"])
     prompt = f"""{_ctx_block(ctx)}
 
 === APPLICABLE MAS INSTRUMENTS ===
@@ -571,8 +604,8 @@ def gen_incident_response_plan(ctx: TrmDocContext) -> Tuple[str, int, int]:
 
 Draft an Incident Response Plan for {ctx.legal_name}.
 
-The MAS notification timelines below are binding under MAS Notice FSM-N05 and
-must appear in the document explicitly, as numbers, not as "promptly":
+The MAS notification timelines below are binding under MAS Notice {notice_id}
+and must appear in the document explicitly, as numbers, not as "promptly":
 - Notify MAS within 1 HOUR of discovering a relevant incident.
 - Submit a root cause and impact analysis to MAS within 14 DAYS.
 - Recover a critical system within 4 HOURS of an unscheduled outage.
@@ -580,8 +613,8 @@ must appear in the document explicitly, as numbers, not as "promptly":
   rolling 12-month period.
 
 STRUCTURE
-1. SCOPE AND DEFINITIONS — what constitutes a relevant incident under FSM-N05,
-   severity tiers, and what is explicitly out of scope.
+1. SCOPE AND DEFINITIONS — what constitutes a relevant incident under
+   {notice_id}, severity tiers, and what is explicitly out of scope.
 2. ROLES — incident commander, MAS notification owner, communications, technical
    lead. Name the roles; use {UNEVIDENCED} for unappointed individuals.
 3. DETECTION AND TRIAGE — how the 1-hour clock starts, and who is authorised to
@@ -603,7 +636,9 @@ Use Markdown headings (##) and tables."""
 # ── 5. BCM / DR PLAN ─────────────────────────────────────────────────────────
 
 def gen_bcm_dr_plan(ctx: TrmDocContext) -> Tuple[str, int, int]:
-    cites = registry.citation_block(["bcm_guidelines", "fsm_n05"])
+    trm_inst = registry.technology_risk_instrument(ctx.licence_type)
+    notice_id = trm_inst.ids[0]
+    cites = registry.citation_block(["bcm_guidelines", trm_inst.key])
     prompt = f"""{_ctx_block(ctx)}
 
 === APPLICABLE MAS INSTRUMENTS ===
@@ -614,7 +649,7 @@ Draft a Business Continuity and Disaster Recovery Plan for {ctx.legal_name}.
 Note the instrument split precisely: business continuity management is addressed
 by the MAS Guidelines on Business Continuity Management (guidance), while the
 4-hour recovery objective and the 4-hour rolling 12-month unscheduled downtime
-cap for critical systems are binding under MAS Notice FSM-N05.
+cap for critical systems are binding under MAS Notice {notice_id}.
 
 STRUCTURE
 1. SCOPE, OBJECTIVES AND GOVERNANCE — board accountability for continuity
@@ -665,7 +700,9 @@ item, not an implied pass.
 
 Activity types to schedule: internal IT audit, external IT audit, vulnerability
 assessment, penetration test, source code review, red team exercise, and the
-FSM-N06 security patch review cycle.
+security patch review cycle. Do NOT name a MAS Notice number anywhere in this
+log: it is the one document in the pack generated without a confirmed licence
+class, so the Notice that binds this entity is not known here.
 
 The entity has not supplied completed audit history. Produce the log with the
 forward schedule rows for a 12-month cycle. Every cell recording a past result —
@@ -686,7 +723,9 @@ the retention of evidence per activity."""
 # ── 7. ACCESS CONTROL & AUTHENTICATION POLICY ────────────────────────────────
 
 def gen_access_control_policy(ctx: TrmDocContext) -> Tuple[str, int, int]:
-    cites = registry.citation_block(["fsm_n06", "trm_guidelines"])
+    ch_inst = registry.cyber_hygiene_instrument(ctx.licence_type)
+    notice_id = ch_inst.ids[0]
+    cites = registry.citation_block([ch_inst.key, "trm_guidelines"])
     prompt = f"""{_ctx_block(ctx)}
 
 === APPLICABLE MAS INSTRUMENTS ===
@@ -694,7 +733,7 @@ def gen_access_control_policy(ctx: TrmDocContext) -> Tuple[str, int, int]:
 
 Draft an Access Control and Authentication Policy for {ctx.legal_name}.
 
-Two FSM-N06 requirements are binding and must be addressed by name:
+Two {notice_id} requirements are binding and must be addressed by name:
 - Administrative accounts must be secured against unauthorised access.
 - Multi-factor authentication is required for administrative access to critical
   systems, and for online access by customers to their accounts.
@@ -702,10 +741,10 @@ Two FSM-N06 requirements are binding and must be addressed by name:
 STRUCTURE
 1. SCOPE AND PRINCIPLES — least privilege, need to know, segregation of duties.
 2. IDENTITY LIFECYCLE — joiner, mover, leaver; the leaver revocation SLA.
-3. PRIVILEGED ACCESS MANAGEMENT — the FSM-N06 administrative accounts
+3. PRIVILEGED ACCESS MANAGEMENT — the {notice_id} administrative accounts
    requirement: inventory, approval, vaulting, session recording, break-glass
    procedure and its after-the-fact review.
-4. AUTHENTICATION STANDARDS — the FSM-N06 multi-factor authentication
+4. AUTHENTICATION STANDARDS — the {notice_id} multi-factor authentication
    requirement, split into administrative access to critical systems and customer
    online access. Cover accepted factor types and the treatment of SMS OTP.
 5. ACCESS REVIEW — cadence by privilege tier, reviewer, and the evidence retained.
@@ -725,7 +764,7 @@ class TrmDocSpec:
     title: str
     fn: Callable[[TrmDocContext], Tuple[Any, int, int]]
     mode: str                      # "text" | "json"
-    requires_licence: bool         # gated when licence is unknown
+    requires_instrument: Optional[str]  # instrument that must resolve, or None
     notices: Tuple[str, ...]       # registry keys, for provenance on the PDF
     domain: str                    # owning MAS TRM domain
     verification_critical: bool    # drives the RED draft banner
@@ -733,58 +772,104 @@ class TrmDocSpec:
 
 # Every generator takes exactly one argument. Do not add a second parameter to
 # any of these — see the module docstring.
+#
+# "trm_notice", "cyber_hygiene_notice" and "outsourcing" are sentinels, not
+# registry keys — the actual instrument (FSM-N05 for a bank, FSM-N14 for a
+# payment institution, ...) depends on ctx.licence_type and is resolved through
+# _resolve_instrument(). Do not put a literal "fsm_n05" or "fsm_n06" key back
+# here — that is the bug this catalog fixes.
+#
+# `requires_instrument` is the gate. It is deliberately not a bare
+# "requires_licence" boolean: the Notice families do not have the same coverage,
+# so "is the licence known?" is the wrong question. An MPI has a confirmed
+# Cyber Hygiene Notice (FSM-N14) but no confirmed TRM Notice, and must therefore
+# receive the attestation and access control policy while the three TRM-Notice
+# documents gate. Ask the registry per document, not per account.
+_TRM_NOTICE = "trm_notice"
+_CYBER_HYGIENE_NOTICE = "cyber_hygiene_notice"
+_OUTSOURCING = "outsourcing"
+
 TRM_DOCUMENT_CATALOG: Tuple[TrmDocSpec, ...] = (
     TrmDocSpec(
         "trm_governance_policy", "Technology Risk Governance Policy",
-        gen_governance_policy, "text", False,
-        ("trm_guidelines", "fsm_n05"), "Technology Risk Governance", False,
+        gen_governance_policy, "text", _TRM_NOTICE,
+        ("trm_guidelines", _TRM_NOTICE), "Technology Risk Governance", False,
     ),
     TrmDocSpec(
         "cyber_hygiene_attestation",
-        "Cyber Hygiene Compliance Attestation (MAS Notice FSM-N06)",
-        gen_cyber_hygiene_attestation, "text", False,
-        ("fsm_n06",), "Cyber Security", True,
+        "Cyber Hygiene Compliance Attestation",
+        gen_cyber_hygiene_attestation, "text", _CYBER_HYGIENE_NOTICE,
+        (_CYBER_HYGIENE_NOTICE,), "Cyber Security", True,
     ),
     TrmDocSpec(
         "outsourcing_risk_register", "Outsourcing Risk Register",
-        gen_outsourcing_register, "json", True,
+        gen_outsourcing_register, "json", _OUTSOURCING,
         (), "IT Outsourcing and Vendor Management", True,
     ),
     TrmDocSpec(
         "incident_response_plan", "Incident Response Plan",
-        gen_incident_response_plan, "text", False,
-        ("fsm_n05",), "Incident Management", True,
+        gen_incident_response_plan, "text", _TRM_NOTICE,
+        (_TRM_NOTICE,), "Incident Management", True,
     ),
     TrmDocSpec(
         "bcm_dr_plan", "Business Continuity and Disaster Recovery Plan",
-        gen_bcm_dr_plan, "text", False,
-        ("bcm_guidelines", "fsm_n05"), "Business Continuity and Disaster Recovery",
+        gen_bcm_dr_plan, "text", _TRM_NOTICE,
+        ("bcm_guidelines", _TRM_NOTICE), "Business Continuity and Disaster Recovery",
         False,
     ),
     TrmDocSpec(
         "it_audit_vapt_log", "IT Audit and VAPT Tracking Log",
-        gen_it_audit_vapt_log, "json", False,
+        gen_it_audit_vapt_log, "json", None,
         ("trm_guidelines",), "IT Audit", False,
     ),
     TrmDocSpec(
         "access_control_policy", "Access Control and Authentication Policy",
-        gen_access_control_policy, "text", False,
-        ("trm_guidelines", "fsm_n06"), "Authentication and Access Management", False,
+        gen_access_control_policy, "text", _CYBER_HYGIENE_NOTICE,
+        ("trm_guidelines", _CYBER_HYGIENE_NOTICE), "Authentication and Access Management", False,
     ),
 )
 
 TRM_DOC_TYPES: Tuple[str, ...] = tuple(s.doc_type for s in TRM_DOCUMENT_CATALOG)
 
 
+def _resolve_instrument(kind: str, licence_type: Optional[str]):
+    """Sentinel → the instrument that actually binds this entity.
+
+    Raises ValueError when nothing is mapped. Callers treat that as "gate this
+    document", never as "fall back to the bank Notice".
+    """
+    if kind == _TRM_NOTICE:
+        return registry.technology_risk_instrument(licence_type)
+    if kind == _CYBER_HYGIENE_NOTICE:
+        return registry.cyber_hygiene_instrument(licence_type)
+    if kind == _OUTSOURCING:
+        return registry.outsourcing_instruments(licence_type)[0]
+    return registry.get(kind)
+
+
+def instrument_resolves(kind: Optional[str], licence_type: Optional[str]) -> bool:
+    """Whether the gating instrument for a document is known for this licence."""
+    if kind is None:
+        return True
+    try:
+        _resolve_instrument(kind, licence_type)
+        return True
+    except (ValueError, KeyError):
+        return False
+
+
 def expected_doc_types(licence_type: Optional[str]) -> Tuple[str, ...]:
     """The doc_types a complete pack must contain for this licence.
 
     The completeness gate and the generator must agree on this, so both call it
-    rather than each keeping a list.
+    rather than each keeping a list. Resolved per document against the registry:
+    an unknown licence yields only the IT Audit & VAPT log, an MPI additionally
+    yields the two Cyber Hygiene Notice documents, a bank yields all seven.
     """
-    if licence_type is None:
-        return tuple(s.doc_type for s in TRM_DOCUMENT_CATALOG if not s.requires_licence)
-    return TRM_DOC_TYPES
+    return tuple(
+        s.doc_type for s in TRM_DOCUMENT_CATALOG
+        if instrument_resolves(s.requires_instrument, licence_type)
+    )
 
 
 def _word_count(content: Any) -> int:
@@ -799,20 +884,24 @@ def generate_all_trm_documents(
 ) -> List[Dict[str, Any]]:
     """Generate the pack. Returns one result dict per attempted document.
 
-    Documents requiring a confirmed licence are SKIPPED (not failed, not
-    defaulted) when the licence is unknown — the caller sets the pack status to
-    blocked_licence_unknown and asks the customer to confirm.
+    A document whose binding instrument is not mapped for this licence class is
+    SKIPPED (not failed, not defaulted) — the caller sets the pack status to
+    blocked_licence_unknown and asks the customer to confirm. Which documents
+    those are depends on the licence, not just on whether one is set: see
+    expected_doc_types.
 
     `only_doc_types` regenerates a subset — the licence-correction path, which
-    re-runs just the outsourcing register once the customer confirms.
+    re-runs whatever became resolvable once the customer confirms.
     """
     results: List[Dict[str, Any]] = []
     for spec in TRM_DOCUMENT_CATALOG:
         if only_doc_types is not None and spec.doc_type not in only_doc_types:
             continue
-        if spec.requires_licence and not ctx.licence_known:
-            logger.info("[TRMDoc] skipping %s — MAS licence type not confirmed",
-                        spec.doc_type)
+        if not instrument_resolves(spec.requires_instrument, ctx.licence_type):
+            logger.info(
+                "[TRMDoc] skipping %s — no %s mapped for licence %r",
+                spec.doc_type, spec.requires_instrument, ctx.licence_type,
+            )
             results.append({
                 "doc_type": spec.doc_type, "title": spec.title,
                 "mode": spec.mode, "content": None,
@@ -825,9 +914,19 @@ def generate_all_trm_documents(
         try:
             content, in_tok, out_tok = _call_with_retry(spec.fn, ctx)
             cost = (in_tok / 1_000_000 * _IN) + (out_tok / 1_000_000 * _OUT)
+            # The sentinels resolve to this entity's actual instrument
+            # (FSM-N05/N03/..., FSM-N06/N14/...) rather than a fixed registry
+            # key. See the TRM_DOCUMENT_CATALOG comment.
+            resolved_notices = []
+            title = spec.title
+            for k in spec.notices:
+                inst = _resolve_instrument(k, ctx.licence_type)
+                resolved_notices.append(inst.citation)
+                if k == _CYBER_HYGIENE_NOTICE:
+                    title = f"{spec.title} (MAS Notice {inst.ids[0]})"
             row: Dict[str, Any] = {
                 "doc_type": spec.doc_type,
-                "title": spec.title,
+                "title": title,
                 "mode": spec.mode,
                 "content": content,
                 "input_tokens": in_tok,
@@ -837,7 +936,7 @@ def generate_all_trm_documents(
                 "generated_by_model": DEEPSEEK_MODEL,
                 "schema_version": TRM_DOC_SCHEMA_VERSION,
                 "verification_critical": spec.verification_critical,
-                "notices": [registry.get(k).citation for k in spec.notices],
+                "notices": resolved_notices,
                 "domain": spec.domain,
             }
             if spec.doc_type == "outsourcing_risk_register":

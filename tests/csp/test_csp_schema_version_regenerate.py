@@ -1,7 +1,7 @@
 """Staleness + free-regenerate gates for CSP deliverables.
 
-Context: tipping-off was cited as CDSA s.48A across the CSP pack; the offence is
-s.48 (s.48A opens Part VIA, cross-border cash movement reporting). Already-issued
+Context: tipping-off was cited as CDSA s.48A across the CSP pack, then
+"corrected" to s.48; the offence is actually s.57. Already-issued
 PDFs sit at fixed S3 keys with their hashes anchored on-chain, so the correction
 is surfaced as an "outdated — regenerate free" path rather than a forced reissue.
 

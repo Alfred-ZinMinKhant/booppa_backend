@@ -36,6 +36,37 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _sync_vendor_sector(db, user, metadata) -> None:
+    """Write the vendor's sector authoritatively on subscription activation.
+
+    Every plan that reads a sector (tender digests, vendor checks, the Suite's
+    sector-ordered TRM controls) must go through here on activation. The bug
+    this closes: only `tender_intelligence` synced, so reactivating an account
+    that had been seeded with a different sector in an earlier cycle kept
+    surfacing the stale one — `VendorSector` rows are read with an unordered
+    `.first()` in several places, so which identity won was up to Postgres.
+
+    `set_vendor_sector` (not the additive `sync_vendor_sector`) is deliberate:
+    the sector is a single-valued fact about who the vendor is, and REPLACING
+    is the only way a correction ever takes effect. Never fatal — a failed
+    sector write must not abandon a paid activation.
+    """
+    sector_input = (
+        (metadata.get("sector") or metadata.get("industry") or getattr(user, "industry", None))
+        if metadata else getattr(user, "industry", None)
+    )
+    if not sector_input:
+        return
+    try:
+        from app.services.tender_service import set_vendor_sector
+        set_vendor_sector(db, user.id, sector_input)
+    except Exception as _sec_err:  # noqa: BLE001
+        logger.warning(
+            "[Subscription] Failed to sync VendorSector for %s: %s",
+            getattr(user, "email", "?"), _sec_err,
+        )
+
+
 RFP_PRODUCT_TYPES = {"rfp_express", "rfp_complete"}
 # Single-document notarization is one-time (pay-per-doc, grants a credit balance).
 # The 10/50 batch tiers are now subscriptions (monthly quota) — see
@@ -385,15 +416,10 @@ async def _activate_subscription(
             elif new_plan == "tender_intelligence":
                 # Sector digest — sync sector from metadata/user if available
                 sector_input = (metadata.get("sector") or metadata.get("industry") or getattr(user, "industry", None)) if metadata else getattr(user, "industry", None)
-                if sector_input:
-                    if not getattr(user, "industry", None):
-                        user.industry = sector_input
-                        db.commit()
-                    try:
-                        from app.services.tender_service import set_vendor_sector
-                        set_vendor_sector(db, user.id, sector_input)
-                    except Exception as _sec_err:
-                        logger.warning("[Subscription] Failed to sync VendorSector for %s: %s", getattr(user, "email", "?"), _sec_err)
+                if sector_input and not getattr(user, "industry", None):
+                    user.industry = sector_input
+                    db.commit()
+                _sync_vendor_sector(db, user, metadata)
                 _wtasks.send_tender_intelligence_digest_for_user.delay(str(user.id))
             elif new_plan == "pdpa_monitor":
                 _wtasks.run_pdpa_monitor_cycle_for_user.delay(
@@ -410,10 +436,12 @@ async def _activate_subscription(
                     override_company=override_company,
                 )
             elif new_plan == "vendor_active":
+                _sync_vendor_sector(db, user, metadata)
                 _wtasks.run_vendor_active_check_for_user.delay(
                     str(user.id), override_company=override_company,
                 )
             elif new_plan == "vendor_pro":
+                _sync_vendor_sector(db, user, metadata)
                 _wtasks.run_vendor_pro_activation_for_user.delay(
                     str(user.id),
                     override_website=override_website,
@@ -470,6 +498,10 @@ async def _activate_subscription(
                         "[Subscription] Failed to seed mas_licence_type for %s: %s",
                         getattr(user, "email", "?"), _lic_err,
                     )
+                # The Suite orders TRM controls by sector (see
+                # reorder_controls_by_sector), so a stale sector row reorders
+                # the customer's whole control set.
+                _sync_vendor_sector(db, user, metadata)
                 # Deliver the MAS TRM Baseline Assessment PDF. Small countdown so
                 # the TRM controls initialised later in this same activation are
                 # committed first (the task also falls back to canonical domains).
@@ -490,9 +522,10 @@ async def _activate_subscription(
                 # view as the tracker and must not race it.
                 #
                 # Generated once, here. If the org's mas_licence_type is not
-                # confirmed the pack lands `blocked_licence_unknown` with six
-                # of seven documents and asks the customer to confirm — it does
-                # not guess a regime.
+                # confirmed the pack lands `blocked_licence_unknown` carrying
+                # only the documents not tied to an entity-specific FSM Notice
+                # or outsourcing regime, and asks the customer to confirm — it
+                # does not guess a regime or a Notice.
                 from app.workers.trm_doc_tasks import generate_trm_document_pack
                 generate_trm_document_pack.apply_async(
                     args=[str(user.id)],
@@ -728,12 +761,33 @@ async def _activate_subscription(
             # PDPA + RFP + cover sheet + emails). Removed. This branch now only
             # handles the no-website nudge above.
         elif new_plan in ["standard_suite", "pro_suite"]:
+            # Resolved below and consumed by the onboarding email: when the
+            # licence class is unset, activation is INCOMPLETE — most of the
+            # document pack cannot be generated, because which MAS Notice binds
+            # this entity is decided by its licence class. Leading with anything
+            # else in the welcome email buries the one step the customer must
+            # take before the Suite can deliver.
+            licence_type_on_file = None
+            documents_withheld = 0
+
             try:
                 from app.trm_workflow_service import initialise_trm_controls
                 from app.api.vendor_features import _get_or_create_org
                 from app.core.models import TrmControl
 
                 org = _get_or_create_org(db, user)
+                licence_type_on_file = getattr(org, "mas_licence_type", None)
+                try:
+                    from app.services.trm_doc_generator import (
+                        TRM_DOCUMENT_CATALOG,
+                        expected_doc_types,
+                    )
+                    documents_withheld = (
+                        len(TRM_DOCUMENT_CATALOG)
+                        - len(expected_doc_types(licence_type_on_file))
+                    )
+                except Exception:  # noqa: BLE001 — count is copy, never fatal
+                    documents_withheld = 0
                 # Idempotent — skip if controls already exist (e.g. renewal webhook)
                 existing = (
                     db.query(TrmControl)
@@ -773,7 +827,29 @@ async def _activate_subscription(
                           <p style="margin:0 0 10px;color:#94a3b8;font-size:13px;line-height:1.5;">{desc}</p>
                           <a href="{url}" style="color:#10b981;font-weight:bold;text-decoration:none;font-size:13px;">{cta} &rarr;</a>
                         </td></tr>"""
-                    features = [
+                    features = []
+                    if not licence_type_on_file:
+                        # Blocking step, first in the list. Without the licence
+                        # class we cannot tell whether this entity is bound by
+                        # FSM-N05/N06 (banks), N11/N12, N03/N04, N21/N22 or
+                        # N14 — and a signed attestation citing a Notice that
+                        # does not bind the entity is a false statement of its
+                        # own obligations, which is worse than no document.
+                        withheld_txt = (
+                            f"{documents_withheld} of your MAS TRM pack documents are on hold"
+                            if documents_withheld else
+                            "part of your MAS TRM pack is on hold"
+                        )
+                        features.append(_feature(
+                            "⚠ Action required — confirm your MAS licence class",
+                            f"{withheld_txt} until you confirm which licence class your "
+                            "entity holds. The MAS Technology Risk and Cyber Hygiene Notices "
+                            "that bind you are determined by that class, and we will not guess "
+                            "one. This takes about ten seconds, and the held documents are "
+                            "generated and emailed to you automatically as soon as it's set.",
+                            "Confirm licence class", "https://www.booppa.io/vendor/trm",
+                        ))
+                    features += [
                         _feature(
                             "MAS TRM — all 13 domains + baseline PDF",
                             "We've initialised all 13 MAS Technology Risk Management control domains for your "
@@ -825,7 +901,11 @@ async def _activate_subscription(
 
                     sent_ob = await EmailService().send_html_email(
                         to_email=customer_email,
-                        subject=f"Welcome to {suite_label} — here's everything included",
+                        subject=(
+                            f"Welcome to {suite_label} — one step to finish activation"
+                            if not licence_type_on_file
+                            else f"Welcome to {suite_label} — here's everything included"
+                        ),
                         body_html=onboarding_html,
                     )
                     if not sent_ob:

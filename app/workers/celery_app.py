@@ -11,6 +11,7 @@ celery_app = Celery(
         "app.workers.monthly_credit_reset",
         "app.workers.csp_tasks",
         "app.workers.trm_doc_tasks",
+        "app.workers.registry_tasks",
     ],
 )
 
@@ -109,6 +110,13 @@ celery_app.conf.update(
     },
     # Beat schedule
     beat_schedule={
+        # Weekly reminder that the regulatory citation registry needs a human
+        # to re-check it against the regulators' own pages. Detection only —
+        # the task never edits an entry. See registry_tasks.py.
+        "check-citation-staleness-weekly": {
+            "task": "registry.check_citation_staleness",
+            "schedule": crontab(day_of_week="monday", hour=1, minute=30),
+        },
         "cleanup-old-tasks": {
             # Must match the registered task name (name="cleanup_old_tasks");
             # the old dotted "app.workers.tasks.cleanup_old_tasks" is unregistered

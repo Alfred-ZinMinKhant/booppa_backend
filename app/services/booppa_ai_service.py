@@ -165,7 +165,11 @@ SINGAPORE_LEGISLATION = {
         },
         "644": {
             "title": "Technology Risk Management",
-            "scope": "Financial institutions",
+            # Banks, not "financial institutions". FSM-N05 is the bank Notice;
+            # insurers are bound by FSM-N03, merchant banks FSM-N11, capital
+            # markets FSM-N21. Broadening the scope here is the same over-claim
+            # that shipped bank Notices to every TRM Suite customer.
+            "scope": "Banks",
             "citation": "MAS Notice 644/FSM-N05 - Technology Risk Management",
             "key_points": [
                 "Major incidents notified to MAS within 1 hour of discovery",
@@ -175,7 +179,7 @@ SINGAPORE_LEGISLATION = {
         },
         "655": {
             "title": "Cyber Hygiene",
-            "scope": "All regulated financial institutions",
+            "scope": "Banks",
             # Unreachable while `notice_655` is in mas_notice_registry (which
             # redirects 655 → FSM-N06). Kept correct anyway: if that entry is ever
             # dropped, this table must not resurrect the cancelled number alone.
@@ -286,7 +290,13 @@ VIOLATION_LEGISLATION: Dict[str, List[str]] = {
     "security_violation": [
         "PDPA 2012 s.24",
         "Cybersecurity Act 2018",
-        MAS_CYBER_HYGIENE_CITATION,
+        # Bank-scoped by construction (mas_notice_citation("655") -> FSM-N06).
+        # A PDPA scan has no licence class to resolve against — the site may not
+        # be an FI at all — so this is flagged as conditional, not asserted as
+        # binding. The licence-correct Notice is resolved per entity in the TRM
+        # products via mas_notice_registry.cyber_hygiene_instrument().
+        f"{MAS_CYBER_HYGIENE_CITATION} (if a MAS-licensed bank; the equivalent "
+        f"Cyber Hygiene Notice applies to other licence classes)",
     ],
     "organizational_violation": ["PDPA 2012 s.11", "PDPC Guide to Accountability"],
     "marketing_violation": ["DNC Registry", "Spam Control Act"],
@@ -699,7 +709,8 @@ NOTE: Implied consent (continued browsing) is NOT sufficient under PDPA""",
 
 LEGISLATION VIOLATED:
 • PDPA 2012 s.24 - Protection Obligation
-• """ + MAS_CYBER_HYGIENE_CITATION + """
+• """ + MAS_CYBER_HYGIENE_CITATION + """ (if you are a bank; the equivalent
+  Cyber Hygiene Notice for your licence class applies otherwise)
 • MTCS Level 3 Requirements (if applicable)
 
 PENALTY: {penalty_amount}
@@ -1488,7 +1499,7 @@ Consult legal counsel for interpretation of regulatory requirements."""
                 "relevance": "Do Not Call provisions for marketing communications",
             })
             references.append({
-                "title": "Spam Control Act (Cap. 311A)",
+                "title": "Spam Control Act 2007",
                 "url": "https://sso.agc.gov.sg/Act/SCA2007",
                 "relevance": "Regulates unsolicited commercial messages",
             })
