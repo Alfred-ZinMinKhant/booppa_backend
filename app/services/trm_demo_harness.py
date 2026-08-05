@@ -521,6 +521,21 @@ def _load_pack(db, pack_id: Optional[str]):
 # Notice (FSM-N14) and its outsourcing regime (non-bank Guidelines) but has no
 # mapped technology-risk Notice, so it receives 4 of 7 and reports `blocked` —
 # partial delivery with an honest ask, not a pack that guesses.
+#
+# Cases E-G were added when the `insurer` key was split against MAS's "Applies
+# to" lists. Case D alone could not catch that split: it passed both before and
+# after, because a direct insurer's mapping did not change. The three classes
+# that were silently wrong under the old single key are the ones worth running —
+# a captive insurer and a general insurance agent were being handed a pack
+# asserting FSM-N03 bound them, and a marine mutual was collecting both Notices
+# while appearing in the "Applies to" of neither.
+#
+# Case F is the case that looks like a bug and is not: two documents out of
+# seven. A marine mutual resolves no technology-risk and no cyber-hygiene
+# Notice, so all five Notice-scoped documents gate and only the Outsourcing Risk
+# Register (non-bank Guidelines, which do reach it) and the IT Audit log — the
+# one document scoped to no instrument at all — can be issued. Do not "fix" this
+# by mapping it to the nearest-looking Notice.
 ACCEPTANCE_CASES: tuple[dict[str, Any], ...] = (
     {"case": "A", "company_name": "Meridian Bank (Singapore) Pte Ltd",
      "mas_licence_type": "bank",
@@ -535,6 +550,23 @@ ACCEPTANCE_CASES: tuple[dict[str, Any], ...] = (
     {"case": "D", "company_name": "Straitsure Insurance Pte Ltd",
      "mas_licence_type": "insurer",
      "expect_regime": "non_bank_guidelines", "expect_status": "ready", "expect_docs": 7},
+    # FSM-N04 reaches captives; FSM-N03 does not. Same 4-of-7 shape as the MPI.
+    {"case": "E", "company_name": "Keppel Captive Insurance Pte Ltd",
+     "mas_licence_type": "captive_insurer",
+     "expect_regime": "non_bank_guidelines",
+     "expect_status": "blocked_licence_unknown", "expect_docs": 4},
+    # Neither Notice lists marine mutuals. Only the two documents that need no
+    # Notice survive — see the note above before changing this number.
+    {"case": "F", "company_name": "Straits Marine Mutual Association",
+     "mas_licence_type": "marine_mutual_insurer",
+     "expect_regime": "non_bank_guidelines",
+     "expect_status": "blocked_licence_unknown", "expect_docs": 2},
+    # FSM-N31 (FSM Act 2022 DTSP regime) resolves for cyber hygiene; no
+    # FSM-series TRM Notice was found for DTSPs, so technology risk gates.
+    {"case": "G", "company_name": "Lumen Digital Assets Pte Ltd",
+     "mas_licence_type": "dtsp",
+     "expect_regime": "non_bank_guidelines",
+     "expect_status": "blocked_licence_unknown", "expect_docs": 4},
 )
 
 

@@ -178,3 +178,34 @@ def test_payment_licensee_receives_the_resolvable_subset_not_all_or_nothing():
         "cyber_hygiene_attestation",
         "access_control_policy",
     }
+
+
+def test_acceptance_matrix_expectations_match_the_generator():
+    """The admin demo matrix hardcodes an `expect_docs` per case, and that number
+    is asserted by a live-AI run nobody does on every change. Pin it against the
+    generator here so a licence-mapping change surfaces in a two-second test
+    rather than in a demo in front of a customer.
+
+    The counts are deliberately unequal: the split of `insurer` means a captive
+    insurer and a DTSP get 4 of 7 and a marine mutual gets 2, and those numbers
+    are the visible consequence of MAS listing them where it does.
+    """
+    from app.services.trm_demo_harness import ACCEPTANCE_CASES
+
+    for case in ACCEPTANCE_CASES:
+        licence = case["mas_licence_type"]
+        assert len(tdg.expected_doc_types(licence)) == case["expect_docs"], (
+            f"case {case['case']} ({licence}) expects {case['expect_docs']} "
+            f"documents, generator resolves {len(tdg.expected_doc_types(licence))}"
+        )
+
+
+def test_acceptance_matrix_covers_every_gating_outcome():
+    """Case D (a direct insurer) passed both before and after the licence split,
+    because its mapping never changed — a matrix of A-D could not have caught the
+    captive-insurer defect. Every distinct outcome must have a case."""
+    from app.services.trm_demo_harness import ACCEPTANCE_CASES
+
+    covered = {len(tdg.expected_doc_types(c["mas_licence_type"])) for c in ACCEPTANCE_CASES}
+    # 7 = fully mapped, 4 = cyber hygiene only, 2 = neither Notice, 1 = licence unset.
+    assert covered == {7, 4, 2, 1}

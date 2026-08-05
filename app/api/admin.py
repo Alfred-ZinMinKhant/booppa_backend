@@ -1740,10 +1740,48 @@ def admin_trm_demo_baseline_latest(
     return {"available": True, "download_url": url}
 
 
+@router.get("/trm/licence-options")
+def admin_trm_licence_options(_auth: bool = Depends(_admin_auth)) -> dict:
+    """The MAS licence classes, with how many pack documents each can support.
+
+    Served rather than hardcoded in the admin page because the list is not
+    stable: it grew from seven keys to eleven when `insurer` was split against
+    MAS's "Applies to" lists. A copy in the frontend would still be offering
+    `insurer` to a captive insurer long after the backend stopped meaning that
+    by it, which is the same class of drift the split was fixing.
+
+    `documents_available` is resolved through the real generator, so the
+    operator can see before running that e.g. a marine mutual yields two
+    documents and know that is the mapping, not a failed run.
+    """
+    from app.services.mas_licence import MAS_LICENCE_TYPES
+    from app.services.trm_doc_generator import (TRM_DOCUMENT_CATALOG,
+                                                expected_doc_types)
+
+    total = len(TRM_DOCUMENT_CATALOG)
+    return {
+        "total_documents": total,
+        "options": [
+            {
+                "value": key,
+                "label": label,
+                "documents_available": len(expected_doc_types(key)),
+                "total_documents": total,
+            }
+            for key, label in MAS_LICENCE_TYPES.items()
+        ],
+        # Omitting the licence is a real acceptance case, not a missing input.
+        "unset_documents_available": len(expected_doc_types(None)),
+    }
+
+
 class TrmDemoDocumentPackRequest(BaseModel):
     mode: str = Field(
         default="matrix",
-        description="'matrix' runs all three acceptance cases; 'single' runs one tenant.",
+        description=(
+            "'matrix' runs every acceptance case in trm_demo_harness."
+            "ACCEPTANCE_CASES; 'single' runs one tenant with the fields below."
+        ),
     )
     customer_email: Optional[str] = Field(default=None)
     company_name: Optional[str] = Field(default="NovaPay Fintech Pte Ltd")
