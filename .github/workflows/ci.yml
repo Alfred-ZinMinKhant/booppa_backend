@@ -18,6 +18,20 @@ on:
         required: false
         default: 'false'
 
+# Deploys must not overlap. Every run of this workflow calls `update-service` on
+# the same three ECS services, so two concurrent runs each supersede the other's
+# rollout: ECS kills the in-flight task with `ServiceSchedulerInitiated` and the
+# `services-stable` waiter, whose 10-minute budget keeps running, exits 255 on a
+# deploy that was actually fine. That is exactly what a push landing seconds
+# before a `workflow_dispatch` produced on 2026-08-05.
+#
+# `cancel-in-progress: false` is deliberate: a deploy that is midway through
+# registering task definitions or running a migration must be allowed to finish.
+# The later run queues behind it instead.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
