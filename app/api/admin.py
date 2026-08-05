@@ -324,6 +324,27 @@ def trigger_tender_intelligence_digest(
     return {"queued": True, "task_id": task.id}
 
 
+@router.post("/acra/refresh-targeted", status_code=202)
+def trigger_acra_targeted_refresh(
+    _auth: bool = Depends(_admin_auth),
+) -> dict:
+    """
+    Trigger an immediate targeted ACRA refresh over every UEN in our own data.
+
+    Exists so the first backfill does not have to wait for the Wednesday 06:00
+    schedule: until one cycle completes, `registry_status` is NULL everywhere and
+    every profile renders it as absent.
+
+    Enqueues and returns immediately — the pass fetches tens of thousands of UENs
+    and takes minutes, so the coverage numbers land in the worker log, not here.
+    The task takes a Redis lock, so a second call while one is running is a no-op
+    rather than a duplicate sweep.
+    """
+    from app.workers.tasks import refresh_acra_targeted
+    task = refresh_acra_targeted.delay()
+    return {"queued": True, "task_id": task.id}
+
+
 @router.delete("/tenders/{tender_id}", status_code=204)
 def delete_tender(
     tender_id: str,
