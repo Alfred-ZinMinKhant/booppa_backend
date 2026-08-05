@@ -2,7 +2,7 @@
 // SOURCE OF TRUTH: CI (.github/workflows/ci.yml) — NOT Terraform.
 //
 // The live ECS task definitions and services (booppa-app, booppa-worker,
-// booppa-beat, booppa-cms) are registered and updated imperatively by ci.yml on
+// booppa-beat) are registered and updated imperatively by ci.yml on
 // every deploy. This Terraform is DRIFTED from production and is kept only as
 // reference / documentation of the intended shape. It has never been `apply`ed
 // against the live account and the local state here is stale.

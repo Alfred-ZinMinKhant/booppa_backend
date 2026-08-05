@@ -17,7 +17,6 @@ ASGI, single-process per container. Also exposes a Mangum Lambda handler (`main.
 **Components (all from one image, `Dockerfile`):**
 - **API** — `uvicorn app.main:app` (ECS service `booppa-app`).
 - **Worker** — Celery, `-Q fast_queue,heavy_queue` with **embedded beat `--beat`** (ci.yml:402; ECS service `booppa-worker`).
-- **CMS** — Django admin (`cms_admin/`, ECS service `booppa-cms`), EFS-backed media volume (ci.yml:500-508).
 - **Cloudflared** — Cloudflare Tunnel in Fargate is the public ingress (per CLAUDE.md / `task-def-cloudflared-out.json`); TLS terminates at Cloudflare.
 
 **Stateful dependencies:**
@@ -34,7 +33,6 @@ ASGI, single-process per container. Also exposes a Mangum Lambda handler (`main.
 ```mermaid
 flowchart LR
   CF[Cloudflare Tunnel] --> API[ECS: booppa-app / Uvicorn:8000]
-  CF --> CMS[ECS: booppa-cms / Django]
   API --> PG[(RDS Postgres t4g.micro, single-AZ)]
   API --> RD[(ElastiCache Redis, single node)]
   API --> S3[(S3 reports)]

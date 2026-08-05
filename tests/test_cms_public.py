@@ -151,7 +151,9 @@ def test_blog_images_are_absolute_url_strings(client, cms_db):
     assert len(body["images"]) == 1
     assert isinstance(body["images"][0], str)
     assert body["images"][0].startswith("https://")
-    assert body["images"][0].endswith("/media/blog_images/x.png")
+    # Django-era un-prefixed value. `booppa-cms` is deleted, so this must route
+    # through the backend media route too — the old `/media/` host is gone.
+    assert body["images"][0].endswith("/api/public/cms-media/blog_images/x.png")
 
 
 def test_non_blog_types_have_no_category_or_images(client, cms_db):
@@ -179,8 +181,8 @@ def test_detail_404s_on_unpublished_and_missing(client, cms_db):
 
 def test_backfilled_image_key_routes_through_the_backend(client, cms_db):
     """A `cms/` value is an S3 key, not a Django path — it must resolve to this
-    backend's media route, not `CMS_LEGACY_MEDIA_BASE`, or every backfilled
-    image 404s the moment `booppa-cms` is deleted."""
+    backend's media route. `booppa-cms` is now deleted, so this is the only way
+    a backfilled image resolves at all."""
     db, created = cms_db
     post = _mk(BlogPost)
     db.add(post)

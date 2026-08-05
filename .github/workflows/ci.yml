@@ -285,7 +285,6 @@ jobs:
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           BLOCKCHAIN_PRIVATE_KEY: ${{ secrets.BLOCKCHAIN_PRIVATE_KEY }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
-          CMS_ADMIN_TOKEN: ${{ secrets.CMS_ADMIN_TOKEN }}
           CSP_PII_KEY_LOCAL: ${{ secrets.CSP_PII_KEY_LOCAL }}
           CSP_PII_SEARCH_PEPPER: ${{ secrets.CSP_PII_SEARCH_PEPPER }}
         run: |
@@ -303,7 +302,6 @@ jobs:
             --arg SECRET_KEY "$SECRET_KEY" \
             --arg BLOCKCHAIN_PRIVATE_KEY "$BLOCKCHAIN_PRIVATE_KEY" \
             --arg ADMIN_PASSWORD "$ADMIN_PASSWORD" \
-            --arg CMS_ADMIN_TOKEN "$CMS_ADMIN_TOKEN" \
             --arg CSP_PII_KEY_LOCAL "$CSP_PII_KEY_LOCAL" \
             --arg CSP_PII_SEARCH_PEPPER "$CSP_PII_SEARCH_PEPPER" \
             '{
@@ -314,7 +312,6 @@ jobs:
                SECRET_KEY: $SECRET_KEY,
                BLOCKCHAIN_PRIVATE_KEY: $BLOCKCHAIN_PRIVATE_KEY,
                ADMIN_PASSWORD: $ADMIN_PASSWORD,
-               CMS_ADMIN_TOKEN: $CMS_ADMIN_TOKEN,
                CSP_PII_KEY_LOCAL: $CSP_PII_KEY_LOCAL,
                CSP_PII_SEARCH_PEPPER: $CSP_PII_SEARCH_PEPPER
              }')
@@ -391,10 +388,9 @@ jobs:
           DB_SECRET_ARN: ${{ secrets.AWS_SECRETSMANAGER_DATABASE_URL_ARN }}
           # Feature flags
           FEATURE_SEO: ${{ secrets.FEATURE_SEO }}
-          # Admin auth + CMS admin token
+          # Admin auth
           ADMIN_USER: ${{ secrets.ADMIN_USER }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
-          CMS_ADMIN_TOKEN: ${{ secrets.CMS_ADMIN_TOKEN }}
           # CSP Compliance Pack — Stripe price IDs + PII encryption
           STRIPE_CSP_PACK_ONETIME: ${{ secrets.STRIPE_CSP_PACK_ONETIME }}
           STRIPE_CSP_PACK_MONTHLY: ${{ secrets.STRIPE_CSP_PACK_MONTHLY }}
@@ -485,7 +481,6 @@ jobs:
                   { "name": "SECRET_KEY", "valueFrom": "${APP_SECRETS_ARN}:SECRET_KEY::" },
                   { "name": "BLOCKCHAIN_PRIVATE_KEY", "valueFrom": "${APP_SECRETS_ARN}:BLOCKCHAIN_PRIVATE_KEY::" },
                   { "name": "ADMIN_PASSWORD", "valueFrom": "${APP_SECRETS_ARN}:ADMIN_PASSWORD::" },
-                  { "name": "CMS_ADMIN_TOKEN", "valueFrom": "${APP_SECRETS_ARN}:CMS_ADMIN_TOKEN::" },
                   { "name": "CSP_PII_KEY_LOCAL", "valueFrom": "${APP_SECRETS_ARN}:CSP_PII_KEY_LOCAL::" },
                   { "name": "CSP_PII_SEARCH_PEPPER", "valueFrom": "${APP_SECRETS_ARN}:CSP_PII_SEARCH_PEPPER::" }
                 ],

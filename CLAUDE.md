@@ -139,15 +139,17 @@ Response carries `Cache-Control: no-store` because the brief state flips as the 
 
 User-supplied strings rendered in a `Paragraph` **must** be `_xml_escape`d — ReportLab's Paragraph mini-XML treats `&` and `<` as entity/tag starts. The "Q&A; Coverage" rendering glitch a few iterations back was exactly this.
 
-### CMS content — mid-migration off Django (`booppa-cms`)
+### CMS content — served from this app (Django retired)
 
-The four public content types (blogs, RFP tips, compliance posts, vendor guides) have been folded out of the Django service `booppa-cms` into this app: public reads in `app/api/cms_public.py`, admin CRUD in `app/api/cms_admin.py` (gated by the normal admin bearer JWT via `_admin_auth` — the `X-Admin-Token` shared secret is retired). The frontend already reads both through `api.booppa.io`. **Django is still running at `cms.booppa.io` purely as the rollback path** while the §6 teardown proceeds; it serves no traffic this app does not also serve.
+The four public content types (blogs, RFP tips, compliance posts, vendor guides) live here: public reads in `app/api/cms_public.py`, admin CRUD in `app/api/cms_admin.py` (gated by the normal admin bearer JWT via `_admin_auth` — the `X-Admin-Token` shared secret is retired). The frontend reads both through `api.booppa.io`.
+
+The Django service `booppa-cms` that used to serve this is **gone** as of 2026-08-05 — ECS service, task definitions, ECR repo, `cms.booppa.io` DNS and tunnel ingress, and the `cms_admin/` tree were all deleted. There is no rollback path to Django; `cms_public.py` / `cms_admin.py` are the only implementations. `tests/test_cms_public.py` and `tests/test_cms_admin.py` are the regression guard and their docstrings reference `cms_admin/` only as provenance.
 
 Media: blog images live on S3 under `cms/blog_images/…` and are served by `GET /api/public/cms-media/{path}`, which 302s to a freshly minted presign. This indirection exists because the stored URL must be permanent — blog images sit in cached pages and `next/image`, so a raw 7-day presign would break every post older than a week. The route pins keys under `cms/`; without that pin it is an unauthenticated reader for the whole bucket, which also holds customer reports.
 
-`blog_post_images.image` now holds **`cms/`-prefixed S3 keys**; the row rewrite off the Django-relative form (`blog_images/x.png`) is done, and all 10 referenced images verified 302→200 through `/api/public/cms-media/` on 2026-08-04. `_image_url` still carries a fallback branch routing un-prefixed values to `CMS_LEGACY_MEDIA_BASE` — that branch is now dead in production and points at a host being decommissioned, so any row that lands there is a bug, not a supported path.
+`blog_post_images.image` holds **`cms/`-prefixed S3 keys**; the row rewrite off the Django-relative form (`blog_images/x.png`) is done, and all 10 referenced images verified 302→200 through `/api/public/cms-media/`. `_image_url` no longer has a legacy-host branch — un-prefixed values are treated as `cms/`-relative keys and routed through the same media route, which is correct because every Django-era file was copied under `cms/` before the service was deleted. `CMS_LEGACY_MEDIA_BASE` is gone from config.
 
-**`booppa-cms`'s media lives on an EFS mount** (`fs-0634ca84d161452f4` → `/app/media`). Any task definition registered without that volume/mountPoint drops the uploaded blog images. `ci.yml` generates the CMS task definition correctly (volume + mountPoint included); the stale hand-written `task-def-cms.json` that omitted them has been deleted, and `task-def-*.json` is now gitignored so no such file can look authoritative again. Read the live task definition before touching the service.
+The media that used to live on EFS (`fs-0634ca84d161452f4` → `/app/media`) is now **only** on S3. The file system was deleted on 2026-08-05 after a byte-level parity check: all 17 files present under `cms/` with identical sizes, 0 missing. S3 is the single source of truth for blog media — there is no second copy.
 
 ### Frontend coordination
 

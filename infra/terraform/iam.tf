@@ -28,7 +28,7 @@ resource "aws_iam_role_policy_attachment" "ecs_exec_attach" {
 
 // The execution role (not the task role) is what ECS uses to resolve `secrets[]`
 // valueFrom references at container start. Grant read on the app-secrets bundle
-// so the app/worker/beat/cms task defs can pull STRIPE_SECRET_KEY, SECRET_KEY,
+// so the app/worker/beat task defs can pull STRIPE_SECRET_KEY, SECRET_KEY,
 // BLOCKCHAIN_PRIVATE_KEY, etc. from Secrets Manager instead of baking them into
 // the task definition. Scoped to the single secret (with the "-*" suffix so the
 // 6-char Secrets Manager random suffix matches).

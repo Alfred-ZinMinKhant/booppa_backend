@@ -72,14 +72,18 @@ def _dj_dt(value: Optional[datetime]) -> Optional[str]:
 def _image_url(stored: str) -> str:
     """Absolute, publicly-fetchable URL for a `blog_post_images.image` value.
 
-    The column holds two generations of value, and both have to work while the
-    media backfill (§3) is in flight:
+    Every value resolves through this backend's media route, which 302s to a
+    freshly minted presign — the stored URL stays permanent instead of expiring
+    with a 7-day presign.
 
-    - **Django-era**: a `MEDIA_ROOT`-relative path (`blog_images/foo.png`),
-      served by the CMS at `{CMS_LEGACY_MEDIA_BASE}/media/<path>`. Kept so this
-      endpoint is byte-comparable against the still-running Django service.
-    - **Post-backfill**: an S3 object key under `cms/`, served through this
-      backend's redirect route so the URL is stable rather than a 7-day presign.
+    The column holds two generations of value:
+
+    - **Post-backfill**: an S3 object key under `cms/`.
+    - **Django-era**: a `MEDIA_ROOT`-relative path (`blog_images/foo.png`) left
+      over from `booppa-cms`. Every such file was copied to S3 under `cms/`
+      before the service was deleted, and `/api/public/cms-media/` pins the
+      `cms/` prefix itself, so stripping/omitting it lands on the same object.
+      Django is gone — there is no host left to serve the old form.
 
     Already-absolute values are passed through untouched.
     """
@@ -87,11 +91,9 @@ def _image_url(stored: str) -> str:
         return ""
     if stored.startswith("http://") or stored.startswith("https://"):
         return stored
-    if stored.startswith("cms/"):
-        base = (settings.API_PUBLIC_BASE_URL or settings.VERIFY_BASE_URL).rstrip("/")
-        return f"{base}/api/public/cms-media/{stored[len('cms/'):]}"
-    base = settings.CMS_LEGACY_MEDIA_BASE.rstrip("/")
-    return f"{base}/media/{stored.lstrip('/')}"
+    key = stored[len("cms/"):] if stored.startswith("cms/") else stored.lstrip("/")
+    base = (settings.API_PUBLIC_BASE_URL or settings.VERIFY_BASE_URL).rstrip("/")
+    return f"{base}/api/public/cms-media/{key}"
 
 
 def _serialize(post, *, include_category: bool = False) -> dict:
