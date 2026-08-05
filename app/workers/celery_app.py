@@ -91,6 +91,9 @@ celery_app.conf.update(
         "anchor_signed_cover_sheet_task": {"queue": "heavy_queue"},
         # Monthly ACRA register refresh — a multi-minute paginated pull.
         "refresh_acra": {"queue": "heavy_queue"},
+        # Weekly targeted ACRA pass over known UENs — one request per ~50 UENs,
+        # but network-bound and unbounded in the number of UENs we've accumulated.
+        "refresh_acra_targeted": {"queue": "heavy_queue"},
         # Weekly PDPC precedent index build — scrapes the decisions register and
         # fetches decision pages for fine/year enrichment (network-heavy).
         "build_pdpc_precedent_index": {"queue": "heavy_queue"},
@@ -164,6 +167,17 @@ celery_app.conf.update(
         "refresh-acra-monthly": {
             "task": "refresh_acra",
             "schedule": crontab(day_of_month=2, hour=4, minute=0),
+        },
+        # Targeted ACRA refresh for UENs already in our own data, weekly on
+        # Wednesday 06:00 UTC. The hour offset from the monthly sweep above
+        # (2nd @ 04:00) is load-bearing, not cosmetic: the two tasks write the
+        # same table with deliberately different ON CONFLICT allowlists, and the
+        # Redis lock is per-task-name so it does NOT serialise them against each
+        # other. Whenever the 2nd falls on a Wednesday they would otherwise start
+        # together; the sweep's multi-minute pull finishes well inside two hours.
+        "refresh-acra-targeted-weekly": {
+            "task": "refresh_acra_targeted",
+            "schedule": crontab(day_of_week="wednesday", hour=6, minute=0),
         },
         # Rebuild the classified PDPC enforcement precedent index weekly (Sunday
         # 04:30 UTC). Feeds the "precedents per finding" feature from live data;

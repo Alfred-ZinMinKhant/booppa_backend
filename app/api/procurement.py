@@ -411,6 +411,7 @@ async def perform_unclaimed_vendor_quick_scan(
     `cached: True` and the original `scannedAt` — never presented as fresh.
     """
     import re
+    from app.services.acra_service import registered_since_year
     from app.services.evidence_enricher import fetch_acra_status
     from app.services.csp_sanctions import screen_entity, MAS_LIST_LABEL
     from app.services.pdpa_free_scan_service import run_free_scan
@@ -504,6 +505,12 @@ async def perform_unclaimed_vendor_quick_scan(
         "acraLive": acra_live,
         "entityType": entity_type,
         "registrationDate": acra_res.get("registration_date"),
+        # Derived from the LIVE ACRA response above, not from `discovered_vendors`
+        # — this payload already holds a fresher answer than the offline seed, so
+        # a registry lookup here would only risk contradicting it. Year only: the
+        # registration date is an unparsed registry string.
+        "registeredSince": registered_since_year(acra_res.get("registration_date")),
+        "registryStatus": acra_status or None,
         "sanctionsScreening": {
             "isClear": sanctions_clear,
             "status": sanctions_status,

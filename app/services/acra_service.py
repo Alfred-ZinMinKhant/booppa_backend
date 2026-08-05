@@ -22,8 +22,12 @@ exponential backoff honouring Retry-After, polite inter-page delay).
 """
 
 import asyncio
+import json
 import logging
+import re
 from typing import Any, Optional
+
+from sqlalchemy import func
 
 from app.core.config import settings
 from app.core.http_client import get_async_client
@@ -60,6 +64,111 @@ ACCEPTED_ENTITY_TYPES = {
 LIVE_STATUS_TOKENS = {"REGISTERED", "LIVE", "ACTIVE"}
 
 
+def registry_live_clause():
+    """SQL clause: `DiscoveredVendor` rows safe to show in a vendor listing.
+
+    The targeted refresh pass deliberately keeps ceased/struck-off entities (for a
+    UEN a customer actually looked up, "struck off" is the fact worth surfacing),
+    which means `discovered_vendors` is no longer a live-only table. Any endpoint
+    that BROWSES the table as a vendor directory must apply this, or a struck-off
+    company shows up as a discoverable vendor.
+
+    NULL passes: it means "never targeted-checked", which covers every row written
+    by the bulk sweep — and the sweep already dropped non-live records upstream in
+    `_normalize`. Token matching mirrors that same exact-match `LIVE_STATUS_TOKENS`
+    test so the two passes cannot disagree about what "live" means.
+
+    Lookups BY a specific UEN are not listings and should not use this — there the
+    ceased status is the answer, not a reason to hide the row.
+    """
+    from sqlalchemy import func, or_
+
+    return or_(
+        DiscoveredVendor.registry_status.is_(None),
+        func.upper(DiscoveredVendor.registry_status).in_(LIVE_STATUS_TOKENS),
+    )
+
+
+def collect_known_uens(db) -> list[str]:
+    """Every UEN that appears anywhere in Booppa's own data, uppercased + deduped.
+
+    This is the selection criterion for the targeted ACRA pass. The full register is
+    1.5M+ entities and the unfiltered sweep's `DEFAULT_MAX_RECORDS` slice is an
+    arbitrary offset-ordered 50k of them; neither is "the companies our customers
+    actually look at". This is.
+
+    Every source is queried independently and unioned in Python rather than as one
+    SQL UNION: the tables live in unrelated feature areas, several are large, and a
+    single failing source should not take down the whole collection. A source that
+    raises is logged and skipped — a short list is a smaller backfill, not a broken
+    one.
+    """
+    from app.core.models import (
+        CspProfile,
+        LeadCapture,
+        ManagedEntity,
+        ManagedVendor,
+        MarketplaceVendor,
+        PendingRfpIntake,
+        Report,
+        Subsidiary,
+        User,
+    )
+
+    uens: set[str] = set()
+
+    def _add(label: str, query_fn) -> None:
+        try:
+            rows = query_fn()
+        except Exception as e:  # noqa: BLE001 - one bad source must not sink the rest
+            logger.warning("[ACRA] collect_known_uens: source %s failed: %s", label, e)
+            return
+        before = len(uens)
+        for (value,) in rows:
+            if value and str(value).strip():
+                uens.add(str(value).strip().upper())
+        logger.debug("[ACRA] collect_known_uens: %s contributed %s new", label, len(uens) - before)
+
+    for label, model in (
+        ("User", User),
+        ("ManagedEntity", ManagedEntity),
+        ("MarketplaceVendor", MarketplaceVendor),
+        ("DiscoveredVendor", DiscoveredVendor),
+        ("CspProfile", CspProfile),
+        ("Subsidiary", Subsidiary),
+        ("PendingRfpIntake", PendingRfpIntake),
+        ("LeadCapture", LeadCapture),
+    ):
+        _add(label, lambda m=model: db.query(m.uen).filter(m.uen.isnot(None)).distinct().all())
+
+    # `ManagedVendor` carries no `uen` column of its own — the vendor's UEN lives on
+    # the linked user account, and `vendor_user_id` is NULL for not-yet-registered
+    # invitees, so this is an inner join by design (nothing to look up otherwise).
+    _add(
+        "ManagedVendor",
+        lambda: db.query(User.uen)
+        .join(ManagedVendor, ManagedVendor.vendor_user_id == User.id)
+        .filter(User.uen.isnot(None))
+        .distinct()
+        .all(),
+    )
+
+    # `assessment_data` is a `json` column, so `cast(col['uen'], String)` would
+    # silently never match — `.as_string()` is the only form that compares. Rows
+    # without a "uen" key yield SQL NULL and are dropped here rather than in Python.
+    _add(
+        "Report.assessment_data",
+        lambda: db.query(Report.assessment_data["uen"].as_string())
+        .filter(Report.assessment_data["uen"].as_string().isnot(None))
+        .distinct()
+        .all(),
+    )
+
+    result = sorted(uens)
+    logger.info("[ACRA] collect_known_uens: %s distinct UENs across all sources", len(result))
+    return result
+
+
 def _field(rec: dict, *names: str) -> str:
     """First non-empty value among the given field-name variants."""
     for n in names:
@@ -87,11 +196,21 @@ def _infer_industry(text: str) -> Optional[str]:
         return None
 
 
-def _normalize(rec: dict) -> Optional[dict]:
+def _normalize(rec: dict, *, require_live: bool = True) -> Optional[dict]:
     """Map a raw datastore record to DiscoveredVendor columns, or None to skip.
 
-    Skips non-accepted entity types and non-live registrations so the offline
-    table mirrors what the live lookup would report as `live=True`.
+    `require_live=True` (the bulk sweep) skips non-accepted entity types and
+    non-live registrations so the offline table mirrors what the live lookup would
+    report as `live=True`.
+
+    `require_live=False` (the targeted pass) keeps every record that has a UEN and
+    a name, and reports the raw registry status in `registry_status`. For a UEN a
+    customer actually looked up, "struck off" is the single most valuable fact in
+    the register — dropping it leaves the caller unable to distinguish a ceased
+    company from one we simply never fetched.
+
+    Both modes share this one field-mapping body on purpose: the dataset's column
+    names are the fragile part, and two copies would drift.
     """
     uen = _field(rec, "uen")
     name = _field(rec, "entity_name", "company_name")
@@ -99,14 +218,15 @@ def _normalize(rec: dict) -> Optional[dict]:
         return None
 
     entity_type = _field(rec, "entity_type_desc", "entity_type")
-    if entity_type and entity_type.upper() not in ACCEPTED_ENTITY_TYPES:
-        return None
-
     status = _field(rec, "uen_status_desc", "entity_status", "status")
-    if status and status.upper() not in LIVE_STATUS_TOKENS:
-        return None
 
-    return {
+    if require_live:
+        if entity_type and entity_type.upper() not in ACCEPTED_ENTITY_TYPES:
+            return None
+        if status and status.upper() not in LIVE_STATUS_TOKENS:
+            return None
+
+    row = {
         "uen": uen,
         "company_name": name,
         "entity_type": entity_type or None,
@@ -116,24 +236,40 @@ def _normalize(rec: dict) -> Optional[dict]:
         "source": "acra",
     }
 
+    if not require_live:
+        # Only the targeted pass may write these. The sweep sees live records
+        # exclusively, so anything it wrote would be an unearned positive claim.
+        row["registry_status"] = status or None
+        row["registry_checked_at"] = _dt_now()
 
-async def _fetch_page(client, dataset_id: str, offset: int) -> Optional[dict]:
-    """GET one datastore page, retrying on 429/5xx/network errors with
+    return row
+
+
+def _dt_now():
+    from datetime import datetime
+
+    return datetime.utcnow()
+
+
+async def _get_with_retry(client, params: dict, label: str) -> Optional[dict]:
+    """GET one datastore request, retrying on 429/5xx/network errors with
     exponential backoff (honouring Retry-After). Returns parsed JSON, or None
-    when the page can't be fetched after all retries."""
+    when the request can't be satisfied after all retries.
+
+    `label` only identifies the request in logs. Both the paginated sweep and the
+    targeted UEN fetch go through here so there is exactly one place defining how
+    politely we treat data.gov.sg.
+    """
     backoff = 2.0
     for attempt in range(1, MAX_PAGE_RETRIES + 1):
         try:
             resp = await client.get(
-                DATASTORE_URL,
-                params={"resource_id": dataset_id, "limit": PAGE_SIZE, "offset": offset},
-                headers={"User-Agent": USER_AGENT},
+                DATASTORE_URL, params=params, headers={"User-Agent": USER_AGENT}
             )
         except Exception as e:
             if attempt == MAX_PAGE_RETRIES:
                 logger.warning(
-                    "[ACRA] network error dataset=%s offset=%s after %s tries: %s",
-                    dataset_id, offset, attempt, e,
+                    "[ACRA] network error %s after %s tries: %s", label, attempt, e
                 )
                 return None
             await asyncio.sleep(backoff)
@@ -151,19 +287,25 @@ async def _fetch_page(client, dataset_id: str, offset: int) -> Optional[dict]:
                 wait_s = backoff
             wait_s = min(wait_s, 30.0)
             logger.info(
-                "[ACRA] HTTP %s dataset=%s offset=%s — retry %s/%s in %.0fs",
-                resp.status_code, dataset_id, offset, attempt, MAX_PAGE_RETRIES, wait_s,
+                "[ACRA] HTTP %s %s — retry %s/%s in %.0fs",
+                resp.status_code, label, attempt, MAX_PAGE_RETRIES, wait_s,
             )
             await asyncio.sleep(wait_s)
             backoff *= 2
             continue
 
-        logger.warning(
-            "[ACRA] HTTP %s dataset=%s offset=%s — giving up",
-            resp.status_code, dataset_id, offset,
-        )
+        logger.warning("[ACRA] HTTP %s %s — giving up", resp.status_code, label)
         return None
     return None
+
+
+async def _fetch_page(client, dataset_id: str, offset: int) -> Optional[dict]:
+    """GET one page of the full dataset sweep."""
+    return await _get_with_retry(
+        client,
+        {"resource_id": dataset_id, "limit": PAGE_SIZE, "offset": offset},
+        f"dataset={dataset_id} offset={offset}",
+    )
 
 
 async def _refresh_async(db, dataset_id: str, max_records: Optional[int]) -> int:
@@ -243,6 +385,238 @@ async def _refresh_async(db, dataset_id: str, max_records: Optional[int]) -> int
         dataset_id, scanned, upserted,
     )
     return upserted
+
+
+TARGETED_BATCH_SIZE = 50
+TARGETED_PROBE_SIZE = 5
+
+
+async def _probe_batching(client, dataset_id: str, uens: list[str]) -> bool:
+    """Does this datastore honour a LIST-valued `filters` (IN semantics)?
+
+    CKAN documents it, but the only usage proven in this repo sends a single UEN
+    (`evidence_enricher.py:201`), so we do not assume. Send a small list and check
+    the response actually spans more than one distinct UEN. A server that ignores
+    the list form typically matches nothing or echoes one row — either way we must
+    fall back, because silently accepting a 1-row answer for a 50-UEN request would
+    look like "49 companies not in ACRA" rather than like a broken query.
+    """
+    probe = uens[:TARGETED_PROBE_SIZE]
+    if len(probe) < 2:
+        return False
+    data = await _get_with_retry(
+        client,
+        {
+            "resource_id": dataset_id,
+            "limit": 100,
+            "filters": json.dumps({"uen": probe}),
+        },
+        f"batch-probe n={len(probe)}",
+    )
+    if not data:
+        return False
+    records = (data.get("result") or {}).get("records") or []
+    distinct = {_field(r, "uen").upper() for r in records if _field(r, "uen")}
+    return len(distinct) > 1
+
+
+async def _fetch_by_uens(client, dataset_id: str, uens: list[str]) -> tuple[list[dict], bool]:
+    """Fetch raw ACRA records for a specific list of UENs.
+
+    Returns `(records, batched)`. Uses the batched `filters` list form when the
+    probe shows the datastore honours it, otherwise one request per UEN.
+    """
+    batched = await _probe_batching(client, dataset_id, uens)
+    logger.info(
+        "[ACRA] targeted fetch: %s UENs, mode=%s",
+        len(uens), "batched" if batched else "per-UEN",
+    )
+
+    records: list[dict] = []
+    if batched:
+        chunks = [
+            uens[i : i + TARGETED_BATCH_SIZE]
+            for i in range(0, len(uens), TARGETED_BATCH_SIZE)
+        ]
+        for chunk in chunks:
+            data = await _get_with_retry(
+                client,
+                {
+                    "resource_id": dataset_id,
+                    "limit": len(chunk) * 2,
+                    "filters": json.dumps({"uen": chunk}),
+                },
+                f"targeted chunk n={len(chunk)}",
+            )
+            if data:
+                records.extend((data.get("result") or {}).get("records") or [])
+            await asyncio.sleep(INTER_PAGE_DELAY)
+    else:
+        for uen in uens:
+            data = await _get_with_retry(
+                client,
+                {
+                    "resource_id": dataset_id,
+                    "limit": 1,
+                    "filters": json.dumps({"uen": uen}),
+                },
+                f"targeted uen={uen}",
+            )
+            if data:
+                records.extend((data.get("result") or {}).get("records") or [])
+            await asyncio.sleep(INTER_PAGE_DELAY)
+
+    return records, batched
+
+
+async def _refresh_targeted_async(db, dataset_id: str, uens: list[str]) -> dict:
+    """Fetch and upsert ACRA records for `uens`, keeping ceased entities."""
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    if not uens:
+        return {"requested": 0, "matched": 0, "upserted": 0, "unmatched": 0, "batched": False}
+
+    async with get_async_client(timeout=30.0) as client:
+        records, batched = await _fetch_by_uens(client, dataset_id, uens)
+
+    requested = set(uens)
+    rows: dict[str, dict] = {}
+    for rec in records:
+        row = _normalize(rec, require_live=False)
+        if row is None:
+            continue
+        key = row["uen"].upper()
+        # Only keep records we actually asked for. A datastore that ignores the
+        # filter would otherwise let arbitrary rows into the table.
+        if key not in requested:
+            continue
+        row["updated_at"] = _dt_now()
+        rows[key] = row
+
+    upserted = 0
+    batch = list(rows.values())
+    for i in range(0, len(batch), 500):
+        chunk = batch[i : i + 500]
+        stmt = pg_insert(DiscoveredVendor.__table__).values(chunk)
+        # A SEPARATE allowlist from the sweep's, deliberately. This one writes
+        # `registry_status` / `registry_checked_at`; the sweep's must never list
+        # them, or the next monthly run would overwrite a targeted "Struck Off"
+        # with a stale value. `verified_hint` / `verified_at` stay out of both —
+        # they are fulfillment's provenance writes (see `_flush`).
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["uen"],
+            set_={
+                "company_name": stmt.excluded.company_name,
+                "entity_type": stmt.excluded.entity_type,
+                "registration_date": stmt.excluded.registration_date,
+                "industry": stmt.excluded.industry,
+                "source": stmt.excluded.source,
+                "registry_status": stmt.excluded.registry_status,
+                "registry_checked_at": stmt.excluded.registry_checked_at,
+                "updated_at": stmt.excluded.updated_at,
+            },
+        )
+        db.execute(stmt)
+        db.commit()
+        upserted += len(chunk)
+
+    result = {
+        "requested": len(uens),
+        "matched": len(rows),
+        "upserted": upserted,
+        "unmatched": len(uens) - len(rows),
+        "batched": batched,
+    }
+    logger.info("[ACRA] targeted refresh complete: %s", result)
+    return result
+
+
+def refresh_acra_targeted(db, uens: Optional[list[str]] = None,
+                          dataset_id: Optional[str] = None) -> dict:
+    """Refresh ACRA facts for UENs Booppa has actually touched.
+
+    Runs ALONGSIDE `refresh_acra`, never replacing it: the unfiltered sweep still
+    seeds a local fallback for an arbitrary new lookup, while this pass gives the
+    companies our customers really look at a real registration date and a current
+    registry status.
+
+    `uens` defaults to `collect_known_uens(db)`. Returns coverage counts —
+    `{"requested", "matched", "upserted", "unmatched", "batched"}` — because
+    "matched" is the evidence for whether a "registered since" claim is worth
+    surfacing at all.
+    """
+    dataset_id = dataset_id or settings.ACRA_DATASET_ID
+    if uens is None:
+        uens = collect_known_uens(db)
+    uens = sorted({u.strip().upper() for u in uens if u and str(u).strip()})
+    return asyncio.run(_refresh_targeted_async(db, dataset_id, uens))
+
+
+EMPTY_REGISTRY_FACTS = {"registered_since": None, "registry_status": None}
+
+
+def registered_since_year(registration_date) -> Optional[int]:
+    """The 4-digit year from a raw ACRA registration date, or None.
+
+    `registration_date` is stored exactly as ACRA wrote it (`acra_service` never
+    parses it), and the observed forms vary. A year is the narrowest claim the
+    raw string can actually support, so that is all we ever return — a full date
+    would be asserting a precision we have not verified.
+    """
+    if not registration_date:
+        return None
+    match = re.search(r"(1[89]\d{2}|20\d{2})", str(registration_date))
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def resolve_registry_facts_bulk(db, uens) -> dict:
+    """Map UEN -> `{"registered_since", "registry_status"}` for the given UENs.
+
+    Every requested UEN gets an entry, including ones with no `DiscoveredVendor`
+    row at all, so callers never have to distinguish "absent from the map" from
+    "absent from the register".
+
+    `registry_status` is None whenever the targeted pass has not checked this UEN
+    (`registry_status IS NULL`). None means UNKNOWN, not live — renderers must
+    omit the field entirely rather than defaulting it to a positive status. The
+    bulk form exists because the portfolio serializers run over whole lists; a
+    per-row call there is an N+1.
+    """
+    wanted = sorted({u.strip().upper() for u in uens if u and str(u).strip()})
+    facts = {u: dict(EMPTY_REGISTRY_FACTS) for u in wanted}
+    if not wanted:
+        return facts
+    try:
+        rows = (
+            db.query(
+                DiscoveredVendor.uen,
+                DiscoveredVendor.registration_date,
+                DiscoveredVendor.registry_status,
+            )
+            .filter(func.upper(DiscoveredVendor.uen).in_(wanted))
+            .all()
+        )
+    except Exception as e:
+        # A profile must still render when the registry lookup fails. Absent
+        # facts are the honest fallback; raising would take down the whole page
+        # over a supplementary field.
+        logger.warning(f"resolve_registry_facts_bulk failed: {e}")
+        return facts
+    for uen, reg_date, status in rows:
+        facts[uen.strip().upper()] = {
+            "registered_since": registered_since_year(reg_date),
+            "registry_status": status or None,
+        }
+    return facts
+
+
+def resolve_registry_facts(db, uen: Optional[str]) -> dict:
+    """Single-UEN form of `resolve_registry_facts_bulk`. Never raises."""
+    if not uen:
+        return dict(EMPTY_REGISTRY_FACTS)
+    return resolve_registry_facts_bulk(db, [uen])[uen.strip().upper()]
 
 
 def refresh_acra(db, dataset_id: Optional[str] = None,

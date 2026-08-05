@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
+from app.services.acra_service import resolve_registry_facts
 from app.core.models import MarketplaceVendor, ImportBatch
 from app.core.models import VerifyRecord, Proof, LifecycleStatus
 from app.core.models import VendorScore
@@ -364,6 +365,10 @@ def get_vendor_by_slug(db: Session, slug: str) -> Optional[dict]:
         "contact_email": v.contact_email,
         "scores": scores,
         "status": status,
+        # ACRA registry facts. `registry_status` is None until the targeted pass
+        # has actually checked this UEN — None is UNKNOWN, never "live", so the
+        # UI must omit it rather than assume a positive status.
+        **resolve_registry_facts(db, v.uen),
     }
 
 

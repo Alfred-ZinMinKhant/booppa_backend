@@ -25,6 +25,11 @@ from sqlalchemy.orm import Session
 from app.core.auth import verify_access_token
 from app.core.db import get_db
 from app.core.models import ManagedEntity, User
+from app.services.acra_service import (
+    EMPTY_REGISTRY_FACTS,
+    resolve_registry_facts,
+    resolve_registry_facts_bulk,
+)
 from app.services.managed_entity_service import (
     UenMismatch,
     find_active_entity,
@@ -49,8 +54,17 @@ def _resolve_user(token: str | None, db: Session) -> User:
     return user
 
 
-def _serialize(row: ManagedEntity) -> dict:
+def _serialize(row: ManagedEntity, db: Session | None = None,
+               facts: dict | None = None) -> dict:
+    # Registry facts come either precomputed (list endpoints resolve the whole
+    # page in one query — a per-row lookup here would be an N+1) or resolved on
+    # the spot for single-entity reads. Neither path may invent a status: absent
+    # stays absent.
+    if facts is None:
+        facts = (resolve_registry_facts(db, row.uen) if db is not None
+                 else dict(EMPTY_REGISTRY_FACTS))
     return {
+        **facts,
         "id": str(row.id),
         "company_name": row.company_name,
         # `legal_name` is what ACRA returned; absent means the entity was accepted
@@ -107,7 +121,14 @@ def list_entities(
     if not include_archived:
         q = q.filter(ManagedEntity.status == "ACTIVE")
     rows = q.order_by(ManagedEntity.company_name.asc()).all()
-    return {"items": [_serialize(r) for r in rows]}
+    # One bulk lookup for the whole page rather than a query per row.
+    facts = resolve_registry_facts_bulk(db, [r.uen for r in rows])
+    return {"items": [
+        # An entity with no UEN still gets both keys, explicitly null — a row
+        # that silently omits them would look like a different shape to the client.
+        _serialize(r, facts=facts.get((r.uen or "").strip().upper()) or EMPTY_REGISTRY_FACTS)
+        for r in rows
+    ]}
 
 
 @router.post("")
@@ -149,7 +170,7 @@ async def create_entity(
     except UenMismatch as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    return {"entity": _serialize(result.entity)}
+    return {"entity": _serialize(result.entity, db)}
 
 
 @router.get("/{entity_id}")
@@ -159,7 +180,7 @@ def get_entity(
     db: Session = Depends(get_db),
 ):
     user = _resolve_user(token, db)
-    return {"entity": _serialize(_owned_or_404(entity_id, user, db))}
+    return {"entity": _serialize(_owned_or_404(entity_id, user, db), db)}
 
 
 @router.patch("/{entity_id}")
@@ -198,7 +219,7 @@ def update_entity(
 
     db.commit()
     db.refresh(row)
-    return {"entity": _serialize(row)}
+    return {"entity": _serialize(row, db)}
 
 
 @router.delete("/{entity_id}")
@@ -213,4 +234,4 @@ def archive_entity(
     row = _owned_or_404(entity_id, user, db)
     row.status = "ARCHIVED"
     db.commit()
-    return {"success": True, "entity": _serialize(row)}
+    return {"success": True, "entity": _serialize(row, db)}

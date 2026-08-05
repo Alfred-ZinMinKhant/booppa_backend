@@ -1625,6 +1625,16 @@ class DiscoveredVendor(Base):
     entity_type = Column(String(100), nullable=True)  # PRIVATE COMPANY, SOLE-PROP, etc.
     registration_date = Column(String(50), nullable=True)
 
+    # Raw ACRA registry status ("Live", "Struck Off", "Cancelled", …) as written by
+    # the TARGETED refresh pass only. The unfiltered bulk sweep drops every non-live
+    # record before it reaches the upsert, so it can only ever confirm "Live" — it
+    # deliberately leaves both columns out of its ON CONFLICT set_ so a monthly run
+    # cannot overwrite a targeted "Struck Off" back to a stale value.
+    # NULL means "never targeted-checked", which is NOT the same as "live": readers
+    # must render it as absent, never as a positive status.
+    registry_status = Column(String(50), nullable=True)
+    registry_checked_at = Column(DateTime, nullable=True)
+
     industry = Column(String(100), nullable=True, index=True)
     country = Column(String(100), default="Singapore", nullable=False)
     city = Column(String(100), nullable=True)

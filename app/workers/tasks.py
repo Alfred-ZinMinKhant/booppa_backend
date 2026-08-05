@@ -7174,6 +7174,55 @@ def refresh_acra():
             pass
 
 
+@celery_app.task(name="refresh_acra_targeted")
+def refresh_acra_targeted():
+    """
+    Refresh ACRA facts for the UENs Booppa has actually touched.
+
+    Runs ALONGSIDE `refresh_acra`, not instead of it. The monthly sweep pulls an
+    arbitrary offset-ordered 50k slice of a 1.5M-entity register to seed a local
+    fallback for an unknown future lookup; this pass fetches the specific
+    companies that appear somewhere in our own data, so every vendor/buyer profile
+    can show a real registration date and current registry status.
+
+    Unlike the sweep, this keeps ceased/struck-off entities and records their
+    status — for a UEN a customer actually looked up, that is the most valuable
+    fact in the register.
+
+    Weekly, offset from the monthly sweep. Same Redis SETNX lock discipline as
+    `refresh_acra` so overlapping runs can't stack up.
+    """
+    from app.services.acra_service import refresh_acra_targeted as _refresh_targeted
+
+    lock_key = "lock:refresh_acra_targeted"
+    redis_client = celery_app.backend.client
+    try:
+        got_lock = redis_client.set(lock_key, "1", nx=True, ex=3600)
+    except Exception as lock_err:  # pragma: no cover - lock is best-effort
+        logger.warning(f"[ACRA] targeted lock acquire failed, running without lock: {lock_err}")
+        got_lock = True
+
+    if not got_lock:
+        logger.info("[ACRA] targeted refresh already in progress; skipping this run")
+        return
+
+    db = SessionLocal()
+    try:
+        result = _refresh_targeted(db)
+        # Log the coverage numbers, not just a success line: `unmatched` is the
+        # signal for how far a "registered since" claim can actually be trusted.
+        logger.info(f"[ACRA] refresh_acra_targeted complete: {result}")
+    except Exception as exc:
+        logger.error(f"[ACRA] refresh_acra_targeted failed: {exc}")
+        db.rollback()
+    finally:
+        db.close()
+        try:
+            redis_client.delete(lock_key)
+        except Exception:  # pragma: no cover - lock will expire on its own
+            pass
+
+
 @celery_app.task(name="build_pdpc_precedent_index")
 def build_pdpc_precedent_index():
     """

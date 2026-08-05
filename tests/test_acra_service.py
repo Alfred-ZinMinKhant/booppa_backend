@@ -67,3 +67,145 @@ def test_alternate_field_names_are_supported():
     assert row is not None
     assert row["company_name"] == "BETA LLP"
     assert row["registration_date"] == "2020-01-01"
+
+
+# ---------------------------------------------------------------------------
+# Targeted pass (`require_live=False`) — keeps ceased entities, records status.
+#
+# These pin the two invariants that make the targeted pass safe to run beside the
+# monthly sweep: the sweep must never emit a registry status, and the targeted
+# status must survive a later sweep upsert of the same UEN.
+# ---------------------------------------------------------------------------
+
+import asyncio
+import json
+
+import pytest
+
+
+def test_targeted_keeps_ceased_record_that_sweep_drops():
+    """The same record: dropped by the sweep, kept with its status by the targeted pass."""
+    rec = _rec(uen_status_desc="Struck Off")
+
+    assert acr._normalize(rec) is None
+
+    row = acr._normalize(rec, require_live=False)
+    assert row is not None
+    assert row["registry_status"] == "Struck Off"
+    assert row["registry_checked_at"] is not None
+    assert row["uen"] == "201812345A"
+
+
+def test_targeted_keeps_entity_type_outside_sweep_allowlist():
+    rec = _rec(entity_type_desc="PUBLIC ACCOUNTING FIRM")
+    assert acr._normalize(rec) is None
+    assert acr._normalize(rec, require_live=False) is not None
+
+
+def test_sweep_never_emits_registry_status():
+    """The sweep only ever sees live rows, so any status it wrote would be an
+    unearned positive claim — and would clobber a targeted 'Struck Off'."""
+    row = acr._normalize(_rec())
+    assert "registry_status" not in row
+    assert "registry_checked_at" not in row
+
+
+class _FakeResp:
+    status_code = 200
+    headers: dict = {}
+
+    def __init__(self, data):
+        self._data = data
+
+    def json(self):
+        return self._data
+
+
+class _FakeClient:
+    """Datastore stub. `honours_list=False` mimics a server that ignores the
+    list-valued `filters` and answers with a single row."""
+
+    def __init__(self, records, honours_list=True):
+        self._records = records
+        self._honours_list = honours_list
+        self.requests: list[dict] = []
+
+    async def get(self, url, params=None, headers=None):
+        self.requests.append(params)
+        wanted = json.loads(params["filters"])["uen"]
+        if isinstance(wanted, str):
+            wanted = [wanted]
+        hits = [r for r in self._records if r["uen"] in wanted]
+        if not self._honours_list:
+            hits = hits[:1]
+        return _FakeResp({"result": {"records": hits}})
+
+
+@pytest.fixture
+def _no_delay(monkeypatch):
+    monkeypatch.setattr(acr, "INTER_PAGE_DELAY", 0)
+
+
+TARGET_RECORDS = [
+    _rec(uen="200011111A", entity_name="CEASED CO", uen_status_desc="Struck Off"),
+    _rec(uen="200022222B", entity_name="LIVE CO", uen_status_desc="Registered"),
+]
+TARGET_UENS = ["200011111A", "200022222B"]
+
+
+def test_batch_probe_detects_working_list_filter(_no_delay):
+    client = _FakeClient(TARGET_RECORDS, honours_list=True)
+    records, batched = asyncio.run(acr._fetch_by_uens(client, "ds", TARGET_UENS))
+    assert batched is True
+    assert {r["uen"] for r in records} == set(TARGET_UENS)
+
+
+def test_falls_back_to_per_uen_and_still_matches_every_uen(_no_delay):
+    """A server that ignores the list form must not look like '1 match, N-1 not in
+    ACRA' — the fallback has to recover full coverage."""
+    client = _FakeClient(TARGET_RECORDS, honours_list=False)
+    records, batched = asyncio.run(acr._fetch_by_uens(client, "ds", TARGET_UENS))
+    assert batched is False
+    assert {r["uen"] for r in records} == set(TARGET_UENS)
+    # one probe + one request per UEN
+    assert len(client.requests) == 1 + len(TARGET_UENS)
+
+
+# ── Profile surfacing: registry facts ────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("2018-03-04", 2018),
+        ("04/03/2018", 2018),
+        ("1985-01-01", 1985),
+        (None, None),
+        ("", None),
+        ("n/a", None),
+    ],
+)
+def test_registered_since_year_extracts_only_a_year(raw, expected):
+    """The stored registration date is an unparsed registry string, so a year is
+    the narrowest claim it can support — and an unparseable value must yield None
+    rather than a guess."""
+    assert acr.registered_since_year(raw) == expected
+
+
+class _BoomSession:
+    def query(self, *a, **kw):
+        raise RuntimeError("registry table unavailable")
+
+
+def test_registry_facts_absent_rather_than_raising_when_lookup_fails():
+    """A profile page must still render when the registry lookup breaks. Absent
+    facts are the honest fallback; a raise would take the whole page down over a
+    supplementary field."""
+    facts = acr.resolve_registry_facts(_BoomSession(), "200011111A")
+    assert facts == {"registered_since": None, "registry_status": None}
+
+
+def test_registry_facts_never_default_status_to_live():
+    """NULL registry_status means 'never targeted-checked', NOT 'live'. Every
+    unknown path must surface None so renderers omit the field."""
+    assert acr.resolve_registry_facts(_BoomSession(), None)["registry_status"] is None
+    assert acr.resolve_registry_facts_bulk(_BoomSession(), []) == {}

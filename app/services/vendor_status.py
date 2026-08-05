@@ -41,7 +41,8 @@ from app.core.models import (
     VerifyRecord, ProofView, ActivityLog,
     VendorSector, VendorScore, GovernanceRecord,
 )
-from app.core.models import VendorStatusSnapshot, ScoreSnapshot, AnomalyEvent
+from app.core.models import VendorStatusSnapshot, ScoreSnapshot, AnomalyEvent, User
+from app.services.acra_service import resolve_registry_facts
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +232,12 @@ def get_vendor_status(db: Session, vendor_id: str) -> dict:
     readiness   = compute_procurement_readiness(depth, monitoring, risk)
     summary     = get_readiness_summary(readiness, depth, monitoring, risk)
 
+    _vendor_uen = (
+        db.query(User.uen).filter(User.id == vendor_id).scalar()
+        if vendor_id else None
+    )
+    _registry = resolve_registry_facts(db, _vendor_uen)
+
     # Verification detail
     record = db.query(VerifyRecord).filter(VerifyRecord.vendor_id == vendor_id).first()
     expiry   = record.expires_at if record else None
@@ -329,6 +336,13 @@ def get_vendor_status(db: Session, vendor_id: str) -> dict:
             "highestSeverity":  highest_severity,
             "openAnomalies":    anomaly_list,
         },
+        # ACRA registry facts. Deliberately NOT inputs to any of the four signals
+        # above — they are context for a human reading the profile, so the scoring
+        # logic is unchanged and `STATUS_LOGIC_VERSION` does not move. A vendor with
+        # no linked UEN, or one the targeted pass has never checked, gets null here;
+        # null is unknown, never "live".
+        "registeredSince":      _registry.get("registered_since"),
+        "registryStatus":       _registry.get("registry_status"),
         "procurementReadiness": readiness,
         "readinessSummary":     summary,
         "sectorPercentile":     sector_pct,

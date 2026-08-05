@@ -22,6 +22,11 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db, get_current_user
+from app.services.acra_service import (
+    EMPTY_REGISTRY_FACTS,
+    resolve_registry_facts,
+    resolve_registry_facts_bulk,
+)
 from app.core.models import User, Report
 from app.core.models import ManagedVendor
 
@@ -113,8 +118,19 @@ def _compute_vendor_risk(vendor_user: Optional[User], db: Session) -> dict:
     }
 
 
-def _serialize_vendor(mv: ManagedVendor, vendor_user: Optional[User] = None) -> dict:
+def _serialize_vendor(mv: ManagedVendor, vendor_user: Optional[User] = None,
+                      db: Optional[Session] = None,
+                      facts: Optional[dict] = None) -> dict:
+    # The UEN lives on the linked user account, not on `ManagedVendor` — an
+    # invitee who has not registered yet has no UEN and therefore no registry
+    # facts, which is correctly indistinguishable from "never checked": both
+    # render as absent. List callers pass `facts` precomputed to avoid an N+1.
+    if facts is None:
+        uen = getattr(vendor_user, "uen", None) if vendor_user else None
+        facts = (resolve_registry_facts(db, uen) if db is not None
+                 else dict(EMPTY_REGISTRY_FACTS))
     return {
+        **facts,
         "id": str(mv.id),
         "vendor_user_id": str(mv.vendor_user_id) if mv.vendor_user_id else None,
         "vendor_name": mv.vendor_name or (vendor_user.company if vendor_user and hasattr(vendor_user, "company") else None),
@@ -154,12 +170,26 @@ async def get_portfolio(
         .all()
     )
 
+    vendor_users = {}
+    for mv in vendors:
+        if mv.vendor_user_id:
+            vendor_users[mv.id] = (
+                db.query(User).filter(User.id == mv.vendor_user_id).first()
+            )
+
+    # One registry lookup for the whole portfolio, not one per vendor.
+    facts_by_uen = resolve_registry_facts_bulk(
+        db, [getattr(u, "uen", None) for u in vendor_users.values()]
+    )
+
     result = []
     for mv in vendors:
-        vendor_user = None
-        if mv.vendor_user_id:
-            vendor_user = db.query(User).filter(User.id == mv.vendor_user_id).first()
-        result.append(_serialize_vendor(mv, vendor_user))
+        vendor_user = vendor_users.get(mv.id)
+        uen = (getattr(vendor_user, "uen", None) or "").strip().upper()
+        result.append(
+            _serialize_vendor(mv, vendor_user,
+                              facts=facts_by_uen.get(uen) or EMPTY_REGISTRY_FACTS)
+        )
 
     # Aggregate risk counts
     risk_counts = {"CLEAN": 0, "WATCH": 0, "FLAGGED": 0, "CRITICAL": 0, "UNKNOWN": 0}
@@ -205,7 +235,7 @@ async def add_vendor(
                 existing.updated_at = datetime.now(timezone.utc)
                 db.commit()
                 db.refresh(existing)
-                return {"created": False, "reactivated": True, "vendor": _serialize_vendor(existing, vendor_user)}
+                return {"created": False, "reactivated": True, "vendor": _serialize_vendor(existing, vendor_user, db)}
             raise HTTPException(status_code=409, detail="Vendor already in portfolio.")
 
     # Compute initial risk snapshot
@@ -229,7 +259,7 @@ async def add_vendor(
 
     return {
         "created": True,
-        "vendor": _serialize_vendor(mv, vendor_user),
+        "vendor": _serialize_vendor(mv, vendor_user, db),
     }
 
 
@@ -271,7 +301,7 @@ async def update_vendor(
     if mv.vendor_user_id:
         vendor_user = db.query(User).filter(User.id == mv.vendor_user_id).first()
 
-    return {"updated": True, "vendor": _serialize_vendor(mv, vendor_user)}
+    return {"updated": True, "vendor": _serialize_vendor(mv, vendor_user, db)}
 
 
 @router.delete("/vendors/{vendor_id}")
@@ -326,7 +356,7 @@ async def refresh_vendor_snapshot(
     db.commit()
     db.refresh(mv)
 
-    return {"refreshed": True, "vendor": _serialize_vendor(mv, vendor_user)}
+    return {"refreshed": True, "vendor": _serialize_vendor(mv, vendor_user, db)}
 
 
 @router.get("/risk-summary")

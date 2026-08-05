@@ -26,7 +26,12 @@ async def search_discovered(
     """Search discovered vendors."""
     from sqlalchemy import or_
 
-    query = db.query(DiscoveredVendor)
+    from app.services.acra_service import registry_live_clause
+
+    # This endpoint browses `discovered_vendors` as a vendor directory, and the
+    # targeted ACRA pass now writes ceased/struck-off entities into that table.
+    # Without this clause they would surface here as discoverable vendors.
+    query = db.query(DiscoveredVendor).filter(registry_live_clause())
 
     if q:
         search = f"%{q}%"

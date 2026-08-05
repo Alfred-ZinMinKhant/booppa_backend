@@ -393,8 +393,12 @@ def get_stats(db: Session = Depends(get_db)):
         .count()
     )
 
-    # Discovered vendors from ACRA/GeBIZ data
-    discovered = db.query(DiscoveredVendor).count()
+    # Discovered vendors from ACRA/GeBIZ data. Excludes entities the targeted ACRA
+    # pass found to be ceased/struck-off — this is a headline "vendors we can point
+    # you at" stat, and counting dead registrations would inflate it.
+    from app.services.acra_service import registry_live_clause
+
+    discovered = db.query(DiscoveredVendor).filter(registry_live_clause()).count()
 
     return {
         "total_vendors":    total_vendors,

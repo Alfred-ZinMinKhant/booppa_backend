@@ -1839,6 +1839,11 @@ def _serialize_profile(p: CspProfile) -> dict:
     return {
         "id": str(p.id), "legal_name": p.legal_name, "uen": p.uen,
         "acra_reg_status":     str(p.acra_reg_status),
+        # CSP profiles carry their own ACRA columns, so these mirror those rather
+        # than hitting `discovered_vendors`. `registry_status` is None when the
+        # profile has no recorded status — absent, not "live".
+        "registered_since":    p.acra_reg_date.year if p.acra_reg_date else None,
+        "registry_status":     str(p.acra_reg_status) if p.acra_reg_status else None,
         "acra_reg_number":     p.acra_reg_number,
         "acra_renewal_date":   p.acra_renewal_date.isoformat() if p.acra_renewal_date else None,
         "rqi_name":            p.rqi_name,
