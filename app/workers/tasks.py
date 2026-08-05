@@ -7174,8 +7174,15 @@ def refresh_acra():
             pass
 
 
+# Ceiling on how many times a backfill may re-queue itself. At ~45k UENs and a
+# few thousand per bounded pass this is generous headroom; it exists so a bug
+# that always reports `remaining > 0` burns a bounded number of runs instead of
+# chaining forever.
+ACRA_TARGETED_MAX_LINKS = 60
+
+
 @celery_app.task(name="refresh_acra_targeted")
-def refresh_acra_targeted():
+def refresh_acra_targeted(_link: int = 0):
     """
     Refresh ACRA facts for the UENs Booppa has actually touched.
 
@@ -7191,6 +7198,13 @@ def refresh_acra_targeted():
 
     Weekly, offset from the monthly sweep. Same Redis SETNX lock discipline as
     `refresh_acra` so overlapping runs can't stack up.
+
+    ONE CALL IS ONE BOUNDED PASS, not the whole backfill. The service layer stops
+    on a wall-clock budget and reports what it did not reach; if work remains,
+    this task re-queues itself and the next link resumes where this one stopped.
+    Chaining rather than one long task is deliberate — `booppa-worker` runs
+    concurrency 2 across both queues, and a multi-hour task would hold half the
+    fulfillment capacity for the duration.
     """
     from app.services.acra_service import refresh_acra_targeted as _refresh_targeted
 
@@ -7204,23 +7218,48 @@ def refresh_acra_targeted():
 
     if not got_lock:
         logger.info("[ACRA] targeted refresh already in progress; skipping this run")
-        return
+        return {"skipped": "locked"}
 
     db = SessionLocal()
+    result = None
     try:
         result = _refresh_targeted(db)
         # Log the coverage numbers, not just a success line: `unmatched` is the
         # signal for how far a "registered since" claim can actually be trusted.
-        logger.info(f"[ACRA] refresh_acra_targeted complete: {result}")
+        logger.info(f"[ACRA] refresh_acra_targeted link {_link}: {result}")
     except Exception as exc:
+        # Re-raised, not swallowed. The first production run returned None after
+        # a SoftTimeLimitExceeded and Celery recorded it as "succeeded" — on a
+        # weekly schedule that would have failed silently forever.
         logger.error(f"[ACRA] refresh_acra_targeted failed: {exc}")
         db.rollback()
+        raise
     finally:
         db.close()
         try:
             redis_client.delete(lock_key)
         except Exception:  # pragma: no cover - lock will expire on its own
             pass
+
+    # Queued only after the lock is released above, or the next link would find
+    # the lock still held and skip itself.
+    if not result.get("complete"):
+        if result.get("processed", 0) <= 0:
+            # No forward progress: chaining again would repeat the same failure.
+            logger.error(
+                "[ACRA] targeted pass made no progress (%s remaining); stopping the chain",
+                result.get("remaining"),
+            )
+        elif _link + 1 >= ACRA_TARGETED_MAX_LINKS:
+            logger.error(
+                "[ACRA] targeted backfill hit the %s-link ceiling with %s UENs "
+                "remaining; stopping",
+                ACRA_TARGETED_MAX_LINKS, result.get("remaining"),
+            )
+        else:
+            refresh_acra_targeted.apply_async(kwargs={"_link": _link + 1}, countdown=10)
+
+    return result
 
 
 @celery_app.task(name="build_pdpc_precedent_index")

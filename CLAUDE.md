@@ -42,7 +42,7 @@ alembic upgrade head                                   # apply
 alembic revision --autogenerate -m "<msg>"             # create new
 ```
 
-`entrypoint.sh` runs `alembic upgrade head` before uvicorn boots in containers.
+`entrypoint.sh` runs `alembic upgrade head` before uvicorn **only when `RUN_MIGRATIONS_ON_BOOT=1`**, which production does not set (replicas must not race each other on boot). See the deployment section — pushing to `main` does not migrate.
 
 ### Lint / format
 
@@ -162,7 +162,11 @@ Sibling Next.js repo at `../booppa-nextjs`. Two polling contracts the frontend d
 
 ## Deployment
 
-`entrypoint.sh` runs `alembic upgrade head` then uvicorn. ECS task definitions are **generated at deploy time** by `.github/workflows/ci.yml` (heredocs for app/worker/cms, plus a `jq` transform of the worker def for beat) and by `scripts/deploy_cloudflared_tunnel.sh`. They are gitignored, not committed — the previously committed `task-def-*.json` files had drifted badly from what was running and have been deleted. `ci.yml` is the source of truth for what gets registered; `aws ecs describe-task-definition` is the source of truth for what is running.
+**Code and schema deploy on separate paths, and a push only moves one of them.** `entrypoint.sh` gates `alembic upgrade head` behind `RUN_MIGRATIONS_ON_BOOT=1`, which is unset in ECS, so containers boot without migrating. Migrations run as a one-off ECS task in `ci.yml` under `if: github.event.inputs.run_migrations == 'true'` — **a `workflow_dispatch` only**. A push to `main` deploys the new image against the OLD schema.
+
+So a migration in your commit does NOT reach production by pushing. Trigger the workflow manually with `run_migrations=true`, and verify with `select version_num from alembic_version` through `scripts/db_tunnel.sh` rather than inferring it. In particular, **a new endpoint answering 401 instead of 404 proves only that the code deployed** — it says nothing about the schema. This exact inference caused a targeted-ACRA backfill to run for 250s against columns that did not exist.
+
+ECS task definitions are **generated at deploy time** by `.github/workflows/ci.yml` (heredocs for app/worker/cms, plus a `jq` transform of the worker def for beat) and by `scripts/deploy_cloudflared_tunnel.sh`. They are gitignored, not committed — the previously committed `task-def-*.json` files had drifted badly from what was running and have been deleted. `ci.yml` is the source of truth for what gets registered; `aws ecs describe-task-definition` is the source of truth for what is running.
 
 **Reaching the production database.** `booppa-postgres` is VPC-only and not publicly accessible; there is no bastion. Run `scripts/db_tunnel.sh` to SSM-port-forward `localhost:5433` through a running `booppa-app` task. Credentials are **not** in `.env` (that file holds local-only creds and will fail with `password authentication failed`) — pull them from Secrets Manager:
 

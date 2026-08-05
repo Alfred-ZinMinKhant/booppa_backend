@@ -209,3 +209,95 @@ def test_registry_facts_never_default_status_to_live():
     unknown path must surface None so renderers omit the field."""
     assert acr.resolve_registry_facts(_BoomSession(), None)["registry_status"] is None
     assert acr.resolve_registry_facts_bulk(_BoomSession(), []) == {}
+
+
+def _expire_after_first_call():
+    """monotonic() stub that jumps far past any budget on every call.
+
+    Deliberately not "0 first, then large": `acr.time` is the shared stdlib
+    module and asyncio's event loop reads monotonic() as its own clock, so a
+    stub keyed on call ordering hands its first value to the loop instead of to
+    the deadline. Any two consecutive reads must exceed the budget.
+    """
+    calls = {"n": 0}
+
+    def _mono():
+        calls["n"] += 1
+        return calls["n"] * 1000.0
+
+    return _mono
+
+
+# ── Resumability: a bounded pass must persist and continue ───────────────────
+
+
+def test_deadline_stops_the_pass_but_keeps_what_it_wrote(_no_delay, monkeypatch):
+    """The failure this guards against actually happened in production: the pass
+    fetched everything before writing anything, ran out of time, and persisted
+    zero rows after 250 seconds of load on data.gov.sg. Each chunk must be
+    written as it lands, and the run must report what it did not reach."""
+    uens = [f"20001{i:04d}A" for i in range(200)]
+    records = [_rec(uen=u, entity_name=f"CO {u}", uen_status_desc="Registered")
+               for u in uens]
+    client = _FakeClient(records, honours_list=True)
+
+    written: list[dict] = []
+    monkeypatch.setattr(acr, "_upsert_targeted",
+                        lambda db, rows: (written.extend(rows), len(rows))[1])
+    # Budget expires after the first chunk. A counter rather than a fixed list:
+    # `acr.time` is the shared stdlib module, so monotonic() is called more often
+    # than just by the deadline check and an exhaustible iterator would blow up.
+    monkeypatch.setattr(acr.time, "monotonic", _expire_after_first_call())
+
+    result = asyncio.run(acr._refresh_targeted_async(None, "ds", uens, budget_seconds=1, client=client))
+
+    assert result["complete"] is False
+    assert result["remaining"] == len(uens) - result["processed"]
+    assert result["processed"] > 0
+    # The decisive assertion: work reached the database before the deadline hit.
+    assert len(written) == result["processed"] > 0
+
+
+def test_unmatched_counts_only_what_was_actually_processed(_no_delay, monkeypatch):
+    """A UEN the pass never reached is not evidence of absence from the register.
+    Counting unreached UENs as `unmatched` would overstate how many of our UENs
+    ACRA cannot find — the number we use to judge the claim's trustworthiness."""
+    uens = [f"20002{i:04d}B" for i in range(200)]
+    client = _FakeClient([], honours_list=True)  # nothing matches
+    monkeypatch.setattr(acr, "_upsert_targeted", lambda db, rows: len(rows))
+    monkeypatch.setattr(acr.time, "monotonic", _expire_after_first_call())
+
+    result = asyncio.run(acr._refresh_targeted_async(None, "ds", uens, budget_seconds=1, client=client))
+
+    assert result["unmatched"] == result["processed"]
+    assert result["unmatched"] < len(uens)
+
+
+def test_resume_order_puts_never_checked_uens_first():
+    """Successive bounded passes only converge on full coverage if each one starts
+    where the last stopped. Never-checked UENs outrank a refresh of a known one."""
+    from datetime import datetime
+
+    class _Sess:
+        def query(self, *a, **kw):
+            return self
+
+        def filter(self, *a, **kw):
+            return self
+
+        def all(self):
+            return [("AAA", datetime(2026, 1, 1)), ("BBB", None)]
+
+    ordered = acr._order_for_resume(_Sess(), ["AAA", "BBB", "CCC"])
+    # BBB (row exists, never checked) and CCC (no row at all) both precede the
+    # already-checked AAA.
+    assert ordered.index("AAA") == 2
+    assert set(ordered[:2]) == {"BBB", "CCC"}
+
+
+def test_resume_order_falls_back_rather_than_blocking_the_backfill():
+    class _Boom:
+        def query(self, *a, **kw):
+            raise RuntimeError("no such column")
+
+    assert acr._order_for_resume(_Boom(), ["AAA", "BBB"]) == ["AAA", "BBB"]

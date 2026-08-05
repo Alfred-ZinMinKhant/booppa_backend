@@ -25,6 +25,8 @@ import asyncio
 import json
 import logging
 import re
+import time
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 from sqlalchemy import func
@@ -390,6 +392,14 @@ async def _refresh_async(db, dataset_id: str, max_records: Optional[int]) -> int
 TARGETED_BATCH_SIZE = 50
 TARGETED_PROBE_SIZE = 5
 
+# Per-run wall-clock budget. Sized against the GLOBAL Celery limits in
+# `celery_app.py` (`task_soft_time_limit=250`), leaving room for
+# `collect_known_uens` and the final flush. It is deliberately not a bigger
+# timeout: `booppa-worker` runs concurrency 2 across BOTH queues, so a
+# multi-hour task would hold half the fulfillment capacity for hours. Short
+# resumable passes give the slot back between links instead.
+TARGETED_RUN_BUDGET_SECONDS = 180
+
 
 async def _probe_batching(client, dataset_id: str, uens: list[str]) -> bool:
     """Does this datastore honour a LIST-valued `filters` (IN semantics)?
@@ -420,83 +430,95 @@ async def _probe_batching(client, dataset_id: str, uens: list[str]) -> bool:
     return len(distinct) > 1
 
 
+async def _iter_fetch(client, dataset_id: str, uens: list[str], batched: bool):
+    """Yield `(chunk, records)` one request at a time.
+
+    A generator rather than a "fetch everything, then write" function so the
+    caller can persist each chunk as it lands and stop on a deadline. The first
+    production run did it the other way round, spent its whole time budget
+    fetching, and was cut off before a single row reached the database — 250
+    seconds of load on data.gov.sg for nothing.
+    """
+    step = TARGETED_BATCH_SIZE if batched else 1
+    for i in range(0, len(uens), step):
+        chunk = uens[i : i + step]
+        params = (
+            {"resource_id": dataset_id, "limit": len(chunk) * 2,
+             "filters": json.dumps({"uen": chunk})}
+            if batched else
+            {"resource_id": dataset_id, "limit": 1,
+             "filters": json.dumps({"uen": chunk[0]})}
+        )
+        label = f"targeted chunk n={len(chunk)}" if batched else f"targeted uen={chunk[0]}"
+        data = await _get_with_retry(client, params, label)
+        records = (data.get("result") or {}).get("records") or [] if data else []
+        yield chunk, records
+        await asyncio.sleep(INTER_PAGE_DELAY)
+
+
 async def _fetch_by_uens(client, dataset_id: str, uens: list[str]) -> tuple[list[dict], bool]:
     """Fetch raw ACRA records for a specific list of UENs.
 
     Returns `(records, batched)`. Uses the batched `filters` list form when the
-    probe shows the datastore honours it, otherwise one request per UEN.
+    probe shows the datastore honours it, otherwise one request per UEN. This
+    collects the whole result in memory and so has no deadline — it is the
+    convenience form for tests and small explicit UEN lists, not the path the
+    scheduled backfill takes.
     """
     batched = await _probe_batching(client, dataset_id, uens)
     logger.info(
         "[ACRA] targeted fetch: %s UENs, mode=%s",
         len(uens), "batched" if batched else "per-UEN",
     )
-
     records: list[dict] = []
-    if batched:
-        chunks = [
-            uens[i : i + TARGETED_BATCH_SIZE]
-            for i in range(0, len(uens), TARGETED_BATCH_SIZE)
-        ]
-        for chunk in chunks:
-            data = await _get_with_retry(
-                client,
-                {
-                    "resource_id": dataset_id,
-                    "limit": len(chunk) * 2,
-                    "filters": json.dumps({"uen": chunk}),
-                },
-                f"targeted chunk n={len(chunk)}",
-            )
-            if data:
-                records.extend((data.get("result") or {}).get("records") or [])
-            await asyncio.sleep(INTER_PAGE_DELAY)
-    else:
-        for uen in uens:
-            data = await _get_with_retry(
-                client,
-                {
-                    "resource_id": dataset_id,
-                    "limit": 1,
-                    "filters": json.dumps({"uen": uen}),
-                },
-                f"targeted uen={uen}",
-            )
-            if data:
-                records.extend((data.get("result") or {}).get("records") or [])
-            await asyncio.sleep(INTER_PAGE_DELAY)
-
+    async for _chunk, recs in _iter_fetch(client, dataset_id, uens, batched):
+        records.extend(recs)
     return records, batched
 
 
-async def _refresh_targeted_async(db, dataset_id: str, uens: list[str]) -> dict:
-    """Fetch and upsert ACRA records for `uens`, keeping ceased entities."""
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
+def _order_for_resume(db, uens: list[str]) -> list[str]:
+    """Order UENs so a resumed run continues rather than repeats.
+
+    Never-checked UENs first (`registry_checked_at IS NULL`, or no
+    `discovered_vendors` row at all), then the stalest. Because each run is
+    deadline-bounded, this ordering is what makes a sequence of short runs
+    converge on full coverage instead of re-fetching the same head of the list
+    every time.
+
+    Falls back to the natural order if the lookup fails — a worse order still
+    makes progress, whereas raising here would block the backfill entirely.
+    """
+    from datetime import datetime
 
     if not uens:
-        return {"requested": 0, "matched": 0, "upserted": 0, "unmatched": 0, "batched": False}
+        return []
+    try:
+        rows = (
+            db.query(DiscoveredVendor.uen, DiscoveredVendor.registry_checked_at)
+            .filter(func.upper(DiscoveredVendor.uen).in_(uens))
+            .all()
+        )
+    except Exception as e:
+        logger.warning("[ACRA] resume ordering unavailable, using natural order: %s", e)
+        return list(uens)
+    checked = {
+        (u or "").strip().upper(): ts for u, ts in rows if ts is not None
+    }
+    return sorted(
+        uens,
+        key=lambda u: (u in checked, checked.get(u) or datetime.min, u),
+    )
 
-    async with get_async_client(timeout=30.0) as client:
-        records, batched = await _fetch_by_uens(client, dataset_id, uens)
 
-    requested = set(uens)
-    rows: dict[str, dict] = {}
-    for rec in records:
-        row = _normalize(rec, require_live=False)
-        if row is None:
-            continue
-        key = row["uen"].upper()
-        # Only keep records we actually asked for. A datastore that ignores the
-        # filter would otherwise let arbitrary rows into the table.
-        if key not in requested:
-            continue
-        row["updated_at"] = _dt_now()
-        rows[key] = row
+def _upsert_targeted(db, rows: list[dict]) -> int:
+    """Upsert one batch of targeted rows. Returns the number written."""
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-    upserted = 0
-    batch = list(rows.values())
-    for i in range(0, len(batch), 500):
-        chunk = batch[i : i + 500]
+    if not rows:
+        return 0
+    written = 0
+    for i in range(0, len(rows), 500):
+        chunk = rows[i : i + 500]
         stmt = pg_insert(DiscoveredVendor.__table__).values(chunk)
         # A SEPARATE allowlist from the sweep's, deliberately. This one writes
         # `registry_status` / `registry_checked_at`; the sweep's must never list
@@ -518,21 +540,92 @@ async def _refresh_targeted_async(db, dataset_id: str, uens: list[str]) -> dict:
         )
         db.execute(stmt)
         db.commit()
-        upserted += len(chunk)
+        written += len(chunk)
+    return written
 
+
+@asynccontextmanager
+async def _targeted_client(client=None):
+    """Yield `client` if one was supplied, else open (and close) our own.
+
+    Injection point for tests: without it a test that passes a fake client is
+    silently ignored and the "unit" test hits data.gov.sg for real.
+    """
+    if client is not None:
+        yield client
+        return
+    async with get_async_client(timeout=30.0) as owned:
+        yield owned
+
+
+async def _refresh_targeted_async(db, dataset_id: str, uens: list[str],
+                                  budget_seconds: float, client=None) -> dict:
+    """Fetch and upsert ACRA records for `uens`, keeping ceased entities.
+
+    Stops cleanly once `budget_seconds` is spent and reports `complete: False`
+    with the UENs it never reached. It writes each chunk as it arrives, so a run
+    that ends early — on its own deadline or on a worker restart — leaves real
+    coverage behind rather than nothing.
+    """
+    empty = {"requested": 0, "matched": 0, "upserted": 0, "unmatched": 0,
+             "batched": False, "processed": 0, "remaining": 0, "complete": True}
+    if not uens:
+        return empty
+
+    started = time.monotonic()
+    matched: set[str] = set()
+    processed: list[str] = []
+    upserted = 0
+    requested = set(uens)
+
+    async with _targeted_client(client) as client:
+        batched = await _probe_batching(client, dataset_id, uens)
+        logger.info(
+            "[ACRA] targeted fetch: %s UENs, mode=%s, budget=%ss",
+            len(uens), "batched" if batched else "per-UEN", budget_seconds,
+        )
+        async for chunk, records in _iter_fetch(client, dataset_id, uens, batched):
+            rows: dict[str, dict] = {}
+            for rec in records:
+                row = _normalize(rec, require_live=False)
+                if row is None:
+                    continue
+                key = row["uen"].upper()
+                # Only keep records we actually asked for. A datastore that
+                # ignores the filter would otherwise let arbitrary rows in.
+                if key not in requested:
+                    continue
+                row["updated_at"] = _dt_now()
+                rows[key] = row
+
+            upserted += _upsert_targeted(db, list(rows.values()))
+            matched.update(rows)
+            processed.extend(chunk)
+
+            if time.monotonic() - started >= budget_seconds:
+                break
+
+    remaining = len(uens) - len(processed)
     result = {
-        "requested": len(uens),
-        "matched": len(rows),
+        "requested": len(processed),
+        "matched": len(matched),
         "upserted": upserted,
-        "unmatched": len(uens) - len(rows),
+        # Scoped to what this run actually processed: a UEN we never reached is
+        # not evidence of absence from the register, and counting it as
+        # "unmatched" would overstate how many of our UENs ACRA cannot find.
+        "unmatched": len(processed) - len(matched),
         "batched": batched,
+        "processed": len(processed),
+        "remaining": remaining,
+        "complete": remaining == 0,
     }
-    logger.info("[ACRA] targeted refresh complete: %s", result)
+    logger.info("[ACRA] targeted refresh pass: %s", result)
     return result
 
 
 def refresh_acra_targeted(db, uens: Optional[list[str]] = None,
-                          dataset_id: Optional[str] = None) -> dict:
+                          dataset_id: Optional[str] = None,
+                          budget_seconds: float = TARGETED_RUN_BUDGET_SECONDS) -> dict:
     """Refresh ACRA facts for UENs Booppa has actually touched.
 
     Runs ALONGSIDE `refresh_acra`, never replacing it: the unfiltered sweep still
@@ -540,16 +633,24 @@ def refresh_acra_targeted(db, uens: Optional[list[str]] = None,
     companies our customers really look at a real registration date and a current
     registry status.
 
+    One call is one bounded pass, not the whole backfill. `budget_seconds` keeps
+    it well inside the global Celery soft limit, and `_order_for_resume` means
+    consecutive passes advance through the list instead of restarting it — so
+    ~45k UENs complete over a sequence of short runs that each release the worker
+    slot back to paid fulfillment work.
+
     `uens` defaults to `collect_known_uens(db)`. Returns coverage counts —
-    `{"requested", "matched", "upserted", "unmatched", "batched"}` — because
-    "matched" is the evidence for whether a "registered since" claim is worth
-    surfacing at all.
+    `{"requested", "matched", "upserted", "unmatched", "batched", "processed",
+    "remaining", "complete"}` — because "matched" is the evidence for whether a
+    "registered since" claim is worth surfacing at all, and "remaining" is what
+    tells the caller whether to run again.
     """
     dataset_id = dataset_id or settings.ACRA_DATASET_ID
     if uens is None:
         uens = collect_known_uens(db)
     uens = sorted({u.strip().upper() for u in uens if u and str(u).strip()})
-    return asyncio.run(_refresh_targeted_async(db, dataset_id, uens))
+    uens = _order_for_resume(db, uens)
+    return asyncio.run(_refresh_targeted_async(db, dataset_id, uens, budget_seconds))
 
 
 EMPTY_REGISTRY_FACTS = {"registered_since": None, "registry_status": None}
