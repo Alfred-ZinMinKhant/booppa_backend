@@ -48,6 +48,7 @@ def test_address_screen_detector():
 
 
 def test_ubo_graph_builder():
+    pytest.importorskip("networkx")
     company_rows = [
         {"uen": "C001", "name": "Alpha Corp"},
         {"uen": "C002", "name": "Beta Corp"},

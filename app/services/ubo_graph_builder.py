@@ -8,7 +8,10 @@ and beneficial owners using networkx.
 from dataclasses import dataclass
 from typing import List, Optional
 
-import networkx as nx
+try:
+    import networkx as nx
+except ImportError:
+    nx = None
 
 
 @dataclass
@@ -26,10 +29,12 @@ class Relationship:
     percentage: Optional[float] = None
 
 
-def build_graph(entities: List[Entity], relationships: List[Relationship]) -> nx.DiGraph:
+def build_graph(entities: List[Entity], relationships: List[Relationship]):
     """
     Builds a directed graph: an edge from person/company to target company.
     """
+    if nx is None:
+        raise RuntimeError("networkx package is required for ubo_graph_builder")
     g = nx.DiGraph()
 
     for e in entities:

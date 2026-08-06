@@ -39,6 +39,7 @@ def test_address_screening():
 
 
 def test_ubo_graph_construction():
+    pytest.importorskip("networkx")
     companies = [{"uen": "C1", "name": "Company One"}]
     directors = [{"nominee_full_name": "John Doe", "nominator_name": "Jane Doe", "company_uen": "C1"}]
     g = from_csp_records(directors, [], [], companies)
