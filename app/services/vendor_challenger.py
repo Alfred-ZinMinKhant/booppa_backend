@@ -35,9 +35,12 @@ async def send_vendor_challenge(
     if not current_user.uen:
         raise HTTPException(status_code=422, detail="Vendor profile has no UEN")
 
+    from app.services.evidence_enricher import display_legal_name
+
+    vendor_company = display_legal_name(current_user, db) or current_user.email
     req = ChallengeRequest(
         vendor_uen=current_user.uen,
-        vendor_company_name=current_user.company or current_user.email,
+        vendor_company_name=vendor_company,
         vendor_user_id=str(current_user.id),
         buyer_email=body.buyer_email,
         buyer_name=body.buyer_name,

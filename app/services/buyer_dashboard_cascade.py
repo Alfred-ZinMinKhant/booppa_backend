@@ -70,8 +70,10 @@ async def revoke_name_usage(
 async def preview_cascade(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
 ):
+    from app.services.evidence_enricher import display_legal_name
+    buyer_company = display_legal_name(current_user, db) or current_user.email
     results = run_buyer_vendor_cascade(
-        db, str(current_user.id), current_user.company or current_user.email, dry_run=True
+        db, str(current_user.id), buyer_company, dry_run=True
     )
     return {"preview": [r.__dict__ for r in results]}
 
@@ -80,9 +82,12 @@ async def preview_cascade(
 async def send_cascade(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
 ):
+    from app.services.evidence_enricher import display_legal_name
+    buyer_company = display_legal_name(current_user, db) or current_user.email
     results = run_buyer_vendor_cascade(
-        db, str(current_user.id), current_user.company or current_user.email, dry_run=False
+        db, str(current_user.id), buyer_company, dry_run=False
     )
+
     if len(results) == 1 and results[0].skip_reason == CascadeSkipReason.NO_AUTHORIZATION:
         raise HTTPException(
             status_code=403,

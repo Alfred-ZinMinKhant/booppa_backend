@@ -51,8 +51,8 @@ async def get_reality_check(
             "message": "Complete the PDPA Quick Scan to unlock your personalized Reality Check.",
         }
 
-    sector_row = db.query(VendorSector).filter(VendorSector.user_id == current_user.id).first()
-    sector_name = sector_row.sector if sector_row else "General"
+    from app.services.tender_service import resolve_primary_sector
+    sector_name = resolve_primary_sector(db, current_user.id) or "General"
 
     sector_user_ids = [
         r.user_id for r in db.query(VendorSector).filter(VendorSector.sector == sector_name).all()
