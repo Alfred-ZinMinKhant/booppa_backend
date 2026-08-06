@@ -1044,6 +1044,59 @@ class CspTosAcceptance(Base):
     )
 
 
+class ScanConsentRecord(Base):
+    """
+    Explicit consent from the entity being scanned (a CSP client, or a
+    Buyer-side ManagedEntity) to the public verification sources Booppa
+    uses. A vendor who has never granted this consent must never be
+    processed by address_screen_detector.py, the future cyber-risk
+    signal, or any new OSINT enrichment module — regardless of what
+    CspTosAcceptance says, since that covers the Booppa-customer
+    relationship, not Booppa-scanned-subject (often two different
+    parties: the CSP customer consents for themselves; their OWN client,
+    the vendor being screened, must consent separately).
+    """
+    __tablename__ = "scan_consent_records"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    # Subject of the consent — exactly one of the two, never both.
+    csp_client_id = Column(UUID(as_uuid=True), ForeignKey("csp_clients.id"), nullable=True, index=True)
+    managed_entity_id = Column(UUID(as_uuid=True), ForeignKey("managed_entities.id"), nullable=True, index=True)
+
+    # Who collected the consent (never the scanned subject themselves —
+    # normally the Booppa customer onboarding their own vendor/client)
+    collected_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+
+    consent_version = Column(String(20), nullable=False, default="1.0")
+    consent_text_shown = Column(Text(), nullable=False)  # exact text shown, for audit
+
+    # One boolean flag per source, not a generic blob
+    consent_acra_lookup = Column(Boolean, nullable=False, default=False)
+    consent_domain_scan = Column(Boolean, nullable=False, default=False)         # component 6.4
+    consent_address_screening = Column(Boolean, nullable=False, default=False)   # component 6.2
+    consent_ubo_graph = Column(Boolean, nullable=False, default=False)           # component 6.3
+
+    granted_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)  # same pattern as ApiKey.revoked_at
+    ip_address = Column(String(45))
+    user_agent = Column(String(500))
+
+    # Blockchain notarization — same 4 fields as CspTosAcceptance
+    content_hash = Column(String(64))
+    blockchain_tx_hash = Column(String(80))
+    polygonscan_url = Column(String(500))
+    notarized_at = Column(DateTime(timezone=True))
+
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_scan_consent_csp_client", "csp_client_id"),
+        Index("ix_scan_consent_managed_entity", "managed_entity_id"),
+        Index("ix_scan_consent_active", "csp_client_id", "managed_entity_id", "revoked_at"),
+    )
+
+
 # ── PROGRAMME APPROVAL ATTESTATION (v3 — Layer 1) ────────────────────────────
 
 class CspProgrammeAttestation(Base):
@@ -1152,6 +1205,9 @@ class ManagedEntity(Base):
 
     verified_hint = Column(String(255))
     verified_at   = Column(DateTime(timezone=True))
+
+    registered_address        = Column(Text(), nullable=True)
+    registered_address_source = Column(String(50), nullable=True)  # "buyer_entered" | "acra_live" | "manual_review"
 
     status     = Column(String(20), default="ACTIVE", nullable=False)  # ACTIVE | ARCHIVED
     created_at = Column(DateTime(timezone=True), default=utcnow)
@@ -3871,3 +3927,51 @@ class CompliancePost(_CmsAwareTimestamps, _CmsContentMixin, Base):
 
 class VendorGuide(_CmsAwareTimestamps, _CmsContentMixin, Base):
     __tablename__ = "vendor_guides"
+
+
+class BuyerNameUsageAuthorization(Base):
+    """
+    Explicit authorization from the buyer for Booppa to use their name/company
+    in communications sent to third parties (their vendors).
+    """
+    __tablename__ = "buyer_name_usage_authorizations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    buyer_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    organisation_id = Column(UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=True, index=True)
+
+    authorization_version = Column(String(20), nullable=False, default="1.0")
+    clause_text_shown = Column(Text(), nullable=False)
+
+    granted_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    ip_address = Column(String(45))
+    user_agent = Column(String(500))
+
+    content_hash = Column(String(64))
+    blockchain_tx_hash = Column(String(80))
+    polygonscan_url = Column(String(500))
+    notarized_at = Column(DateTime(timezone=True))
+
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_buyer_name_auth_active", "buyer_user_id", "revoked_at"),
+    )
+
+
+class BuyerCascadeNotificationLog(Base):
+    """
+    One row per cascade notification successfully sent to a vendor.
+    """
+    __tablename__ = "buyer_cascade_notification_log"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    buyer_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    vendor_email = Column(String(255), nullable=False, index=True)
+    sent_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    __table_args__ = (
+        Index("ix_buyer_cascade_log_cooldown", "buyer_user_id", "vendor_email", "sent_at"),
+    )
+

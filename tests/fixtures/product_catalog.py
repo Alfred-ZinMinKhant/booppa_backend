@@ -140,6 +140,8 @@ SUBSCRIPTIONS: list[ProductCase] = [
         # and the webhook routes them through _activate_subscription.
         "compliance_notarization_10",
         "compliance_notarization_50",
+        "trust_passport_monitor",
+        "trust_passport_api",
     ]
 ]
 

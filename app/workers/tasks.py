@@ -10718,3 +10718,66 @@ def publish_queue_depth_metrics():
         logger.warning(f"[QueueDepth] CloudWatch publish failed: {exc}")
 
     return depths
+
+
+@celery_app.task(bind=True, max_retries=2, name="run_trust_passport_monitor_reanchors")
+def run_trust_passport_monitor_reanchors(self):
+    """
+    Trust Passport + Monitor: monthly re-anchor, run RIGHT AFTER the PDPA
+    Monitor rescan.
+    """
+    db = SessionLocal()
+    try:
+        active_subs = (
+            db.query(Subscription)
+            .filter(Subscription.product_type == "trust_passport_monitor")
+            .filter(Subscription.status == "active")
+            .all()
+        )
+
+        today = datetime.now(timezone.utc).date()
+
+        for sub in active_subs:
+            if sub.current_period_end and sub.current_period_end.day != today.day:
+                continue
+
+            metadata = sub.metadata_json or {}
+            vendor_data = {
+                "vendor_id": str(sub.user_id),
+                "company_name": metadata.get("company_name", ""),
+            }
+
+            from app.services.trust_passport_service import (
+                assemble_l2_passport_data,
+                create_passport_notarization_record,
+            )
+
+            passport_data = assemble_l2_passport_data({}, vendor_data)
+            raw = json.dumps(passport_data, sort_keys=True, default=str)
+            content_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+            report_kwargs = create_passport_notarization_record(
+                company_name=vendor_data["company_name"],
+                owner_id=str(sub.user_id),
+                passport_data=passport_data,
+                content_hash=content_hash,
+            )
+            report = Report(**report_kwargs)
+            db.add(report)
+            db.commit()
+
+            try:
+                tx_hash = asyncio.run(
+                    BlockchainService().anchor_evidence(content_hash, metadata=f"passport:{report.id}")
+                )
+                if tx_hash:
+                    report.tx_hash = tx_hash
+                    report.status = "COMPLETED"
+                    db.commit()
+            except Exception as e:
+                report.status = "FAILED"
+                db.commit()
+
+    finally:
+        db.close()
+

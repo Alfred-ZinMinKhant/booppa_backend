@@ -240,6 +240,12 @@ celery_app.conf.update(
             "task": "check_vendor_proof_expiry",
             "schedule": crontab(hour=4, minute=0),
         },
+        # Trust Passport + Monitor: daily anniversary re-anchor sweep at 04:30 UTC
+        # (after monthly PDPA rescan at 03:00 UTC).
+        "trust-passport-monitor-reanchor-daily": {
+            "task": "run_trust_passport_monitor_reanchors",
+            "schedule": crontab(hour=4, minute=30),
+        },
         # Vendor Active: daily anniversary cron at 06:00 UTC. Task filters
         # subscribers whose subscription_anniversary_day matches today.
         "vendor-active-daily-anniversary-checks": {

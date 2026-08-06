@@ -88,6 +88,8 @@ SUBSCRIPTION_PRODUCT_TYPES = {
     # CSP Compliance Pack recurring tiers (one-time grant handled separately).
     "csp_pack_monthly",
     "csp_monitoring_monthly",
+    "trust_passport_monitor",
+    "trust_passport_api",
 }
 
 # CSP one-time pack purchase — grants lifetime pack access (no recurring billing).

@@ -92,6 +92,8 @@ MODE_MAP = {
     "csp_pack_monthly": "subscription",
     "csp_monitoring_monthly": "subscription",
     "csp_pack_onetime": "payment",
+    "trust_passport_monitor": "subscription",
+    "trust_passport_api": "subscription",
 }
 
 

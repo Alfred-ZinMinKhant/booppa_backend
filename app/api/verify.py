@@ -207,6 +207,13 @@ async def verify_report(audit_hash: str):
                     "expired": expired,
                 },
             }
+        elif report.framework == "trust_passport":
+            resp["trust_passport"] = {
+                "tier": ad.get("tier"),
+                "dimensions_total": ad.get("dimensions_total"),
+                "dimensions_failing": ad.get("dimensions_failing"),
+                "scan_id": ad.get("scan_id"),
+            }
         return resp
     finally:
         db.close()

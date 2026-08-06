@@ -219,9 +219,18 @@ router.include_router(sso_router, prefix="/enterprise", tags=["enterprise-sso"])
 # Email deliverability — SES bounce/complaint (SNS) + one-click unsubscribe
 from .email_sns import router as email_sns_router
 from .email_unsubscribe import router as email_unsubscribe_router
+from .passport_public import router as passport_public_router
+from .trust_passport_api import router as trust_passport_api_router
+from app.services.vendor_challenger import router as vendor_challenger_router
+from app.services.buyer_dashboard_cascade import router as buyer_dashboard_cascade_router
 
 router.include_router(email_sns_router, prefix="/email", tags=["email-deliverability"])
 router.include_router(email_unsubscribe_router, prefix="/email", tags=["email-deliverability"])
+router.include_router(passport_public_router)
+router.include_router(trust_passport_api_router)
+router.include_router(vendor_challenger_router)
+router.include_router(buyer_dashboard_cascade_router)
+
 
 
 # ── Lightweight public platform stats (no auth) ─────────────────────────────
