@@ -190,6 +190,39 @@ def test_no_cast_on_plain_json_column():
 # False return is a silently undelivered email, never an exception.
 UNCHECKED_EMAIL_ALLOWLIST: set[str] = set()
 
+# The coroutine-driving wrappers. `asyncio.run(svc.send_html_email(...))` returns
+# the coroutine's value like any other call, so discarding it discards the send
+# result exactly as a bare `await` would — but the original check only unwrapped
+# `await`, so every sync-context send in the Celery workers was invisible to it.
+# The SCOUT weekly digest sat unchecked behind `asyncio.run` for that reason.
+_COROUTINE_RUNNERS = {"run", "run_until_complete", "get_event_loop"}
+
+
+def _unwrap_send(value):
+    """Strip await/asyncio.run wrappers; return the send_html_email Call or None."""
+    seen = 0
+    while seen < 4:  # depth guard; real nesting is 1-2
+        seen += 1
+        if isinstance(value, ast.Await):
+            value = value.value
+            continue
+        if not isinstance(value, ast.Call):
+            return None
+        func = value.func
+        if isinstance(func, ast.Attribute) and func.attr == "send_html_email":
+            return value
+        # asyncio.run(<coro>) / loop.run_until_complete(<coro>) — descend into
+        # the single positional coroutine argument.
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr in _COROUTINE_RUNNERS
+            and value.args
+        ):
+            value = value.args[0]
+            continue
+        return None
+    return None
+
 
 def test_send_html_email_return_value_is_checked():
     problems = []
@@ -197,20 +230,14 @@ def test_send_html_email_return_value_is_checked():
         for node in ast.walk(tree):
             if not isinstance(node, ast.Expr):
                 continue
-            value = node.value
-            if isinstance(value, ast.Await):
-                value = value.value
-            if (
-                isinstance(value, ast.Call)
-                and isinstance(value.func, ast.Attribute)
-                and value.func.attr == "send_html_email"
-            ):
-                site = f"{_rel(path)}:{node.lineno}"
-                if site not in UNCHECKED_EMAIL_ALLOWLIST:
-                    problems.append(
-                        f"{site} discards the send_html_email() return value — "
-                        f"it returns False on provider rejection without raising"
-                    )
+            if _unwrap_send(node.value) is None:
+                continue
+            site = f"{_rel(path)}:{node.lineno}"
+            if site not in UNCHECKED_EMAIL_ALLOWLIST:
+                problems.append(
+                    f"{site} discards the send_html_email() return value — "
+                    f"it returns False on provider rejection without raising"
+                )
     assert not problems, "Unchecked send_html_email:\n" + "\n".join(problems)
 
 

@@ -52,13 +52,15 @@ def _send_email(to_address: str, subject: str, inner_html: str, *, title: str = 
     """
     try:
         body_html = branded_email_html(inner_html, title=title or subject)
-        asyncio.run(
+        sent = asyncio.run(
             EmailService().send_html_email(
                 to_email=to_address,
                 subject=subject,
                 body_html=body_html,
             )
         )
+        if not sent:
+            logger.error(f"[Tickets] email to {to_address} REJECTED by provider — subject={subject!r}")
     except Exception as exc:
         # Fail silently to avoid blocking ticket creation
         logger.warning(f"[Tickets] email to {to_address} failed: {exc}")

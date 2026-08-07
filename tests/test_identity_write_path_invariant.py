@@ -36,9 +36,13 @@ ASSIGN_RE = re.compile(
 
 # Assignments on objects that are demonstrably NOT a User row. These carry their own
 # identity fields and are not the account-level cache that leaks across purchases.
+# `prospect` is a ScoutProspect: a cold-outreach candidate we scraped and scored,
+# with its own scraped `uen`. It is never an account, and nothing reads it as one —
+# the SCOUT pipeline checks a prospect's UEN against User rows precisely to EXCLUDE
+# existing customers, rather than to write to them.
 NON_USER_RECEIVERS = re.compile(
     r"\b(row|intake|profile|dv|vendor|record|pack|snapshot|entry|obj|payload"
-    r"|discovered|candidate|tender|result)\.\w+\s*=(?!=)"
+    r"|discovered|candidate|prospect|tender|result)\.\w+\s*=(?!=)"
 )
 
 

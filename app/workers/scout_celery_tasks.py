@@ -74,12 +74,20 @@ async def _alert_scout_issue(*, reason: str, pipeline: str, extra: dict | None =
         {f"<pre>{extra}</pre>" if extra else ""}
         """
         html = branded_email_html(body_inner, title=f"SCOUT alert: {pipeline}")
-        await EmailService().send_html_email(
+        ok = await EmailService().send_html_email(
             to_email=settings.SUPPORT_EMAIL,
             subject=f"[SCOUT] {pipeline} needs attention",
             body_html=html,
             category="transactional",
         )
+        # A rejected alert returns False rather than raising, so the except
+        # below never sees it. Silence here means nobody learns the pipeline
+        # broke — the log line above is the only remaining trace.
+        if not ok:
+            logger.error(
+                f"[SCOUT ALERT] alert email REJECTED by provider — "
+                f"pipeline={pipeline} reason={reason} went unnotified"
+            )
     except Exception as e:
         logger.error(f"[SCOUT ALERT] failed to send alert email itself: {e}")
 
@@ -108,7 +116,11 @@ def _upsert_prospects(db, pipeline: str, scored_items: list[dict]) -> tuple[int,
     new_count = updated_count = excluded_existing = 0
 
     for item in scored_items:
-        existing = db.query(ScoutProspect).filter(
+        # Named `prospect`, not `existing`: this is a ScoutProspect — a cold
+        # outreach candidate we scraped and scored — never a User row. The
+        # identity-write invariant reads receiver names, and `uen` on an
+        # account is the one that has to go through record_verified_identity.
+        prospect = db.query(ScoutProspect).filter(
             ScoutProspect.pipeline == pipeline,
             ScoutProspect.natural_key == item["natural_key"],
         ).first()
@@ -119,22 +131,22 @@ def _upsert_prospects(db, pipeline: str, scored_items: list[dict]) -> tuple[int,
 
         is_customer = _is_existing_customer(db, item.get("uen"), item.get("contact_email"))
 
-        if existing:
-            existing.display_name = display_name
-            existing.uen = item.get("uen") or existing.uen
-            existing.website_url = item.get("website_url") or existing.website_url
-            existing.score = score
-            existing.priority_tier = tier
-            existing.fit_tier = item.get("fit_tier") or item.get("licence_age_tier") or existing.fit_tier
-            existing.raw_data = item
-            existing.last_scored_at = now
-            existing.updated_at = now
+        if prospect:
+            prospect.display_name = display_name
+            prospect.uen = item.get("uen") or prospect.uen
+            prospect.website_url = item.get("website_url") or prospect.website_url
+            prospect.score = score
+            prospect.priority_tier = tier
+            prospect.fit_tier = item.get("fit_tier") or item.get("licence_age_tier") or prospect.fit_tier
+            prospect.raw_data = item
+            prospect.last_scored_at = now
+            prospect.updated_at = now
             if is_customer:
-                existing.status = "EXISTING_CUSTOMER"
-                existing.status_reason = "matched an active Booppa account by UEN or email"
+                prospect.status = "EXISTING_CUSTOMER"
+                prospect.status_reason = "matched an active Booppa account by UEN or email"
                 excluded_existing += 1
-            elif existing.status in ("NEW", "BELOW_THRESHOLD", "PENDING_APPROVAL"):
-                existing.status = "PENDING_APPROVAL" if tier in ("TIER1", "TIER2") else "BELOW_THRESHOLD"
+            elif prospect.status in ("NEW", "BELOW_THRESHOLD", "PENDING_APPROVAL"):
+                prospect.status = "PENDING_APPROVAL" if tier in ("TIER1", "TIER2") else "BELOW_THRESHOLD"
             updated_count += 1
         else:
             status = "EXISTING_CUSTOMER" if is_customer else (
@@ -410,11 +422,17 @@ def scout_weekly_digest_task(self):
         """
         html = branded_email_html(body_inner, title="SCOUT weekly digest")
 
-        asyncio.run(EmailService().send_html_email(
+        sent = asyncio.run(EmailService().send_html_email(
             to_email=DIGEST_RECIPIENT, subject=f"SCOUT: {len(pending)} prospects awaiting approval",
             body_html=html, category="transactional",
         ))
-        logger.info(f"[SCOUT digest] sent — {len(pending)} pending, {len(send_failed)} failed")
+        if not sent:
+            # The digest is the ONE regular touchpoint a human gets (see the
+            # module docstring). If it is dropped, approvals stall for a week
+            # with nothing indicating why, so this is an alert, not a warning.
+            logger.error("[SCOUT digest] send REJECTED by provider — nobody was notified")
+        else:
+            logger.info(f"[SCOUT digest] sent — {len(pending)} pending, {len(send_failed)} failed")
 
     finally:
         db.close()

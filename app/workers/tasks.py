@@ -2361,12 +2361,16 @@ def send_referral_reward_email_task(self, referrer_email: str):
         preheader="A vendor you referred purchased — 30 free days added.",
     )
     try:
-        asyncio.run(EmailService().send_html_email(
+        if not asyncio.run(EmailService().send_html_email(
             to_email=referrer_email,
             subject="Your referral converted — free month added",
             body_html=body_html,
-        ))
-        logger.info(f"[send_referral_reward_email_task] sent to {referrer_email}")
+        )):
+            # The 30 free days are already applied; only the notification failed.
+            # Not retried — a retry would re-send a reward the account already has.
+            logger.error(f"[send_referral_reward_email_task] provider REJECTED send to {referrer_email}")
+        else:
+            logger.info(f"[send_referral_reward_email_task] sent to {referrer_email}")
     except Exception as exc:
         logger.warning(f"[send_referral_reward_email_task] failed: {exc}")
         raise self.retry(exc=exc, countdown=120)
@@ -3646,7 +3650,7 @@ def fulfill_cover_sheet_task(
                     logger.warning("[CoverSheet] evidence ZIP build failed (non-blocking): %s", _zip_err)
 
                 from app.services.email_layout import branded_email_html, email_button, email_info_box
-                asyncio.run(email_svc.send_html_email(
+                _ok = asyncio.run(email_svc.send_html_email(
                     to_email=delivery_email,
                     subject="Your Compliance Evidence Pack — final blockchain receipt",
                     attachments=_zip_attachment,
@@ -3677,10 +3681,18 @@ def fulfill_cover_sheet_task(
                         preheader="Your signed Cover Sheet is anchored — full audit trail inside.",
                     ),
                 ))
-                logger.info(
-                    f"[CoverSheet] Final receipt sent to {customer_email} "
-                    f"(signed_cs={signed_cs_tx[:10]}…, zip={'yes' if _zip_attachment else 'no'})"
-                )
+                if not _ok:
+                    # This is the delivery of a paid artifact — the customer's
+                    # only copy of the signed, anchored Cover Sheet and ZIP.
+                    logger.error(
+                        f"[CoverSheet] Final receipt REJECTED by provider for {customer_email} "
+                        f"(signed_cs={signed_cs_tx[:10]}…) — paid deliverable undelivered"
+                    )
+                else:
+                    logger.info(
+                        f"[CoverSheet] Final receipt sent to {customer_email} "
+                        f"(signed_cs={signed_cs_tx[:10]}…, zip={'yes' if _zip_attachment else 'no'})"
+                    )
             else:
                 _draft_attachment = None
                 if pdf_bytes:
@@ -3688,7 +3700,7 @@ def fulfill_cover_sheet_task(
                     _draft_attachment = [(f"Cover_Sheet_Unsigned_{_safe_co}.pdf", pdf_bytes)]
 
                 from app.services.email_layout import branded_email_html, email_button, email_info_box
-                asyncio.run(email_svc.send_html_email(
+                _ok = asyncio.run(email_svc.send_html_email(
                     to_email=delivery_email,
                     subject="Your Compliance Evidence Pack — sign & notarize the Cover Sheet",
                     attachments=_draft_attachment,
@@ -3712,7 +3724,15 @@ def fulfill_cover_sheet_task(
                         preheader="Sign and upload your Cover Sheet to complete your Evidence Pack.",
                     ),
                 ))
-                logger.info(f"Cover sheet delivered to {customer_email} for {bundle_type} — awaiting signed upload")
+                if not _ok:
+                    # The customer is now waiting on a signed upload they were
+                    # never asked for — the flow stalls with no other signal.
+                    logger.error(
+                        f"[CoverSheet] Draft delivery REJECTED by provider for {customer_email} "
+                        f"({bundle_type}) — customer cannot complete the signing step"
+                    )
+                else:
+                    logger.info(f"Cover sheet delivered to {customer_email} for {bundle_type} — awaiting signed upload")
 
     except Retry:
         # Readiness-gate retry — let Celery handle it without overriding the countdown.
@@ -4204,14 +4224,20 @@ def vendor_active_health_check_task(self, vendor_id: str, vendor_email: str, ove
 
         from app.services.email_layout import branded_email_html
         email_svc = EmailService()
-        asyncio.run(email_svc.send_html_email(
+        _ok = asyncio.run(email_svc.send_html_email(
             to_email=vendor_email,
             subject=subject,
             body_html=branded_email_html(body_inner, title=header,
                                          preheader=f"{plan_label} · Trust {score_record.total_score}/100"),
             attachments=digest_attachments or None,
         ))
-        logger.info(f"Vendor digest ({plan_label}, first_cycle={is_first_cycle}) sent for vendor {vendor_id}")
+        if not _ok:
+            logger.error(
+                f"[VendorDigest] REJECTED by provider for vendor {vendor_id} ({vendor_email}) — "
+                f"plan={plan_label} first_cycle={is_first_cycle}; digest and attachments undelivered"
+            )
+        else:
+            logger.info(f"Vendor digest ({plan_label}, first_cycle={is_first_cycle}) sent for vendor {vendor_id}")
         _emit_user_webhook(db, vendor_id, "vendor.health_check.completed", {
             "vendor_id": str(vendor_id),
             "plan_label": plan_label,
@@ -5556,11 +5582,18 @@ def pdpa_monitor_monthly_alert_task(self, vendor_id: str, vendor_email: str):
         preheader=f"Your {month_label} PDPA regulatory alert from BOOPPA.",
     )
     try:
-        asyncio.run(EmailService().send_html_email(
+        if not asyncio.run(EmailService().send_html_email(
             to_email=vendor_email,
             subject=f"BOOPPA PDPA Monitor — {month_label} Regulatory Alert",
             body_html=body_html,
-        ))
+        )):
+            # Not retried: the except path below retries transport errors, but a
+            # provider rejection (suppression list, invalid recipient) repeats
+            # identically, so a retry would just burn the countdown budget.
+            logger.error(
+                f"[PDPAMonitorAlert] REJECTED by provider for {vendor_email} — "
+                f"{month_label} alert undelivered"
+            )
     except Exception as exc:
         logger.error(f"[PDPAMonitorAlert] Email failed for {vendor_email}: {exc}")
         raise self.retry(exc=exc, countdown=300)
@@ -6401,17 +6434,27 @@ def check_compliance_drift_task(self, vendor_id: str, vendor_email: str, framewo
         )
 
         try:
-            asyncio.run(email_svc.send_html_email(
+            _ok = asyncio.run(email_svc.send_html_email(
                 to_email=vendor_email,
                 subject=f"PDPA compliance drift — {severity}",
                 body_html=body_html,
             ))
-            event = db.query(ComplianceDriftEvent).filter(
-                ComplianceDriftEvent.id == result["event_id"]
-            ).first()
-            if event:
-                event.notified = True
-                db.commit()
+            # `notified` must reflect an actual delivery. A False return marked
+            # the event notified anyway, which permanently suppresses the retry
+            # this flag exists to allow — the vendor never learns their PDPA
+            # posture degraded, and nothing ever tries again.
+            if not _ok:
+                logger.error(
+                    f"[ComplianceDrift] REJECTED by provider for {vendor_email} "
+                    f"(severity={severity}) — event left un-notified for retry"
+                )
+            else:
+                event = db.query(ComplianceDriftEvent).filter(
+                    ComplianceDriftEvent.id == result["event_id"]
+                ).first()
+                if event:
+                    event.notified = True
+                    db.commit()
         except Exception as email_exc:
             logger.warning(f"[ComplianceDrift] Email failed for {vendor_email}: {email_exc}")
     except Exception as exc:
@@ -6734,11 +6777,15 @@ def run_compliance_evidence_monthly_refresh():
                     preheader="Add your website to resume your monthly Compliance Evidence cycle.",
                 )
                 try:
-                    asyncio.run(email_svc.send_html_email(
+                    if not asyncio.run(email_svc.send_html_email(
                         to_email=user.email,
                         subject="Compliance Evidence: add your website to resume monthly cycle",
                         body_html=body_html,
-                    ))
+                    )):
+                        logger.error(
+                            f"[CE Refresh] REJECTED by provider for {user.email} — "
+                            f"cycle stays paused with no notice sent"
+                        )
                 except Exception as email_exc:
                     logger.warning(f"[CE Refresh] Could not email {user.email}: {email_exc}")
 
@@ -7924,8 +7971,11 @@ def send_weekly_vendor_scores():
                     preheader=f"Your BOOPPA vendor score this week — {score.total_score} pts.",
                 )
                 import asyncio as _asyncio
-                _asyncio.run(email_svc.send_html_email(user.email, subject, body_html, category="marketing"))
-                sent += 1
+                if _asyncio.run(email_svc.send_html_email(user.email, subject, body_html, category="marketing")):
+                    sent += 1
+                else:
+                    logger.warning(f"[WeeklyScore] Provider rejected send to {user.email}")
+                    failed += 1
             except Exception as exc:
                 logger.warning(f"[WeeklyScore] Failed to send to {user.email}: {exc}")
                 failed += 1
@@ -7985,12 +8035,14 @@ def post_payment_drip(vendor_email: str, product_type: str = "",
 
     try:
         email_svc = EmailService()
-        _asyncio.run(email_svc.send_html_email(
+        if not _asyncio.run(email_svc.send_html_email(
             to_email=vendor_email,
             subject=f"What to do next with your {label} — 3 steps",
             body_html=body_html,
-        ))
-        logger.info(f"[PostPaymentDrip] Sent to {vendor_email} product={product_type}")
+        )):
+            logger.error(f"[PostPaymentDrip] REJECTED by provider for {vendor_email} product={product_type}")
+        else:
+            logger.info(f"[PostPaymentDrip] Sent to {vendor_email} product={product_type}")
     except Exception as exc:
         logger.error(f"[PostPaymentDrip] Failed for {vendor_email}: {exc}")
 
@@ -8090,8 +8142,11 @@ def send_gebiz_alert_newsletter():
                     preheader=f"{len(tenders)} GeBIZ tenders closing in the next 14 days.",
                 )
                 import asyncio as _asyncio
-                _asyncio.run(email_svc.send_html_email(vendor.email, subject, body_html, category="marketing"))
-                sent += 1
+                if _asyncio.run(email_svc.send_html_email(vendor.email, subject, body_html, category="marketing")):
+                    sent += 1
+                else:
+                    logger.warning(f"[GeBIZAlert] Provider rejected send to {vendor.email}")
+                    failed += 1
             except Exception as exc:
                 logger.warning(f"[GeBIZAlert] Failed to send to {vendor.email}: {exc}")
                 failed += 1
@@ -8804,8 +8859,11 @@ def send_tender_intelligence_digest(target_user_id: str | None = None):
                     title=f"Tender Intelligence — {period}",
                     preheader=f"Monthly GeBIZ sector trends for {period_label}.",
                 )
-                _asyncio.run(email_svc.send_html_email(sub.email, subject, body_html, category="marketing"))
-                sent += 1
+                if _asyncio.run(email_svc.send_html_email(sub.email, subject, body_html, category="marketing")):
+                    sent += 1
+                else:
+                    logger.warning(f"[TenderIntelDigest] Provider rejected send to {sub.email}")
+                    failed += 1
             except Exception as exc:
                 logger.warning(f"[TenderIntelDigest] Failed for {sub.email}: {exc}")
                 failed += 1
@@ -9156,8 +9214,11 @@ def send_vendor_pro_daily_alerts():
                     title="Competitor activity — last 24 hours",
                     preheader="Other vendors checked tenders you're tracking.",
                 )
-                _asyncio.run(email_svc.send_html_email(sub.email, subject, body_html, category="marketing"))
-                sent += 1
+                if _asyncio.run(email_svc.send_html_email(sub.email, subject, body_html, category="marketing")):
+                    sent += 1
+                else:
+                    logger.warning(f"[VendorProDaily] Provider rejected send to {sub.email}")
+                    failed += 1
             except Exception as exc:
                 logger.warning(f"[VendorProDaily] Failed for {sub.email}: {exc}")
                 failed += 1
@@ -9233,13 +9294,16 @@ def weekly_intelligence_brief():
                     preheader=f"Your Trust Score is {score}/100 — {position}.",
                 )
 
-                _asyncio.run(email_svc.send_html_email(
+                if _asyncio.run(email_svc.send_html_email(
                     to_email=user.email,
                     subject="Your weekly BOOPPA profile brief",
                     body_html=body_html,
                     category="marketing",
-                ))
-                sent += 1
+                )):
+                    sent += 1
+                else:
+                    logger.warning(f"[WeeklyBrief] Provider rejected send to {user.email}")
+                    failed += 1
             except Exception as exc:
                 logger.warning(f"[WeeklyBrief] Failed for {owner_id}: {exc}")
                 failed += 1

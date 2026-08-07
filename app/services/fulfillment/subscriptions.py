@@ -745,13 +745,20 @@ async def _activate_subscription(
 
                     from app.services.email_templates import get_vendor_active_no_website_html
                     body_html = get_vendor_active_no_website_html()
-                    _asyncio.run(
+                    _sent = _asyncio.run(
                         EmailService().send_html_email(
                             to_email=customer_email,
                             subject="Compliance Evidence: add your website to start your first cycle",
                             body_html=body_html,
                         )
                     )
+                    if not _sent:
+                        # This email is the only thing telling a paying CE
+                        # customer why their first cycle hasn't started.
+                        logger.error(
+                            f"[Subscription] CE website-needed email REJECTED by provider "
+                            f"for {customer_email} — activation is deferred with no notice sent"
+                        )
                 except Exception as email_exc:
                     logger.warning(
                         f"[Subscription] Could not send CE website-needed email: {email_exc}"

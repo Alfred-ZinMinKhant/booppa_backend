@@ -576,11 +576,16 @@ def create_invite(org_id: str, body: InviteCreate, db: Session = Depends(get_db)
             title=f"Invitation to join {org.name}",
             preheader=f"{current_user.email} invited you to join {org.name} on BOOPPA.",
         )
-        _asyncio.run(EmailService().send_html_email(
+        _sent = _asyncio.run(EmailService().send_html_email(
             to_email=email,
             subject=f"Invitation to join {org.name} on BOOPPA",
             body_html=body_html,
         ))
+        if not _sent:
+            # The invite row is already committed, so the invitee simply never
+            # hears about it. Log the accept URL's existence loudly enough that
+            # support can resend rather than guess why nobody joined.
+            logger.error(f"[OrgInvite] Email REJECTED by provider for {email} — invite {invite.id} unsent")
     except Exception as exc:
         logger.warning(f"[OrgInvite] Email failed for {email}: {exc}")
 
