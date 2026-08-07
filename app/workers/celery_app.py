@@ -12,6 +12,7 @@ celery_app = Celery(
         "app.workers.csp_tasks",
         "app.workers.trm_doc_tasks",
         "app.workers.registry_tasks",
+        "app.workers.scout_celery_tasks",
     ],
 )
 
@@ -340,6 +341,27 @@ celery_app.conf.update(
         "csp-daily-monitoring": {
             "task": "csp.daily_monitoring",
             "schedule": crontab(hour=23, minute=0),
+        },
+        # SCOUT Agents: scheduled scoring, send batching, weekly digest
+        "scout-vendor-scoring-weekly": {
+            "task": "scout_vendor_scoring_task",
+            "schedule": crontab(day_of_week=1, hour=4, minute=0),
+            "options": {"queue": "heavy_queue"},
+        },
+        "scout-buyer-scoring-weekly": {
+            "task": "scout_buyer_scoring_task",
+            "schedule": crontab(day_of_week=1, hour=4, minute=30),
+            "options": {"queue": "heavy_queue"},
+        },
+        "scout-send-approved-daily": {
+            "task": "scout_send_approved_batch_task",
+            "schedule": crontab(hour=9, minute=0),
+            "options": {"queue": "heavy_queue"},
+        },
+        "scout-weekly-digest": {
+            "task": "scout_weekly_digest_task",
+            "schedule": crontab(day_of_week=1, hour=8, minute=0),
+            "options": {"queue": "heavy_queue"},
         },
     },
 )

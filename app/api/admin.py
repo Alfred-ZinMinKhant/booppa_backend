@@ -3,7 +3,6 @@ from fastapi import (
     APIRouter, Request, HTTPException, Query, Depends, UploadFile,
     File as FastAPIFile,
 )
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field, field_validator
 from app.core.validators import validate_name_field
 from typing import List, Optional
@@ -11,7 +10,8 @@ from app.core.db import SessionLocal
 from app.core.repositories.user_repository import UserRepository
 from app.core.models import ConsentLog, EnterpriseProfile, ActivityLog, VendorScore, User
 from app.core.config import settings
-from app.core.auth import create_admin_token, verify_admin_token
+from app.core.auth import create_admin_token
+from app.core.admin_auth import admin_auth as _admin_auth
 import hashlib as _hashlib
 import logging
 import secrets
@@ -19,36 +19,8 @@ import secrets
 logger = logging.getLogger(__name__)
 
 router = APIRouter(route_class=RetryAPIRoute)
-security = HTTPBasic(auto_error=False)
-
-
-def _admin_auth(
-    request: Request, credentials: HTTPBasicCredentials = Depends(security)
-):
-    """Accept (in order): Bearer admin JWT, X-Admin-Token header, or HTTP Basic creds."""
-    # 1. Bearer admin JWT (used by the new /admin/login flow)
-    auth_header = request.headers.get("authorization") or ""
-    if auth_header.lower().startswith("bearer "):
-        token = auth_header.split(" ", 1)[1].strip()
-        payload = verify_admin_token(token)
-        if payload and payload.get("sub"):
-            return True
-
-    # 2. Static X-Admin-Token header (legacy machine-to-machine)
-    header = request.headers.get("x-admin-token")
-    if settings.ADMIN_TOKEN:
-        if header and secrets.compare_digest(header, settings.ADMIN_TOKEN):
-            return True
-
-    # 3. HTTP Basic (for direct API hits / curl)
-    if settings.ADMIN_USER and settings.ADMIN_PASSWORD and credentials:
-        valid_user = secrets.compare_digest(credentials.username, settings.ADMIN_USER)
-        valid_pass = secrets.compare_digest(credentials.password, settings.ADMIN_PASSWORD)
-        if valid_user and valid_pass:
-            return True
-
-    logger.warning("Admin authentication failed")
-    raise HTTPException(status_code=401, detail="Unauthorized")
+# _admin_auth now lives in app/core/admin_auth.py so that other admin-only
+# routers (SCOUT approvals) can depend on the same rules. Imported above.
 
 
 # ── Admin login / logout ──────────────────────────────────────────────────────

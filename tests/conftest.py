@@ -59,17 +59,37 @@ _TRUNCATABLE_TABLES = [
     "certificate_logs",
     "reports",
     "users",
+    "scout_prospects",
 ]
 
 
 def _truncate_test_tables():
-    """Wipe data the tests write to. CASCADE handles FK chains."""
-    with engine.begin() as conn:
+    """Wipe data the tests write to. CASCADE handles FK chains.
+
+    One statement for all tables, because a failed TRUNCATE aborts the whole
+    transaction; the per-table fallback each gets its own transaction so a
+    table missing on an older alembic rev can't poison the rest.
+
+    lock_timeout is mandatory here. TRUNCATE needs ACCESS EXCLUSIVE on every
+    listed table at once, so a single test that leaks an open session (leaving
+    a connection "idle in transaction" holding a row lock on e.g. users) makes
+    this block forever and hangs the whole suite. Timing out sends us to the
+    per-table fallback, which clears everything not actually locked.
+    """
+    tables_str = ", ".join(f'"{t}"' for t in _TRUNCATABLE_TABLES)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+            conn.execute(text(f'TRUNCATE TABLE {tables_str} RESTART IDENTITY CASCADE'))
+    except Exception:
         for table in _TRUNCATABLE_TABLES:
             try:
-                conn.execute(text(f'TRUNCATE TABLE "{table}" RESTART IDENTITY CASCADE'))
+                with engine.begin() as conn:
+                    conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+                    conn.execute(text(f'TRUNCATE TABLE "{table}" RESTART IDENTITY CASCADE'))
             except Exception:
-                # Table may not exist in older alembic revs; that's fine.
+                # Table may not exist in older alembic revs, or is locked by a
+                # leaked session; either way, don't hang the suite.
                 pass
 
 

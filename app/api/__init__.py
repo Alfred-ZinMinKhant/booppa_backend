@@ -223,6 +223,8 @@ from .passport_public import router as passport_public_router
 from .trust_passport_api import router as trust_passport_api_router
 from app.services.vendor_challenger import router as vendor_challenger_router
 from app.services.buyer_dashboard_cascade import router as buyer_dashboard_cascade_router
+from .scout_approval_api import router as scout_approval_router
+from .scout_csp_seed_import import router as scout_csp_seed_import_router
 
 router.include_router(email_sns_router, prefix="/email", tags=["email-deliverability"])
 router.include_router(email_unsubscribe_router, prefix="/email", tags=["email-deliverability"])
@@ -230,6 +232,9 @@ router.include_router(passport_public_router)
 router.include_router(trust_passport_api_router)
 router.include_router(vendor_challenger_router)
 router.include_router(buyer_dashboard_cascade_router)
+router.include_router(scout_approval_router, prefix="/scout", tags=["scout-approval"])
+router.include_router(scout_csp_seed_import_router, prefix="/scout/csp", tags=["scout-csp-seed"])
+
 
 
 

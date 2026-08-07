@@ -3975,3 +3975,51 @@ class BuyerCascadeNotificationLog(Base):
         Index("ix_buyer_cascade_log_cooldown", "buyer_user_id", "vendor_email", "sent_at"),
     )
 
+
+class ScoutProspect(Base):
+    """
+    One row per prospect, across all three pipelines (vendor / buyer /
+    csp) and across every run. Re-running a pipeline UPSERTS existing
+    rows (matched on pipeline + natural_key) rather than creating
+    duplicates — score refreshes, contact history does not reset.
+    """
+    __tablename__ = "scout_prospects"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    pipeline = Column(String(20), nullable=False, index=True)   # "vendor" | "buyer" | "csp"
+    natural_key = Column(String(255), nullable=False, index=True)  # UEN if known, else normalised name
+
+    display_name = Column(String(255), nullable=False)
+    uen = Column(String(20), nullable=True, index=True)
+    website_url = Column(String(500), nullable=True)
+
+    score = Column(Integer, nullable=True)
+    priority_tier = Column(String(10), nullable=True, index=True)
+    fit_tier = Column(String(40), nullable=True)
+
+    raw_data = Column(JSONB, nullable=True)
+
+    outreach_subject = Column(String(255), nullable=True)
+    outreach_body_html = Column(Text(), nullable=True)
+
+    status = Column(String(20), nullable=False, default="NEW", index=True)
+    status_reason = Column(String(500), nullable=True)
+
+    first_scored_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_scored_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    approved_by_user_id = Column(UUID(as_uuid=True), nullable=True)
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    send_attempts = Column(Integer, nullable=False, default=0)
+
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("pipeline", "natural_key", name="uq_scout_prospect_pipeline_key"),
+        Index("ix_scout_prospect_status_pipeline", "status", "pipeline"),
+        Index("ix_scout_prospect_tier_status", "priority_tier", "status"),
+    )
+
+
