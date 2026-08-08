@@ -6,17 +6,27 @@ from typing import List, Optional
 from app.core.db import SessionLocal
 from app.core.models import ResourceItem
 from app.core.config import settings
+from app.core.auth import verify_admin_token
 import uuid
 import secrets
 
 router = APIRouter(route_class=RetryAPIRoute)
-security = HTTPBasic()
+# auto_error=False so a Bearer admin JWT is not rejected before _admin_auth runs.
+security = HTTPBasic(auto_error=False)
 
 
 def _admin_auth(request: Request, credentials: HTTPBasicCredentials = Depends(security)):
-    header = request.headers.get("x-admin-token")
-    if settings.ADMIN_TOKEN:
-        if header and secrets.compare_digest(header, settings.ADMIN_TOKEN):
+    """Same rules as `app.core.admin_auth.admin_auth` — keep the two in step.
+
+    The `X-Admin-Token` branch was removed here on 2026-08-08 for the reason
+    given there. It was doubly dead in this module: `security` is constructed
+    without `auto_error=False`, so a request carrying only that header was
+    rejected by the Basic dependency before this function ever ran.
+    """
+    auth_header = request.headers.get("authorization") or ""
+    if auth_header.lower().startswith("bearer "):
+        payload = verify_admin_token(auth_header.split(" ", 1)[1].strip())
+        if payload and payload.get("sub"):
             return True
     if settings.ADMIN_USER and settings.ADMIN_PASSWORD:
         if credentials:

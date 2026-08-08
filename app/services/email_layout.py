@@ -37,11 +37,65 @@ _MUTED = "#64748b"
 _BORDER = "#e2e8f0"
 
 
-def branded_email_html(body_html: str, *, title: str = "", preheader: str = "") -> str:
+ADV_PREFIX = "<ADV>"
+
+
+def adv_subject(subject: str) -> str:
+    """Prefix a subject line with ``<ADV>`` for unsolicited commercial email.
+
+    Required by the Spam Control Act (Cap. 311A), Second Schedule para 3: the
+    title of an unsolicited commercial message must start with "<ADV>". Applied
+    through this one helper so the three SCOUT templates cannot drift apart, and
+    so :func:`is_adv_subject` can gate the send on it. Idempotent.
+    """
+    s = (subject or "").strip()
+    return s if s.startswith(ADV_PREFIX) else f"{ADV_PREFIX} {s}".strip()
+
+
+def is_adv_subject(subject: str) -> bool:
+    return (subject or "").lstrip().startswith(ADV_PREFIX)
+
+
+def marketing_footer_html(unsubscribe_url: str, postal_address: str) -> str:
+    """The in-body unsubscribe + sender address block for marketing email.
+
+    The Spam Control Act requires the unsubscribe facility to be *in the
+    message* — an SMTP ``List-Unsubscribe`` header alone does not satisfy it,
+    because a recipient reading the mail cannot act on a header. The statement
+    that the facility stays open for at least 30 days is para 4's requirement
+    and is true of our tokens, which are stateless HMACs that never expire.
+    """
+    return (
+        f'<div style="border-top:1px solid {_BORDER};margin-top:28px;padding-top:16px;'
+        f'color:{_MUTED};font-size:12px;line-height:1.6;">'
+        f'<p style="margin:0 0 8px;">This is an advertisement. If you would rather not '
+        f'receive email like this from us, '
+        f'<a href="{unsubscribe_url}" style="color:{_MUTED};text-decoration:underline;">'
+        f'unsubscribe here</a> — the link keeps working for at least 30 days and we act '
+        f'on it within 10 business days.</p>'
+        f'<p style="margin:0;">{postal_address}</p>'
+        f'</div>'
+    )
+
+
+def branded_email_html(
+    body_html: str,
+    *,
+    title: str = "",
+    preheader: str = "",
+    unsubscribe_url: str = "",
+    postal_address: str = "",
+) -> str:
     """Return a full HTML document wrapping ``body_html`` in the brand frame.
 
     ``body_html`` is the inner content (already-escaped where needed). ``title``
     renders as the teal header line; ``preheader`` is the hidden inbox preview.
+
+    Passing both ``unsubscribe_url`` and ``postal_address`` appends the
+    marketing footer (see :func:`marketing_footer_html`). Both are required
+    together — half of that block satisfies neither obligation — so passing only
+    one renders nothing and the send-side gate then refuses the message rather
+    than letting a partially-compliant advertisement go out.
     """
     pre = (
         f'<div style="display:none;max-height:0;overflow:hidden;opacity:0;">{preheader}</div>'
@@ -51,6 +105,8 @@ def branded_email_html(body_html: str, *, title: str = "", preheader: str = "") 
         f'<div style="color:#9fb0c3;font-size:13px;font-weight:600;margin-top:6px;">{title}</div>'
         if title else ""
     )
+    if unsubscribe_url and postal_address:
+        body_html = body_html + marketing_footer_html(unsubscribe_url, postal_address)
     return f"""\
 <!DOCTYPE html>
 <html>

@@ -48,6 +48,20 @@ class User(Base):
     website_hint = Column(String(500), nullable=True)
     uen = Column(String(50), unique=True, nullable=True)
     plan = Column(String(50), default="free", nullable=False, server_default="free")
+    # When the last paid subscription lapsed, and which plan it was. Backs the
+    # public promise (booppa-nextjs/app/pricing/page.tsx:24) that "historical
+    # evidence and certificates remain accessible for 90 days after
+    # cancellation" — see app.billing.enforcement.grace_plan_for_read.
+    #
+    # `plan` itself is already "free" by then: the cancel branch derives it from
+    # remaining active subscriptions, so the tier the customer paid for is lost
+    # unless recorded here. Both columns are cleared on re-subscription, so a
+    # returning customer never carries a stale grace window.
+    #
+    # Read-only entitlement ONLY. Never consult these for generation, seats, SSO
+    # or anything that costs money per call.
+    plan_lapsed_at = Column(DateTime, nullable=True)
+    lapsed_plan = Column(String(50), nullable=True)
     temp_password = Column(Boolean, default=False)
     verified_at = Column(DateTime, nullable=True)
     subscription_tier = Column(String(50), nullable=True)
@@ -1368,10 +1382,37 @@ class RetentionPolicy(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organisation_id = Column(UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False)
-    data_category = Column(String(100), nullable=False)    # e.g. "personal_data", "audit_logs"
+    # One of app.services.retention.RETENTION_CATEGORIES. Deliberately still a
+    # String rather than a DB enum: rows written before the category set was
+    # closed (2026-08-08) hold arbitrary text, and dropping a customer's stored
+    # configuration to tidy our schema is not our call. The API rejects unknown
+    # categories on write (422) and reports legacy ones as unenforced on read.
+    data_category = Column(String(100), nullable=False)
     retention_days = Column(Integer, nullable=False)
     auto_purge = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RetentionPurgeLog(Base):
+    """One row per policy per sweep — the evidence that retention was ENFORCED.
+
+    Without this the product could only claim a purge was configured, which is
+    the "documented, not tested" gap CLAUDE.md calls out. Rows are written for
+    dry runs and for zero-row sweeps too: "we checked and there was nothing to
+    delete" is a materially different statement from "we never ran".
+    """
+
+    __tablename__ = "retention_purge_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organisation_id = Column(UUID(as_uuid=True), ForeignKey("organisations.id"), nullable=False, index=True)
+    policy_id = Column(UUID(as_uuid=True), ForeignKey("retention_policies.id", ondelete="SET NULL"), nullable=True)
+    data_category = Column(String(100), nullable=False)
+    retention_days = Column(Integer, nullable=False)
+    cutoff = Column(DateTime, nullable=False)          # rows older than this were eligible
+    rows_deleted = Column(Integer, nullable=False, default=0)
+    dry_run = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
 class SsoConfig(Base):

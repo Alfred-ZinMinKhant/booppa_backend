@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from typing import Any, Dict
 
 
@@ -108,6 +109,47 @@ FRAMEWORK_CUSTOMISE_PLAN_KEYS = SUITE_PLAN_KEYS | {
 FRAMEWORK_TEMPLATE_PLAN_KEYS = PRO_SUITE_PLAN_KEYS | {
     "buyer_enterprise", "buyer_enterprise_monthly", "buyer_enterprise_annual",
 }
+
+
+# Post-cancellation read-only grace. The number is a public promise, not a
+# tunable: booppa-nextjs/app/pricing/page.tsx:24 tells buyers their "historical
+# evidence and certificates remain accessible for 90 days after cancellation".
+# Changing it here without changing that copy makes the product lie again.
+GRACE_WINDOW_DAYS = 90
+
+
+def grace_plan_for_read(user: Any) -> str | None:
+    """The plan a lapsed customer still counts as holding, for READ access only.
+
+    Returns the tier they were on if their subscription lapsed within
+    GRACE_WINDOW_DAYS, else None.
+
+    **This is deliberately not a general entitlement.** It exists so a customer
+    who cancels can still open the evidence and certificates they already paid
+    to produce. It must never be consulted by:
+
+      * generation paths (`enforce_tier`, gap analysis, report/kit fulfilment) —
+        those cost money per call and would let a lapsed account keep spending
+        ours for three months;
+      * seat allocation (`max_seats_for`) — grace is for the person who paid,
+        not for onboarding new colleagues onto a cancelled plan;
+      * SSO — an authentication path, not an artefact; keeping it alive means a
+        cancelled org's whole workforce still holds live logins.
+
+    If you are reaching for this in a `POST`/`PUT`/`PATCH`/`DELETE` handler,
+    that is the signal you are widening it past what was promised.
+    """
+    lapsed_at = getattr(user, "plan_lapsed_at", None)
+    lapsed_plan = (getattr(user, "lapsed_plan", "") or "").lower().strip()
+    if not lapsed_at or not lapsed_plan:
+        return None
+    # Stored naive-UTC by the webhook; compare like-for-like rather than letting
+    # a tz-aware `now` raise on subtraction.
+    if lapsed_at.tzinfo is not None:
+        lapsed_at = lapsed_at.replace(tzinfo=None)
+    if datetime.utcnow() - lapsed_at > timedelta(days=GRACE_WINDOW_DAYS):
+        return None
+    return lapsed_plan
 
 
 def can_customise_frameworks(plan: str | None) -> bool:

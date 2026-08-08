@@ -12,16 +12,38 @@ the same Bearer-admin-JWT / X-Admin-Token / HTTP-Basic rules the rest of
 customer, and approving outbound cold email is a Booppa-team action.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from datetime import datetime, timezone
 
 from app.core.admin_auth import admin_auth
+from app.core.auth import verify_admin_token
 from app.core.db import get_db
-from app.core.models import ScoutProspect
+from app.core.models import ScoutProspect, User
 from app.services.scout_outreach_templates import generate_vendor_outreach, generate_buyer_outreach, generate_csp_outreach
 
 router = APIRouter(tags=["scout-agents"])
+
+
+def admin_identity(request: Request) -> str:
+    """Who is acting, for the audit trail — never for authorisation.
+
+    ``admin_auth`` returns only True/False and accepts two credential types, one
+    of which (HTTP Basic) is a shared secret that identifies no individual. So
+    this is best-effort: the JWT's subject when there is one, otherwise a label
+    naming the credential class. It runs *alongside* ``admin_auth``, never
+    instead of it — by itself it rejects nothing.
+
+    The `X-Admin-Token` branch was dropped on 2026-08-08 along with the header
+    itself; consent-sensitive approvals should carry an admin JWT so the audit
+    trail names a person.
+    """
+    auth_header = request.headers.get("authorization") or ""
+    if auth_header.lower().startswith("bearer "):
+        payload = verify_admin_token(auth_header.split(" ", 1)[1].strip())
+        if payload and payload.get("sub"):
+            return str(payload["sub"])
+    return "http-basic (shared credential, no individual identity)"
 
 
 class ProspectSummary(BaseModel):
@@ -61,7 +83,14 @@ async def list_pending(
                 subject, body = generate_buyer_outreach(data)
             else:
                 subject, body = generate_csp_outreach(data)
-            p.outreach_subject, p.outreach_body_html = subject, body
+            # The generators return ("", "") when they cannot produce a legally
+            # sendable message — no contact address to build an unsubscribe link
+            # for, or COMPANY_POSTAL_ADDRESS unset. Leave the columns NULL in
+            # that case rather than storing an empty body that reads like a
+            # generation bug; the row stays visible here with
+            # outreach_subject=None so the reason is chased rather than approved.
+            if subject and body:
+                p.outreach_subject, p.outreach_body_html = subject, body
     db.commit()
 
     return [
@@ -90,23 +119,70 @@ async def preview_prospect(
     }
 
 
+class ProspectEditRequest(BaseModel):
+    subject: str | None = None
+    body_html: str | None = None
+
+
+@router.patch("/pending/{prospect_id}")
+async def edit_prospect(
+    prospect_id: str, body: ProspectEditRequest,
+    db=Depends(get_db), _auth: bool = Depends(admin_auth),
+):
+    """Let the reviewer edit the outreach before approving it.
+
+    The generated body opens with a neutral "Hello," because no pipeline
+    captures a contact person's name. This is how a reviewer who does know the
+    person personalises it — previously the stored body could not be edited at
+    all, which is why the old templates shipped the literal "Dear [Name],".
+
+    Only PENDING_APPROVAL rows are editable: what a human approved must be
+    exactly what gets sent (the whole reason the body is stored rather than
+    regenerated at send time). The send-side compliance gate still applies to
+    whatever is saved here, so an edit cannot strip the <ADV> prefix,
+    unsubscribe link or postal address and reach a recipient.
+    """
+    p = db.query(ScoutProspect).filter(ScoutProspect.id == prospect_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Prospect not found")
+    if p.status != "PENDING_APPROVAL":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only PENDING_APPROVAL prospects can be edited (this one is {p.status})",
+        )
+    if body.subject is not None:
+        p.outreach_subject = body.subject[:255]
+    if body.body_html is not None:
+        p.outreach_body_html = body.body_html
+    p.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"id": str(p.id), "subject": p.outreach_subject, "body_html": p.outreach_body_html}
+
+
 @router.post("/approve")
 async def approve_batch(
-    body: BulkActionRequest, db=Depends(get_db), _auth: bool = Depends(admin_auth),
+    body: BulkActionRequest, db=Depends(get_db),
+    _auth: bool = Depends(admin_auth), actor: str = Depends(admin_identity),
 ):
     """Bulk approve — normal usage from weekly digest."""
+    # Approving cold outreach is a consent-sensitive act, so record who did it.
+    # approved_by_user_id can only be filled when the admin JWT's subject maps
+    # to a real User row; the shared-secret credential paths identify nobody, so
+    # the identity is also written to status_reason in text — a NULL id there
+    # means "not individually attributable", not "not recorded".
+    actor_user = db.query(User.id).filter(User.email == actor.strip().lower()).first()
     updated = (
         db.query(ScoutProspect)
         .filter(ScoutProspect.id.in_(body.prospect_ids), ScoutProspect.status == "PENDING_APPROVAL")
         .update({
             "status": "APPROVED",
             "approved_at": datetime.now(timezone.utc),
-            # Admin auth is not a User row, so there is no id to record here.
-            # approved_by_user_id stays NULL; the approval timestamp is the audit trail.
+            "approved_by_user_id": actor_user[0] if actor_user else None,
+            "status_reason": f"approved by {actor}"[:500],
         }, synchronize_session=False)
     )
     db.commit()
-    return {"approved": updated}
+    return {"approved": updated, "approved_by": actor}
 
 
 @router.post("/reject")

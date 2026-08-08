@@ -2,7 +2,7 @@ from app.core.limiter import limiter
 from app.core.route_classes import RetryAPIRoute
 import logging
 import redis as _redis_lib
-from fastapi import APIRouter, Depends, HTTPException, status, Body, Security
+from fastapi import APIRouter, Depends, HTTPException, status, Body, Security, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, field_validator
 from app.core.validators import validate_name_field
@@ -13,6 +13,7 @@ from app.core.auth import (
     create_access_token, create_refresh_token,
     verify_refresh_token, verify_access_token,
     create_password_reset_token, verify_password_reset_token,
+    create_ws_token,
     get_password_hash,
 )
 from app.core.db import get_db
@@ -167,8 +168,15 @@ class ProfileUpdate(BaseModel):
 
 # ── Form-based login (OAuth2 compatible) ─────────────────────────────────────
 
+# Rate limits below are per-IP and sit on top of the global 200/minute default
+# in app/core/limiter.py. Without them, credential stuffing and reset-token
+# brute-forcing were both practical at ~12k attempts/hour/IP
+# (AUDIT_2026-08-07.md P1-8). `request: Request` is required by slowapi — the
+# decorator cannot find the client IP without it.
 @router.post("/token", response_model=TokenWithRefresh)
+@limiter.limit("5/minute")
 async def login_form(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
@@ -192,7 +200,8 @@ async def login_form(
 # ── JSON login (used by Next.js frontend) ────────────────────────────────────
 
 @router.post("/login", response_model=TokenWithRefresh)
-async def login_json(body: LoginRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+async def login_json(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
     user = authenticate_user(db, body.email, body.password)
     if not user:
         raise HTTPException(status_code=401, detail="Incorrect email or password")
@@ -209,7 +218,8 @@ async def login_json(body: LoginRequest, db: Session = Depends(get_db)):
 # ── Registration ──────────────────────────────────────────────────────────────
 
 @router.post("/register", status_code=201, response_model=TokenWithRefresh)
-async def register(body: RegisterRequest, db: Session = Depends(get_db)):
+@limiter.limit("3/minute")
+async def register(request: Request, body: RegisterRequest, db: Session = Depends(get_db)):
     try:
         user = register_user(db, email=body.email, password=body.password, company=body.company, website=body.website, uen=body.uen, industry=body.industry)
     except ValueError as e:
@@ -234,7 +244,10 @@ FREE_EMAIL_DOMAINS = {
 
 
 @router.post("/register/procurement", status_code=201, response_model=TokenWithRefresh)
-async def register_procurement(body: ProcurementRegisterRequest, db: Session = Depends(get_db)):
+@limiter.limit("3/minute")
+async def register_procurement(
+    request: Request, body: ProcurementRegisterRequest, db: Session = Depends(get_db)
+):
     # Reject free email providers
     domain = body.email.rsplit("@", 1)[-1].lower()
     if domain in FREE_EMAIL_DOMAINS:
@@ -285,6 +298,40 @@ async def refresh_access_token(refresh_token: str = Body(..., embed=True)):
     )
 
 
+# ── Logout (this session only) ────────────────────────────────────────────────
+
+class LogoutRequest(BaseModel):
+    refresh_token: Optional[str] = None
+
+
+@router.post("/logout", status_code=204)
+@limiter.limit("30/minute")
+async def logout(request: Request, body: LogoutRequest = Body(default=LogoutRequest())):
+    """Revoke the presented refresh token — i.e. sign out THIS device.
+
+    Signing out used to be cookie-clearing only: the frontend deleted its
+    cookies and told the user they were signed out, while the refresh token
+    stayed valid server-side for its full 30 days. Anyone who had captured that
+    token (shared machine, proxy log, backup) could keep minting access tokens
+    long after the "logout".
+
+    Deliberately NOT the same as `/revoke`: that kills every session on every
+    device and is the "sign out everywhere" control. Routine logout must not
+    silently sign the user out of their phone as well.
+
+    Idempotent, and always 204 — a logout must never fail in a way that leaves
+    the user believing they are still signed in.
+    """
+    token = (body.refresh_token or "").strip()
+    if not token:
+        return
+    try:
+        payload = verify_refresh_token(token)
+        _revoke_token(token, payload.get("sub") if payload else None)
+    except Exception as exc:
+        logger.warning("[Auth] logout revocation failed: %s", exc)
+
+
 # ── Revoke ────────────────────────────────────────────────────────────────────
 
 @router.post("/revoke", status_code=204)
@@ -316,6 +363,28 @@ async def revoke_all_refresh_tokens(
     removed = _revoke_all_for_email(target)
     revoke_user_tokens(target)
     logger.info("[Auth] Revoked %d refresh token(s) + set access cutoff for %s", removed, target)
+
+
+# ── WebSocket handshake token ────────────────────────────────────────────────
+
+@router.get("/ws-token")
+@limiter.limit("30/minute")
+async def ws_token(request: Request, token: str = Security(oauth2_scheme)):
+    """Exchange a valid access token for a 2-minute, WS-scoped handshake token.
+
+    The socket.io handshake can't read the HttpOnly session cookie, so a token
+    must cross into JavaScript. Previously the frontend simply echoed the raw
+    7-day session JWT back to the browser while its own docstring claimed the
+    value was short-lived — so any XSS or logged handshake yielded a week of
+    full API access. The minted token is `type: "ws"`, which
+    `verify_access_token` rejects, so it opens sockets and nothing else.
+    """
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    payload = verify_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return {"wsToken": create_ws_token(payload.get("sub")), "expiresIn": 120}
 
 
 # ── Me ────────────────────────────────────────────────────────────────────────
@@ -502,7 +571,10 @@ def _reset_token_already_used(token: str) -> bool:
 
 
 @router.post("/forgot-password", status_code=202)
-async def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+async def forgot_password(
+    request: Request, body: ForgotPasswordRequest, db: Session = Depends(get_db)
+):
     """Always returns 202 to prevent email enumeration. Sends a reset link if the user exists."""
     from app.core.models import User
     from app.services.email_service import EmailService
@@ -546,7 +618,10 @@ async def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get
 
 
 @router.post("/reset-password")
-async def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+async def reset_password(
+    request: Request, body: ResetPasswordRequest, db: Session = Depends(get_db)
+):
     from app.core.models import User
 
     if len(body.password) < 8:

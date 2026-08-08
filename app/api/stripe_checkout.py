@@ -8,6 +8,12 @@ from app.core.db import get_db
 from app.core.auth import verify_access_token
 from app.core.config import settings
 from app.services.evidence_enricher import record_verified_identity, trusted_cached_uen
+from app.services.fulfillment.catalog import (
+    BUNDLE_COMPONENTS,
+    RFP_BRIEF_PRODUCT_TYPES,
+    RFP_PRODUCT_TYPES,
+    rfp_component_for,
+)
 from fastapi.security import OAuth2PasswordBearer
 from typing import Any
 import os
@@ -669,11 +675,10 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
 
     # For bundles: require website (for VP + PDPA scan) and company name.
     # Falls back to user profile, otherwise 422 to trigger frontend prompt.
-    BUNDLE_TYPES = {
-        "vendor_trust_pack", "rfp_accelerator",
-        "enterprise_bid_kit", "compliance_evidence_pack",
-        "rfp_express", "rfp_complete",
-    }
+    # Every bundle plus the standalone kits — all of them scan a site and name a
+    # company, so all of them need those two facts up front. Derived from the
+    # catalogue so a new SKU is covered without editing this line.
+    BUNDLE_TYPES = set(BUNDLE_COMPONENTS) | RFP_PRODUCT_TYPES
     if product_type in BUNDLE_TYPES:
         from app.core.db import SessionLocal
         from app.core.models import User
@@ -1083,10 +1088,7 @@ async def checkout_verify(session_id: str | None = None):
         # brief. The post-checkout page needs to know whether to show the
         # "Complete your brief" CTA — surface the pending intake on the verify
         # response so the frontend doesn't race the webhook with a separate call.
-        requires_brief = product_type_resolved in {
-            "rfp_complete", "rfp_express",
-            "rfp_accelerator", "enterprise_bid_kit", "compliance_evidence_pack",
-        }
+        requires_brief = product_type_resolved in RFP_BRIEF_PRODUCT_TYPES
         pending_rfp_intake_id = None
         # Compliance Evidence Pack also defers the BCEP 7-document intake. Surface
         # it so the success page can prompt the buyer to start the pack they paid
@@ -1169,15 +1171,29 @@ async def checkout_verify(session_id: str | None = None):
                                 # Brief already filed for THIS session.
                                 brief_satisfied = True
                                 requires_brief = True
-                            elif requires_brief and product_type_resolved in {"rfp_complete", "rfp_express"}:
+                            elif requires_brief and rfp_component_for(product_type_resolved):
                                 # No session row yet — webhook race or failure.
                                 # Lazy-create so the buyer has a brief link to follow.
+                                #
+                                # This branch used to test only {"rfp_complete",
+                                # "rfp_express"} while `requires_brief` above covered
+                                # five SKUs, so the three bundles — the most expensive
+                                # ones — fell through and left the buyer on the success
+                                # page with no brief CTA and no way to reach the kit
+                                # they had paid for. Both sides now derive from the
+                                # same catalogue.
+                                #
+                                # `rfp_product_type` must be the KIT type, not the
+                                # bundle name: fulfill_rfp_task cannot fulfil a row
+                                # that says "rfp_accelerator". The bundle name belongs
+                                # in `bundle_source` — same split the webhook path uses
+                                # (fulfillment/bundles.py:757-765).
                                 resolved_url = _meta_get("vendor_url") or (getattr(_user, "website", "") or "") or None
                                 resolved_company = _meta_get("company_name") or (getattr(_user, "company", "") or "") or None
                                 _new = PendingRfpIntake(
                                     user_id=_user.id,
                                     session_id=session_id,
-                                    rfp_product_type=product_type_resolved,
+                                    rfp_product_type=rfp_component_for(product_type_resolved),
                                     bundle_source=product_type_resolved,
                                     vendor_url=resolved_url,
                                     company_name=resolved_company,
@@ -1261,40 +1277,8 @@ async def rfp_result(session_id: str | None = None):
 
     return JSONResponse(data, headers={"Cache-Control": "no-store, max-age=0"})
 
-
-@router.get("/portal")
-async def create_portal_session(
-    token: str = Security(oauth2_scheme),
-    db: Session = Depends(get_db),
-):
-    """Create a Stripe Billing Portal session for the current user."""
-    if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    payload = verify_access_token(token)
-    if not payload:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    from app.core.models import User
-
-    from app.core.repositories.user_repository import UserRepository
-    user = UserRepository.get_by_email(db, payload.get("sub"))
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    if not user.stripe_customer_id:
-        raise HTTPException(
-            status_code=400,
-            detail="No billing record found. Please purchase a product first.",
-        )
-
-    try:
-        stripe_client = get_stripe_client()
-        base_url = get_base_url()
-        session = stripe_client.billing_portal.Session.create(
-            customer=user.stripe_customer_id,
-            return_url=f"{base_url}/pricing",
-        )
-        return RedirectResponse(url=session.url)
-    except Exception as e:
-        logger.exception("Failed to create billing portal session")
-        raise HTTPException(status_code=500, detail=str(e))
+# NOTE: `GET /stripe/portal` was removed (2026-08-08). It was a second, unused
+# Stripe Billing Portal entry point — the live one the UI calls is
+# `POST /vendor/subscription/portal` in app/api/vendor_status.py. Two portal
+# routes meant a divergent `return_url` and one of them going untested; the
+# frontend had no caller for this one.

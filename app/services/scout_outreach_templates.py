@@ -14,9 +14,54 @@ differ if regenerated later.
 Output is real HTML now (branded_email_html), not the original plain-text
 templates — needed since these now go through send_html_email, not a
 .txt file a human copy-pastes.
+
+Spam Control Act (Cap. 311A) compliance — added 2026-08-07, see
+AUDIT_2026-08-07.md P0-3. Every message these functions produce is an
+unsolicited commercial message, so all three must carry:
+  * an "<ADV>" subject prefix (Second Schedule para 3), via ``adv_subject``;
+  * an unsubscribe facility *inside the body* (para 2(a)) — the SMTP
+    List-Unsubscribe header alone does not satisfy this;
+  * the sender's registered postal address (para 2(b)).
+The last two come from ``branded_email_html(unsubscribe_url=…,
+postal_address=…)``, which needs the recipient address — so these
+functions now require ``prospect_data["contact_email"]`` and return
+``("", "")`` without it. A prospect with no address cannot be emailed
+anyway, so refusing to render is strictly better than rendering an
+advertisement that has no working opt-out in it.
 """
 
-from app.services.email_layout import branded_email_html, email_button
+from app.core.config import settings
+from app.services.email_layout import adv_subject, branded_email_html, email_button
+from app.services.email_suppression import unsubscribe_url
+
+# No pipeline captures a contact person's name — only ``contact_email`` (see
+# scout_shared.extract_contact_email). The templates used to open with the
+# literal "Dear [Name]," and shipped it unfilled, because nothing could fill it
+# and no endpoint could edit the stored body. A neutral salutation is honest;
+# a reviewer who knows the person can personalise it through
+# PATCH /scout/pending/{id} before approving.
+_SALUTATION = "<p>Hello,</p>"
+
+
+def _render(prospect_data: dict, subject: str, body_inner: str, preheader: str) -> tuple[str, str]:
+    """Wrap an outreach body in the marketing frame, or refuse to render.
+
+    Returns ``("", "")`` when the message cannot be made compliant — no
+    recipient address to build an unsubscribe link for, or no configured
+    postal address. Callers store the empty result and the send task skips
+    the prospect; nothing half-compliant is ever produced.
+    """
+    to_email = (prospect_data.get("contact_email") or "").strip()
+    postal = (settings.COMPANY_POSTAL_ADDRESS or "").strip()
+    if not to_email or not postal:
+        return "", ""
+    return adv_subject(subject), branded_email_html(
+        body_inner,
+        title=subject,
+        preheader=preheader,
+        unsubscribe_url=unsubscribe_url(to_email),
+        postal_address=postal,
+    )
 
 
 def generate_vendor_outreach(prospect_data: dict, sector_top_name: str, sector_top_score: int) -> tuple[str, str]:
@@ -30,8 +75,20 @@ def generate_vendor_outreach(prospect_data: dict, sector_top_name: str, sector_t
         }.items()
         if not findings.get(key, {}).get("present", True)
     ][:2]
-    dim1 = failing[0] if len(failing) > 0 else "a PDPA compliance gap"
-    dim2 = failing[1] if len(failing) > 1 else "your data protection policy"
+    # Only positively-detected gaps are named. This block used to pad a short
+    # list with "a PDPA compliance gap" / "your data protection policy" and then
+    # present both under "The two most urgent gaps identified" — asserting
+    # findings the scan never made. Same absence-of-evidence rule the PDPA
+    # product already follows: nothing detected means the section is dropped.
+    gaps_block = ""
+    if failing:
+        items = "".join(f"<li>{label}</li>" for label in failing)
+        heading = (
+            "The most urgent gap identified on your public-facing site:"
+            if len(failing) == 1
+            else "The two most urgent gaps identified on your public-facing site:"
+        )
+        gaps_block = f"<p>{heading}</p><ol>{items}</ol>"
 
     rank_line = ""
     if prospect_data.get("sector_rank"):
@@ -42,7 +99,10 @@ def generate_vendor_outreach(prospect_data: dict, sector_top_name: str, sector_t
         compare_line = f"<p>The top-verified {prospect_data.get('sector', '')} vendor in our index currently has a Trust Score of {sector_top_score}/100.</p>"
 
     upsell = ""
-    if prospect_data.get("priority_tier") == "TIER1" and len(findings) > 2:
+    # Gated on failing checks, not on ``len(findings)`` — findings always holds
+    # one entry per check performed, so the old condition fired on every TIER1
+    # prospect and told vendors with a clean scan that gaps had been found.
+    if prospect_data.get("priority_tier") == "TIER1" and len(failing) >= 2:
         upsell = ("<p>Given the number of gaps found, you may also want to look at the "
                    "Compliance Bundle (S$799 one-time) — the full PDPA governance pack, "
                    "an RFP-ready compliance dossier, and a blockchain-anchored cover sheet "
@@ -50,19 +110,18 @@ def generate_vendor_outreach(prospect_data: dict, sector_top_name: str, sector_t
 
     subject = f"{prospect_data['clean_name']} — Trust Score {prospect_data.get('trust_score', 0)}/100 on the GeBIZ Vendor Index"
     body_inner = f"""
-    <p>Dear [Name],</p>
+    {_SALUTATION}
     <p>I recently completed an automated PDPA compliance scan of active GeBIZ vendors in Singapore.</p>
     <p><strong>{prospect_data['clean_name']}</strong> received a Trust Score of {prospect_data.get('trust_score', 0)}/100.</p>
     {rank_line}{compare_line}
-    <p>The two most urgent gaps identified on your public-facing site:</p>
-    <ol><li>{dim1}</li><li>{dim2}</li></ol>
+    {gaps_block}
     <p>The Booppa PDPA Quick Scan gives you the full picture in under 5 minutes: every finding
     with remediation steps, PDPC enforcement precedents, and an audit-ready PDF report.</p>
     {email_button("https://booppa.io/pdpa-quick-scan", "Run the PDPA Quick Scan — S$299")}
     {upsell}
     <p>Worth a 15-minute call this week?</p>
     """
-    return subject, branded_email_html(body_inner, title=subject, preheader="Automated PDPA compliance signal")
+    return _render(prospect_data, subject, body_inner, "Automated PDPA compliance signal")
 
 
 def generate_buyer_outreach(prospect_data: dict) -> tuple[str, str]:
@@ -95,7 +154,7 @@ def generate_buyer_outreach(prospect_data: dict) -> tuple[str, str]:
 
     subject = f"{prospect_data['agency_name']} — {prospect_data['award_count']} GeBIZ awards last year, how much time does supplier due diligence cost?"
     body_inner = f"""
-    <p>Dear [Name],</p>
+    {_SALUTATION}
     <p>Public GeBIZ data shows {prospect_data['agency_name']} awarded {prospect_data['award_count']}
     contracts last year to {prospect_data.get('distinct_vendors', 0)} different suppliers.</p>
     {regulated_line}
@@ -103,7 +162,10 @@ def generate_buyer_outreach(prospect_data: dict) -> tuple[str, str]:
     <ul>{bullets_html}</ul>
     <p>Worth a 15-minute comparison this week?</p>
     """
-    return subject, branded_email_html(body_inner, title=subject, preheader=f"{prospect_data['award_count']} GeBIZ awards last year")
+    return _render(
+        prospect_data, subject, body_inner,
+        f"{prospect_data['award_count']} GeBIZ awards last year",
+    )
 
 
 def generate_csp_outreach(prospect_data: dict) -> tuple[str, str]:
@@ -121,7 +183,7 @@ def generate_csp_outreach(prospect_data: dict) -> tuple[str, str]:
 
     subject = f"{prospect_data['clean_name']} — AML/CFT Readiness Check (CSP Act 2024)"
     body_inner = f"""
-    <p>Dear [Name],</p>
+    {_SALUTATION}
     <p>I ran an independent public-signal review of AML/CFT programme readiness across
     ACRA-licensed Corporate Service Providers in Singapore.</p>
     <p><strong>{prospect_data['clean_name']}</strong> scored {prospect_data.get('aml_readiness_score', 0)}/100
@@ -135,4 +197,4 @@ def generate_csp_outreach(prospect_data: dict) -> tuple[str, str]:
     {email_button("https://booppa.io/csp-compliance-pack", "S$3,999 one-time, or S$299/month")}
     <p>Worth a 15-minute call this week?</p>
     """
-    return subject, branded_email_html(body_inner, title=subject, preheader="AML/CFT readiness signal")
+    return _render(prospect_data, subject, body_inner, "AML/CFT readiness signal")

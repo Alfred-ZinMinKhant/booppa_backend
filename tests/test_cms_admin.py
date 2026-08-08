@@ -30,16 +30,20 @@ from app.core.models import (
 )
 
 BASE = "/api/admin/cms"
-TOKEN = "test-admin-token-value"
 
 
 @pytest.fixture
-def auth(monkeypatch):
-    """`_admin_auth` accepts a bearer admin JWT, this static header, or Basic.
-    The header is the cheapest of the three to exercise and takes the same path
-    the other admin tests use."""
-    monkeypatch.setattr(settings, "ADMIN_TOKEN", TOKEN)
-    return {"X-Admin-Token": TOKEN}
+def auth():
+    """`_admin_auth` accepts a bearer admin JWT or HTTP Basic.
+
+    This used the static `X-Admin-Token` header until 2026-08-08, when that
+    branch was removed — it was a non-expiring shared secret accepted on every
+    admin route, and `ADMIN_TOKEN` was never set in production, so it
+    authenticated nobody there. The bearer JWT is the real production path.
+    """
+    from app.core.auth import create_admin_token
+
+    return {"Authorization": f"Bearer {create_admin_token('cms-test-admin')}"}
 
 
 @pytest.fixture

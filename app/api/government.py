@@ -1,22 +1,39 @@
-from __future__ import annotations
-from app.core.route_classes import RetryAPIRoute
 """
 Government Portal API
 =====================
 Dedicated endpoints for Singapore government procurement officers accessing
 the Booppa Vendor Intelligence portal.
 
-All /api/government/* routes are public-read (no auth required) so procurement
-officers can use the portal without creating a Booppa account.  Writes (verify
-by UEN) trigger a lightweight ACRA + blockchain lookup only.
+Access model (changed 2026-08-07 — see AUDIT_2026-08-07.md P0-1)
+----------------------------------------------------------------
+These routes used to be public-read. They are not any more, for two reasons:
+
+  1. The public landing page states "Access is restricted to Singapore
+     government email addresses ending in .gov.sg" and offers a registration
+     form. That statement was false: the domain check was commented out here,
+     so any address could mint a role="GOVERNMENT" account, and the data
+     endpoints required no account at all.
+  2. Registration collected names, agency affiliations and passwords from
+     public-sector officers against an access control that did not exist.
+
+So: `/register` now enforces the .gov.sg domain server-side, and every data
+endpoint requires an authenticated GOVERNMENT-role user via `_require_gov_user`.
+The frontend check in `GovernmentLandingPage.tsx` and the Next proxy at
+`app/api/government/register/route.ts` are now defence in depth, not the gate.
+
+Do not reintroduce a public branch here without also changing the landing-page
+copy — the two must agree.
 
 Endpoints
 ---------
-GET  /api/government/vendors          — paginated vendor list with trust signals
-GET  /api/government/vendors/{uen}    — single vendor detail by UEN
-GET  /api/government/tenders          — live open GeBIZ tenders (latest first)
-POST /api/government/verify           — verify vendor by UEN or blockchain TX hash
-POST /api/government/shortlist-report — generate plain-text evaluation report
+POST /api/government/register         — public; .gov.sg only
+POST /api/government/login            — public
+GET  /api/government/vendors          — GOVERNMENT auth; paginated vendor list
+GET  /api/government/vendors/{uen}    — GOVERNMENT auth; single vendor by UEN
+GET  /api/government/tenders          — GOVERNMENT auth; live open GeBIZ tenders
+GET  /api/government/stats            — GOVERNMENT auth; portal counts
+POST /api/government/verify           — GOVERNMENT auth; verify by UEN or TX hash
+POST /api/government/shortlist-report — GOVERNMENT auth; plain-text evaluation
 """
 
 
@@ -24,13 +41,15 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy import or_, func
 from sqlalchemy.orm import Session
 
-from app.core.db import get_db
+from app.core.route_classes import RetryAPIRoute
+from app.core.db import get_db, get_current_user
+from app.core.limiter import limiter
 from app.core.models import User
 from app.core.models import VendorScore, VendorSector
 from app.core.models import VendorStatusSnapshot
@@ -48,6 +67,40 @@ router = APIRouter(route_class=RetryAPIRoute)
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 _DEPTH_RANK = {"UNVERIFIED": 0, "BASIC": 1, "STANDARD": 2, "DEEP": 3, "CERTIFIED": 4}
+
+# The one place the government-email rule is expressed on the server. The
+# frontend has its own copy for UX; this is the one that decides.
+_GOV_EMAIL_SUFFIX = ".gov.sg"
+
+
+def _is_gov_email(email: str) -> bool:
+    return (email or "").strip().lower().endswith(_GOV_EMAIL_SUFFIX)
+
+
+def _require_gov_user(current_user: User = Depends(get_current_user)) -> User:
+    """Dependency — an authenticated user holding the GOVERNMENT role.
+
+    Checks the role AND re-checks the email domain. The double check is
+    deliberate: the role is data and could have been set by an older code path
+    (the domain check on /register was commented out until 2026-08-07), so any
+    account minted during that window is rejected here on the way in rather
+    than trusted because its role column says GOVERNMENT.
+    """
+    if (current_user.role or "").upper() != "GOVERNMENT":
+        raise HTTPException(
+            status_code=403,
+            detail="This portal is restricted to registered Singapore government users.",
+        )
+    if not _is_gov_email(current_user.email):
+        logger.warning(
+            "[GovPortal] GOVERNMENT role on non-.gov.sg address rejected: %s",
+            current_user.email,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="This portal is restricted to Singapore government email addresses (.gov.sg).",
+        )
+    return current_user
 
 
 def _vendor_row(
@@ -120,20 +173,24 @@ class GovAuthOut(BaseModel):
 
 
 @router.post("/register", response_model=GovAuthOut, status_code=201)
-async def gov_register(body: GovRegisterRequest, db: Session = Depends(get_db)):
+@limiter.limit("3/minute")
+async def gov_register(
+    request: Request, body: GovRegisterRequest, db: Session = Depends(get_db)
+):
     """
-    Register a government procurement officer account.
+    Register a government procurement officer account. Public, .gov.sg only.
 
-    NOTE: .gov.sg domain check is disabled for testing.
-    To enable, uncomment the domain validation block below.
+    The domain check below used to be commented out "for testing", which meant
+    any address could mint a role="GOVERNMENT" account while the landing page
+    told officers access was restricted. It is enforced now, and this is the
+    only enforcement point that counts — the checks in the Next proxy and the
+    React form are UX, and neither is reachable by a direct API call.
     """
-    # -- Uncomment to enforce .gov.sg domain in production --
-    # domain = body.email.rsplit("@", 1)[-1].lower()
-    # if not domain.endswith(".gov.sg"):
-    #     raise HTTPException(
-    #         status_code=422,
-    #         detail="Access is restricted to Singapore government email addresses (.gov.sg).",
-    #     )
+    if not _is_gov_email(body.email):
+        raise HTTPException(
+            status_code=422,
+            detail="Access is restricted to Singapore government email addresses (.gov.sg).",
+        )
 
     try:
         user = register_user(
@@ -169,7 +226,10 @@ class GovLoginRequest(BaseModel):
 
 
 @router.post("/login", response_model=GovAuthOut)
-async def gov_login(body: GovLoginRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+async def gov_login(
+    request: Request, body: GovLoginRequest, db: Session = Depends(get_db)
+):
     """Authenticate a government portal user."""
     user = authenticate_user(db, body.email, body.password)
     if not user:
@@ -200,6 +260,7 @@ def list_vendors(
     page:     int           = Query(1, ge=1),
     per_page: int           = Query(24, ge=1, le=100),
     db: Session = Depends(get_db),
+    _gov: User = Depends(_require_gov_user),
 ):
     """Return paginated vendor list with all procurement intelligence fields."""
     # VendorSector is deliberately NOT joined here. It is one-to-many, so an
@@ -258,7 +319,11 @@ def list_vendors(
 # ── GET /vendors/{uen} ────────────────────────────────────────────────────────
 
 @router.get("/vendors/{uen}")
-def get_vendor_by_uen(uen: str, db: Session = Depends(get_db)):
+def get_vendor_by_uen(
+    uen: str,
+    db: Session = Depends(get_db),
+    _gov: User = Depends(_require_gov_user),
+):
     """Return full vendor profile by UEN."""
     user = db.query(User).filter(User.uen == uen, User.is_active == True).first()  # type: ignore[union-attr]
     if not user:
@@ -286,6 +351,7 @@ def get_vendor_by_uen(uen: str, db: Session = Depends(get_db)):
 def list_tenders(
     limit: int = Query(8, ge=1, le=50),
     db: Session = Depends(get_db),
+    _gov: User = Depends(_require_gov_user),
 ):
     """Return open GeBIZ tenders sorted by closing date (soonest first).
     Uses the same on-demand sync as the GeBIZ ticker so data is always fresh.
@@ -353,8 +419,17 @@ def list_tenders(
 # ── GET /stats ───────────────────────────────────────────────────────────────
 
 @router.get("/stats")
-def get_stats(db: Session = Depends(get_db)):
-    """Real counts for the landing page stats panel."""
+def get_stats(
+    db: Session = Depends(get_db),
+    _gov: User = Depends(_require_gov_user),
+):
+    """Real counts for the in-portal stats panel.
+
+    NOTE: the *public* landing page does not use this — it reads
+    `/api/v1/marketplace/stats` (GovernmentLandingPage.tsx:154). Verified before
+    gating. If a public counts panel is ever wanted here, add a separate
+    unauthenticated endpoint rather than removing this dependency.
+    """
     from datetime import timezone as _tz
     from app.core.models import VerifyRecord
 
@@ -416,7 +491,11 @@ class VerifyRequest(BaseModel):
 
 
 @router.post("/verify")
-async def verify_vendor(body: VerifyRequest, db: Session = Depends(get_db)):
+async def verify_vendor(
+    body: VerifyRequest,
+    db: Session = Depends(get_db),
+    _gov: User = Depends(_require_gov_user),
+):
     """
     Verify a vendor certificate by UEN or blockchain TX hash.
     Returns structured verification result for the portal modal.
@@ -519,7 +598,11 @@ class ShortlistReportRequest(BaseModel):
 
 
 @router.post("/shortlist-report", response_class=PlainTextResponse)
-def generate_shortlist_report(body: ShortlistReportRequest, db: Session = Depends(get_db)):
+def generate_shortlist_report(
+    body: ShortlistReportRequest,
+    db: Session = Depends(get_db),
+    _gov: User = Depends(_require_gov_user),
+):
     """
     Generate a plain-text AGO-auditable evaluation shortlist.
     Looks up real blockchain TX hashes from CertificateLog per vendor.

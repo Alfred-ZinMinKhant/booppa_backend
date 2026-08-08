@@ -19,7 +19,7 @@ from app.core.models import (
     Organisation, OrganisationMember, Subsidiary,
     WebhookEndpoint, WebhookDelivery,
     TrmControl, TrmEvidence,
-    RetentionPolicy, SsoConfig, WhiteLabelConfig, SlaLog,
+    RetentionPolicy, RetentionPurgeLog, SsoConfig, WhiteLabelConfig, SlaLog,
     OrganisationInvite, VendorWatchlistItem, VendorWatchlistComment,
     MAS_TRM_DOMAINS,
 )
@@ -104,6 +104,7 @@ class WatchlistCommentCreate(BaseModel):
 from app.billing.enforcement import (
     SUITE_PLAN_KEYS, PRO_SUITE_PLAN_KEYS, COLLABORATION_PLAN_KEYS,
     ENTERPRISE_PLAN_KEYS, BUYER_WHITE_LABEL_PLAN_KEYS,
+    grace_plan_for_read,
 )
 
 
@@ -120,10 +121,18 @@ def _get_org(org_id: str, user: User, db: Session) -> Organisation:
     return org
 
 
-def _org_owner_plan(org: Organisation, db: Session) -> str:
-    """Resolve the org's billing owner's current plan (lowercase, stripped)."""
+def _org_owner_plan(org: Organisation, db: Session, *, read_only: bool = False) -> str:
+    """Resolve the org's billing owner's current plan (lowercase, stripped).
+
+    With `read_only=True`, a plan of "free" falls back to the tier the owner held
+    before cancelling, if that was within the 90-day grace window. See
+    `grace_plan_for_read` for why that fallback is confined to read paths.
+    """
     owner = db.query(User).filter(User.id == org.owner_user_id).first()
-    return (getattr(owner, "plan", "") or "").lower().strip()
+    plan = (getattr(owner, "plan", "") or "").lower().strip()
+    if read_only and plan in ("", "free") and owner is not None:
+        return grace_plan_for_read(owner) or plan
+    return plan
 
 
 def _require_suite_plan(
@@ -134,6 +143,7 @@ def _require_suite_plan(
     pro_only: bool = False,
     allowed: set[str] | None = None,
     tier_label: str | None = None,
+    read_only: bool = False,
 ) -> Organisation:
     """Gate: org membership AND owner holds a plan in the required key set.
 
@@ -141,9 +151,17 @@ def _require_suite_plan(
     it, either Standard or Pro Suite is accepted. `allowed` overrides both with an
     explicit key set — used by features whose entitlement isn't Suite-shaped
     (multi-subsidiary, buyer white-label); `tier_label` names that tier in the 402.
+
+    `read_only=True` additionally honours the 90-day post-cancellation grace
+    window. **Only pass it from a GET handler that returns already-produced
+    artefacts.** It is not "GET-shaped means safe": it must not be passed by any
+    handler that generates, spends, allocates seats, or configures SSO, because
+    the grace we promised buyers is access to evidence they already paid for —
+    not three further months of the product. Adding it to a write handler is the
+    failure mode this parameter exists to make visible at the call site.
     """
     org = _get_org(org_id, user, db)
-    plan = _org_owner_plan(org, db)
+    plan = _org_owner_plan(org, db, read_only=read_only)
     if allowed is None:
         allowed = PRO_SUITE_PLAN_KEYS if pro_only else SUITE_PLAN_KEYS
         tier_label = tier_label or ("Pro Suite" if pro_only else "Standard Suite or Pro Suite")
@@ -249,7 +267,7 @@ def add_subsidiary(org_id: str, body: SubsidiaryCreate, db: Session = Depends(ge
 @router.get("/organisations/{org_id}/subsidiaries")
 def list_subsidiaries(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     # Same Suite-wide entitlement as add_subsidiary — keep the two gates identical.
-    _require_suite_plan(org_id, current_user, db, allowed=ENTERPRISE_PLAN_KEYS,
+    _require_suite_plan(org_id, current_user, db, allowed=ENTERPRISE_PLAN_KEYS, read_only=True,
                         tier_label="An Enterprise, Suite, or Buyer Professional/Enterprise")
     subs = db.query(Subsidiary).filter(Subsidiary.organisation_id == org_id).all()
     return [{"id": str(s.id), "name": s.name, "uen": s.uen, "country": s.country} for s in subs]
@@ -274,7 +292,7 @@ def create_webhook(org_id: str, body: WebhookCreate, db: Session = Depends(get_d
 
 @router.get("/organisations/{org_id}/webhooks")
 def list_webhooks(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _require_suite_plan(org_id, current_user, db)
+    _require_suite_plan(org_id, current_user, db, read_only=True)
     eps = db.query(WebhookEndpoint).filter(WebhookEndpoint.organisation_id == org_id).all()
     return [{"id": str(e.id), "url": e.url, "events": e.events, "is_active": e.is_active} for e in eps]
 
@@ -293,7 +311,7 @@ def delete_webhook(org_id: str, webhook_id: str, db: Session = Depends(get_db), 
 
 @router.get("/organisations/{org_id}/trm")
 def list_trm_controls(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _require_suite_plan(org_id, current_user, db)
+    _require_suite_plan(org_id, current_user, db, read_only=True)
     controls = db.query(TrmControl).filter(TrmControl.organisation_id == org_id).all()
     return [{"id": str(c.id), "domain": c.domain, "control_ref": c.control_ref, "status": c.status, "risk_rating": c.risk_rating, "gap_analysis": c.gap_analysis} for c in controls]
 
@@ -326,9 +344,44 @@ async def run_gap_analysis(org_id: str, body: TrmGapRequest, db: Session = Depen
 
 # ── 5. Retention Policies ─────────────────────────────────────────────────────
 
+@router.get("/retention/categories")
+def list_retention_categories():
+    """The categories a policy can actually enforce.
+
+    Exposed so a client never has to guess. Before the daily purge worker
+    existed (2026-08-08) `data_category` was free text and the model's own
+    comment suggested "personal_data" / "audit_logs" — neither of which maps to
+    a table, so either value produced a policy that could never do anything.
+    """
+    from app.services.retention import RETENTION_CATEGORIES
+
+    return [
+        {"key": c.key, "label": c.label, "description": c.description}
+        for c in RETENTION_CATEGORIES.values()
+    ]
+
+
 @router.post("/organisations/{org_id}/retention", status_code=201)
 def create_retention_policy(org_id: str, body: RetentionPolicyCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     _require_suite_plan(org_id, current_user, db)
+
+    # Reject unknown categories rather than storing an unenforceable policy. A
+    # stored-but-inert policy is worse than an error: the customer is shown a
+    # retention rule, believes deletion is happening, and it never is.
+    from app.services.retention import RETENTION_CATEGORIES
+
+    if body.data_category not in RETENTION_CATEGORIES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Unsupported data_category '{body.data_category}'. "
+                f"Supported: {', '.join(sorted(RETENTION_CATEGORIES))}. "
+                "See GET /enterprise/retention/categories."
+            ),
+        )
+    if body.retention_days < 1:
+        raise HTTPException(status_code=422, detail="retention_days must be at least 1.")
+
     policy = RetentionPolicy(id=uuid.uuid4(), organisation_id=org_id, **body.model_dump())
     db.add(policy)
     db.commit()
@@ -337,9 +390,54 @@ def create_retention_policy(org_id: str, body: RetentionPolicyCreate, db: Sessio
 
 @router.get("/organisations/{org_id}/retention")
 def list_retention_policies(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _require_suite_plan(org_id, current_user, db)
+    _require_suite_plan(org_id, current_user, db, read_only=True)
+    from app.services.retention import is_enforceable
+
     policies = db.query(RetentionPolicy).filter(RetentionPolicy.organisation_id == org_id).all()
-    return [{"id": str(p.id), "data_category": p.data_category, "retention_days": p.retention_days, "auto_purge": p.auto_purge} for p in policies]
+    return [
+        {
+            "id": str(p.id),
+            "data_category": p.data_category,
+            "retention_days": p.retention_days,
+            "auto_purge": p.auto_purge,
+            # `enforced` is the honest signal: policies written before the
+            # category set was closed name tables that do not exist, and
+            # auto_purge=False means the policy is recorded intent, not a purge.
+            # Reporting these as active would restate the original bug in JSON.
+            "enforced": bool(p.auto_purge) and is_enforceable(p.data_category),
+        }
+        for p in policies
+    ]
+
+
+@router.get("/organisations/{org_id}/retention/purge-log")
+def list_retention_purge_log(org_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Evidence that retention ran — what was deleted, when, and against which cutoff.
+
+    This is the difference between "we have a retention policy" and "retention
+    was enforced on <date>, N rows removed", which is the distinction an auditor
+    actually tests for.
+    """
+    _require_suite_plan(org_id, current_user, db, read_only=True)
+    logs = (
+        db.query(RetentionPurgeLog)
+        .filter(RetentionPurgeLog.organisation_id == org_id)
+        .order_by(RetentionPurgeLog.created_at.desc())
+        .limit(200)
+        .all()
+    )
+    return [
+        {
+            "id": str(l.id),
+            "data_category": l.data_category,
+            "retention_days": l.retention_days,
+            "cutoff": l.cutoff.isoformat() if l.cutoff else None,
+            "rows_deleted": l.rows_deleted,
+            "dry_run": l.dry_run,
+            "created_at": l.created_at.isoformat() if l.created_at else None,
+        }
+        for l in logs
+    ]
 
 
 # ── 6. White-label ────────────────────────────────────────────────────────────

@@ -134,13 +134,28 @@ def client(test_db, _disable_rate_limit):
 @pytest.fixture
 def _disable_rate_limit(monkeypatch):
     """slowapi limits requests by remote IP. In tests every request comes from
-    the same TestClient host, so the 20/minute /checkout limit trips quickly
-    when parametrized tests run together. Disable rate-limiting for tests."""
-    try:
-        from app.api.stripe_checkout import _limiter
-        monkeypatch.setattr(_limiter, "enabled", False)
-    except Exception:
-        pass
+    the same TestClient host, so limits trip quickly when parametrized tests
+    run together. Disable rate-limiting for tests.
+
+    There are TWO limiter instances and both must be disabled:
+      - `app.core.limiter.limiter` — the shared app-wide one (auth login /
+        register / password reset, government register+login).
+      - `app.api.stripe_checkout._limiter` — a separate instance that module
+        constructs for itself.
+    Disabling only one leaves the other live and makes any test that hits the
+    same endpoint more than a few times flaky.
+    """
+    for module, attr in (
+        ("app.core.limiter", "limiter"),
+        ("app.api.stripe_checkout", "_limiter"),
+    ):
+        try:
+            import importlib
+            monkeypatch.setattr(
+                getattr(importlib.import_module(module), attr), "enabled", False
+            )
+        except Exception:
+            pass
 
 
 # ── AWS / S3 ────────────────────────────────────────────────────────────────

@@ -12,7 +12,9 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, AsyncMock, MagicMock
 
+from app.core.config import settings
 from app.core.models import ScoutProspect, User
+from app.services.email_suppression import unsubscribe_url
 from app.workers.scout_celery_tasks import (
     scout_send_approved_batch_task,
     get_daily_send_cap,
@@ -20,6 +22,18 @@ from app.workers.scout_celery_tasks import (
 )
 from app.services.scout_vendor_pipeline import run_vendor_pipeline
 from app.services.scout_csp_pipeline import run_csp_pipeline
+
+
+SEND_TEST_RECIPIENT = "outreach-test@example.com"
+TEST_POSTAL_ADDRESS = "Booppa Smart Care LLC, Singapore (test address)"
+
+
+@pytest.fixture
+def postal_address(monkeypatch):
+    """COMPANY_POSTAL_ADDRESS is empty by default and the send task fails
+    closed on it, so any test that expects a send must set one."""
+    monkeypatch.setattr(settings, "COMPANY_POSTAL_ADDRESS", TEST_POSTAL_ADDRESS)
+    return TEST_POSTAL_ADDRESS
 
 
 @pytest.fixture(autouse=True)
@@ -94,7 +108,7 @@ def test_acceptance_1_vendor_scoring(test_db):
     assert p.status in ("NEW", "PENDING_APPROVAL", "BELOW_THRESHOLD", "EXISTING_CUSTOMER")
 
 
-def test_acceptance_2_approval_and_send(test_db):
+def test_acceptance_2_approval_and_send(test_db, postal_address):
     """2. Mark row APPROVED -> run send task -> confirm row moves to SENT."""
     now = datetime.now(timezone.utc)
     test_key = f"TEST_APPROVAL_KEY_{int(now.timestamp())}"
@@ -108,9 +122,17 @@ def test_acceptance_2_approval_and_send(test_db):
         score=45,
         priority_tier="TIER1",
         status="APPROVED",
-        outreach_subject="Test Subject",
-        outreach_body_html="<p>Test Body</p>",
-        raw_data={"contact_email": "outreach-test@example.com"},
+        # Must be a *compliant* message: the send task refuses to dispatch
+        # anything lacking the <ADV> prefix, an in-body unsubscribe link for
+        # this recipient, or the sender's postal address (Spam Control Act,
+        # Cap. 311A Sch 2 — see tests/test_scout_outreach_compliance.py).
+        outreach_subject="<ADV> Test Subject",
+        outreach_body_html=(
+            f'<p>Test Body</p>'
+            f'<a href="{unsubscribe_url(SEND_TEST_RECIPIENT)}">unsubscribe</a>'
+            f'<p>{TEST_POSTAL_ADDRESS}</p>'
+        ),
+        raw_data={"contact_email": SEND_TEST_RECIPIENT},
         first_scored_at=now,
         last_scored_at=now,
         created_at=now,

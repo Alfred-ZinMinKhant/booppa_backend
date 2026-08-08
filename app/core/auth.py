@@ -3,6 +3,7 @@ from jose import JWTError, jwt
 from datetime import datetime, timedelta, timezone
 from app.core.config import settings
 import logging
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -86,9 +87,21 @@ def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
 
 
 def create_refresh_token(data: dict, expires_delta: timedelta = None) -> str:
+    """Mint a refresh token. Every call returns a DISTINCT token.
+
+    `jti` is what makes that true. The payload was previously just
+    {sub, exp, type}, and `exp` has one-second resolution — so two sessions for
+    the same user created within the same second produced a byte-identical JWT.
+    Two devices then shared one credential, and signing out of either revoked
+    both, because to the store they were literally the same string. `iat` also
+    lets a refresh token be reasoned about against the revocation cutoff.
+    """
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(days=30))
-    to_encode.update({"exp": expire, "type": "refresh"})
+    now = datetime.now(timezone.utc)
+    expire = now + (expires_delta or timedelta(days=30))
+    to_encode.update(
+        {"exp": expire, "iat": now, "jti": uuid.uuid4().hex, "type": "refresh"}
+    )
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm="HS256")
 
 
@@ -142,6 +155,44 @@ def verify_password_reset_token(token: str):
         return payload
     except JWTError as e:
         logger.warning(f"Password reset token verification failed: {e}")
+        return None
+
+
+def create_ws_token(sub: str, expires_delta: timedelta = None) -> str:
+    """Short-lived token whose ONLY purpose is the socket.io handshake.
+
+    The WS handshake cannot use the HttpOnly session cookie, so the token has to
+    pass through JavaScript. Handing the client the 7-day access token for that
+    turns an XSS or a leaked handshake URL into week-long account access; this
+    token is scoped (`type: "ws"`, rejected by `verify_access_token`) and expires
+    in 2 minutes, which is ample for "fetch token, open socket".
+
+    Deliberately NOT accepted anywhere except `verify_ws_token`.
+    """
+    now = datetime.now(timezone.utc)
+    expire = now + (expires_delta or timedelta(minutes=2))
+    return jwt.encode(
+        {"sub": sub, "exp": expire, "iat": now, "type": "ws"},
+        settings.SECRET_KEY,
+        algorithm="HS256",
+    )
+
+
+def verify_ws_token(token: str):
+    """Verify a handshake token. Honours the same revocation cutoff as access."""
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+        if payload.get("type") != "ws":
+            raise JWTError("Invalid token type")
+        sub = payload.get("sub")
+        iat = payload.get("iat")
+        if sub and iat is not None:
+            cutoff = _revoked_before(sub)
+            if cutoff and int(iat) < cutoff:
+                raise JWTError("Token revoked")
+        return payload
+    except JWTError as e:
+        logger.warning(f"WS token verification failed: {e}")
         return None
 
 

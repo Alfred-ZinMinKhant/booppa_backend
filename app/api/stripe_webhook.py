@@ -45,7 +45,14 @@ def _emit_subscription_webhook(event_type: str, customer_email: str, product_typ
         logger.warning("subscription webhook emit skipped (%s): %s", event_type, e)
 
 
-RFP_PRODUCT_TYPES = {"rfp_express", "rfp_complete"}
+# Product catalogue lives in one place — see app/services/fulfillment/catalog.py
+# for why these are not defined per-module any more.
+from app.services.fulfillment.catalog import (  # noqa: F401
+    RFP_PRODUCT_TYPES,
+    BUNDLE_COMPONENTS,
+    RFP_BRIEF_PRODUCT_TYPES,
+    rfp_component_for,
+)
 # Single-document notarization is one-time (pay-per-doc, grants a credit balance).
 # The 10/50 batch tiers are now subscriptions (monthly quota) — see
 # SUBSCRIPTION_PRODUCT_TYPES + ENTERPRISE_NOTARIZATION_LIMITS.
@@ -98,33 +105,6 @@ CSP_ONETIME_PRODUCT_TYPES = {"csp_pack_onetime"}
 # Bundle → component mapping.
 # Each bundle fans out to multiple fulfillment tasks.
 # notarization_count = how many notarization tasks to queue (each for one document credit).
-BUNDLE_COMPONENTS = {
-    "vendor_trust_pack": {
-        "vendor_proof": True,
-        "pdpa": True,
-        "notarization_count": 2,
-        "rfp": None,
-    },
-    "rfp_accelerator": {
-        "vendor_proof": True,
-        "pdpa": True,
-        "notarization_count": 2,
-        "rfp": "rfp_express",
-    },
-    "enterprise_bid_kit": {
-        "vendor_proof": True,
-        "pdpa": True,
-        "notarization_count": 7,  # 2 from Trust Pack + 5 additional
-        "rfp": "rfp_complete",
-    },
-    "compliance_evidence_pack": {
-        "vendor_proof": False,
-        "pdpa": True,
-        "notarization_count": 1,
-        "rfp": "rfp_complete",
-        "cover_sheet": True,  # auto-fires once PDPA + RFP + BCEP pack are all ready
-    },
-}
 
 # Grace window after which the Compliance Evidence Pack cover sheet fires with
 # PDPA + RFP only, when the buyer never completed the BCEP evidence-pack intake
@@ -638,6 +618,11 @@ async def _stripe_webhook_impl(
                             )
                         user.plan = new_plan
                         user.subscription_tier = new_plan
+                        # Back on a paid plan — the post-cancellation grace
+                        # window is void. Leaving it set would hand a returning
+                        # customer a second free 90 days when they cancel again.
+                        user.plan_lapsed_at = None
+                        user.lapsed_plan = None
                         try:
                             user.subscription_started_at = datetime.now(timezone.utc)
                         except Exception:
@@ -888,11 +873,24 @@ async def _stripe_webhook_impl(
                             )
                             .all()
                         )
+                        _prior_plan = (user.plan or "").lower().strip()
                         if remaining:
                             # Set plan to the last remaining active subscription
                             user.plan = _plan_map.get(remaining[-1].product_type, "pro")
+                            # Still paying for something — no lapse, and any
+                            # earlier grace window is void.
+                            user.plan_lapsed_at = None
+                            user.lapsed_plan = None
                         else:
                             user.plan = "free"
+                            # Record what lapsed and when, so the 90-day
+                            # read-only grace promised on the pricing page can
+                            # actually be enforced. `plan` is about to become
+                            # "free", which is why the tier is captured here and
+                            # not derived later.
+                            if _prior_plan and _prior_plan != "free":
+                                user.plan_lapsed_at = datetime.utcnow()
+                                user.lapsed_plan = _prior_plan
                         user.subscription_tier = user.plan
                         if hasattr(user, "stripe_subscription_id"):
                             user.stripe_subscription_id = None

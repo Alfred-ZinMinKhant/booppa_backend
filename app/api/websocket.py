@@ -3,7 +3,7 @@ import logging
 import socketio
 from typing import Dict, Set
 
-from app.core.auth import verify_access_token
+from app.core.auth import verify_ws_token
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,11 @@ async def connect(sid, environ, auth):
         if token.startswith("Bearer "):
             token = token.split(" ")[1]
             
-        payload = verify_access_token(token)
+        # Handshake tokens only. A long-lived access token is explicitly NOT
+        # accepted here: the client has to exchange it for a 2-minute ws-scoped
+        # token first (GET /api/auth/ws-token), so the value that passes through
+        # JavaScript is useless minutes later.
+        payload = verify_ws_token(token)
         if not payload:
             return False
             

@@ -35,7 +35,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-RFP_PRODUCT_TYPES = {"rfp_express", "rfp_complete"}
+# Product catalogue lives in one place — see app/services/fulfillment/catalog.py
+# for why these are not defined per-module any more.
+from app.services.fulfillment.catalog import (  # noqa: F401
+    RFP_PRODUCT_TYPES,
+    BUNDLE_COMPONENTS,
+    RFP_BRIEF_PRODUCT_TYPES,
+    rfp_component_for,
+)
 # Single-document notarization is one-time (pay-per-doc, grants a credit balance).
 # The 10/50 batch tiers are now subscriptions (monthly quota) — see
 # SUBSCRIPTION_PRODUCT_TYPES + ENTERPRISE_NOTARIZATION_LIMITS.
@@ -88,33 +95,6 @@ CSP_ONETIME_PRODUCT_TYPES = {"csp_pack_onetime"}
 # Bundle → component mapping.
 # Each bundle fans out to multiple fulfillment tasks.
 # notarization_count = how many notarization tasks to queue (each for one document credit).
-BUNDLE_COMPONENTS = {
-    "vendor_trust_pack": {
-        "vendor_proof": True,
-        "pdpa": True,
-        "notarization_count": 2,
-        "rfp": None,
-    },
-    "rfp_accelerator": {
-        "vendor_proof": True,
-        "pdpa": True,
-        "notarization_count": 2,
-        "rfp": "rfp_express",
-    },
-    "enterprise_bid_kit": {
-        "vendor_proof": True,
-        "pdpa": True,
-        "notarization_count": 7,  # 2 from Trust Pack + 5 additional
-        "rfp": "rfp_complete",
-    },
-    "compliance_evidence_pack": {
-        "vendor_proof": False,
-        "pdpa": True,
-        "notarization_count": 1,
-        "rfp": "rfp_complete",
-        "cover_sheet": True,  # auto-fires once PDPA + RFP + BCEP pack are all ready
-    },
-}
 
 # Grace window after which the Compliance Evidence Pack cover sheet fires with
 # PDPA + RFP only, when the buyer never completed the BCEP evidence-pack intake

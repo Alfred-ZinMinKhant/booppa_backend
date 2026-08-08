@@ -41,6 +41,14 @@ class Settings(BaseSettings):
     AWS_SES_REGION: str = "ap-southeast-1"
     SUPPORT_EMAIL: str = "evidence@booppa.io"
 
+    # Registered postal address of the sender, required in the body of every
+    # unsolicited commercial message by the Spam Control Act (Cap. 311A),
+    # Second Schedule para 2(b). Deliberately EMPTY by default and NOT guessed:
+    # an address that is not the real registered one satisfies nothing. The
+    # SCOUT send task refuses to dispatch while this is unset
+    # (app/workers/scout_celery_tasks.py:_outreach_compliance_error).
+    COMPANY_POSTAL_ADDRESS: str = ""
+
     # Resend (preferred over SES — set RESEND_API_KEY to enable)
     RESEND_API_KEY: Optional[str] = None
 
@@ -130,8 +138,10 @@ class Settings(BaseSettings):
     # Rate Limiting
     RATE_LIMIT_REQUESTS: int = 100
     RATE_LIMIT_WINDOW: int = 60
-    # Admin token for lightweight admin endpoints (set in environment)
-    ADMIN_TOKEN: str | None = None
+    # NOTE: ADMIN_TOKEN (the static `X-Admin-Token` shared secret) was removed on
+    # 2026-08-08. It was accepted on every admin route, never expired, could not
+    # be rotated, and was never injected into the ECS task definition — so it
+    # authenticated nobody in production. Admin access is bearer JWT or Basic.
     # Optional basic auth for admin endpoints
     ADMIN_USER: str | None = None
     ADMIN_PASSWORD: str | None = None
@@ -152,6 +162,13 @@ class Settings(BaseSettings):
     FEATURE_COMPETITION: bool = False
     FEATURE_INSIGHT: bool = False
     FEATURE_PROCUREMENT_AUTOMATION: bool = False
+
+    # Enterprise data retention. The daily sweep enforces RetentionPolicy rows
+    # (app/services/retention.py). Set RETENTION_PURGE_DRY_RUN=true to log what
+    # WOULD be deleted without deleting it — useful when onboarding an org with
+    # a lot of history, since deletion is irreversible. Defaults to false: a
+    # worker that only ever logs is a documented control, not an enforced one.
+    RETENTION_PURGE_DRY_RUN: bool = False
 
     # Auto-activation check interval (seconds)
     AUTO_ACTIVATION_INTERVAL: int = 3600  # 1 hour

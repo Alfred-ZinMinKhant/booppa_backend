@@ -62,9 +62,12 @@ async def login(req: LoginRequest, db: Session = Depends(get_db)):
         }
     }
 
-@router.post("/auth/logout", tags=["bridge-auth"])
-async def logout():
-    return {"message": "Logout successful"}
+# NOTE: `/auth/logout` used to be a no-op stub here that returned
+# {"message": "Logout successful"} without revoking anything. The real handler
+# now lives in app/api/auth.py and deletes the presented refresh token. The
+# auth router is included before this one (app/api/__init__.py:49 vs :61), so
+# this stub was shadowed anyway — keeping it would only suggest logout is a
+# no-op to the next reader.
 
 @router.post("/auth/refresh", tags=["bridge-auth"])
 async def refresh(req: RefreshRequest):

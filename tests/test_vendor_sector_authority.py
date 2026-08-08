@@ -212,14 +212,34 @@ def test_government_vendor_list_does_not_duplicate_multi_sector_vendors(test_db)
     sector, so a two-sector vendor appeared twice and was counted twice."""
     from fastapi.testclient import TestClient
     from app.main import app
+    from app.core.auth import create_access_token, get_password_hash
+    from app.core.models import User
 
     user = _ambiguous_vendor(test_db)
     user.role = "VENDOR"
     user.is_active = True
+
+    # The government endpoints are authenticated now (P0-1) — this assertion is
+    # about the sector join, so it needs a real GOVERNMENT caller rather than an
+    # anonymous one.
+    officer_email = "officer@agency.gov.sg"
+    test_db.add(
+        User(
+            email=officer_email,
+            hashed_password=get_password_hash("Passw0rd!123"),
+            company="Test Agency",
+            role="GOVERNMENT",
+        )
+    )
     test_db.commit()
+    headers = {"Authorization": f"Bearer {create_access_token(data={'sub': officer_email})}"}
 
     with TestClient(app) as client:
-        body = client.get("/api/government/vendors", params={"per_page": 100}).json()
+        resp = client.get(
+            "/api/government/vendors", params={"per_page": 100}, headers=headers
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
 
     ids = [v["id"] for v in body["vendors"]]
     assert ids.count(str(user.id)) == 1, "vendor duplicated by the sector join"

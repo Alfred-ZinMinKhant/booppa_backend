@@ -10845,3 +10845,65 @@ def run_trust_passport_monitor_reanchors(self):
     finally:
         db.close()
 
+
+
+@celery_app.task(bind=True, max_retries=2, name="purge_retention_policies_task")
+def purge_retention_policies_task(self):
+    """Daily sweep enforcing every Enterprise RetentionPolicy with auto_purge on.
+
+    Before this existed, RetentionPolicy rows were written, read back to the
+    customer, and never acted on — while the public privacy page promised data
+    "is securely deleted or anonymized upon expiry of the applicable retention
+    period". See app/services/retention.py for what is and is not purgeable and
+    why.
+
+    Each policy commits in its OWN transaction. A sweep that rolled everything
+    back on one org's failure would leave the other orgs' promised deletions
+    undone while the audit log showed nothing at all — and the next run would
+    hit the same bad policy and fail identically. Per-policy isolation means one
+    unenforceable org degrades to a logged error, not a silent global no-op.
+    """
+    from app.core.models import RetentionPolicy
+    from app.services.retention import purge_organisation_policies
+
+    dry_run = bool(getattr(settings, "RETENTION_PURGE_DRY_RUN", False))
+    db = SessionLocal()
+    swept = purged = failed = 0
+    try:
+        policies = db.query(RetentionPolicy).filter(RetentionPolicy.auto_purge.is_(True)).all()
+        for policy in policies:
+            try:
+                log = purge_organisation_policies(db, policy, dry_run=dry_run)
+                if log is None:
+                    db.rollback()   # skipped (unenforceable category) — nothing staged
+                    continue
+                db.commit()
+                swept += 1
+                purged += log.rows_deleted
+            except Exception:
+                db.rollback()
+                failed += 1
+                logger.exception(
+                    "retention: sweep failed for policy=%s org=%s category=%s",
+                    policy.id,
+                    policy.organisation_id,
+                    policy.data_category,
+                )
+    except Exception as exc:
+        # Only reached if the policy LISTING failed (DB down); the per-policy
+        # loop already contains its own failures. Safe to retry wholesale
+        # because each enforced policy is idempotent: a second run re-derives
+        # the cutoff from `now` and finds nothing left above it.
+        logger.exception("retention: sweep aborted before completion")
+        raise self.retry(exc=exc, countdown=600)
+    finally:
+        db.close()
+
+    logger.info(
+        "retention: sweep complete policies=%d rows=%d failed=%d%s",
+        swept,
+        purged,
+        failed,
+        " (DRY RUN)" if dry_run else "",
+    )
+    return {"policies_enforced": swept, "rows_deleted": purged, "failed": failed, "dry_run": dry_run}

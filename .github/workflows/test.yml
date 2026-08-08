@@ -118,6 +118,28 @@ jobs:
         if: hashFiles('prices.csv') != ''
         run: python scripts/export_stripe_price_ids.py >> "$GITHUB_ENV"
 
+      # Frontend↔backend contract check. Catches the class of bug where a
+      # frontend call names a path no route serves — six live 404s at the
+      # 2026-08-07 audit, none of which type-check, lint or test failures could
+      # see, because a URL is a string on one side and a decorator on the other.
+      #
+      # Needs the sibling repo. FRONTEND_REPO_TOKEN is a PAT with read access to
+      # booppa-nextjs; without it the checkout is skipped and the script reports
+      # SKIP rather than failing the build on a missing input.
+      - name: Checkout frontend (for API contract check)
+        id: fe
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: Alfred-ZinMinKhant/booppa-nextjs
+          token: ${{ secrets.FRONTEND_REPO_TOKEN }}
+          # Must stay inside GITHUB_WORKSPACE — actions/checkout rejects a path
+          # that escapes it, so this cannot mirror the local ../booppa-nextjs layout.
+          path: frontend
+
+      - name: API contract check (frontend calls resolve to real routes)
+        run: python scripts/check_api_contract.py --frontend frontend
+
       - name: Run pytest
         run: pytest -v --cov=app --cov-report=term-missing tests/
 

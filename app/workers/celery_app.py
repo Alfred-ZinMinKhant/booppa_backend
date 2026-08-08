@@ -84,6 +84,9 @@ celery_app.conf.update(
         "check_compliance_drift_task": {"queue": "fast_queue"},
         # New Heavy Task Routing
         "anchor_scan_ledger_task": {"queue": "heavy_queue"},
+        # Bulk DELETEs across sla_logs / webhook_deliveries — table-scan shaped,
+        # must not sit in front of latency-sensitive fast_queue work.
+        "purge_retention_policies_task": {"queue": "heavy_queue"},
         "scrape_vendor_contact_task": {"queue": "heavy_queue"},
         "run_vendor_pro_pdpa_snapshot_for_user": {"queue": "heavy_queue"},
         "run_pdpa_monitor_report_for_user": {"queue": "heavy_queue"},
@@ -120,6 +123,13 @@ celery_app.conf.update(
         "check-citation-staleness-weekly": {
             "task": "registry.check_citation_staleness",
             "schedule": crontab(day_of_week="monday", hour=1, minute=30),
+        },
+        # Enforce Enterprise retention policies once a day, off-peak. Daily (not
+        # hourly) because retention_days is a day-granularity promise — running
+        # more often only adds table scans without deleting anything sooner.
+        "purge-retention-policies-daily": {
+            "task": "purge_retention_policies_task",
+            "schedule": crontab(hour=4, minute=15),
         },
         "cleanup-old-tasks": {
             # Must match the registered task name (name="cleanup_old_tasks");
@@ -353,11 +363,30 @@ celery_app.conf.update(
             "schedule": crontab(day_of_week=1, hour=4, minute=30),
             "options": {"queue": "heavy_queue"},
         },
-        "scout-send-approved-daily": {
-            "task": "scout_send_approved_batch_task",
-            "schedule": crontab(hour=9, minute=0),
-            "options": {"queue": "heavy_queue"},
-        },
+        # PAUSED 2026-08-07 — the outreach this task sent breached the Spam
+        # Control Act (Cap. 311A) Second Schedule. See AUDIT_2026-08-07.md P0-3.
+        #
+        # The code defects are FIXED: "<ADV>" subject prefix, in-body
+        # unsubscribe link, sender postal address, no "[Name]" placeholder, and
+        # no asserted gaps the scan did not detect. A send-side gate
+        # (scout_celery_tasks._outreach_compliance_error) now blocks any message
+        # missing those, including bodies stored before the fix.
+        #
+        # Still blocked on ONE operational step, which is why this stays
+        # commented out: COMPANY_POSTAL_ADDRESS must be set to Booppa's real
+        # registered address. It has no default and was deliberately not
+        # guessed — a wrong address satisfies nothing. With it unset the task
+        # aborts immediately, so re-enabling now would simply run a daily no-op.
+        #
+        # To resume: set COMPANY_POSTAL_ADDRESS, regenerate the stored bodies of
+        # any rows still in APPROVED (they predate the fix and the gate will
+        # refuse them), inspect one real rendered send by eye, then uncomment.
+        # Scoring/approval keep running; prospects accrue in APPROVED unsent.
+        # "scout-send-approved-daily": {
+        #     "task": "scout_send_approved_batch_task",
+        #     "schedule": crontab(hour=9, minute=0),
+        #     "options": {"queue": "heavy_queue"},
+        # },
         "scout-weekly-digest": {
             "task": "scout_weekly_digest_task",
             "schedule": crontab(day_of_week=1, hour=8, minute=0),

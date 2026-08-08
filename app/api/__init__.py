@@ -187,8 +187,20 @@ from .cms_admin import router as cms_admin_router
 
 router.include_router(cms_admin_router, prefix="/admin/cms", tags=["cms-admin"])
 from .mock_report import router as mock_report_router
+from app.core.admin_auth import admin_auth
 
-router.include_router(mock_report_router, prefix="/mock", tags=["mock"])
+# Admin-gated. This renders a PDF through the REAL PDFService carrying a
+# fabricated tx_hash and a link to the live Polygon explorer — i.e. a document
+# that looks like a genuine Booppa compliance certificate. It was reachable
+# anonymously at /api/mock/report until 2026-08-07 (AUDIT_2026-08-07.md P1-9).
+# Keep it behind admin auth so previews still work for staff without letting
+# strangers mint plausible-looking Booppa deliverables.
+router.include_router(
+    mock_report_router,
+    prefix="/mock",
+    tags=["mock"],
+    dependencies=[Depends(admin_auth)],
+)
 
 from .government import router as government_router
 
