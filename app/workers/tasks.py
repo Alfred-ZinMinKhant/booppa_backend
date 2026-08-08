@@ -6091,6 +6091,8 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
                 })
         urgent_findings.sort(key=lambda x: x["days_open"], reverse=True)
 
+        from app.core.auth import create_report_share_token
+
         pdf_bytes = generate_pdpa_monitor_report_pdf({
             "company_name": company,
             "current_score": _compliance(current),
@@ -6103,7 +6105,13 @@ def run_pdpa_monitor_report_for_user(self, vendor_id: str, vendor_email: str | N
             # carried no PDPA section citations at all, and a reviewer checking
             # the deliverable for a real §-number correctly found none.
             "briefing_bullets": briefing_bullets,
-            "full_report_url": f"https://api.booppa.io/api/v1/reports/{current.id}/download",
+            # `?t=` — the reader opens this from an email with no session, and
+            # the download endpoint now enforces ownership unconditionally
+            # (AUDIT_2026-08-08.md P1-2).
+            "full_report_url": (
+                f"https://api.booppa.io/api/v1/reports/{current.id}/download"
+                f"?t={create_report_share_token(str(current.id))}"
+            ),
             "urgent_findings": urgent_findings,
             "score_history": score_history,
         })

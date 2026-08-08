@@ -88,6 +88,13 @@ app.add_middleware(
 async def startup_event():
     """Initialize application on startup"""
     logger.info("Starting BOOPPA v10.0 Enterprise")
+
+    # State which Stripe mode we are in, on every boot. Production ran on test
+    # keys unnoticed because nothing ever said so out loud
+    # (AUDIT_2026-08-08.md P0-D).
+    from app.billing.stripe_mode import log_startup_banner
+
+    log_startup_banner()
     # In production, use Alembic migrations instead of create_tables
     if settings.ENVIRONMENT == "development":
         # ensure models imported so metadata includes all tables

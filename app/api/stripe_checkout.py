@@ -443,7 +443,16 @@ def get_base_url():
 async def checkout_post(request: Request, token: str | None = Security(oauth2_scheme)):
     """Create a Stripe Checkout session. Requires an authenticated user.
 
-    Body: { productType, priceId (optional), prefill_email (optional) }
+    Body: { productType, prefill_email (optional) }
+
+    `priceId` used to be accepted from the body and *won* over the server's own
+    `_get_price(product_type)` mapping, while `metadata.product_type` — the value
+    the webhook grants entitlement from — came from a different field. Nothing
+    cross-checked the two, so a caller could pay the price of the cheapest SKU
+    and be granted the most expensive one (AUDIT_2026-08-08.md P0-B). The price
+    is now resolved on the server from the product type alone. Do not reintroduce
+    a body-supplied price: the webhook's binding assertion would reject the
+    session anyway, which reads to the buyer as a failed purchase.
     """
     payload = verify_access_token(token) if token else None
     if not payload or not payload.get("sub"):
@@ -456,7 +465,6 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     product_type = data.get("productType") or data.get("product_type")
-    price_id = data.get("priceId") or data.get("price_id")
     report_id = data.get("reportId") or data.get("report_id")
     prefill_email = (
         data.get("prefill_email")
@@ -466,8 +474,8 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         or auth_email
     )
 
-    if not product_type and not price_id:
-        raise HTTPException(status_code=400, detail="Missing productType or priceId")
+    if not product_type:
+        raise HTTPException(status_code=400, detail="Missing productType")
 
     if product_type in PROCUREMENT_PRODUCTS and prefill_email:
         from app.core.db import SessionLocal
@@ -588,8 +596,14 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
                                 }
                                 expected_prices.discard(None)
                                 for item in (s.get("items", {}).get("data") or []):
-                                    price_id = (item.get("price") or {}).get("id")
-                                    if price_id and price_id in expected_prices:
+                                    # NOT `price_id` — that name is the price this
+                                    # checkout will charge. Assigning to it here left
+                                    # a non-matching existing subscription's price in
+                                    # scope, and the `if not price_id` fallback below
+                                    # then declined to overwrite it, charging the
+                                    # wrong amount (AUDIT_2026-08-08.md P1-5).
+                                    item_price_id = (item.get("price") or {}).get("id")
+                                    if item_price_id and item_price_id in expected_prices:
                                         raise HTTPException(
                                             status_code=409,
                                             detail=f"You already have an active {expected_plan.replace('_', ' ').title()} subscription. Manage it from your subscription page.",
@@ -783,8 +797,8 @@ async def checkout_post(request: Request, token: str | None = Security(oauth2_sc
         finally:
             _db.close()
 
-    if not price_id:
-        price_id = _get_price(product_type)
+    # The server is the only source of the price. See the docstring.
+    price_id = _get_price(product_type)
 
     if not price_id:
         env_key = (product_type or "").upper()

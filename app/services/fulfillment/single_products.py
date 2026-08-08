@@ -1494,7 +1494,14 @@ async def _deliver_unscannable_and_refund(
         logger.error(f"[PDPA] Could not persist refund state for {report_id}: {e}")
 
     # ── Tell the buyer, and give them the document we did produce ─────────────
-    download_url = f"https://api.booppa.io/api/v1/reports/{report_id}/download"
+    # `?t=` — emailed to a buyer who has no session; the endpoint enforces
+    # ownership unconditionally (AUDIT_2026-08-08.md P1-2).
+    from app.core.auth import create_report_share_token
+
+    download_url = (
+        f"https://api.booppa.io/api/v1/reports/{report_id}/download"
+        f"?t={create_report_share_token(str(report_id))}"
+    )
 
     if refund.get("refunded"):
         money_line = (
