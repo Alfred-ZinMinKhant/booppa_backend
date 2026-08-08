@@ -47,6 +47,51 @@ class ReportResponse(BaseModel):
     created_at: str
 
 
+def _may_read_report(
+    report: Optional[Report],
+    current_user: Optional[User],
+    share_token: Optional[str] = None,
+) -> bool:
+    """Whether this caller may read this report.
+
+    The previous form of this check was `if report and current_user and
+    report.owner_id != current_user.id` — which enforced ownership *only* when
+    credentials were presented, so an anonymous caller holding a report id read
+    anyone's report, and signing out turned a 404 into a 200
+    (AUDIT_2026-08-08.md P1-2). The check is unconditional here.
+
+    Three ways to pass, in order:
+
+    1. **Owner.** The ordinary dashboard case.
+    2. **Share token.** Emailed deliverables link to readers who have no
+       session; `create_report_share_token` mints a per-report bearer for them.
+    3. **Unowned report.** `create_report_public` produces free scans with no
+       `owner_id` at all. Those were public by construction and demanding
+       ownership of them would 404 every existing free-scan link. This is the
+       one permissive branch, and it is narrow: it needs `owner_id IS NULL`,
+       which no paid fulfilment path leaves behind.
+    """
+    if report is None:
+        return False
+    # A chargeback took the money back — `charge.dispute.created` sets this.
+    # A refund we issued ourselves does NOT set it: those are usually us
+    # refunding a scan we couldn't complete, where the buyer is still owed the
+    # partial document (see `unscannable_scan_refund_invariant`).
+    if isinstance(report.assessment_data, dict) and report.assessment_data.get(
+        "access_revoked"
+    ):
+        return False
+    if report.owner_id is None:
+        return True
+    if current_user is not None and report.owner_id == current_user.id:
+        return True
+    if share_token:
+        from app.core.auth import verify_report_share_token
+
+        return verify_report_share_token(share_token, str(report.id))
+    return False
+
+
 def _build_verify_payload(report: Report) -> dict:
     audit_hash = report.audit_hash
     if not audit_hash:
@@ -558,10 +603,16 @@ async def get_report(
     report_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_optional_user),
+    t: Optional[str] = None,
 ):
-    """Get report status and details. No login required (public reports accessible by ID)."""
+    """Get report status and details.
+
+    Readable by the owner, by a caller holding a `?t=` share token for this
+    report, or by anyone if the report is an unowned free scan. See
+    `_may_read_report`.
+    """
     report = ReportRepository.get_by_id(db, str(report_id))
-    if report and current_user and report.owner_id != current_user.id:
+    if not _may_read_report(report, current_user, t):
         report = None
 
     if not report:
@@ -605,18 +656,20 @@ async def download_report_pdf(
     report_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_optional_user),
+    t: Optional[str] = None,
 ):
     """Generate a fresh presigned S3 URL for the report PDF and redirect.
 
     Use this endpoint in emails and dashboards instead of storing presigned URLs
     directly — presigned URLs expire (typically 7 days) but this endpoint always
-    returns a fresh one.
+    returns a fresh one. Emailed links carry `?t=` (see
+    `create_report_share_token`) because the reader has no session.
     """
     from fastapi.responses import RedirectResponse
     from app.services.storage import S3Service
 
     report = ReportRepository.get_by_id(db, str(report_id))
-    if report and current_user and report.owner_id != current_user.id:
+    if not _may_read_report(report, current_user, t):
         report = None
 
     if not report:
@@ -681,10 +734,11 @@ async def get_report_qr(
     report_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_optional_user),
+    t: Optional[str] = None,
 ):
     """Return a QR code PNG for the report verification URL (read-only)."""
     report = ReportRepository.get_by_id(db, str(report_id))
-    if report and current_user and report.owner_id != current_user.id:
+    if not _may_read_report(report, current_user, t):
         report = None
 
     if not report:

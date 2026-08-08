@@ -21,6 +21,44 @@ logger = logging.getLogger(__name__)
 router = APIRouter(route_class=RetryAPIRoute)
 
 
+def _render_payment_failed_email(hosted_url: str | None, final: bool) -> str:
+    """Dunning notice. Deliberately plain — this is a billing problem, not a sale.
+
+    Says what actually happens next rather than implying immediate cut-off:
+    Stripe retries for about two weeks, and only after the last attempt does the
+    plan drop to free (with the 90-day read-only grace).
+    """
+    cta = (
+        f'<p><a href="{hosted_url}" style="background:#0B6BCB;color:#fff;'
+        f'padding:12px 20px;border-radius:6px;text-decoration:none;'
+        f'display:inline-block">Update payment method</a></p>'
+        if hosted_url
+        else "<p>You can update your card from Billing in your Booppa dashboard.</p>"
+    )
+    if final:
+        body = (
+            "<p>We've tried your card several times over the past two weeks and "
+            "it hasn't gone through, so your subscription is about to end.</p>"
+            "<p>Paying the invoice below restores your plan straight away. If you "
+            "do nothing, your account moves to the free tier — the evidence and "
+            "certificates you've already produced stay readable for 90 days.</p>"
+        )
+    else:
+        body = (
+            "<p>Your latest Booppa payment was declined. Nothing has changed on "
+            "your account yet — we'll retry automatically over the next couple of "
+            "weeks.</p>"
+            "<p>Updating your card now avoids any interruption.</p>"
+        )
+    return (
+        '<div style="font-family:system-ui,-apple-system,sans-serif;'
+        'max-width:560px;line-height:1.6">'
+        f"{body}{cta}"
+        "<p style=\"color:#666;font-size:13px\">Questions? Just reply to this email.</p>"
+        "</div>"
+    )
+
+
 def _emit_subscription_webhook(event_type: str, customer_email: str, product_type: str, extra: dict) -> None:
     """Resolve the buyer by email and queue a subscription lifecycle webhook.
 
@@ -156,6 +194,68 @@ from app.services.fulfillment import (
     create_stub_report as _create_stub_report,
     revert_subscription_score_lever as _revert_subscription_score_lever,
 )
+def _price_matches_product(session: dict, product_type: str | None) -> tuple[bool, str]:
+    """Is the price actually charged the one configured for `product_type`?
+
+    Entitlement is granted from `metadata.product_type`, which is set by whoever
+    created the Checkout Session. Until 2026-08-08 nothing compared that claim
+    against what was paid, so a session created with a cheap price and expensive
+    metadata bought the expensive product (AUDIT_2026-08-08.md P0-A/P0-B).
+
+    Returns (ok, reason). Two deliberate fail-OPEN cases, both alerted by the
+    caller rather than silently allowed:
+
+      * `_get_price` returns nothing — a retired SKU whose env var is no longer
+        set, or a price configured only in Stripe. We cannot judge, so we do not
+        block a customer who has already been charged.
+      * the line-item lookup fails — a Stripe outage must not strand paid
+        fulfilment. The lookup is server-to-Stripe, so a caller cannot induce
+        this to bypass the check.
+
+    We fail CLOSED only when we know the expected price AND observe a different
+    one. That is the case that is always an attack or a genuine misconfiguration,
+    and both need a human.
+    """
+    if not product_type:
+        return True, "no product_type to check"
+
+    from app.api.stripe_checkout import _get_price
+
+    expected = _get_price(product_type)
+    if not expected:
+        return True, f"no configured price for {product_type} — cannot verify"
+
+    line_items = (session.get("line_items") or {}).get("data")
+    if not line_items:
+        session_id = session.get("id")
+        if not session_id:
+            return True, "no session id — cannot fetch line items"
+        try:
+            stripe.api_key = settings.STRIPE_SECRET_KEY
+            fetched = stripe.checkout.Session.retrieve(
+                session_id, expand=["line_items"]
+            )
+            line_items = (
+                (fetched.get("line_items") or {}).get("data")
+                if isinstance(fetched, dict)
+                else (getattr(fetched, "line_items", None) or {}).get("data")
+            )
+        except Exception as exc:
+            return True, f"line-item lookup failed ({exc}) — not blocking"
+
+    if not line_items:
+        return True, "Stripe returned no line items — cannot verify"
+
+    charged = {
+        ((item.get("price") or {}) if isinstance(item, dict) else (item.price or {})).get("id")
+        for item in line_items
+    }
+    charged.discard(None)
+    if expected in charged:
+        return True, "ok"
+    return False, f"expected price {expected} for {product_type}, session charged {sorted(charged)}"
+
+
 def _rollback_webhook_idempotency(event_id: str | None) -> None:
     """
     Delete the ProcessedWebhookEvent row so a Stripe retry can re-process.
@@ -277,6 +377,30 @@ async def _stripe_webhook_impl(
             or session.get("customer_email")
             or metadata.get("customer_email")
         )
+
+        # ── Price ↔ product binding ───────────────────────────────────────────
+        # Everything below grants entitlement from `product_type`, which is just
+        # metadata on the session. Verify it against the price actually charged
+        # BEFORE any branch runs. See `_price_matches_product` for why the
+        # unverifiable cases proceed with an alert instead of blocking.
+        _price_ok, _price_reason = _price_matches_product(session, product_type)
+        if not _price_ok:
+            logger.error(
+                "[Webhook] REFUSING fulfillment — price/product mismatch: %s (session=%s email=%s)",
+                _price_reason, session.get("id"), customer_email,
+            )
+            await _alert_payment_fulfillment_issue(
+                reason=f"price/product mismatch — no entitlement granted: {_price_reason}",
+                product_type=product_type,
+                customer_email=customer_email,
+                session_id=session.get("id"),
+                event_id=event_id,
+                extra={"metadata_keys": sorted(metadata.keys())},
+            )
+            # 200 so Stripe stops retrying — a retry cannot change the outcome.
+            return {"received": True, "fulfilled": False, "reason": "price_product_mismatch"}
+        if _price_reason not in ("ok", "no product_type to check"):
+            logger.warning("[Webhook] price binding not verified: %s", _price_reason)
 
         # Record PAYMENT funnel event (non-blocking)
         try:
@@ -1097,6 +1221,135 @@ async def _stripe_webhook_impl(
             # Never fail the webhook over bookkeeping — Stripe would retry the
             # whole event, re-running fulfillment branches above.
             logger.error(f"[Webhook] charge.refunded handling failed: {exc}")
+
+    # ── Failed renewal ────────────────────────────────────────────────────────
+    # Stripe dunning: the card was declined on a renewal invoice. This is NOT a
+    # cancellation and must not revoke anything — Stripe retries for ~2 weeks and
+    # most of these self-heal. When retries are finally exhausted Stripe moves the
+    # subscription to `unpaid`/`canceled` and fires `customer.subscription.*`,
+    # which the branch above already downgrades and starts the 90-day grace on.
+    #
+    # What was missing was the customer ever being told, so a card expiry ended in
+    # a silent downgrade weeks later with no warning (AUDIT_2026-08-08.md P1-3).
+    if event["type"] == "invoice.payment_failed":
+        try:
+            raw = json.loads(payload)
+            inv = raw.get("data", {}).get("object", {})
+            inv_email = inv.get("customer_email")
+            next_attempt = inv.get("next_payment_attempt")
+            final = next_attempt is None
+            logger.warning(
+                "[Webhook] invoice.payment_failed email=%s amount_due=%s final_attempt=%s",
+                inv_email, inv.get("amount_due"), final,
+            )
+            if inv_email:
+                sent = await EmailService().send_html_email(
+                    to_email=inv_email,
+                    subject=(
+                        "Action needed: we couldn't process your Booppa renewal"
+                        if final
+                        else "Your Booppa payment didn't go through"
+                    ),
+                    body_html=_render_payment_failed_email(
+                        hosted_url=inv.get("hosted_invoice_url"), final=final
+                    ),
+                )
+                # `send_html_email` returns False rather than raising.
+                if not sent:
+                    logger.error(
+                        "[Webhook] dunning email REJECTED for %s — customer was not warned",
+                        inv_email,
+                    )
+            if final:
+                # Last retry burned. Someone is about to lose access; make that
+                # visible to a human before the customer notices it themselves.
+                await _alert_payment_fulfillment_issue(
+                    reason="final renewal attempt failed — access will lapse",
+                    product_type="subscription_renewal",
+                    customer_email=inv_email,
+                    session_id=inv.get("id"),
+                    event_id=event_id,
+                    extra={"amount_due": inv.get("amount_due")},
+                )
+        except Exception as exc:
+            logger.error(f"[Webhook] invoice.payment_failed handling failed: {exc}")
+
+    # ── Chargebacks ───────────────────────────────────────────────────────────
+    # A dispute pulls the money back immediately and is adversarial, which is
+    # what separates it from `charge.refunded` above.
+    #
+    # **What a reversal revokes, explicitly** (AUDIT_2026-08-08.md P1-3):
+    #   * A refund WE issue revokes nothing. It is often us refunding a scan we
+    #     could not complete, and the buyer is still owed the partial document we
+    #     did produce — see `unscannable_scan_refund_invariant`.
+    #   * A dispute revokes read access to the deliverables bought with that
+    #     charge, by setting `access_revoked` on the matching reports.
+    # Subscription plans are deliberately NOT auto-downgraded here: a chargeback
+    # on one invoice of a live subscription is a billing argument, not a signal
+    # to cut off an account, and Stripe cancels the subscription itself if the
+    # dispute is lost. That call stays with a human, which is why this alerts.
+    if event["type"] == "charge.dispute.created":
+        try:
+            raw = json.loads(payload)
+            dispute = raw.get("data", {}).get("object", {})
+            charge_id = dispute.get("charge")
+            pi_id = dispute.get("payment_intent")
+            stripe.api_key = settings.STRIPE_SECRET_KEY
+            if not pi_id and charge_id:
+                try:
+                    ch = stripe.Charge.retrieve(charge_id)
+                    pi_id = ch.get("payment_intent") if isinstance(ch, dict) else getattr(ch, "payment_intent", None)
+                except Exception:
+                    pi_id = None
+
+            revoked = 0
+            sess_id = None
+            if pi_id:
+                sessions = stripe.checkout.Session.list(payment_intent=pi_id, limit=1)
+                rows = sessions.get("data") if isinstance(sessions, dict) else getattr(sessions, "data", [])
+                sess_id = rows[0].get("id") if rows else None
+
+            if sess_id:
+                from app.core.repositories.report_repository import ReportRepository
+                from app.workers.tasks import _set_assessment_values
+
+                _ddb = SessionLocal()
+                try:
+                    reports = ReportRepository.list_by_stripe_session_id(_ddb, sess_id)
+                    for rep in reports:
+                        _set_assessment_values(rep, {
+                            "access_revoked": True,
+                            "access_revoked_reason": "chargeback",
+                            "dispute_id": dispute.get("id"),
+                            "dispute_status": dispute.get("status"),
+                            "dispute_amount": dispute.get("amount"),
+                            "access_revoked_at": datetime.utcnow().isoformat(),
+                        })
+                        flag_modified(rep, "assessment_data")
+                    _ddb.commit()
+                    revoked = len(reports)
+                finally:
+                    _ddb.close()
+
+            logger.error(
+                "[Webhook] charge.dispute.created id=%s amount=%s session=%s revoked=%s",
+                dispute.get("id"), dispute.get("amount"), sess_id, revoked,
+            )
+            await _alert_payment_fulfillment_issue(
+                reason=f"chargeback opened — access revoked on {revoked} report(s)",
+                product_type="dispute",
+                customer_email=None,
+                session_id=sess_id,
+                event_id=event_id,
+                extra={
+                    "dispute_id": dispute.get("id"),
+                    "reason": dispute.get("reason"),
+                    "amount": dispute.get("amount"),
+                    "evidence_due_by": (dispute.get("evidence_details") or {}).get("due_by"),
+                },
+            )
+        except Exception as exc:
+            logger.error(f"[Webhook] charge.dispute.created handling failed: {exc}")
 
     # Record ACTIVE funnel event after all fulfillment (non-blocking)
     try:

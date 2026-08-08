@@ -86,8 +86,17 @@ async def dashboard_alerts(
     )
     pdpa_report_id = str(pdpa_report.id) if pdpa_report else None
     # Use stable download endpoint — not the presigned S3 URL which expires after 7 days
+    # `?t=` — this is a plain link the dashboard renders, so clicking it sends
+    # no Authorization header. The endpoint enforces ownership unconditionally
+    # now (AUDIT_2026-08-08.md P1-2), and without the token an owner clicking
+    # their own report would 404.
+    from app.core.auth import create_report_share_token
+
     pdpa_report_url = (
-        f"/api/v1/reports/{pdpa_report.id}/download" if pdpa_report else None
+        f"/api/v1/reports/{pdpa_report.id}/download"
+        f"?t={create_report_share_token(str(pdpa_report.id))}"
+        if pdpa_report
+        else None
     )
 
     # ── 5. Notarization count ────────────────────────────────────────────────

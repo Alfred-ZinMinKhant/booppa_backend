@@ -137,6 +137,18 @@ jobs:
           # that escapes it, so this cannot mirror the local ../booppa-nextjs layout.
           path: frontend
 
+      # A checker that reports SKIP is indistinguishable from one that reports
+      # OK, and the SKIP path is the likely one: it triggers whenever
+      # FRONTEND_REPO_TOKEN expires, which nothing else would tell us about.
+      # Fail loudly on this repo instead of going quietly blind. Forks (which
+      # legitimately have no PAT) are exempted by the repository check.
+      - name: Fail if the frontend checkout was skipped
+        if: steps.fe.outcome != 'success' && github.repository == 'Alfred-ZinMinKhant/booppa_backend'
+        run: |
+          echo "::error::Frontend checkout failed (${{ steps.fe.outcome }}), so the API"
+          echo "::error::contract check cannot run. Check that FRONTEND_REPO_TOKEN is valid."
+          exit 1
+
       - name: API contract check (frontend calls resolve to real routes)
         run: python scripts/check_api_contract.py --frontend frontend
 

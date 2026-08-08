@@ -484,7 +484,8 @@ jobs:
                   { "name": "CORS_ALLOWED_ORIGINS", "value": "https://api.booppa.io,https://booppa.io,https://www.booppa.io" },
                   { "name": "ADMIN_USER", "value": "${ADMIN_USER}" },                  { "name": "STRIPE_CSP_PACK_ONETIME", "value": "${STRIPE_CSP_PACK_ONETIME}" },
                   { "name": "STRIPE_CSP_PACK_MONTHLY", "value": "${STRIPE_CSP_PACK_MONTHLY}" },
-                  { "name": "STRIPE_CSP_MONITORING_MONTHLY", "value": "${STRIPE_CSP_MONITORING_MONTHLY}" },                  { "name": "EU_SANCTIONS_XML_URL", "value": "https://webgate.ec.europa.eu/fsd/fsf/public/files/xmlFullSanctionsList_1_1/content?token=dG9rZW4tMjAxNw" }
+                  { "name": "STRIPE_CSP_MONITORING_MONTHLY", "value": "${STRIPE_CSP_MONITORING_MONTHLY}" },                  { "name": "EU_SANCTIONS_XML_URL", "value": "https://webgate.ec.europa.eu/fsd/fsf/public/files/xmlFullSanctionsList_1_1/content?token=dG9rZW4tMjAxNw" },
+                  { "name": "COMPANY_POSTAL_ADDRESS", "value": "Booppa Smart Care LLC, 1209 Orange Street, Wilmington, Delaware 19801, USA" }
                 ],
                 "secrets": [
                   { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" },
@@ -700,7 +701,8 @@ jobs:
                   { "name": "PLAYWRIGHT_BROWSERS_PATH", "value": "/opt/playwright" },
                   { "name": "STRIPE_CSP_PACK_ONETIME", "value": "${STRIPE_CSP_PACK_ONETIME}" },
                   { "name": "STRIPE_CSP_PACK_MONTHLY", "value": "${STRIPE_CSP_PACK_MONTHLY}" },
-                  { "name": "STRIPE_CSP_MONITORING_MONTHLY", "value": "${STRIPE_CSP_MONITORING_MONTHLY}" },                  { "name": "EU_SANCTIONS_XML_URL", "value": "https://webgate.ec.europa.eu/fsd/fsf/public/files/xmlFullSanctionsList_1_1/content?token=dG9rZW4tMjAxNw" }
+                  { "name": "STRIPE_CSP_MONITORING_MONTHLY", "value": "${STRIPE_CSP_MONITORING_MONTHLY}" },                  { "name": "EU_SANCTIONS_XML_URL", "value": "https://webgate.ec.europa.eu/fsd/fsf/public/files/xmlFullSanctionsList_1_1/content?token=dG9rZW4tMjAxNw" },
+                  { "name": "COMPANY_POSTAL_ADDRESS", "value": "Booppa Smart Care LLC, 1209 Orange Street, Wilmington, Delaware 19801, USA" }
                 ],
                 "secrets": [
                   { "name": "DATABASE_URL", "valueFrom": "${DB_SECRET_ARN}" },

@@ -52,12 +52,25 @@ SKIP_DIRS = {"node_modules", ".next", ".git", "dist", "build", "coverage", "e2e"
 BACKEND_PATTERNS = [
     # fetchWithAuth('/api/v1/…')  — prepends config.apiUrl inside lib/auth.ts
     re.compile(r"""fetchWithAuth\(\s*[`'"](/[^`'"?\s]*)"""),
-    # `${config.apiUrl}/api/…` / `${apiUrl}/api/…` / `${API_BASE}/api/…`
-    re.compile(r"""\$\{\s*(?:config\.)?(?:apiUrl|API_URL|API_BASE|apiBase)\s*\}(/[^`'"?\s]*)"""),
+    # `${<anything>}/api/…` — any interpolated base followed by the /api mount.
+    #
+    # This used to enumerate the identifier by name
+    # (`config.apiUrl|apiUrl|API_URL|API_BASE|apiBase`), which meant a component
+    # declaring its own `const API = process.env.NEXT_PUBLIC_API_BASE` was
+    # invisible to this check. 14 call sites were unscanned that way, including
+    # the government dashboard's POST to `/api/v1/reports/gov-shortlist` — an
+    # endpoint that does not exist and shipped anyway (AUDIT_2026-08-08.md P1-4).
+    #
+    # The discriminator is the `/api/` mount, not what someone named the
+    # variable, so match on that instead and stop guessing at identifiers.
+    re.compile(r"""\$\{[^}]*\}(/api/[^`'"?\s]*)"""),
     # apiPath('/…') — the helper supplies /api/v1
     re.compile(r"""apiPath\(\s*[`'"](/[^`'"?\s]*)"""),
 ]
 NEXT_PATTERN = re.compile(r"""(?<!\w)fetch\(\s*[`'"](/api/[^`'"?\s]*)""")
+
+# `// …`, `/* …`, or a ` * …` continuation line inside a block comment.
+COMMENT_LINE = re.compile(r"\s*(//|/\*|\*)")
 
 # A `${…}` interpolation inside a path is a path parameter; normalise it to the
 # same wildcard the backend's `{id}` becomes so the two can be compared.
@@ -247,6 +260,14 @@ def scan_frontend(frontend: Path):
             continue
         rel = path.relative_to(frontend)
         for lineno, line in enumerate(lines, 1):
+            # Comment lines are prose, not call sites. A comment explaining
+            # *why* a call was repointed usually quotes the old, dead path —
+            # scanning it reports the very bug the comment documents as fixed.
+            # Only whole-line comments are skipped, so a trailing `// note`
+            # after real code still leaves the code visible, and a `//` inside
+            # a URL is never mistaken for one.
+            if COMMENT_LINE.match(line):
+                continue
             for pattern in BACKEND_PATTERNS:
                 for m in pattern.finditer(line):
                     yield rel, lineno, m.group(1), "backend"

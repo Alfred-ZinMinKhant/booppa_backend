@@ -196,6 +196,45 @@ def verify_ws_token(token: str):
         return None
 
 
+def create_report_share_token(report_id: str, expires_delta: timedelta = None) -> str:
+    """Bearer credential for ONE report, for readers who are not signed in.
+
+    Deliverables are emailed to the buyer, who usually opens them from the email
+    without a session. Before this existed, `/reports/{id}` simply skipped its
+    ownership check whenever no credentials were presented, so *anyone* holding
+    a report id read the report — and ids travel in URLs, mail logs and support
+    threads (AUDIT_2026-08-08.md P1-2).
+
+    Scoped to a single report (`sub` is the report id), `type: "report_share"`
+    so `verify_access_token` rejects it, and expiring in 30 days — long enough
+    to outlive the 7-day S3 presign the link exists to replace, short enough
+    that a forwarded email stops working.
+    """
+    now = datetime.now(timezone.utc)
+    expire = now + (expires_delta or timedelta(days=30))
+    return jwt.encode(
+        {"sub": str(report_id), "exp": expire, "iat": now, "type": "report_share"},
+        settings.SECRET_KEY,
+        algorithm="HS256",
+    )
+
+
+def verify_report_share_token(token: str, report_id: str) -> bool:
+    """True only if `token` is a live share token minted for `report_id`.
+
+    The report id is compared here rather than returned to the caller so a token
+    for report A can never be mistakenly accepted on report B.
+    """
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+        if payload.get("type") != "report_share":
+            raise JWTError("Invalid token type")
+        return str(payload.get("sub")) == str(report_id)
+    except JWTError as e:
+        logger.warning(f"Report share token verification failed: {e}")
+        return False
+
+
 def verify_access_token(token: str):
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
